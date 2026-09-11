@@ -149,12 +149,16 @@ fn run_daemon() -> Result<()> {
         theme.name
     );
 
-    Application::new().run(move |cx: &mut App| {
-        if let Err(error) = start(cx, paths, config, theme) {
-            log::error!("could not start: {error:#}");
-            cx.quit();
-        }
-    });
+    // The icon set and the font are compiled in, so there is no folder to
+    // find at run time and nothing to go missing between install and use.
+    Application::new()
+        .with_assets(lumen_ui::Assets)
+        .run(move |cx: &mut App| {
+            if let Err(error) = start(cx, paths, config, theme) {
+                log::error!("could not start: {error:#}");
+                cx.quit();
+            }
+        });
 
     Ok(())
 }

@@ -16,8 +16,32 @@ use std::sync::Arc;
 
 use gpui::{App, RenderImage};
 use image::{Frame, RgbaImage};
+use lumen_core::Kind;
 use lumen_platform::{IconImage, IconSource, Platform};
 use parking_lot::Mutex;
+
+/// The bundled glyph for a row that has no icon of its own.
+///
+/// Keyed on [`Kind`] rather than carried on the [`Item`](lumen_core::Item),
+/// because which glyph a kind gets is a presentation decision and `core` is
+/// not where presentation decisions live (AD-03). It also means a provider
+/// cannot forget to set one.
+///
+/// [`Kind::Application`] has an entry too, even though an application almost
+/// always has a real icon: almost always is not always, and an empty square
+/// beside fifteen filled ones is worse than a plain glyph.
+pub fn glyph(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Application => "icons/application.svg",
+        Kind::Command => "icons/command.svg",
+        Kind::Calculation => "icons/calculator.svg",
+        Kind::Script => "icons/script.svg",
+        Kind::Snippet => "icons/snippet.svg",
+        Kind::Clipboard => "icons/clipboard.svg",
+        Kind::Window => "icons/window.svg",
+        Kind::File => "icons/file.svg",
+    }
+}
 
 /// What the UI knows about one icon.
 #[derive(Clone)]

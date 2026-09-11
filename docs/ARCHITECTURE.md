@@ -108,7 +108,7 @@ the README.
 | ----- | ---- | ------ |
 | **F0** | Platform spike on Windows: transparent undecorated window, backdrop, monitor placement, global gesture, focus capture and restore | **Done** |
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
-| **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Mostly done** — themes, live reload, the fade, the bundled typeface and the action panel are in. The icon set is not, and the appearance animation omits the scale (7.5) |
+| **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Done.** Themes, live reload, the fade, the bundled typeface, the icon set and the action panel are all in; the appearance animation omits the scale, deliberately (7.5) |
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
 | **F4** | View extensions, tiers T2 and T3 | Not started |
 | **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |
@@ -454,6 +454,47 @@ query, each capped at eight rows so a common letter cannot fill the list with
 one kind of thing. Keeping them out of `candidates` also keeps the application
 index cheap to hold -- merging would mean re-preparing several hundred
 application haystacks every time the user copies something.
+
+### 7.22 The glyph is chosen from the row's kind, in the UI layer
+
+The obvious place to put an icon is on the [`Item`](../crates/lumen-core/src/item.rs),
+next to the one an application already carries. It is the wrong place twice
+over.
+
+`Item::icon` is an `IconSource` -- a thing the *platform* resolves to pixels,
+by extracting it from an executable or looking it up in an icon theme. A
+bundled glyph is neither; it is a file compiled into this binary, painted as a
+mask in a colour the theme supplies. Putting it in the same field would mean
+the platform boundary carrying a value only the UI can interpret.
+
+And it would make every provider responsible for setting one, which is a rule
+that gets forgotten exactly once and then ships. `Kind` already says what sort
+of row this is, and the mapping from kind to glyph is a presentation decision
+that belongs in the UI layer (AD-03). A test asserts every `Kind` resolves to a
+bundled asset, so adding a kind without a glyph fails the build rather than
+drawing an empty square.
+
+The order the row draws in is: the real icon if it has arrived, the bundled
+glyph if there was never going to be one, and *nothing* while extraction is
+still in flight -- because showing a glyph and replacing it a frame later is a
+flicker, and a row that is about to have its own icon can wait.
+
+### 7.23 The icon set is eight files on one grid, not an icon font
+
+Every glyph is a `20 × 20` viewBox with its drawing inside the inner `16 × 16`,
+stroked at 1.5, round caps and joins, `currentColor`. That is F2's "optically
+aligned on a 16 and 20 px grid", and the two-unit margin is the point of it: a
+shell-extracted application icon is drawn to its own edges, and a stroked glyph
+at the same nominal size reads as larger, because its corners are further from
+the centre with no shading to soften them.
+
+Horizontal and vertical edges sit on half-units so a 1.5 stroke lands on whole
+pixels at 100% scaling rather than straddling two.
+
+A test reads the files back and asserts the viewBox, the stroke width and
+`currentColor` on all eight. Those are the three things that make one icon look
+like it belongs with the others, and they are exactly the three things an
+edit six months from now will get wrong.
 
 ---
 

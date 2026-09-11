@@ -18,6 +18,7 @@
 //! anyone else, and `gpui`'s own `examples/input.rs` is the reference for doing
 //! it.
 
+pub mod assets;
 pub mod fonts;
 pub mod icons;
 pub mod keymap;
@@ -27,6 +28,7 @@ pub mod settings;
 pub mod styling;
 pub mod text_field;
 
+pub use assets::Assets;
 pub use fonts::FAMILY as FONT_FAMILY;
 pub use launcher::{Launcher, LauncherEvent};
 pub use overlay::{Overlay, OverlayEvent};

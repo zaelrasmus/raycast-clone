@@ -23,7 +23,7 @@ use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, KeyDownEvent,
     ScrollStrategy, SharedString, Styled, Task, UniformListScrollHandle, Window, actions, div,
-    ease_out_quint, img, uniform_list,
+    ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::theme::Appearance;
 use lumen_core::{
@@ -1067,11 +1067,29 @@ impl Launcher {
             })
             .child(
                 // The icon square exists whether or not the icon has loaded, so
-                // a late icon never moves the title (I-10).
+                // a late icon never moves the title (I-10). What fills it is a
+                // three-way choice and the order matters: the real icon if it
+                // has arrived, the bundled glyph for the row's kind if there is
+                // no real icon to arrive, and nothing at all while extraction
+                // is still in flight -- because swapping a glyph for an icon
+                // one frame later is a flicker, and a row that is about to have
+                // its own icon should simply wait for it.
                 div()
                     .size(metrics::icon_size())
                     .flex_none()
-                    .when_some(icon, |slot, image| slot.child(img(image).size_full())),
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .map(|slot| match icon {
+                        Some(image) => slot.child(img(image).size_full()),
+                        None if item.icon.is_none() => slot.child(
+                            svg()
+                                .path(crate::icons::glyph(item.kind))
+                                .size(metrics::icon_size())
+                                .text_color(color(colors.icon)),
+                        ),
+                        None => slot,
+                    }),
             )
             .child(
                 div()

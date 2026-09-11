@@ -167,6 +167,10 @@ pub struct Colors {
     pub border_strong: Color,
     pub text_primary: Color,
     pub text_muted: Color,
+    /// The bundled glyphs. Between primary and muted on purpose: an icon at
+    /// this size carries less ink than a word, so muted makes it disappear and
+    /// primary makes it shout over the title beside it.
+    pub icon: Color,
     pub text_placeholder: Color,
     pub text_on_accent: Color,
     pub accent: Color,
@@ -189,6 +193,7 @@ impl Colors {
             "border.strong" => &mut self.border_strong,
             "text.primary" => &mut self.text_primary,
             "text.muted" => &mut self.text_muted,
+            "icon" => &mut self.icon,
             "text.placeholder" => &mut self.text_placeholder,
             "text.on-accent" => &mut self.text_on_accent,
             "accent" => &mut self.accent,
@@ -223,6 +228,7 @@ impl Theme {
                 border_strong: Color::rgba(0xFF, 0xFF, 0xFF, 0x24),
                 text_primary: Color::rgb(0xED, 0xED, 0xF2),
                 text_muted: Color::rgb(0x8A, 0x8A, 0x96),
+                icon: Color::rgb(0xB4, 0xB4, 0xC0),
                 text_placeholder: Color::rgb(0x60, 0x60, 0x6C),
                 text_on_accent: Color::rgb(0xFF, 0xFF, 0xFF),
                 accent: Color::rgb(0x7C, 0x6B, 0xD6),
@@ -247,6 +253,7 @@ impl Theme {
                 border_strong: Color::rgba(0x1A, 0x1A, 0x2E, 0x24),
                 text_primary: Color::rgb(0x1A, 0x1A, 0x24),
                 text_muted: Color::rgb(0x6B, 0x6B, 0x7B),
+                icon: Color::rgb(0x4A, 0x4A, 0x5A),
                 text_placeholder: Color::rgb(0x9A, 0x9A, 0xA8),
                 text_on_accent: Color::rgb(0xFF, 0xFF, 0xFF),
                 accent: Color::rgb(0x5B, 0x4A, 0xC4),

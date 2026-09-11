@@ -63,6 +63,10 @@ an aesthetic worth looking at fifty times a day.
   keyboard, which is what F2 asks for.
 - **Inter bundled into the binary** rather than the system font, so the interface
   is the same typeface on Windows and on Hyprland.
+- **An icon set**, eight glyphs drawn for this project on a 16-and-20 px grid
+  and compiled into the binary, so every row has something in its icon square
+  even when the shell has no icon to give. They take their colour from the
+  theme's `icon` token.
 - **Themes and sheets as data** with live reload for themes: edit the JSON, see
   it on screen, no rebuild. Two in-house themes ship, one dark and one light.
 - **Windows 11 chrome**: acrylic backdrop, rounded corners, dark mode, out of
@@ -78,8 +82,8 @@ Listed because a README that implies more than exists is worse than no README.
 - **No IME.** The search field is a plain string with a drawn caret, not a GPUI
   `EntityInputHandler`, so composition input does not work. ASCII typing,
   backspace, word-delete and paste all do.
-- **No icon set.** F2 asks for one optically aligned on a 16 and 20 px grid;
-  application icons come from the shell and nothing else has an icon at all.
+- **The settings window has no icons.** The launcher's rows do; the sheet
+  editor is still text and buttons.
 - **File search is not a search of the whole disk.** It walks the folders
   listed above, to a bounded depth and a bounded count, and matches from
   memory. It finds the file you were working on, not every file on the machine.
@@ -235,14 +239,18 @@ Every token is optional and falls back to the base theme, so a theme written
 today still loads after the palette grows. Tokens are semantic
 (`surface.background`, `text.muted`, `accent`) and never name components.
 
+The `icon` token colours the bundled glyphs. It sits between `text.primary` and
+`text.muted` on purpose: a 20-px glyph carries less ink than a word, so muted
+makes it vanish and primary makes it shout over the title beside it.
+
 A theme may set **colour and type family only**. Geometry — spacing, radii, row
 heights, icon sizes — is not themeable, deliberately: it is the calibration the
 whole project exists to protect.
 
 ### Script commands
 
-Any executable in `%APPDATA%umennfigscripts` with a `@lumen.title`
-header becomes a command in the launcher. an example is written there on first
+Any executable in `%APPDATA%\Lumen\config\scripts\` with a `@lumen.title`
+header becomes a command in the launcher. An example is written there on first
 run; delete it once you have your own.
 
 ```powershell
