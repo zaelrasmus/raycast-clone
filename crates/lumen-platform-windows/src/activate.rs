@@ -57,18 +57,64 @@ use windows::core::{BOOL, Interface as _, PCWSTR};
 use crate::com;
 
 /// What identifies the application a target refers to.
+///
+/// Several candidates rather than one, because the AppsFolder does not have a
+/// single naming convention. Real parsing names from one machine:
+///
+/// | Parsing name | What it is |
+/// | ------------ | ---------- |
+/// | `Microsoft.WindowsTerminal_8wekyb3d8bbwe!App` | a packaged app's model id |
+/// | `ZedIndustries.Zed` | a model id with no `!` at all |
+/// | `Firefox.lnk` | a shortcut file |
+///
+/// The middle row is the one that broke the first version of this: it has no
+/// `!`, so it was not recognised as a model id, and `file_stem` then treated
+/// `.Zed` as an extension and produced `zedindustries` -- which matches no
+/// process on earth. A match is now anything in either list.
 #[derive(Debug, Default)]
 struct Identity {
-    /// The packaged application's model id, when it has one.
-    aumid: Option<String>,
-    /// Lowercased executable stems any of which counts as a match, best first.
+    /// Model ids to compare against a window's own, exactly.
+    aumids: Vec<String>,
+    /// Lowercased executable stems, any of which counts as a match.
     stems: Vec<String>,
 }
 
 impl Identity {
     fn is_empty(&self) -> bool {
-        self.aumid.is_none() && self.stems.is_empty()
+        self.aumids.is_empty() && self.stems.is_empty()
     }
+
+    fn push_stem(&mut self, stem: String) {
+        if !stem.is_empty() && !is_too_generic(&stem) && !self.stems.contains(&stem) {
+            self.stems.push(stem);
+        }
+    }
+}
+
+/// Words that identify nothing, and would match the wrong window if trusted.
+///
+/// The last dot-separated segment of a model id is usually the application --
+/// `ZedIndustries.Zed` -- but sometimes it is a role. Raising the wrong window
+/// is worse than starting a second copy, so anything this generic is dropped
+/// rather than guessed with.
+fn is_too_generic(stem: &str) -> bool {
+    const GENERIC: &[&str] = &[
+        "app",
+        "exe",
+        "lnk",
+        "url",
+        "main",
+        "desktop",
+        "launcher",
+        "client",
+        "start",
+        "run",
+        "shell",
+        "host",
+        "application",
+    ];
+
+    stem.len() < 3 || GENERIC.contains(&stem)
 }
 
 /// Raise an already-running instance, if there is one.
@@ -84,6 +130,7 @@ pub fn raise_existing(target: &LaunchTarget) -> Result<bool> {
     let Some(hwnd) = find_window(&identity) else {
         return Ok(false);
     };
+    log::debug!("raising {hwnd:?} for {identity:?}");
 
     unsafe { raise(hwnd) };
     Ok(true)
@@ -94,10 +141,12 @@ fn identify(target: &LaunchTarget) -> Identity {
     let parsing = match target {
         LaunchTarget::ShellExecute(name) => name.clone(),
         LaunchTarget::AppUserModelId(aumid) => {
-            return Identity {
-                aumid: Some(aumid.to_lowercase()),
+            let mut identity = Identity {
+                aumids: vec![aumid.to_lowercase()],
                 stems: Vec::new(),
             };
+            identity.push_stem(last_segment(aumid));
+            return identity;
         }
         LaunchTarget::DesktopEntry(_) => return Identity::default(),
     };
@@ -109,32 +158,70 @@ fn identify(target: &LaunchTarget) -> Identity {
         .map(|(_, item)| item)
         .unwrap_or(&parsing);
 
-    // A packaged entry is `Publisher.Product_hash!App` -- the `!` is what
-    // distinguishes it from a file name, and the whole string is the model id.
+    let mut identity = Identity::default();
+
+    // Every AppsFolder item is *some* kind of model id, whether or not it has
+    // the `!` that a packaged one carries. Comparing it against a window's own
+    // is exact when it works and costs nothing when it does not.
+    identity.aumids.push(item.to_lowercase());
+
+    // A packaged entry is `Publisher.Product_hash!App`. Only the model id can
+    // identify it -- its windows belong to `ApplicationFrameHost.exe`, whose
+    // executable name says nothing about which application is inside.
     if item.contains('!') {
-        return Identity {
-            aumid: Some(item.to_lowercase()),
-            stems: Vec::new(),
-        };
+        return identity;
     }
 
-    let mut stems = Vec::new();
-
-    // Rule 2, when the shortcut can be found and read.
+    // What a shortcut points at, when the shell will say.
     if let Some(resolved) = resolve_shortcut(&parsing)
         && let Some(stem) = stem_of(&resolved)
     {
-        stems.push(stem);
+        identity.push_stem(stem);
     }
 
-    // Rule 3: the shortcut's own name.
-    if let Some(stem) = stem_of(item)
-        && !stems.contains(&stem)
-    {
-        stems.push(stem);
+    // The item's own name, with any launcher extension removed. `Firefox.lnk`
+    // is a file and `ZedIndustries.Zed` is not, so the extension is stripped
+    // only when it is one -- otherwise `file_stem` eats `.Zed` and leaves the
+    // publisher.
+    let base = strip_launcher_extension(item);
+    identity.push_stem(base.to_lowercase());
+
+    // And the last dot-separated segment, which for a model id is the
+    // application: `ZedIndustries.Zed` -> `zed`, matching a process running
+    // `zed.exe`.
+    identity.push_stem(last_segment(base));
+
+    identity
+}
+
+/// The item's name without a trailing `.lnk`, `.exe` or `.url`.
+///
+/// Only those three. A dot in an AppsFolder item is far more often a namespace
+/// separator than a file extension, and treating it as one is what turned
+/// `ZedIndustries.Zed` into `zedindustries`.
+fn strip_launcher_extension(item: &str) -> &str {
+    const LAUNCHER: &[&str] = &[".lnk", ".exe", ".url"];
+
+    for extension in LAUNCHER {
+        if item.len() > extension.len()
+            && item[item.len() - extension.len()..].eq_ignore_ascii_case(extension)
+        {
+            return &item[..item.len() - extension.len()];
+        }
     }
 
-    Identity { aumid: None, stems }
+    item
+}
+
+/// The last dot-separated segment, lowercased.
+fn last_segment(value: &str) -> String {
+    // The `!` half of a packaged id is a role, not a name, so it is dropped
+    // before looking for the application.
+    let value = value.split('!').next().unwrap_or(value);
+    // As is the `_hash` a packaged family name carries.
+    let value = value.split('_').next().unwrap_or(value);
+
+    value.rsplit('.').next().unwrap_or(value).to_lowercase()
 }
 
 /// The lowercased file stem of a path or file name.
@@ -220,8 +307,13 @@ fn is_candidate(hwnd: HWND) -> bool {
 }
 
 fn matches(hwnd: HWND, identity: &Identity) -> bool {
-    if let Some(wanted) = &identity.aumid {
-        return window_aumid(hwnd).is_some_and(|found| &found == wanted);
+    // The model id first: it is exact, and for a packaged application it is the
+    // only thing that can work.
+    if !identity.aumids.is_empty()
+        && let Some(found) = window_aumid(hwnd)
+        && identity.aumids.contains(&found)
+    {
+        return true;
     }
 
     window_stem(hwnd).is_some_and(|stem| identity.stems.contains(&stem))
@@ -315,32 +407,79 @@ unsafe fn raise(hwnd: HWND) {
 mod tests {
     use super::*;
 
+    /// The three shapes an AppsFolder item really takes, taken from a running
+    /// machine rather than imagined. The middle one is the regression: it has
+    /// no `!`, and the first version of this read `ZedIndustries.Zed` as a file
+    /// called `ZedIndustries` with a `.Zed` extension.
+    #[test]
+    fn a_model_id_without_an_exclamation_mark_still_finds_the_application() {
+        let identity = identify(&LaunchTarget::ShellExecute(
+            "shell:AppsFolder\\ZedIndustries.Zed".into(),
+        ));
+
+        assert!(
+            identity.stems.contains(&"zed".to_string()),
+            "a window owned by zed.exe has to match: {:?}",
+            identity.stems
+        );
+        assert!(!identity.stems.contains(&"zedindustries".to_string()));
+    }
+
     #[test]
     fn a_packaged_target_is_identified_by_its_model_id() {
         let identity = identify(&LaunchTarget::ShellExecute(
             "shell:AppsFolder\\Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
         ));
 
-        assert_eq!(
-            identity.aumid.as_deref(),
-            Some("microsoft.windowsterminal_8wekyb3d8bbwe!app")
+        assert!(
+            identity
+                .aumids
+                .contains(&"microsoft.windowsterminal_8wekyb3d8bbwe!app".to_string())
         );
-        assert!(identity.stems.is_empty());
+        // `App` is a role, not a name, and `windowsterminal` is what the
+        // process would be called if it had one of its own.
+        assert!(!identity.stems.contains(&"app".to_string()));
     }
 
-    /// Rule 3 on its own, without the shell: the shortcut's name is always
-    /// available even when the `.lnk` cannot be resolved.
     #[test]
-    fn a_shortcut_is_identified_by_its_own_name_at_least() {
+    fn a_shortcut_file_loses_only_a_real_extension() {
         let identity = identify(&LaunchTarget::ShellExecute(
-            "shell:AppsFolder\\Discord.lnk".into(),
+            "shell:AppsFolder\\Firefox.lnk".into(),
         ));
 
-        assert!(identity.aumid.is_none());
-        assert!(
-            identity.stems.contains(&"discord".to_string()),
-            "{:?}",
-            identity.stems
+        assert!(identity.stems.contains(&"firefox".to_string()));
+        assert!(!identity.stems.contains(&"lnk".to_string()));
+    }
+
+    /// A segment that names a role rather than an application must not be
+    /// trusted: raising the wrong window is worse than starting a second copy.
+    #[test]
+    fn generic_segments_are_not_matched_on() {
+        assert!(is_too_generic("app"));
+        assert!(is_too_generic("exe"));
+        assert!(is_too_generic("ui"));
+        assert!(!is_too_generic("zed"));
+        assert!(!is_too_generic("firefox"));
+    }
+
+    #[test]
+    fn the_last_segment_ignores_the_packaged_suffixes() {
+        assert_eq!(last_segment("ZedIndustries.Zed"), "zed");
+        assert_eq!(
+            last_segment("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"),
+            "windowsterminal"
+        );
+        assert_eq!(last_segment("Firefox"), "firefox");
+    }
+
+    #[test]
+    fn only_launcher_extensions_are_stripped() {
+        assert_eq!(strip_launcher_extension("Firefox.lnk"), "Firefox");
+        assert_eq!(strip_launcher_extension("Tool.EXE"), "Tool");
+        // Not an extension: a namespace separator.
+        assert_eq!(
+            strip_launcher_extension("ZedIndustries.Zed"),
+            "ZedIndustries.Zed"
         );
     }
 
@@ -348,19 +487,6 @@ mod tests {
     fn a_desktop_entry_identifies_nothing_here() {
         let identity = identify(&LaunchTarget::DesktopEntry("/usr/share/x.desktop".into()));
         assert!(identity.is_empty());
-    }
-
-    /// Whole stems, not substrings. Raising the wrong window is worse than
-    /// starting a second copy.
-    #[test]
-    fn stems_are_compared_whole() {
-        let identity = Identity {
-            aumid: None,
-            stems: vec!["discord".into()],
-        };
-
-        assert!(identity.stems.contains(&"discord".to_string()));
-        assert!(!identity.stems.contains(&"discordcanary".to_string()));
     }
 
     #[test]
