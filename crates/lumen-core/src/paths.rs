@@ -39,6 +39,12 @@ impl Paths {
         self.config_dir.join("sheets")
     }
 
+    /// Script commands (F3, tier T1). Any executable dropped in here with a
+    /// `@lumen.title` header becomes a command.
+    pub fn scripts_dir(&self) -> PathBuf {
+        self.config_dir.join("scripts")
+    }
+
     pub fn theme_file(&self, name: &str) -> PathBuf {
         self.themes_dir().join(format!("{name}.json"))
     }
@@ -53,6 +59,7 @@ impl Paths {
             &self.data_dir,
             &self.themes_dir(),
             &self.sheets_dir(),
+            &self.scripts_dir(),
         ] {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }

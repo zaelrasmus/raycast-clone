@@ -25,6 +25,7 @@ mod foreground;
 mod icons;
 mod input;
 mod monitor;
+mod scripts;
 mod window;
 
 pub use lumen_platform::BackdropMode;
@@ -151,6 +152,10 @@ impl Platform for WindowsPlatform {
             }
         };
         shell_execute(&parsing_name)
+    }
+
+    fn run_script(&self, path: &std::path::Path) -> Result<String> {
+        scripts::run(path)
     }
 
     fn clipboard_text(&self) -> Result<Option<String>> {

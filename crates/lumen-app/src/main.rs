@@ -131,6 +131,7 @@ fn run_daemon() -> Result<()> {
     paths.ensure_exists()?;
     lumen_core::install_builtin_themes(&paths.themes_dir())?;
     lumen_core::install_builtin_sheets(&paths.sheets_dir())?;
+    lumen_core::install_example_script(&paths.scripts_dir())?;
     Config::write_default(&paths.config_file())?;
 
     let config = Config::load(&paths.config_file());

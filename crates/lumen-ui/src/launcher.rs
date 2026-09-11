@@ -167,6 +167,7 @@ impl Launcher {
     /// empty, and the user can already type.
     fn start_indexing(&mut self, cx: &mut Context<Self>) {
         let platform = self.platform.clone();
+        let scripts_dir = self.paths.scripts_dir();
 
         cx.spawn(async move |this, cx| {
             let entries = cx
@@ -184,10 +185,29 @@ impl Launcher {
 
             log::info!("indexed {} applications", entries.len());
 
+            // Script commands are read here, on the background task, because
+            // scanning a folder and parsing headers is disk work -- and because
+            // AD-08 requires the index to be built without running anything.
+            let scripts = cx
+                .background_executor()
+                .spawn({
+                    let dir = scripts_dir.clone();
+                    async move { lumen_core::providers::scripts::scan(&dir) }
+                })
+                .await;
+
+            if !scripts.is_empty() {
+                log::info!("indexed {} script commands", scripts.len());
+            }
+
             // The provider catalogue joins the same index as the applications,
             // so Lumen's own commands are found by typing part of their name
             // exactly like anything else -- one notion of "matches", not two.
-            let catalogue = Providers::builtin().catalogue();
+            let mut providers = Providers::builtin();
+            providers.register(Box::new(lumen_core::providers::ScriptProvider::new(
+                scripts,
+            )));
+            let catalogue = providers.catalogue();
 
             // Preparing the haystacks is the expensive half, so it stays on the
             // background thread too: handing the UI raw entries would just move
@@ -392,6 +412,7 @@ impl Launcher {
             let outcome = match &action {
                 Action::Launch(target) => platform.launch(target),
                 Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
+                Action::RunScript(run) => run_script(platform.as_ref(), run),
                 // Handled above, before this task was spawned.
                 Action::Builtin(_) => Ok(()),
             };
@@ -814,6 +835,33 @@ fn highlighted(
         .into_any_element()
 }
 
+/// Run a script command and deal with its output.
+///
+/// Off the UI thread, and after the launcher has been dismissed: a script may
+/// take as long as it likes and nothing waits for it. That is also why `Copy`
+/// is the only mode that does anything with the output -- by the time a script
+/// finishes there is no list left to show it in, and the clipboard is where the
+/// user wanted it anyway.
+fn run_script(
+    platform: &dyn Platform,
+    run: &lumen_core::providers::ScriptRun,
+) -> anyhow::Result<()> {
+    use lumen_core::providers::ScriptMode;
+
+    let output = platform.run_script(&run.path)?;
+
+    match run.mode {
+        ScriptMode::Silent => Ok(()),
+        ScriptMode::Copy if output.is_empty() => {
+            // Clearing the clipboard because a script printed nothing would
+            // destroy whatever the user had copied earlier, which is a far
+            // worse outcome than doing nothing.
+            log::warn!("{} printed nothing to copy", run.path.display());
+            Ok(())
+        }
+        ScriptMode::Copy => platform.set_clipboard_text(&output),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::{previous_char_boundary, word_start_before};

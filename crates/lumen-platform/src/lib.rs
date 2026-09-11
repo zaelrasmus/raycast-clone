@@ -235,6 +235,21 @@ pub trait Platform: Send + Sync {
     /// previous application already restored to the foreground.
     fn launch(&self, target: &LaunchTarget) -> Result<()>;
 
+    /// Run a script command and return what it printed.
+    ///
+    /// On the boundary rather than reached for directly with `std::process`,
+    /// because AD-09 puts every capability behind the host: "Network,
+    /// filesystem, execution, clipboard and notifications pass through the host
+    /// even where the subprocess could technically perform them directly…
+    /// what matters is that the boundary is drawn, so that introducing a
+    /// sandbox later means changing the runtime rather than redesigning the
+    /// system." Tier T1 is the first thing to need execution, so this is where
+    /// the line gets drawn.
+    ///
+    /// Called off the UI thread: a script may take as long as it likes, and
+    /// nothing in the launcher waits for it.
+    fn run_script(&self, path: &std::path::Path) -> Result<String>;
+
     /// Read the system clipboard as text, if it currently holds text.
     fn clipboard_text(&self) -> Result<Option<String>>;
 

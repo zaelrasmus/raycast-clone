@@ -21,9 +21,11 @@ use crate::item::Item;
 
 pub mod calculator;
 pub mod commands;
+pub mod scripts;
 
 pub use calculator::CalculatorProvider;
 pub use commands::CommandsProvider;
+pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
 
 /// A source of results.
 ///

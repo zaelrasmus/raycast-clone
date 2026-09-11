@@ -100,6 +100,13 @@ impl Platform for LinuxPlatform {
         todo!("F5: desktop entry activation")
     }
 
+    fn run_script(&self, _path: &std::path::Path) -> Result<String> {
+        // Portable in principle -- `std::process` works everywhere -- but the
+        // policy is not: Windows needs CREATE_NO_WINDOW, and Linux needs the
+        // executable bit honoured and a shebang respected.
+        todo!("F5: spawn the script, honouring its shebang")
+    }
+
     fn clipboard_text(&self) -> Result<Option<String>> {
         todo!("F5: wl_data_device")
     }

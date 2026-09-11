@@ -36,6 +36,9 @@ an aesthetic worth looking at fifty times a day.
   application you were just using.
 - **Inline calculator.** Type `12*7` and the answer is the first row, ready to
   copy. It stays quiet for anything that is not arithmetic, including `7-zip`.
+- **Script commands (tier T1).** Drop any executable into the scripts folder
+  with a `@lumen.title` comment header and it becomes a searchable command.
+  Headers are read at index time, never by running the file (AD-08).
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **Themes and sheets as data** with live reload for themes: edit the JSON, see
   it on screen, no rebuild. Two in-house themes ship, one dark and one light.
@@ -57,10 +60,8 @@ Listed because a README that implies more than exists is worse than no README.
   between Windows and Linux.
 - **No action panel and no icon set.** `Enter` runs the primary action; there is
   no `Ctrl+K` panel behind it yet.
-- **Most internal providers are missing.** The calculator is in; clipboard
-  history, snippets, window management and file search are not. Nor is tier T1
-  (script commands), which the plan rates the best effort-to-value ratio in the
-  project.
+- **Most internal providers are missing.** The calculator and tier T1 are in;
+  clipboard history, snippets, window management and file search are not.
 - **Browsers and Electron apps report their container.** A sheet keyed on
   `chrome.exe` covers every tab, because the window does not say what is open
   inside it. Key those on the window title instead. Packaged apps *are* resolved
@@ -190,7 +191,39 @@ A theme may set **colour and type family only**. Geometry — spacing, radii, ro
 heights, icon sizes — is not themeable, deliberately: it is the calibration the
 whole project exists to protect.
 
-### Shortcut sheets
+### Script commands
+
+Any executable in `%APPDATA%umennfigscripts` with a `@lumen.title`
+header becomes a command in the launcher. an example is written there on first
+run; delete it once you have your own.
+
+```powershell
+# @lumen.title copy ip address
+# @lumen.subtitle example script command
+# @lumen.mode copy
+# @lumen.keywords network, ip
+
+(get-netipaddress -addressfamily ipv4 | select-object -first 1 -expandproperty ipaddress)
+```
+
+| header | meaning |
+| ------ | ------- |
+| `@lumen.title` | required. what appears in the list. |
+| `@lumen.subtitle` | optional second line. |
+| `@lumen.keywords` | optional, comma separated. matched but never shown. |
+| `@lumen.mode` | `silent` (default) runs and ignores the output; `copy` puts the output on the clipboard. |
+
+the comment character is whatever the language uses — lumen looks for the
+`@lumen.` marker and does not care what precedes it, so `.ps1`, `.cmd`, `.bat`
+and plain executables all work. `.ps1` runs through powershell with `-noprofile`,
+`.cmd` and `.bat` through `cmd`, and anything else is executed directly.
+
+headers are read when the folder is indexed; the file itself is run only when you
+pick its row. nothing executes to populate the list (ad-08). scripts get no
+console window, run from their own folder, and are abandoned after 30 seconds if
+they have not finished.
+
+### shortcut sheets
 
 Hold **Right Ctrl** for about a third of a second and Lumen shows the shortcuts
 for whatever application is in front.

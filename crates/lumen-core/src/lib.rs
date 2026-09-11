@@ -75,6 +75,22 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
 /// shortcuts are *theirs*, annotated by them, rather than a fixed set someone
 /// else chose. Shipping a pile of guessed sheets would quietly turn this back
 /// into the thing it is trying not to be.
+/// Write the example script command into the scripts folder if it is not there.
+///
+/// One example, heavily commented, because the header format is the only thing
+/// about tier T1 that has to be learned -- and a working file to copy teaches it
+/// faster than a section of the README nobody opens.
+pub fn install_example_script(scripts_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(scripts_dir)?;
+
+    let path = scripts_dir.join("example.ps1");
+    if !path.exists() {
+        std::fs::write(&path, providers::scripts::EXAMPLE)?;
+    }
+
+    Ok(())
+}
+
 pub fn install_builtin_sheets(sheets_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(sheets_dir)?;
 

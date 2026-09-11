@@ -42,6 +42,7 @@ pub enum Kind {
     Application,
     Command,
     Calculation,
+    Script,
 }
 
 impl Kind {
@@ -50,6 +51,7 @@ impl Kind {
             Kind::Application => "Application",
             Kind::Command => "Command",
             Kind::Calculation => "Calculator",
+            Kind::Script => "Script",
         }
     }
 }
@@ -66,6 +68,14 @@ pub enum Action {
     /// rather than performed in the view, because opening a window or quitting
     /// is the shell's business and not the list's.
     Builtin(Builtin),
+    /// Run a tier-T1 script command.
+    ///
+    /// Execution goes through `trait Platform` rather than `std::process` here,
+    /// because AD-09 draws the boundary at the host: every capability an
+    /// extension needs is requested from it, and T1 is the first thing to need
+    /// execution. Drawing the line now means adding a sandbox later changes the
+    /// runtime rather than redesigning the system.
+    RunScript(crate::providers::ScriptRun),
 }
 
 /// Commands Lumen provides for itself.
@@ -85,6 +95,7 @@ impl Action {
             Action::Builtin(Builtin::OpenSettings) => "Open Settings",
             Action::Builtin(Builtin::ReloadSheets) => "Reload",
             Action::Builtin(Builtin::Quit) => "Quit",
+            Action::RunScript(_) => "Run",
         }
     }
 }
@@ -163,7 +174,12 @@ mod tests {
 
     #[test]
     fn every_kind_has_a_label() {
-        for kind in [Kind::Application, Kind::Command, Kind::Calculation] {
+        for kind in [
+            Kind::Application,
+            Kind::Command,
+            Kind::Calculation,
+            Kind::Script,
+        ] {
             assert!(!kind.label().is_empty());
         }
     }
