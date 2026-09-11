@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "Nocturne",
+  "appearance": "dark",
+  "colors": {
+    "surface.background": "#0E0E12D8",
+    "surface.elevated": "#17171BF0",
+    "border.subtle": "#FFFFFF14",
+    "border.strong": "#FFFFFF24",
+    "text.primary": "#EDEDF2",
+    "text.muted": "#8A8A96",
+    "text.placeholder": "#60606C",
+    "text.on-accent": "#FFFFFF",
+    "accent": "#7C6BD6",
+    "selection.background": "#FFFFFF14",
+    "selection.border": "#FFFFFF1A",
+    "match.highlight": "#A89BEC",
+    "shadow": "#00000099"
+  }
+}

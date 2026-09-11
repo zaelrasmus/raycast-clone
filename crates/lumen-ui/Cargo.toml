@@ -1,0 +1,19 @@
+[package]
+name = "lumen-ui"
+description = "The GPUI presentation layer for Lumen. The only crate that depends on gpui (AD-03)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lumen-core.workspace = true
+lumen-platform.workspace = true
+gpui.workspace = true
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image = "0.25"
+parking_lot.workspace = true

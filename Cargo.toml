@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lumen-core",
+    "crates/lumen-platform",
+    "crates/lumen-platform-windows",
+    "crates/lumen-platform-linux",
+    "crates/lumen-ui",
+    "crates/lumen-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lumen-launcher/lumen"
+authors = ["Lumen contributors"]
+
+[workspace.dependencies]
+# I-6: gpui is pinned EXACTLY. Never `*`, never a range.
+# Updating is a deliberate commit with its own verification.
+gpui = "=0.2.2"
+
+lumen-core = { path = "crates/lumen-core" }
+lumen-platform = { path = "crates/lumen-platform" }
+lumen-platform-windows = { path = "crates/lumen-platform-windows" }
+lumen-platform-linux = { path = "crates/lumen-platform-linux" }
+lumen-ui = { path = "crates/lumen-ui" }
+
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
+notify = "8.0"
+nucleo-matcher = "0.3"
+directories = "6.0"
+# Aligned with gpui 0.2.2 so the compiled crate is shared, not duplicated.
+windows = "0.61"
+windows-core = "0.61"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# The launcher is used from a debug build during development; an unoptimised
+# renderer misrepresents every performance budget in section 5.
+[profile.dev.package."*"]
+opt-level = 2

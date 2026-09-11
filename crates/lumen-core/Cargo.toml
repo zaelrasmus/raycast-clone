@@ -1,0 +1,26 @@
+[package]
+name = "lumen-core"
+description = "Index, matching, ranking and theming for Lumen. Knows nothing about the operating system or about GPUI (AD-03, I-1)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lumen-platform.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+nucleo-matcher.workspace = true
+directories.workspace = true
+notify.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "search"
+harness = false

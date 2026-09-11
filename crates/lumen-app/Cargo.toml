@@ -1,0 +1,33 @@
+[package]
+name = "lumen-app"
+description = "The Lumen daemon and its thin client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lumen"
+path = "src/main.rs"
+
+[dependencies]
+lumen-core.workspace = true
+lumen-platform.workspace = true
+lumen-ui.workspace = true
+gpui.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+interprocess = "2.4"
+
+futures = "0.3"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+lumen-platform-windows.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+lumen-platform-linux.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "lumen-platform"
+description = "The operating-system boundary for Lumen (AD-04). Trait and types only, no implementations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+raw-window-handle = "0.6"

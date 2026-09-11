@@ -1,0 +1,53 @@
+# Lumen
+
+A native command palette in Rust + GPUI. Windows 11 now, Arch + Hyprland later.
+
+Full context: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Invariants
+
+Not negotiated case by case.
+
+| #    | Invariant |
+| ---- | --------- |
+| I-1  | `lumen-core` contains no `#[cfg(windows)]` or `#[cfg(unix)]` and no direct OS call. Everything goes through `trait Platform`. |
+| I-2  | `lumen-platform-linux` always compiles, even if its methods are `todo!()`. CI runs `cargo check --target x86_64-unknown-linux-gnu` on every commit. |
+| I-3  | Root search never waits on an extension process. No exceptions and no "short" timeouts. |
+| I-4  | The window is created once when the daemon starts and from then on is only shown or hidden. Never destroyed. |
+| I-5  | No colour, spacing, radius or type size appears literally in UI code. Everything comes from a token module: colour and type family from the theme file, geometry from `lumen_core::layout`. |
+| I-6  | The `gpui` version is pinned exactly in `Cargo.toml`. Never `*`, never a range. Updating is a deliberate commit with its own verification. |
+| I-7  | Every capability an extension needs is requested over host RPC. The subprocess does not reach resources directly even where the system would allow it. |
+| I-8  | The performance budgets below are measured in CI. A regression breaks the build. |
+| I-9  | Changing the signature of `trait Platform` requires updating both implementations in the same commit. |
+| I-10 | Fixed row height and reserved space for icons and accessories. Zero layout shift when results change. |
+| I-11 | A theme may define only colour and type family. No geometric property is themeable. |
+| I-12 | Every missing theme token resolves from the base theme. A theme written today must still load a year from now. |
+| I-13 | The UI tree and event types exist in exactly one place. No parallel definitions in WIT, in JSON Schema or in the SDK. |
+| I-14 | In-app shortcuts are declared as GPUI actions and bound from a keymap file. No hand-written key comparisons in UI code. |
+| I-15 | No system input callback allocates, logs, takes a lock or touches UI state. It pushes the event to a channel and returns. |
+
+## Performance budgets
+
+Numbers, not adjectives. Measured, not asserted.
+
+| Budget | Threshold | How it is measured |
+| ------ | --------- | ------------------ |
+| Global gesture → first frame | p50 < 40 ms, p95 < 80 ms | Synthetic keypress until visible. Median of 15 on an idle machine. |
+| Per-frame cost while typing | p95 < 8 ms | Internal instrumentation of the render loop with the full list loaded. |
+| Idle resident memory | < 150 MB | Process group, window hidden, no extensions active. |
+| Idle CPU | < 0.2 % | Average over 30 s with the window hidden. |
+| Cold start to usable | < 400 ms | Daemon launch until the first search responds. |
+| Installed size | < 40 MB | Binary plus bundled assets. |
+
+## Working rules
+
+- One phase, one branch. One acceptance criterion, one pull request.
+- For anything performance-related, write the measurement first and the
+  functionality second. A benchmark written beforehand is a constraint; written
+  afterwards it is a justification.
+- `cargo fmt --check`, `cargo clippy -- -D warnings`, and the Linux cross-check
+  all pass before a commit.
+- The characteristic risk here is **volume**, not incorrect code. It is very easy
+  to accumulate functionality faster than it can be polished, and this project is
+  defined by polish. When the invariants and budgets conflict with moving faster,
+  they win.

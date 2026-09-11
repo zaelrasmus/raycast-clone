@@ -1,0 +1,417 @@
+//! Themes as pure data (AD-12).
+//!
+//! A theme is a colour and typography definition file and nothing else. It
+//! installs by being dropped into a folder: no code, no runtime, no sandbox,
+//! nothing to review. Four rules hold this together, and each one is load
+//! bearing:
+//!
+//! - **Semantic tokens.** `surface.background`, never `list_item_hover`. A token
+//!   that names a component turns every new component into a break for every
+//!   existing theme (AD-12).
+//! - **Default resolution.** Every missing token falls back to the base theme,
+//!   so widening the palette never invalidates a theme written a year ago (I-12).
+//! - **Versioned schema** from the very first file, so migration replaces
+//!   breakage.
+//! - **No geometry.** Colour and type family exclusively (AD-13, I-11). This is
+//!   the rule that protects the thing the project exists for: if a third-party
+//!   theme can change row heights, the calibrated layout dies the first day
+//!   somebody publishes one.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use anyhow::{Context as _, Result};
+use serde::{Deserialize, Serialize};
+
+/// The schema version this build writes and understands.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// A colour as straight, non-premultiplied RGBA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Color {
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self::rgba(r, g, b, 255)
+    }
+
+    /// Parse `#RGB`, `#RRGGBB` or `#RRGGBBAA`.
+    ///
+    /// The alpha suffix is not decoration: over an acrylic backdrop, a surface
+    /// token *must* be able to say "80% opaque" or the blur is buried.
+    pub fn parse(value: &str) -> Result<Self> {
+        let hex = value.strip_prefix('#').unwrap_or(value);
+        let digits: Vec<u8> = hex
+            .chars()
+            .map(|c| {
+                c.to_digit(16)
+                    .map(|d| d as u8)
+                    .with_context(|| format!("{value:?} is not a hex colour"))
+            })
+            .collect::<Result<_>>()?;
+
+        Ok(match digits.len() {
+            3 => Self::rgb(digits[0] * 17, digits[1] * 17, digits[2] * 17),
+            6 => Self::rgb(
+                digits[0] * 16 + digits[1],
+                digits[2] * 16 + digits[3],
+                digits[4] * 16 + digits[5],
+            ),
+            8 => Self::rgba(
+                digits[0] * 16 + digits[1],
+                digits[2] * 16 + digits[3],
+                digits[4] * 16 + digits[5],
+                digits[6] * 16 + digits[7],
+            ),
+            other => anyhow::bail!("{value:?} has {other} hex digits; expected 3, 6 or 8"),
+        })
+    }
+
+    /// Pack as `0xAARRGGBB`, which is what GPUI's `rgba` helper consumes.
+    pub const fn to_argb(self) -> u32 {
+        ((self.a as u32) << 24) | ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
+    }
+
+    /// This colour at a different alpha. Used for states a theme should not have
+    /// to enumerate, such as a pressed row derived from a hovered one.
+    pub const fn with_alpha(self, a: u8) -> Self {
+        Self { a, ..self }
+    }
+}
+
+impl Serialize for Color {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let value = if self.a == 255 {
+            format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+        } else {
+            format!("#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a)
+        };
+        serializer.serialize_str(&value)
+    }
+}
+
+impl<'de> Deserialize<'de> for Color {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Color::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Whether a theme is meant for a light or a dark desktop.
+///
+/// Drives the system's dark-mode window attribute, so it has to be declared
+/// rather than guessed from the background's luminance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    Light,
+    #[default]
+    Dark,
+}
+
+/// A theme exactly as it appears on disk.
+///
+/// Every colour is optional: absence means "inherit from the base theme", which
+/// is what makes I-12 true rather than aspirational.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeFile {
+    pub schema_version: u32,
+    pub name: String,
+    #[serde(default)]
+    pub appearance: Appearance,
+    #[serde(default)]
+    pub colors: BTreeMap<String, Color>,
+    /// The type family. The *only* typographic property a theme may set, and
+    /// deliberately not a size: sizes are geometry (AD-13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+}
+
+/// A fully resolved theme: every token present, nothing left to fall back on.
+///
+/// The UI only ever sees this type, so no rendering code has to consider what
+/// happens when a token is missing (I-5 stays easy to obey).
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub name: String,
+    pub appearance: Appearance,
+    pub font_family: Option<String>,
+    pub colors: Colors,
+}
+
+/// The semantic colour palette.
+///
+/// Adding a field here is safe by construction: existing theme files simply
+/// inherit the new token from the base theme.
+#[derive(Debug, Clone)]
+pub struct Colors {
+    pub surface_background: Color,
+    pub surface_elevated: Color,
+    pub border_subtle: Color,
+    pub border_strong: Color,
+    pub text_primary: Color,
+    pub text_muted: Color,
+    pub text_placeholder: Color,
+    pub text_on_accent: Color,
+    pub accent: Color,
+    pub selection_background: Color,
+    pub selection_border: Color,
+    pub match_highlight: Color,
+    pub shadow: Color,
+}
+
+impl Colors {
+    /// The token names a theme file may set, paired with where they land.
+    ///
+    /// One table, used both to apply a theme file and to report unknown tokens
+    /// back to its author. Two parallel lists would drift.
+    fn apply(&mut self, name: &str, value: Color) -> bool {
+        let slot = match name {
+            "surface.background" => &mut self.surface_background,
+            "surface.elevated" => &mut self.surface_elevated,
+            "border.subtle" => &mut self.border_subtle,
+            "border.strong" => &mut self.border_strong,
+            "text.primary" => &mut self.text_primary,
+            "text.muted" => &mut self.text_muted,
+            "text.placeholder" => &mut self.text_placeholder,
+            "text.on-accent" => &mut self.text_on_accent,
+            "accent" => &mut self.accent,
+            "selection.background" => &mut self.selection_background,
+            "selection.border" => &mut self.selection_border,
+            "match.highlight" => &mut self.match_highlight,
+            "shadow" => &mut self.shadow,
+            _ => return false,
+        };
+        *slot = value;
+        true
+    }
+}
+
+impl Theme {
+    /// The base dark theme. Every other theme resolves its gaps from here.
+    pub fn base_dark() -> Self {
+        Self {
+            name: "Nocturne".into(),
+            appearance: Appearance::Dark,
+            font_family: None,
+            colors: Colors {
+                // Alpha below 255 on purpose: this surface sits over the system
+                // acrylic, and an opaque value would hide the backdrop that F0
+                // exists to obtain.
+                surface_background: Color::rgba(0x0E, 0x0E, 0x12, 0xD8),
+                surface_elevated: Color::rgba(0x17, 0x17, 0x1B, 0xF0),
+                border_subtle: Color::rgba(0xFF, 0xFF, 0xFF, 0x14),
+                border_strong: Color::rgba(0xFF, 0xFF, 0xFF, 0x24),
+                text_primary: Color::rgb(0xED, 0xED, 0xF2),
+                text_muted: Color::rgb(0x8A, 0x8A, 0x96),
+                text_placeholder: Color::rgb(0x60, 0x60, 0x6C),
+                text_on_accent: Color::rgb(0xFF, 0xFF, 0xFF),
+                accent: Color::rgb(0x7C, 0x6B, 0xD6),
+                selection_background: Color::rgba(0xFF, 0xFF, 0xFF, 0x14),
+                selection_border: Color::rgba(0xFF, 0xFF, 0xFF, 0x1A),
+                match_highlight: Color::rgb(0xA8, 0x9B, 0xEC),
+                shadow: Color::rgba(0x00, 0x00, 0x00, 0x99),
+            },
+        }
+    }
+
+    /// The base light theme, used as the fallback for light theme files.
+    pub fn base_light() -> Self {
+        Self {
+            name: "Daylight".into(),
+            appearance: Appearance::Light,
+            font_family: None,
+            colors: Colors {
+                surface_background: Color::rgba(0xF7, 0xF7, 0xFA, 0xDE),
+                surface_elevated: Color::rgba(0xFF, 0xFF, 0xFF, 0xF2),
+                border_subtle: Color::rgba(0x1A, 0x1A, 0x2E, 0x14),
+                border_strong: Color::rgba(0x1A, 0x1A, 0x2E, 0x24),
+                text_primary: Color::rgb(0x1A, 0x1A, 0x24),
+                text_muted: Color::rgb(0x6B, 0x6B, 0x7B),
+                text_placeholder: Color::rgb(0x9A, 0x9A, 0xA8),
+                text_on_accent: Color::rgb(0xFF, 0xFF, 0xFF),
+                accent: Color::rgb(0x5B, 0x4A, 0xC4),
+                selection_background: Color::rgba(0x1A, 0x1A, 0x2E, 0x0E),
+                selection_border: Color::rgba(0x1A, 0x1A, 0x2E, 0x14),
+                match_highlight: Color::rgb(0x4A, 0x39, 0xB0),
+                shadow: Color::rgba(0x1A, 0x1A, 0x2E, 0x33),
+            },
+        }
+    }
+
+    /// Resolve a theme file against the appropriate base theme.
+    ///
+    /// Unknown tokens are reported, never fatal: a theme written for a later
+    /// version of Lumen must still load on this one (I-12).
+    pub fn resolve(file: &ThemeFile) -> Self {
+        let mut theme = match file.appearance {
+            Appearance::Dark => Self::base_dark(),
+            Appearance::Light => Self::base_light(),
+        };
+
+        theme.name = file.name.clone();
+        theme.appearance = file.appearance;
+        if let Some(family) = &file.font_family {
+            theme.font_family = Some(family.clone());
+        }
+
+        for (token, value) in &file.colors {
+            if !theme.colors.apply(token, *value) {
+                log::warn!(
+                    "theme {:?} sets unknown token {token:?}; ignoring it",
+                    file.name
+                );
+            }
+        }
+
+        theme
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        let source = std::fs::read_to_string(path)
+            .with_context(|| format!("reading theme {}", path.display()))?;
+        let file: ThemeFile = serde_json::from_str(&source)
+            .with_context(|| format!("parsing theme {}", path.display()))?;
+
+        // A file from a *newer* schema still loads: unknown tokens are already
+        // ignored, so the worst case is a theme that renders with some base
+        // colours. Refusing outright would be the breakage I-12 forbids.
+        if file.schema_version > SCHEMA_VERSION {
+            log::warn!(
+                "theme {:?} declares schema version {} but this build understands {SCHEMA_VERSION}; \
+                 unknown tokens will fall back to the base theme",
+                file.name,
+                file.schema_version
+            );
+        }
+
+        Ok(Self::resolve(&file))
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::base_dark()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_every_accepted_hex_shape() {
+        assert_eq!(Color::parse("#fff").unwrap(), Color::rgb(255, 255, 255));
+        assert_eq!(
+            Color::parse("#0E0E12").unwrap(),
+            Color::rgb(0x0E, 0x0E, 0x12)
+        );
+        assert_eq!(
+            Color::parse("#0E0E12D8").unwrap(),
+            Color::rgba(0x0E, 0x0E, 0x12, 0xD8)
+        );
+        // The leading hash is conventional, not required.
+        assert_eq!(
+            Color::parse("7C6BD6").unwrap(),
+            Color::rgb(0x7C, 0x6B, 0xD6)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_colours_instead_of_guessing() {
+        assert!(Color::parse("#12345").is_err());
+        assert!(Color::parse("#zzzzzz").is_err());
+    }
+
+    #[test]
+    fn packs_argb_for_the_renderer() {
+        assert_eq!(Color::rgba(0x12, 0x34, 0x56, 0x78).to_argb(), 0x78123456);
+    }
+
+    /// I-12, stated as a test: a theme that sets one token keeps the base value
+    /// for every other one.
+    #[test]
+    fn missing_tokens_resolve_from_the_base_theme() {
+        let file = ThemeFile {
+            schema_version: 1,
+            name: "Sparse".into(),
+            appearance: Appearance::Dark,
+            colors: BTreeMap::from([("accent".to_string(), Color::rgb(1, 2, 3))]),
+            font_family: None,
+        };
+
+        let theme = Theme::resolve(&file);
+
+        assert_eq!(theme.colors.accent, Color::rgb(1, 2, 3));
+        assert_eq!(
+            theme.colors.surface_background,
+            Theme::base_dark().colors.surface_background
+        );
+        assert_eq!(theme.name, "Sparse");
+    }
+
+    /// A theme written against a future, wider palette must still load today.
+    #[test]
+    fn unknown_tokens_are_ignored_not_fatal() {
+        let file = ThemeFile {
+            schema_version: 99,
+            name: "FromTheFuture".into(),
+            appearance: Appearance::Light,
+            colors: BTreeMap::from([
+                ("accent".to_string(), Color::rgb(9, 9, 9)),
+                ("token.invented.later".to_string(), Color::rgb(1, 1, 1)),
+            ]),
+            font_family: None,
+        };
+
+        let theme = Theme::resolve(&file);
+
+        assert_eq!(theme.colors.accent, Color::rgb(9, 9, 9));
+        assert_eq!(theme.appearance, Appearance::Light);
+    }
+
+    #[test]
+    fn light_files_resolve_against_the_light_base() {
+        let file = ThemeFile {
+            schema_version: 1,
+            name: "Sparse Light".into(),
+            appearance: Appearance::Light,
+            colors: BTreeMap::new(),
+            font_family: None,
+        };
+
+        let theme = Theme::resolve(&file);
+
+        assert_eq!(
+            theme.colors.text_primary,
+            Theme::base_light().colors.text_primary
+        );
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        // Doubled hashes: a hex colour contains `"#`, which would otherwise
+        // terminate the raw string early.
+        let json = r##"{
+            "schema_version": 1,
+            "name": "Nocturne",
+            "appearance": "dark",
+            "colors": { "accent": "#7C6BD6", "surface.background": "#0E0E12D8" }
+        }"##;
+
+        let file: ThemeFile = serde_json::from_str(json).unwrap();
+        let theme = Theme::resolve(&file);
+
+        assert_eq!(theme.colors.accent, Color::rgb(0x7C, 0x6B, 0xD6));
+        assert_eq!(theme.colors.surface_background.a, 0xD8);
+    }
+}
