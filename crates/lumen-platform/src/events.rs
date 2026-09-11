@@ -54,7 +54,19 @@ impl Default for Hotkey {
                 ..Default::default()
             },
             key: "Space".to_string(),
-            hold: None,
+            // Right control, and the choice is constrained from three sides.
+            //
+            // Not Super: releasing it opens the Start menu, and suppressing that
+            // is the single case section 7 says would force a low-level hook,
+            // with the timeout and antivirus hazards that brings.
+            //
+            // Not right alt: on many keyboard layouts it is AltGr and produces
+            // characters, so holding it would type into whatever has focus.
+            //
+            // Not a left-hand modifier: those are held constantly as part of
+            // ordinary chords, and a sheet that appears during Alt+Tab or on the
+            // way to Ctrl+C is a sheet the user turns off within a day.
+            hold: Some(Modifier::RightControl),
         }
     }
 }

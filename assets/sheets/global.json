@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "name": "Global",
+  "match": { "on": "global" },
+  "groups": [
+    {
+      "title": "Lumen",
+      "shortcuts": [
+        { "keys": "Alt+Space", "description": "Open the launcher" },
+        { "keys": "Hold Right Ctrl", "description": "Show this sheet" }
+      ]
+    },
+    {
+      "title": "Windows",
+      "shortcuts": [
+        { "keys": "Win+D", "description": "Show the desktop" },
+        { "keys": "Win+E", "description": "Open File Explorer" },
+        { "keys": "Win+L", "description": "Lock the session" },
+        { "keys": "Win+V", "description": "Clipboard history" },
+        { "keys": "Win+Shift+S", "description": "Capture a region" },
+        { "keys": "Alt+Tab", "description": "Switch window" }
+      ]
+    },
+    {
+      "title": "Editing",
+      "shortcuts": [
+        { "keys": "Ctrl+Z", "description": "Undo" },
+        { "keys": "Ctrl+Shift+Z", "description": "Redo" },
+        { "keys": "Ctrl+A", "description": "Select all" },
+        { "keys": "Ctrl+F", "description": "Find" }
+      ]
+    }
+  ]
+}

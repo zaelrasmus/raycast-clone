@@ -62,6 +62,40 @@ impl BackdropMode {
     }
 }
 
+/// Which of the daemon's two warm windows an operation refers to.
+///
+/// The overlay is "a new platform surface, not a UI feature" (F3), and the two
+/// surfaces differ in ways only the platform can express: the launcher takes
+/// focus and the overlay must never take it, the launcher accepts clicks and the
+/// overlay is click-through. Rather than adding a parallel set of
+/// `show_overlay` / `hide_overlay` methods, the existing window methods take a
+/// role. The method count on the boundary stays where AD-04 wants it, and
+/// "two warm windows, not one" becomes something the boundary states outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowRole {
+    /// The launcher: takes focus, accepts input, restores focus on hide.
+    Launcher,
+    /// The shortcut overlay: never activates, never takes focus, click-through,
+    /// and never consumes the keystroke that follows it.
+    Overlay,
+}
+
+/// The application currently in the foreground.
+///
+/// This is the context the shortcut overlay is keyed on. The plan notes that it
+/// "is already captured for focus restoration, so the incremental cost is
+/// minimal" -- which is true of the window handle, though the executable name
+/// behind it still has to be resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ForegroundApp {
+    /// The executable's file name, lowercased, without a path: `"code.exe"`,
+    /// `"firefox.exe"`. `None` when the process could not be opened, which
+    /// happens for elevated processes when Lumen is not elevated.
+    pub executable: Option<String>,
+    /// The window title, used for the second rung of the fallback chain.
+    pub title: String,
+}
+
 /// A handle to the window whose foreground state we took, so it can be given
 /// back verbatim when the launcher hides (F0 acceptance criterion).
 ///
@@ -137,34 +171,45 @@ pub enum LaunchTarget {
 /// Implementations are held behind an `Arc` and touched from the UI thread, so
 /// methods take `&self`.
 pub trait Platform: Send + Sync {
-    /// Apply the platform's launcher-window treatment to an already-created
-    /// window: extended styles, backdrop, corner shape, dark mode.
+    /// Apply the platform's treatment for `role` to an already-created window:
+    /// extended styles, backdrop, corner shape, dark mode.
     ///
-    /// Called exactly once, when the daemon creates its single window (I-4).
-    fn attach_window(&self, handle: RawWindowHandle) -> Result<()>;
+    /// Called exactly once per role, when the daemon creates its two windows.
+    /// From then on they are only shown and hidden, never destroyed (I-4).
+    fn attach_window(&self, role: WindowRole, handle: RawWindowHandle) -> Result<()>;
 
-    /// Show the window on the monitor holding the cursor and take focus.
+    /// Show a window at `bounds`, on the monitor holding the cursor.
     ///
-    /// Captures the outgoing foreground owner first and returns it, so the
-    /// caller can hand it back on hide.
-    fn show_window(&self, size: Rect) -> Result<Option<FocusOwner>>;
+    /// [`WindowRole::Launcher`] takes focus, and the outgoing foreground owner
+    /// is captured first and returned so the caller can hand it back on hide.
+    /// [`WindowRole::Overlay`] never activates and always returns `None`: it
+    /// documents the shortcuts of the application underneath, so taking that
+    /// application's focus would defeat the entire feature.
+    fn show_window(&self, role: WindowRole, bounds: Rect) -> Result<Option<FocusOwner>>;
 
-    /// Hide the window and return focus to `restore_to`, if given.
+    /// Hide a window and return focus to `restore_to`, if given.
     ///
     /// The window is hidden, never destroyed (I-4).
-    fn hide_window(&self, restore_to: Option<FocusOwner>) -> Result<()>;
+    fn hide_window(&self, role: WindowRole, restore_to: Option<FocusOwner>) -> Result<()>;
 
-    /// Move and resize the window without touching focus or z-order.
+    /// Move and resize a window without touching focus or z-order.
     ///
     /// The launcher hugs its content: the window is exactly as tall as the rows
     /// it is showing, so it grows and shrinks as the result count changes. That
     /// is a position change, not a visibility change, and conflating the two
     /// would re-take the foreground on every keystroke.
-    fn set_window_bounds(&self, bounds: Rect) -> Result<()>;
+    fn set_window_bounds(&self, role: WindowRole, bounds: Rect) -> Result<()>;
 
     /// The monitor containing the cursor. The launcher appears where the user's
     /// attention is, not on the primary monitor.
     fn cursor_monitor(&self) -> Result<MonitorInfo>;
+
+    /// The application currently in the foreground.
+    ///
+    /// Must be called *before* either of Lumen's own windows is shown, or the
+    /// answer is Lumen. Returns `None` when there is no foreground window at
+    /// all, which is briefly true during a desktop switch.
+    fn foreground_application(&self) -> Result<Option<ForegroundApp>>;
 
     /// Begin delivering global gesture events to `sink`.
     ///

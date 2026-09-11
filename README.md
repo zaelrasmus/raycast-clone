@@ -26,8 +26,13 @@ an aesthetic worth looking at fifty times a day.
   at any display scale.
 - **Fuzzy matching** with `nucleo`, ranked by frequency and recency of use, with
   the matched characters highlighted.
-- **Themes as data** with live reload: edit the JSON, see it on screen, no
-  rebuild. Two in-house themes ship, one dark and one light.
+- **Context-aware shortcut overlay.** Hold Right Ctrl and a sheet of shortcuts
+  for whatever application is in front appears; release it and it goes away.
+  The shortcuts are *yours*, written by you, and the sheet follows the
+  foreground application. It never takes focus, is click-through, and is not in
+  the keyboard path at all, so it cannot swallow the keystroke that follows it.
+- **Themes and sheets as data** with live reload for themes: edit the JSON, see
+  it on screen, no rebuild. Two in-house themes ship, one dark and one light.
 - **Windows 11 chrome**: acrylic backdrop, rounded corners, dark mode, out of
   Alt+Tab and the taskbar, appearing on the monitor holding the cursor, and
   returning focus to exactly the window it took it from.
@@ -47,9 +52,13 @@ Listed because a README that implies more than exists is worse than no README.
 - **No action panel and no icon set.** `Enter` runs the primary action; there is
   no `Ctrl+K` panel behind it yet.
 - **No internal providers.** No calculator, clipboard history, snippets or file
-  search — that is all F3.
-- **No shortcut overlay.** The press-and-hold gesture is detected and plumbed end
-  to end, but nothing draws yet; the overlay needs its own window.
+  search — the rest of F3.
+- **Sheets do not live-reload.** Themes do; sheets are read once at startup, so
+  editing one means restarting the daemon.
+- **Browsers and Electron apps report their container.** A sheet keyed on
+  `chrome.exe` covers every tab, because the window does not say what is open
+  inside it. Key those on the window title instead. Packaged apps *are* resolved
+  correctly, by descending past `ApplicationFrameHost`.
 - **Budgets are only partly measured.** See below: ranking is benchmarked, the
   rest is not yet, and a regression does not yet fail the build (I-8).
 - **Linux is stubs.** `lumen-platform-linux` compiles on every commit and every
@@ -171,6 +180,53 @@ today still loads after the palette grows. Tokens are semantic
 A theme may set **colour and type family only**. Geometry — spacing, radii, row
 heights, icon sizes — is not themeable, deliberately: it is the calibration the
 whole project exists to protect.
+
+### Shortcut sheets
+
+Hold **Right Ctrl** for about a third of a second and Lumen shows the shortcuts
+for whatever application is in front. Sheets are distributed exactly like themes:
+drop a JSON file into `%APPDATA%\Lumen\config\sheets\` and restart the daemon.
+
+```json
+{
+  "schema_version": 1,
+  "name": "Visual Studio Code",
+  "match": { "on": "executable", "any": ["code.exe"] },
+  "groups": [
+    {
+      "title": "Navigate",
+      "shortcuts": [
+        { "keys": "Ctrl+P", "description": "Go to file" },
+        { "keys": "Ctrl+Shift+P", "description": "Command palette" }
+      ]
+    }
+  ]
+}
+```
+
+`match` takes one of three forms, tried in this order:
+
+| Form | Matches |
+| ---- | ------- |
+| `{ "on": "executable", "any": ["code.exe"] }` | The foreground executable, case-insensitively. |
+| `{ "on": "title-contains", "any": ["Mozilla Firefox"] }` | A substring of the window title. For browsers and Electron apps, which do not identify themselves any other way. |
+| `{ "on": "global" }` | Anything. The last resort. |
+
+The chain is exhaustive by design: **the overlay never appears empty**. If no
+sheet matches and you have written no global sheet, a built-in one is used.
+
+`keys` is free text. Lumen is describing *other* applications' shortcuts, which
+it cannot parse, validate or intercept — so write what you actually press.
+`"Ctrl+Shift+P"` is drawn as three keycaps; `"Hold Right Ctrl"` is drawn as one.
+
+Lumen's own sheet is not a file: it is generated from the keymap, so it can
+never drift from the keys that are actually bound.
+
+To change the hold key, set `hotkey.hold` in `config.json` to one of
+`left_control`, `right_control`, `left_alt`, `right_alt`, `left_shift`,
+`right_shift`, or `null` to turn the gesture off. Avoid the Super keys —
+releasing one opens the Start menu, and suppressing that would require a
+low-level keyboard hook the project deliberately does not install.
 
 ---
 

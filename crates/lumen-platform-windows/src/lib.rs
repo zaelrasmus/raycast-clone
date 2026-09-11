@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, FocusOwner, GestureSink, Hotkey, IconImage, IconSource, LaunchTarget, MonitorInfo,
-    Platform, Rect,
+    AppEntry, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchTarget,
+    MonitorInfo, Platform, Rect, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -21,6 +21,7 @@ use windows::Win32::Foundation::HWND;
 mod apps;
 mod clipboard;
 mod com;
+mod foreground;
 mod icons;
 mod input;
 mod monitor;
@@ -41,55 +42,82 @@ pub struct WindowsPlatformOptions {
 
 pub struct WindowsPlatform {
     options: WindowsPlatformOptions,
-    /// The single launcher window's handle, published once `attach_window` runs.
+    /// The launcher window's handle, published once `attach_window` runs.
     ///
-    /// An atomic rather than a lock because it is read on every show and hide
-    /// and written exactly once, and because `HWND` is a raw pointer that would
-    /// otherwise make this type `!Send`.
-    hwnd: AtomicU64,
+    /// Atomics rather than a lock because they are read on every show and hide
+    /// and written exactly once each, and because `HWND` is a raw pointer that
+    /// would otherwise make this type `!Send`.
+    launcher: AtomicU64,
+    /// The overlay window's handle. Two warm windows in memory, not one (F3).
+    overlay: AtomicU64,
 }
 
 impl WindowsPlatform {
     pub fn new(options: WindowsPlatformOptions) -> Self {
         Self {
             options,
-            hwnd: AtomicU64::new(0),
+            launcher: AtomicU64::new(0),
+            overlay: AtomicU64::new(0),
         }
     }
 
-    fn window(&self) -> Result<HWND> {
-        let raw = self.hwnd.load(Ordering::Acquire);
-        anyhow::ensure!(raw != 0, "the launcher window has not been attached yet");
+    fn slot(&self, role: WindowRole) -> &AtomicU64 {
+        match role {
+            WindowRole::Launcher => &self.launcher,
+            WindowRole::Overlay => &self.overlay,
+        }
+    }
+
+    fn window(&self, role: WindowRole) -> Result<HWND> {
+        let raw = self.slot(role).load(Ordering::Acquire);
+        anyhow::ensure!(raw != 0, "the {role:?} window has not been attached yet");
         Ok(HWND(raw as *mut c_void))
     }
 }
 
 impl Platform for WindowsPlatform {
-    fn attach_window(&self, handle: RawWindowHandle) -> Result<()> {
+    fn attach_window(&self, role: WindowRole, handle: RawWindowHandle) -> Result<()> {
         let RawWindowHandle::Win32(handle) = handle else {
             anyhow::bail!("expected a Win32 window handle, got {handle:?}");
         };
 
         let hwnd = HWND(handle.hwnd.get() as *mut c_void);
-        window::attach(hwnd, self.options.backdrop, self.options.dark)?;
-        self.hwnd.store(hwnd.0 as u64, Ordering::Release);
+        match role {
+            WindowRole::Launcher => window::attach(hwnd, self.options.backdrop, self.options.dark)?,
+            WindowRole::Overlay => {
+                window::attach_overlay(hwnd, self.options.backdrop, self.options.dark)?
+            }
+        }
+        self.slot(role).store(hwnd.0 as u64, Ordering::Release);
         Ok(())
     }
 
-    fn show_window(&self, bounds: Rect) -> Result<Option<FocusOwner>> {
-        window::show(self.window()?, bounds)
+    fn show_window(&self, role: WindowRole, bounds: Rect) -> Result<Option<FocusOwner>> {
+        let hwnd = self.window(role)?;
+        match role {
+            WindowRole::Launcher => window::show(hwnd, bounds),
+            // Shown without activating and without being raised into the
+            // foreground: the overlay annotates whatever is underneath it, and
+            // stealing that window's focus would break the shortcuts it is
+            // describing.
+            WindowRole::Overlay => window::show_passive(hwnd, bounds).map(|()| None),
+        }
     }
 
-    fn hide_window(&self, restore_to: Option<FocusOwner>) -> Result<()> {
-        window::hide(self.window()?, restore_to)
+    fn hide_window(&self, role: WindowRole, restore_to: Option<FocusOwner>) -> Result<()> {
+        window::hide(self.window(role)?, restore_to)
     }
 
-    fn set_window_bounds(&self, bounds: Rect) -> Result<()> {
-        window::set_bounds(self.window()?, bounds)
+    fn set_window_bounds(&self, role: WindowRole, bounds: Rect) -> Result<()> {
+        window::set_bounds(self.window(role)?, bounds)
     }
 
     fn cursor_monitor(&self) -> Result<MonitorInfo> {
         monitor::cursor_monitor()
+    }
+
+    fn foreground_application(&self) -> Result<Option<ForegroundApp>> {
+        foreground::current()
     }
 
     fn start_gesture_listener(&self, hotkey: Hotkey, sink: GestureSink) -> Result<()> {

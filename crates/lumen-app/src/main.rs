@@ -22,15 +22,16 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::AppContext as _;
 use gpui::{
-    App, Application, Bounds, Entity, WindowBackgroundAppearance, WindowBounds, WindowKind,
-    WindowOptions, point, px, size,
+    App, Application, Bounds, Entity, Render, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowKind, WindowOptions, point, px, size,
 };
+use lumen_core::sheets::{Sheet, SheetLibrary};
 use lumen_core::theme::Appearance;
 use lumen_core::{Config, Paths, Theme};
 use lumen_platform::{
-    FocusOwner, GestureEvent, GestureSink, HoldPhase, MonitorInfo, Platform, Rect,
+    FocusOwner, GestureEvent, GestureSink, HoldPhase, MonitorInfo, Platform, Rect, WindowRole,
 };
-use lumen_ui::{Launcher, LauncherEvent, keymap};
+use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, keymap};
 
 mod ipc;
 
@@ -112,13 +113,18 @@ struct Shell {
     /// so a resize mid-search cannot teleport the window to wherever the mouse
     /// has since wandered.
     monitor: Option<MonitorInfo>,
-    hold_active: bool,
+    /// Whether the overlay's window is currently mapped.
+    ///
+    /// Distinct from whether it is *visible*: it stays mapped throughout the
+    /// fade-out, and is hidden only once the fade reports it has finished.
+    overlay_shown: bool,
 }
 
 fn run_daemon() -> Result<()> {
     let paths = Paths::discover()?;
     paths.ensure_exists()?;
     lumen_core::install_builtin_themes(&paths.themes_dir())?;
+    lumen_core::install_builtin_sheets(&paths.sheets_dir())?;
     Config::write_default(&paths.config_file())?;
 
     let config = Config::load(&paths.config_file());
@@ -145,15 +151,60 @@ fn run_daemon() -> Result<()> {
 
 fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()> {
     keymap::install(cx);
+    keymap::verify_against_registry(cx);
 
     let platform = build_platform(&config, &theme);
-    let window = open_hidden_window(cx, &platform, &paths, &config, theme)?;
+
+    let window = open_hidden_window(
+        cx,
+        &platform,
+        WindowRole::Launcher,
+        &config,
+        size(
+            px(config.window.width),
+            px(config.window_height(config.window.visible_rows)),
+        ),
+        {
+            let platform = platform.clone();
+            let paths = paths.clone();
+            let config = config.clone();
+            let theme = theme.clone();
+            move |_window, cx| cx.new(|cx| Launcher::new(platform, paths, config, theme, cx))
+        },
+    )?;
+
+    // The sheets the overlay will draw from, assembled once at startup.
+    //
+    // Lumen's own sheet is generated from the keymap rather than written by
+    // hand (F3), and the built-in global sheet is the last rung of the fallback
+    // chain, compiled in so the guarantee that the overlay is never empty does
+    // not depend on a file existing.
+    let mut sheets = SheetLibrary::load(&paths.sheets_dir());
+    sheets.add(keymap::sheet());
+    let fallback = lumen_core::sheets::builtin_global();
+    log::info!("loaded {} shortcut sheets", sheets.len());
+
+    let overlay = open_hidden_window(
+        cx,
+        &platform,
+        WindowRole::Overlay,
+        &config,
+        size(
+            px(fallback.measured_width(lumen_core::layout::overlay::COLUMNS)),
+            px(fallback.measured_height(lumen_core::layout::overlay::COLUMNS)),
+        ),
+        {
+            let theme = theme.clone();
+            let fallback = fallback.clone();
+            move |_window, cx| cx.new(|_cx| Overlay::new(theme, fallback))
+        },
+    )?;
 
     let shell = Rc::new(RefCell::new(Shell {
         visible: false,
         restore_to: None,
         monitor: None,
-        hold_active: false,
+        overlay_shown: false,
     }));
 
     // One channel for both sources. The gesture listener and the IPC listener
@@ -198,14 +249,22 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     .context("starting the IPC listener")?;
 
     subscribe_to_launcher(cx, &window, platform.clone(), config.clone(), shell.clone());
-    watch_theme(cx, &window, &paths, &config);
+    subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
+    watch_theme(cx, &window, &overlay, &paths, &config);
+
+    let surfaces = Surfaces {
+        launcher: window,
+        overlay,
+        sheets: Rc::new(sheets),
+        fallback: Rc::new(fallback),
+    };
 
     cx.spawn({
         let platform = platform.clone();
         let config = config.clone();
         async move |cx| {
             while let Some(message) = rx.next().await {
-                let outcome = handle(message, &platform, &config, &shell, &window, cx);
+                let outcome = handle(message, &platform, &config, &shell, &surfaces, cx);
                 if let Err(error) = outcome {
                     log::error!("could not handle {message:?}: {error:#}");
                 }
@@ -215,6 +274,47 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     .detach();
 
     Ok(())
+}
+
+/// The two warm windows and the sheets one of them draws from.
+///
+/// Grouped rather than threaded through every function as four more parameters,
+/// which is what the event loop would otherwise become.
+struct Surfaces {
+    launcher: gpui::WindowHandle<Launcher>,
+    overlay: gpui::WindowHandle<Overlay>,
+    sheets: Rc<SheetLibrary>,
+    fallback: Rc<Sheet>,
+}
+
+/// Hide the overlay's window once its fade has actually finished.
+fn subscribe_to_overlay(
+    cx: &mut App,
+    overlay: &gpui::WindowHandle<Overlay>,
+    platform: Arc<dyn Platform>,
+    shell: Rc<RefCell<Shell>>,
+) {
+    let Ok(entity) = overlay.entity(cx) else {
+        return;
+    };
+
+    cx.subscribe(&entity, move |_entity: Entity<Overlay>, event, _cx| {
+        let OverlayEvent::FadedOut = event;
+
+        // Hiding at the start of the fade would mean there was no fade; hiding
+        // here, after it, is what lets the window stop compositing once it is
+        // genuinely invisible.
+        let mut shell = shell.borrow_mut();
+        if !shell.overlay_shown {
+            return;
+        }
+        shell.overlay_shown = false;
+
+        if let Err(error) = platform.hide_window(WindowRole::Overlay, None) {
+            log::error!("could not hide the overlay: {error:#}");
+        }
+    })
+    .detach();
 }
 
 #[cfg(target_os = "windows")]
@@ -233,23 +333,26 @@ fn build_platform(_config: &Config, _theme: &Theme) -> Arc<dyn Platform> {
 }
 
 /// Create the one window this process will ever have (I-4).
-fn open_hidden_window(
+/// Create one of the daemon's two warm windows, hidden, and hand its raw handle
+/// to the platform for the treatment GPUI does not expose.
+///
+/// "Pre-created hidden window, like the launcher's. That is two warm windows in
+/// memory, not one" (F3). The overlay pays its GPU initialisation once at
+/// startup for the same reason the launcher does: a surface that is created when
+/// the gesture fires cannot also appear within the gesture's own duration.
+fn open_hidden_window<V: 'static + Render>(
     cx: &mut App,
     platform: &Arc<dyn Platform>,
-    paths: &Paths,
+    role: WindowRole,
     config: &Config,
-    theme: Theme,
-) -> Result<gpui::WindowHandle<Launcher>> {
-    // A plausible starting rectangle. The real position is chosen on every show,
-    // against the monitor holding the cursor.
-    let initial = size(
-        px(config.window.width),
-        px(config.window_height(config.window.visible_rows)),
-    );
-
+    initial: gpui::Size<gpui::Pixels>,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
+) -> Result<gpui::WindowHandle<V>> {
     let window = cx
         .open_window(
             WindowOptions {
+                // A plausible starting rectangle. The real position is chosen on
+                // every show, against the monitor holding the cursor.
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(0.0), px(0.0)),
                     size: initial,
@@ -261,8 +364,8 @@ fn open_hidden_window(
                 // Created hidden. The whole point of a resident daemon is that
                 // the first invocation is not the first frame.
                 show: false,
-                // PopUp is what gets WS_EX_TOOLWINDOW on Windows, keeping the
-                // launcher out of Alt+Tab and the taskbar.
+                // PopUp is what gets WS_EX_TOOLWINDOW on Windows, keeping both
+                // surfaces out of Alt+Tab and the taskbar.
                 kind: WindowKind::PopUp,
                 is_movable: false,
                 is_resizable: false,
@@ -281,17 +384,10 @@ fn open_hidden_window(
                 window_decorations: None,
                 tabbing_identifier: None,
             },
-            {
-                let platform = platform.clone();
-                let paths = paths.clone();
-                let config = config.clone();
-                move |_window, cx| cx.new(|cx| Launcher::new(platform, paths, config, theme, cx))
-            },
+            build,
         )
-        .context("creating the launcher window")?;
+        .with_context(|| format!("creating the {role:?} window"))?;
 
-    // Hand the raw handle to the platform so it can apply the styles, the
-    // backdrop and the corner shape GPUI does not expose.
     window
         .update(cx, |_view, window, _cx| -> Result<()> {
             use raw_window_handle::HasWindowHandle;
@@ -299,10 +395,10 @@ fn open_hidden_window(
             let handle = window
                 .window_handle()
                 .map_err(|error| anyhow::anyhow!("no raw window handle: {error}"))?;
-            platform.attach_window(handle.as_raw())
+            platform.attach_window(role, handle.as_raw())
         })
         .context("reaching the new window")?
-        .context("applying the launcher's window treatment")?;
+        .with_context(|| format!("applying the {role:?} window treatment"))?;
 
     Ok(window)
 }
@@ -335,6 +431,7 @@ fn subscribe_to_launcher(
 fn watch_theme(
     cx: &mut App,
     window: &gpui::WindowHandle<Launcher>,
+    overlay: &gpui::WindowHandle<Overlay>,
     paths: &Paths,
     config: &Config,
 ) {
@@ -351,6 +448,7 @@ fn watch_theme(
     };
 
     let window = *window;
+    let overlay = *overlay;
     cx.spawn(async move |cx| {
         loop {
             // Polled rather than pushed because `notify` hands back a std
@@ -364,6 +462,15 @@ fn watch_theme(
                 continue;
             };
             log::info!("reloaded theme {:?}", theme.name);
+
+            // Both surfaces follow the same theme file. Reloading one and not
+            // the other would leave two differently coloured windows one
+            // keystroke apart.
+            overlay
+                .update(cx, |overlay, _window, cx| {
+                    overlay.apply_theme(theme.clone(), cx)
+                })
+                .ok();
 
             let updated = window.update(cx, |launcher, _window, cx| {
                 launcher.apply_theme(theme, cx);
@@ -381,7 +488,7 @@ fn handle(
     platform: &Arc<dyn Platform>,
     config: &Config,
     shell: &Rc<RefCell<Shell>>,
-    window: &gpui::WindowHandle<Launcher>,
+    surfaces: &Surfaces,
     cx: &mut gpui::AsyncApp,
 ) -> Result<()> {
     match message {
@@ -390,25 +497,95 @@ fn handle(
             if visible {
                 hide(platform, shell)
             } else {
-                show(platform, config, shell, window, cx)
+                show(platform, config, shell, &surfaces.launcher, cx)
             }
         }
-        Message::Show => show(platform, config, shell, window, cx),
+        Message::Show => show(platform, config, shell, &surfaces.launcher, cx),
         Message::Hide => hide(platform, shell),
-        Message::OverlayPress => {
-            // F3's context-aware shortcut overlay is not built yet. The gesture
-            // is already plumbed end to end, so what is missing is the overlay's
-            // own window -- a new platform surface, not a UI feature.
-            shell.borrow_mut().hold_active = true;
-            log::debug!("hold gesture began (the overlay arrives in F3)");
-            Ok(())
-        }
-        Message::OverlayRelease => {
-            shell.borrow_mut().hold_active = false;
-            Ok(())
-        }
+        Message::OverlayPress => show_overlay(platform, shell, surfaces, cx),
+        Message::OverlayRelease => hide_overlay(surfaces, cx),
         Message::Ping => Ok(()),
     }
+}
+
+/// Raise the shortcut sheet for whatever is in front.
+fn show_overlay(
+    platform: &Arc<dyn Platform>,
+    shell: &Rc<RefCell<Shell>>,
+    surfaces: &Surfaces,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
+    // Asked before the overlay is mapped, so the answer is the application the
+    // user is actually looking at rather than Lumen. The overlay never takes
+    // focus, so this stays true for as long as it is up.
+    let foreground = platform.foreground_application().unwrap_or_else(|error| {
+        log::debug!("could not identify the foreground application: {error:#}");
+        None
+    });
+
+    let sheet = surfaces
+        .sheets
+        .resolve(foreground.as_ref(), &surfaces.fallback);
+
+    log::debug!(
+        "overlay: {:?} -> sheet {:?}",
+        foreground
+            .as_ref()
+            .and_then(|app| app.executable.as_deref()),
+        sheet.name
+    );
+
+    let columns = lumen_core::layout::overlay::COLUMNS;
+    let height = sheet.measured_height(columns);
+    let width = sheet.measured_width(columns);
+    let sheet = sheet.clone();
+
+    // The window is positioned and mapped while its content is still at zero
+    // opacity, and only then told to fade in. That ordering is what F3 means by
+    // "the animation starts at zero opacity": a first frame that arrives late
+    // is invisible, so the hitch hides itself instead of flashing.
+    let already_shown = shell.borrow().overlay_shown;
+    if !already_shown {
+        let monitor = platform.cursor_monitor()?;
+        let bounds = monitor.place(
+            Rect::size(width as i32, height as i32),
+            lumen_core::layout::overlay::VERTICAL_BIAS,
+        );
+        platform.show_window(WindowRole::Overlay, bounds)?;
+        shell.borrow_mut().overlay_shown = true;
+    } else {
+        // Already up, but a different application may now be in front, so the
+        // panel has to be resized to the new sheet. A position change, not a
+        // visibility change: the overlay keeps its z-order and its passivity.
+        if let Some(monitor) = shell
+            .borrow()
+            .monitor
+            .or_else(|| platform.cursor_monitor().ok())
+        {
+            let bounds = monitor.place(
+                Rect::size(width as i32, height as i32),
+                lumen_core::layout::overlay::VERTICAL_BIAS,
+            );
+            platform.set_window_bounds(WindowRole::Overlay, bounds).ok();
+        }
+    }
+
+    surfaces
+        .overlay
+        .update(cx, |overlay, _window, cx| overlay.present(sheet, cx))
+        .ok();
+
+    Ok(())
+}
+
+/// Begin fading the sheet out. The window is hidden later, by the subscription,
+/// once the fade reports that it has finished.
+fn hide_overlay(surfaces: &Surfaces, cx: &mut gpui::AsyncApp) -> Result<()> {
+    surfaces
+        .overlay
+        .update(cx, |overlay, _window, cx| overlay.dismiss(cx))
+        .ok();
+    Ok(())
 }
 
 fn show(
@@ -430,7 +607,7 @@ fn show(
     let monitor = platform.cursor_monitor()?;
     let bounds = placement(&monitor, config, rows);
 
-    let restore_to = platform.show_window(bounds)?;
+    let restore_to = platform.show_window(WindowRole::Launcher, bounds)?;
 
     let mut shell = shell.borrow_mut();
     shell.visible = true;
@@ -450,7 +627,7 @@ fn hide(platform: &Arc<dyn Platform>, shell: &Rc<RefCell<Shell>>) -> Result<()> 
         shell.restore_to.take()
     };
 
-    platform.hide_window(restore_to)
+    platform.hide_window(WindowRole::Launcher, restore_to)
 }
 
 fn resize(
@@ -467,7 +644,7 @@ fn resize(
         return Ok(());
     };
 
-    platform.set_window_bounds(placement(&monitor, config, rows))
+    platform.set_window_bounds(WindowRole::Launcher, placement(&monitor, config, rows))
 }
 
 /// Where the window goes, in physical pixels.

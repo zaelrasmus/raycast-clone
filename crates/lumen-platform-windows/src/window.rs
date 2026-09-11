@@ -24,7 +24,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOPMOST,
     IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 use windows::core::{BOOL, w};
 
@@ -298,4 +298,53 @@ pub fn set_bounds(hwnd: HWND, bounds: Rect) -> Result<()> {
         )
         .context("resizing the launcher window")
     }
+}
+
+/// Apply the overlay treatment: visible, on top, and untouchable.
+///
+/// Three extended styles carry the whole "passive" requirement of F3:
+///
+/// - `WS_EX_NOACTIVATE` -- clicking or showing it never makes it the foreground
+///   window, so the application it is documenting keeps its focus.
+/// - `WS_EX_TRANSPARENT` -- it is click-through: hit testing falls past it to
+///   whatever is underneath, so it cannot swallow a click either.
+/// - `WS_EX_TOOLWINDOW` -- out of Alt+Tab and the taskbar, like the launcher.
+///
+/// Together with never registering a keyboard hook, this is what guarantees the
+/// overlay "never consumes the following keystroke": it is not in the input
+/// path at all, rather than being in it and politely forwarding.
+pub fn attach_overlay(hwnd: HWND, backdrop: BackdropMode, dark: bool) -> Result<()> {
+    attach(hwnd, backdrop, dark)?;
+
+    unsafe {
+        let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let ex_style = current | WS_EX_NOACTIVATE.0 | WS_EX_TRANSPARENT.0 | WS_EX_TOOLWINDOW.0;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style as isize);
+    }
+
+    Ok(())
+}
+
+/// Show a window at `bounds` without activating it or taking focus.
+///
+/// `SWP_NOACTIVATE` plus `SW_SHOWNOACTIVATE`, and deliberately no
+/// `take_foreground`: that omission is the entire difference between this and
+/// [`show`], and it is what lets the overlay appear over an application without
+/// interrupting it.
+pub fn show_passive(hwnd: HWND, bounds: Rect) -> Result<()> {
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .context("positioning the overlay window")?;
+
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    Ok(())
 }

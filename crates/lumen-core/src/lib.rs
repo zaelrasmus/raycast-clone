@@ -18,6 +18,7 @@ pub mod item;
 pub mod layout;
 pub mod paths;
 pub mod search;
+pub mod sheets;
 pub mod theme;
 pub mod watcher;
 
@@ -26,6 +27,7 @@ pub use frecency::Frecency;
 pub use item::{Action, Item};
 pub use paths::Paths;
 pub use search::{Candidate, Match, Search};
+pub use sheets::{Sheet, SheetLibrary};
 pub use theme::{Appearance, Color, Theme};
 
 use std::path::Path;
@@ -59,6 +61,24 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
         if !path.exists() {
             std::fs::write(&path, source)?;
         }
+    }
+
+    Ok(())
+}
+
+/// Write the starter shortcut sheet into the sheets folder if it is not there.
+///
+/// Only the global sheet ships. Per-application sheets are deliberately left to
+/// the user: F3's whole distinction from the PowerToys equivalent is that the
+/// shortcuts are *theirs*, annotated by them, rather than a fixed set someone
+/// else chose. Shipping a pile of guessed sheets would quietly turn this back
+/// into the thing it is trying not to be.
+pub fn install_builtin_sheets(sheets_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(sheets_dir)?;
+
+    let path = sheets_dir.join("global.json");
+    if !path.exists() {
+        std::fs::write(&path, include_str!("../../../assets/sheets/global.json"))?;
     }
 
     Ok(())

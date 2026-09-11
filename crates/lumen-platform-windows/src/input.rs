@@ -90,10 +90,12 @@ pub fn start(hotkey: Hotkey, sink: GestureSink) -> Result<()> {
     std::thread::Builder::new()
         .name("lumen-gestures".into())
         .spawn(move || {
-            let outcome = run(hotkey, sink);
-            match outcome {
-                Ok(pump) => {
-                    let _ = ready_tx.send(Ok(()));
+            match run(hotkey, sink) {
+                // The listener is up either way. `accelerator` reports only
+                // whether the launcher hotkey could be bound, and the pump runs
+                // regardless so the hold gesture keeps working.
+                Ok((pump, accelerator)) => {
+                    let _ = ready_tx.send(accelerator);
                     pump();
                 }
                 Err(error) => {
@@ -108,11 +110,13 @@ pub fn start(hotkey: Hotkey, sink: GestureSink) -> Result<()> {
         .context("the gesture listener thread stopped before reporting readiness")?
 }
 
-/// Register everything, then hand back the message pump to run.
+/// Register everything, then hand back the message pump plus the hotkey outcome.
 ///
 /// Split this way so registration failures surface to the caller instead of
-/// disappearing into a thread that simply never delivers events.
-fn run(hotkey: Hotkey, sink: GestureSink) -> Result<impl FnOnce()> {
+/// disappearing into a thread that simply never delivers events -- and so that a
+/// hotkey that is already taken is reported without tearing down a listener that
+/// is otherwise working.
+fn run(hotkey: Hotkey, sink: GestureSink) -> Result<(impl FnOnce(), Result<()>)> {
     unsafe {
         let instance = GetModuleHandleW(None).context("GetModuleHandleW")?;
         let class_name = w!("LumenGestureListener");
@@ -155,13 +159,14 @@ fn run(hotkey: Hotkey, sink: GestureSink) -> Result<impl FnOnce()> {
             });
         });
 
-        let (modifiers, vk) = accelerator_for(&hotkey)?;
-        // MOD_NOREPEAT: holding the hotkey must summon the launcher once, not
-        // toggle it at the keyboard's repeat rate.
-        RegisterHotKey(Some(hwnd), HOTKEY_ID, modifiers | MOD_NOREPEAT, vk).with_context(|| {
-            format!("registering the global hotkey {hotkey}; another application may hold it")
-        })?;
-
+        // Raw Input first, and deliberately so.
+        //
+        // The hold gesture and the launcher hotkey are independent concerns
+        // that happen to share a message loop -- that is the whole basis of the
+        // split described above. Registering the accelerator first and using
+        // `?` made a taken hotkey return before this ran, which silently
+        // disabled the overlay as well. One unavailable key must not cost the
+        // other feature.
         if hotkey.hold.is_some() {
             let device = RAWINPUTDEVICE {
                 usUsagePage: HID_USAGE_PAGE_GENERIC,
@@ -174,9 +179,17 @@ fn run(hotkey: Hotkey, sink: GestureSink) -> Result<impl FnOnce()> {
             RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32)
                 .context("registering for raw keyboard input")?;
         }
-    }
 
-    Ok(pump_messages)
+        let accelerator = accelerator_for(&hotkey).and_then(|(modifiers, vk)| {
+            // MOD_NOREPEAT: holding the hotkey must summon the launcher once,
+            // not toggle it at the keyboard's repeat rate.
+            RegisterHotKey(Some(hwnd), HOTKEY_ID, modifiers | MOD_NOREPEAT, vk).with_context(|| {
+                format!("registering the global hotkey {hotkey}; another application may hold it")
+            })
+        });
+
+        Ok((pump_messages, accelerator))
+    }
 }
 
 fn pump_messages() {
@@ -328,6 +341,12 @@ const RI_KEY_E0: u16 = 0x02;
 const VK_SHIFT: u16 = 0x10;
 const VK_CONTROL: u16 = 0x11;
 const VK_MENU: u16 = 0x12;
+const VK_LSHIFT: u16 = 0xA0;
+const VK_RSHIFT: u16 = 0xA1;
+const VK_LCONTROL: u16 = 0xA2;
+const VK_RCONTROL: u16 = 0xA3;
+const VK_LMENU: u16 = 0xA4;
+const VK_RMENU: u16 = 0xA5;
 const VK_LWIN: u16 = 0x5B;
 const VK_RWIN: u16 = 0x5C;
 const SCANCODE_RIGHT_SHIFT: u16 = 0x36;
@@ -338,6 +357,20 @@ const SCANCODE_RIGHT_SHIFT: u16 = 0x36;
 /// the side has to be recovered: from the E0 prefix for control and alt, and
 /// from the scancode for shift, which has no E0 form.
 fn modifier_from_raw(vkey: u16, make_code: u16, extended: bool) -> Option<Modifier> {
+    // Some drivers -- and every injected event -- report the side-specific
+    // virtual key directly instead of the generic one plus an E0 prefix. Both
+    // spellings mean the same physical key, and handling only the generic form
+    // makes the gesture work on one keyboard and not on the next.
+    match vkey {
+        VK_LSHIFT => return Some(Modifier::LeftShift),
+        VK_RSHIFT => return Some(Modifier::RightShift),
+        VK_LCONTROL => return Some(Modifier::LeftControl),
+        VK_RCONTROL => return Some(Modifier::RightControl),
+        VK_LMENU => return Some(Modifier::LeftAlt),
+        VK_RMENU => return Some(Modifier::RightAlt),
+        _ => {}
+    }
+
     Some(match vkey {
         VK_SHIFT => {
             if make_code == SCANCODE_RIGHT_SHIFT {
@@ -478,5 +511,23 @@ mod tests {
             Some(Modifier::RightShift)
         );
         assert_eq!(modifier_from_raw(0x41, 0x1E, false), None);
+    }
+
+    /// Injected events, and some drivers, report the side-specific virtual key
+    /// rather than the generic one plus an E0 prefix.
+    #[test]
+    fn accepts_side_specific_virtual_keys_too() {
+        assert_eq!(
+            modifier_from_raw(VK_RCONTROL, 0x1D, true),
+            Some(Modifier::RightControl)
+        );
+        assert_eq!(
+            modifier_from_raw(VK_LCONTROL, 0x1D, false),
+            Some(Modifier::LeftControl)
+        );
+        assert_eq!(
+            modifier_from_raw(VK_RMENU, 0x38, true),
+            Some(Modifier::RightAlt)
+        );
     }
 }

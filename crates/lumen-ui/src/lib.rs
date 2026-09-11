@@ -21,6 +21,8 @@
 pub mod icons;
 pub mod keymap;
 pub mod launcher;
+pub mod overlay;
 pub mod styling;
 
 pub use launcher::{Launcher, LauncherEvent};
+pub use overlay::{Overlay, OverlayEvent};

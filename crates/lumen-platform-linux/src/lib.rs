@@ -27,8 +27,8 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, FocusOwner, GestureSink, Hotkey, IconImage, IconSource, LaunchTarget, MonitorInfo,
-    Platform, Rect,
+    AppEntry, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchTarget,
+    MonitorInfo, Platform, Rect, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -42,11 +42,13 @@ impl LinuxPlatform {
 }
 
 impl Platform for LinuxPlatform {
-    fn attach_window(&self, _handle: RawWindowHandle) -> Result<()> {
+    fn attach_window(&self, _role: WindowRole, _handle: RawWindowHandle) -> Result<()> {
+        // Both roles become layer surfaces, on LAYER_OVERLAY with exclusive
+        // keyboard interactivity for the launcher and none for the overlay.
         todo!("F5: wlr-layer-shell surface on LAYER_OVERLAY")
     }
 
-    fn show_window(&self, _bounds: Rect) -> Result<Option<FocusOwner>> {
+    fn show_window(&self, _role: WindowRole, _bounds: Rect) -> Result<Option<FocusOwner>> {
         // On Wayland a client cannot position itself; the layer-shell surface
         // is anchored by the compositor instead. `bounds` will be advisory here,
         // which is exactly the kind of difference this crate exists to surface
@@ -54,14 +56,14 @@ impl Platform for LinuxPlatform {
         todo!("F5: map the layer surface")
     }
 
-    fn hide_window(&self, _restore_to: Option<FocusOwner>) -> Result<()> {
+    fn hide_window(&self, _role: WindowRole, _restore_to: Option<FocusOwner>) -> Result<()> {
         // Focus restoration is the compositor's job under layer-shell:
         // unmapping the surface returns focus on its own, so `restore_to` is
         // expected to stay unused on this platform.
         todo!("F5: unmap the layer surface")
     }
 
-    fn set_window_bounds(&self, _bounds: Rect) -> Result<()> {
+    fn set_window_bounds(&self, _role: WindowRole, _bounds: Rect) -> Result<()> {
         // Under layer-shell the compositor owns placement; the client asks for
         // a size and an anchor rather than a rectangle. Another difference this
         // crate exists to surface before F5 rather than during it.
@@ -70,6 +72,13 @@ impl Platform for LinuxPlatform {
 
     fn cursor_monitor(&self) -> Result<MonitorInfo> {
         todo!("F5: wl_output enumeration")
+    }
+
+    fn foreground_application(&self) -> Result<Option<ForegroundApp>> {
+        // Simpler here than on Windows: Hyprland's event socket exposes the
+        // active window's class and title directly, with no process handle to
+        // open and no frame host to descend through (section 8).
+        todo!("F5: read the active window from Hyprland's event socket")
     }
 
     fn start_gesture_listener(&self, _hotkey: Hotkey, _sink: GestureSink) -> Result<()> {

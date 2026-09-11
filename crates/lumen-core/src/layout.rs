@@ -85,6 +85,13 @@ pub mod motion {
 
     pub const APPEAR: Duration = Duration::from_millis(120);
     pub const APPEAR_SCALE_FROM: f32 = 0.98;
+
+    /// The overlay fades in over this long, with ease-out.
+    pub const OVERLAY_ENTER: Duration = Duration::from_millis(150);
+
+    /// ...and out over this long. Deliberately shorter than the entry:
+    /// "Equal durations feel heavy" (F3).
+    pub const OVERLAY_EXIT: Duration = Duration::from_millis(90);
 }
 
 // These relationships between the tokens are checked at compile time rather
@@ -107,3 +114,50 @@ const _: () = assert!(WINDOW_RADIUS > ROW_RADIUS);
 /// A row's highlight is inset from the window edge, so the inset has to leave
 /// room for the text that follows the gutter.
 const _: () = assert!(GUTTER > ROW_INSET);
+
+/// Geometry for the shortcut overlay.
+///
+/// Separate from the launcher's because the two surfaces are not variations on
+/// each other: one is a single scrolling column sized to its results, the other
+/// is a static multi-column sheet sized to its content.
+pub mod overlay {
+    /// Logical width of the sheet panel.
+    pub const WIDTH: f32 = 920.0;
+
+    /// Padding inside the panel, on every side.
+    pub const PADDING: f32 = 26.0;
+
+    /// The heading naming the matched application.
+    pub const HEADER_HEIGHT: f32 = 38.0;
+
+    /// How many columns the groups are distributed across.
+    pub const COLUMNS: usize = 3;
+
+    /// Horizontal gap between columns.
+    pub const COLUMN_GAP: f32 = 26.0;
+
+    /// One shortcut row.
+    pub const ROW_HEIGHT: f32 = 24.0;
+
+    /// A group's title row.
+    pub const GROUP_TITLE_HEIGHT: f32 = 26.0;
+
+    /// Vertical gap below a finished group, before the next one starts.
+    pub const GROUP_GAP: f32 = 16.0;
+
+    /// Corner radius of the panel.
+    pub const RADIUS: f32 = 14.0;
+
+    /// Where the panel sits vertically in the work area.
+    ///
+    /// Nearer the middle than the launcher: the overlay is read, not typed
+    /// into, so it is not competing with the user's gaze at a text field.
+    pub const VERTICAL_BIAS: f32 = 0.3;
+
+    pub mod text {
+        pub const HEADING: f32 = 15.0;
+        pub const GROUP: f32 = 11.0;
+        pub const DESCRIPTION: f32 = 12.5;
+        pub const KEYS: f32 = 11.5;
+    }
+}

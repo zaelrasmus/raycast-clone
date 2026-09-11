@@ -33,6 +33,12 @@ impl Paths {
         self.config_dir.join("themes")
     }
 
+    /// Shortcut sheets, distributed exactly like themes: same folder-drop
+    /// model, same absence of any runtime (F3, tier T0).
+    pub fn sheets_dir(&self) -> PathBuf {
+        self.config_dir.join("sheets")
+    }
+
     pub fn theme_file(&self, name: &str) -> PathBuf {
         self.themes_dir().join(format!("{name}.json"))
     }
@@ -42,7 +48,12 @@ impl Paths {
     }
 
     pub fn ensure_exists(&self) -> Result<()> {
-        for dir in [&self.config_dir, &self.data_dir, &self.themes_dir()] {
+        for dir in [
+            &self.config_dir,
+            &self.data_dir,
+            &self.themes_dir(),
+            &self.sheets_dir(),
+        ] {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         Ok(())
