@@ -170,6 +170,14 @@ impl Launcher {
         launcher
     }
 
+    /// Rebuild the index: applications, scripts and snippets.
+    ///
+    /// Public so the daemon can ask for it after the user edits a script or a
+    /// snippet, rather than making them restart to see the change.
+    pub fn reindex(&mut self, cx: &mut Context<Self>) {
+        self.start_indexing(cx);
+    }
+
     /// Build the application index off the UI thread.
     ///
     /// I-3: root search never waits on this. Until it lands the list is simply
@@ -177,6 +185,7 @@ impl Launcher {
     fn start_indexing(&mut self, cx: &mut Context<Self>) {
         let platform = self.platform.clone();
         let scripts_dir = self.paths.scripts_dir();
+        let snippets_file = self.paths.snippets_file();
 
         cx.spawn(async move |this, cx| {
             let entries = cx
@@ -209,12 +218,27 @@ impl Launcher {
                 log::info!("indexed {} script commands", scripts.len());
             }
 
+            let snippets = cx
+                .background_executor()
+                .spawn({
+                    let file = snippets_file.clone();
+                    async move { lumen_core::providers::snippets::load(&file) }
+                })
+                .await;
+
+            if !snippets.is_empty() {
+                log::info!("indexed {} snippets", snippets.len());
+            }
+
             // The provider catalogue joins the same index as the applications,
             // so Lumen's own commands are found by typing part of their name
             // exactly like anything else -- one notion of "matches", not two.
             let mut providers = Providers::builtin();
             providers.register(Box::new(lumen_core::providers::ScriptProvider::new(
                 scripts,
+            )));
+            providers.register(Box::new(lumen_core::providers::SnippetProvider::new(
+                snippets,
             )));
             let catalogue = providers.catalogue();
 

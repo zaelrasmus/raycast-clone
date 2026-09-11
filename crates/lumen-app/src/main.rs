@@ -132,6 +132,7 @@ fn run_daemon() -> Result<()> {
     lumen_core::install_builtin_themes(&paths.themes_dir())?;
     lumen_core::install_builtin_sheets(&paths.sheets_dir())?;
     lumen_core::install_example_script(&paths.scripts_dir())?;
+    lumen_core::providers::snippets::install_example(&paths.snippets_file())?;
     Config::write_default(&paths.config_file())?;
 
     let config = Config::load(&paths.config_file());
@@ -722,6 +723,13 @@ fn handle(
         Message::Settings => open_settings(platform, config, surfaces, cx),
         Message::ReloadSheets => {
             surfaces.reload_sheets();
+            // Scripts and snippets live in the launcher's index, so reloading
+            // is two halves: the sheet library here, and a reindex there.
+            // One command reloads everything the user can edit by hand.
+            surfaces
+                .launcher
+                .update(cx, |launcher, _window, cx| launcher.reindex(cx))
+                .ok();
             Ok(())
         }
         Message::Quit => {

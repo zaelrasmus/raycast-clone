@@ -36,6 +36,8 @@ an aesthetic worth looking at fifty times a day.
   application you were just using.
 - **Inline calculator.** Type `12*7` and the answer is the first row, ready to
   copy. It stays quiet for anything that is not arithmetic, including `7-zip`.
+- **Snippets.** Blocks of text you paste often, searchable and copied with
+  `Enter`.
 - **Script commands (tier T1).** Drop any executable into the scripts folder
   with a `@lumen.title` comment header and it becomes a searchable command.
   Headers are read at index time, never by running the file (AD-08).
@@ -61,8 +63,11 @@ Listed because a README that implies more than exists is worse than no README.
   backspace, word-delete and paste all do.
 - **No icon set.** F2 asks for one optically aligned on a 16 and 20 px grid;
   application icons come from the shell and nothing else has an icon at all.
-- **Most internal providers are missing.** The calculator and tier T1 are in;
-  clipboard history, snippets, window management and file search are not.
+- **Some internal providers are missing.** The calculator, snippets and tier T1
+  are in; clipboard history, window management and file search are not.
+- **No text expansion.** Snippets are copied from the launcher. Expanding them
+  as you type anywhere would need a global keyboard hook, which is the one
+  mechanism this project deliberately avoids (see R-13).
 - **Browsers and Electron apps report their container.** A sheet keyed on
   `chrome.exe` covers every tab, because the window does not say what is open
   inside it. Key those on the window title instead. Packaged apps *are* resolved
@@ -123,7 +128,7 @@ Then run the binary once to start the daemon:
 | `lumen overlay-press`   | Report that the hold gesture began (Hyprland `bind`)  |
 | `lumen overlay-release` | Report that it ended (Hyprland `bindr`)       |
 | `lumen settings`        | Open the settings window                      |
-| `lumen reload-sheets`   | Re-read the shortcut sheets from disk         |
+| `lumen reload-sheets`   | Re-read sheets, scripts and snippets from disk |
 | `lumen quit`            | Stop the daemon                               |
 
 ### Keys

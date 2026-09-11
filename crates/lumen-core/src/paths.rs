@@ -45,6 +45,13 @@ impl Paths {
         self.config_dir.join("scripts")
     }
 
+    /// Saved blocks of text (F3). One file rather than a folder: snippets are
+    /// edited in bulk, and a file per snippet would make reordering them a
+    /// filesystem operation.
+    pub fn snippets_file(&self) -> PathBuf {
+        self.config_dir.join("snippets.json")
+    }
+
     pub fn theme_file(&self, name: &str) -> PathBuf {
         self.themes_dir().join(format!("{name}.json"))
     }

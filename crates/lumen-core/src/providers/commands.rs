@@ -19,9 +19,9 @@ const COMMANDS: &[(&str, &str, &str, Builtin)] = &[
         Builtin::OpenSettings,
     ),
     (
-        "reload-sheets",
-        "Reload Shortcut Sheets",
-        "Re-read the sheets folder from disk",
+        "reload",
+        "Reload Configuration",
+        "Re-read sheets, scripts and snippets from disk",
         Builtin::ReloadSheets,
     ),
     ("quit", "Quit Lumen", "Stop the daemon", Builtin::Quit),

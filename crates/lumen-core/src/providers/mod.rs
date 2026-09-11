@@ -22,10 +22,12 @@ use crate::item::Item;
 pub mod calculator;
 pub mod commands;
 pub mod scripts;
+pub mod snippets;
 
 pub use calculator::CalculatorProvider;
 pub use commands::CommandsProvider;
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
+pub use snippets::{Snippet, SnippetProvider};
 
 /// A source of results.
 ///
