@@ -631,6 +631,7 @@ fn subscribe_to_launcher(
         let outcome = match event {
             LauncherEvent::Dismissed => hide(&platform, &shell),
             LauncherEvent::RowsChanged(rows) => resize(&platform, &config, &shell, *rows),
+            LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, *layout),
             // Sent back through the same channel the hotkey and the socket use,
             // rather than acted on here. One queue means one order of events,
             // and it means `lumen settings` from a terminal and "Configure
@@ -874,6 +875,31 @@ fn hide(platform: &Arc<dyn Platform>, shell: &Rc<RefCell<Shell>>) -> Result<()> 
     };
 
     platform.hide_window(WindowRole::Launcher, restore_to)
+}
+
+/// Hide, give the foreground back, and then move that window.
+///
+/// The order matters in both directions. The handle is read before hiding,
+/// because hiding consumes it; the arrangement happens after, because the
+/// window should be the one the user is looking at by the time it moves rather
+/// than jumping about behind a launcher that is still on screen.
+fn arrange(
+    platform: &Arc<dyn Platform>,
+    shell: &Rc<RefCell<Shell>>,
+    layout: lumen_platform::WindowLayout,
+) -> Result<()> {
+    let target = shell.borrow().restore_to;
+    hide(platform, shell)?;
+
+    let Some(target) = target else {
+        // Nothing had the foreground when the launcher appeared: the user came
+        // from the desktop. There is no window to arrange and nothing has gone
+        // wrong.
+        log::debug!("no window to arrange");
+        return Ok(());
+    };
+
+    platform.arrange_window(target, layout)
 }
 
 fn resize(

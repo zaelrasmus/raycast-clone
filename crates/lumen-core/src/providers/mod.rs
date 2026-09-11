@@ -19,12 +19,14 @@
 
 use crate::item::Item;
 
+pub mod arrange;
 pub mod calculator;
 pub mod clipboard;
 pub mod commands;
 pub mod scripts;
 pub mod snippets;
 
+pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;
 pub use commands::CommandsProvider;
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
@@ -85,6 +87,7 @@ impl Providers {
         let mut providers = Self::new();
         providers.register(Box::new(CommandsProvider));
         providers.register(Box::new(CalculatorProvider));
+        providers.register(Box::new(ArrangeProvider));
         providers
     }
 
@@ -196,10 +199,14 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_catalogue_is_all_commands() {
+    fn the_builtin_catalogue_is_commands_and_window_layouts() {
         let items = Providers::builtin().catalogue();
         assert!(!items.is_empty());
-        assert!(items.iter().all(|item| item.kind == Kind::Command));
+        assert!(
+            items
+                .iter()
+                .all(|item| matches!(item.kind, Kind::Command | Kind::Window))
+        );
     }
 
     /// The calculator must not contribute to the catalogue, or every launch

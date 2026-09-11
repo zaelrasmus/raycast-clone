@@ -13,12 +13,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchTarget, MonitorInfo, Platform, Rect, WindowRole,
+    LaunchTarget, MonitorInfo, Platform, Rect, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
 
 mod apps;
+mod arrange;
 mod clipboard;
 mod clipboard_watch;
 mod com;
@@ -161,6 +162,10 @@ impl Platform for WindowsPlatform {
 
     fn run_script(&self, path: &std::path::Path) -> Result<String> {
         scripts::run(path)
+    }
+
+    fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()> {
+        arrange::arrange(window, layout)
     }
 
     fn clipboard_text(&self) -> Result<Option<String>> {

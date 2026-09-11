@@ -28,7 +28,7 @@
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchTarget, MonitorInfo, Platform, Rect, WindowRole,
+    LaunchTarget, MonitorInfo, Platform, Rect, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -113,6 +113,18 @@ impl Platform for LinuxPlatform {
         // policy is not: Windows needs CREATE_NO_WINDOW, and Linux needs the
         // executable bit honoured and a shebang respected.
         todo!("F5: spawn the script, honouring its shebang")
+    }
+
+    fn arrange_window(&self, _window: FocusOwner, _layout: WindowLayout) -> Result<()> {
+        // The one method here that gets *easier* on this side. Wayland gives a
+        // client no way to move another client's window, and it should not:
+        // the compositor owns layout. Hyprland exposes exactly this over its
+        // IPC socket (`dispatch movewindow`, `dispatch resizeactive`), which is
+        // the same socket AD-02 already uses for activation.
+        //
+        // `lumen_platform::tiling` does the arithmetic for both platforms, so
+        // what lands here is the dispatch and nothing else.
+        todo!("F5: arrange through Hyprland's IPC socket")
     }
 
     fn clipboard_text(&self) -> Result<Option<String>> {

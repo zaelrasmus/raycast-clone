@@ -45,6 +45,7 @@ pub enum Kind {
     Script,
     Snippet,
     Clipboard,
+    Window,
 }
 
 impl Kind {
@@ -56,6 +57,7 @@ impl Kind {
             Kind::Script => "Script",
             Kind::Snippet => "Snippet",
             Kind::Clipboard => "Clipboard",
+            Kind::Window => "Window",
         }
     }
 }
@@ -72,6 +74,16 @@ pub enum Action {
     /// rather than performed in the view, because opening a window or quitting
     /// is the shell's business and not the list's.
     Builtin(Builtin),
+    /// Arrange the window the user was looking at when they opened the
+    /// launcher.
+    ///
+    /// Carried back to the daemon like a [`Builtin`] rather than performed
+    /// here, and for a sharper reason than that one: the target is the window
+    /// that held the foreground *before* the launcher appeared, and only the
+    /// daemon still has that handle. Asking the system which window is in
+    /// front at the moment the action runs would be a race, and losing it
+    /// means resizing a window the user did not choose.
+    ArrangeWindow(lumen_platform::WindowLayout),
     /// Run a tier-T1 script command.
     ///
     /// Execution goes through `trait Platform` rather than `std::process` here,
@@ -99,6 +111,7 @@ impl Action {
             Action::Builtin(Builtin::OpenSettings) => "Open Settings",
             Action::Builtin(Builtin::ReloadSheets) => "Reload",
             Action::Builtin(Builtin::Quit) => "Quit",
+            Action::ArrangeWindow(_) => "Arrange",
             Action::RunScript(_) => "Run",
         }
     }

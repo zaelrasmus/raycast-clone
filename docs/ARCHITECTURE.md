@@ -109,7 +109,7 @@ the README.
 | **F0** | Platform spike on Windows: transparent undecorated window, backdrop, monitor placement, global gesture, focus capture and restore | **Done** |
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Mostly done** — themes, live reload, the fade, the bundled typeface and the action panel are in. The icon set is not, and the appearance animation omits the scale (7.5) |
-| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay, settings editor, calculator, snippets, clipboard history and tier T1 done**, behind the `trait Provider` seam. Window management and file search not started |
+| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay, settings editor, calculator, snippets, clipboard history, window management and tier T1 done**, behind the `trait Provider` seam. File search not started |
 | **F4** | View extensions, tiers T2 and T3 | Not started |
 | **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |
 
@@ -335,6 +335,52 @@ Refreshing it is the daemon's job and happens when an entry is recorded -- the
 only moment anything knows the history changed -- rather than on a timer or
 when the window opens, so the snapshot is already correct by the time anyone
 searches it and no query runs that nobody asked for.
+
+### 7.15 A layout is applied to the captured handle, never to "the foreground"
+
+Activating a row hides the launcher and hands the foreground back before the
+action runs. Any window-management feature that then asks the system which
+window is in front is reading the answer to a question it asked too late: the
+hand-back is asynchronous from the point of view of everything watching it, and
+losing that race means resizing a window the user did not choose.
+
+So `Action::ArrangeWindow` travels back to the daemon like a builtin, and the
+daemon applies it to the `FocusOwner` it captured *before* showing the
+launcher -- the same handle it is about to restore focus to. It reads that
+handle first and hides second, because hiding consumes it.
+
+### 7.16 The tiling arithmetic lives on the boundary, not in `core`
+
+Everything else about what a result *does* lives in `lumen-core`, so the layout
+maths looks like it belongs there too. It cannot: `core` depends on
+`lumen-platform` and not the other way round, and a layout is a value the
+platform has to be handed.
+
+That turns out to be the better place anyway. A half is a half on Windows and
+on Hyprland, the arithmetic is the part that is easy to get subtly wrong, and
+putting it in `lumen_platform::tiling` means it is tested with no compositor
+anywhere near it -- including the cases that actually bite: a work area whose
+width divides by neither two nor three, whether the thirds meet without a seam,
+and whether a window carried between monitors of different sizes arrives inside
+the destination. `core` keeps what is genuinely its own, which is what each
+layout is called.
+
+### 7.17 Tiling compensates for the invisible resize border
+
+Since Windows 10 a window's resize border is drawn outside what the user
+perceives as its edge. `GetWindowRect` reports the outer rectangle and DWM
+composites the inner one, so placing a window at exactly half the work area
+leaves a visible strip of desktop down the middle and lets the window overhang
+the screen by the same amount -- around seven physical pixels at 100%, more
+when scaled.
+
+`DWMWA_EXTENDED_FRAME_BOUNDS` reports what is actually drawn. The difference
+between the two rectangles is the padding a target is expanded by. It is four
+lines, and it is the whole difference between a tiling feature that looks
+deliberate and one that looks approximate.
+
+A window DWM will not describe is placed as asked rather than not placed at
+all.
 
 ---
 

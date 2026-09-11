@@ -31,7 +31,7 @@ pub fn cursor_monitor() -> Result<MonitorInfo> {
     }
 }
 
-fn describe(monitor: HMONITOR) -> Result<MonitorInfo> {
+pub(crate) fn describe(monitor: HMONITOR) -> Result<MonitorInfo> {
     unsafe {
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,

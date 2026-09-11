@@ -47,6 +47,12 @@ an aesthetic worth looking at fifty times a day.
 - **Script commands (tier T1).** Drop any executable into the scripts folder
   with a `@lumen.title` comment header and it becomes a searchable command.
   Headers are read at index time, never by running the file (AD-08).
+- **Window management.** Seventeen layouts in the list -- halves, quarters,
+  thirds, two-thirds, maximise, centre, and move to the next or previous
+  monitor -- applied to the window you were using when you opened the launcher.
+  The edges land flush: Windows draws a window's resize border outside what you
+  see, and Lumen compensates for it, so tiled windows meet with no seam and do
+  not hang off the screen.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -69,8 +75,11 @@ Listed because a README that implies more than exists is worse than no README.
   backspace, word-delete and paste all do.
 - **No icon set.** F2 asks for one optically aligned on a 16 and 20 px grid;
   application icons come from the shell and nothing else has an icon at all.
-- **Some internal providers are missing.** The calculator, snippets, clipboard
-  history and tier T1 are in; window management and file search are not.
+- **File search is missing.** The calculator, snippets, clipboard history,
+  window management and tier T1 are in; searching the filesystem is not.
+- **Windows at a higher integrity level cannot be arranged.** A layout applied
+  to an elevated window does nothing, and Windows reports no error for it to
+  report back.
 - **No text expansion.** Snippets are copied from the launcher. Expanding them
   as you type anywhere would need a global keyboard hook, which is the one
   mechanism this project deliberately avoids (see R-13).

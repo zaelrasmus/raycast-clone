@@ -16,12 +16,14 @@ use raw_window_handle::RawWindowHandle;
 
 pub mod events;
 pub mod geometry;
+pub mod tiling;
 
 pub use events::{
     ClipboardEvent, ClipboardSink, GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier,
     Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
+pub use tiling::WindowLayout;
 
 /// How the launcher window's background is produced.
 ///
@@ -260,6 +262,21 @@ pub trait Platform: Send + Sync {
     /// Called off the UI thread: a script may take as long as it likes, and
     /// nothing in the launcher waits for it.
     fn run_script(&self, path: &std::path::Path) -> Result<String>;
+
+    /// Arrange a window that is not ours.
+    ///
+    /// `window` is the foreground owner captured before the launcher appeared,
+    /// rather than "whatever is in front now", and that distinction is the
+    /// whole of the design. Activating a row hides the launcher and hands the
+    /// foreground back; asking the system afterwards which window is in front
+    /// is a race the user loses by having a window resized that they did not
+    /// pick. The handle names the window the user was looking at when they
+    /// chose the layout.
+    ///
+    /// Failure is ordinary: the window may have closed, or belong to a process
+    /// at a higher integrity level than ours, in which case Windows refuses
+    /// silently and there is nothing to be done about it from here.
+    fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()>;
 
     /// Read the system clipboard as text, if it currently holds text.
     fn clipboard_text(&self) -> Result<Option<String>>;

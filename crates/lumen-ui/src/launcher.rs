@@ -601,6 +601,14 @@ impl Launcher {
             log::warn!("could not persist usage statistics: {error:#}");
         }
 
+        // Arranging has to hide *and* keep the handle that hiding would
+        // otherwise consume, so it replaces the dismissal rather than
+        // following it. The daemon does both, in that order.
+        if let Action::ArrangeWindow(layout) = action {
+            cx.emit(LauncherEvent::ArrangeWindow(layout));
+            return;
+        }
+
         cx.emit(LauncherEvent::Dismissed);
 
         // Lumen's own commands open windows or stop the process, which is the
@@ -617,8 +625,8 @@ impl Launcher {
                 Action::Launch(target) => platform.launch(target),
                 Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
                 Action::RunScript(run) => run_script(platform.as_ref(), run),
-                // Handled above, before this task was spawned.
-                Action::Builtin(_) => Ok(()),
+                // Both handled above, before this task was spawned.
+                Action::Builtin(_) | Action::ArrangeWindow(_) => Ok(()),
             };
             if let Err(error) = outcome {
                 log::error!("could not run {action:?}: {error:#}");
@@ -758,6 +766,13 @@ pub enum LauncherEvent {
     Dismissed,
     /// One of Lumen's own commands was run.
     Builtin(lumen_core::Builtin),
+    /// A layout was chosen for the window that held the foreground.
+    ///
+    /// Carries no window handle: the daemon is the only thing that has one,
+    /// and it is the same handle it is about to restore focus to. This event
+    /// also *replaces* `Dismissed` rather than following it, because hiding
+    /// takes that handle and the arrangement still needs it.
+    ArrangeWindow(lumen_platform::WindowLayout),
     /// The number of visible rows changed, so the window should be resized to
     /// hug its content.
     RowsChanged(usize),
