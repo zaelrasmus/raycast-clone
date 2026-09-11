@@ -10,6 +10,8 @@ use anyhow::{Context as _, Result};
 use lumen_platform::{BackdropMode, Hotkey};
 use serde::{Deserialize, Serialize};
 
+use crate::clipboard::Retention;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Config {
@@ -18,6 +20,30 @@ pub struct Config {
     pub theme: String,
     pub backdrop: BackdropMode,
     pub window: WindowConfig,
+    pub clipboard: ClipboardConfig,
+}
+
+/// Clipboard history (F3).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ClipboardConfig {
+    /// Whether anything is recorded at all.
+    ///
+    /// A real switch rather than a documented workaround: "make the folder
+    /// read-only" is not an answer to somebody who would rather Lumen did not
+    /// watch their clipboard. Off means the listener is never started, so the
+    /// question of what reaches the database does not arise.
+    pub enabled: bool,
+    pub retention: Retention,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retention: Retention::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +81,7 @@ impl Default for Config {
             theme: "nocturne".into(),
             backdrop: BackdropMode::default(),
             window: WindowConfig::default(),
+            clipboard: ClipboardConfig::default(),
         }
     }
 }
@@ -135,6 +162,25 @@ mod tests {
         let config: Config = serde_json::from_str(r#"{ "theme": "daylight" }"#).unwrap();
         assert_eq!(config.theme, "daylight");
         assert_eq!(config.window.visible_rows, 8);
+    }
+
+    /// The switch has to survive a config written before it existed, or
+    /// upgrading silently turns the clipboard watcher off.
+    #[test]
+    fn clipboard_history_is_on_for_a_config_that_predates_the_setting() {
+        let config: Config = serde_json::from_str(r#"{ "theme": "daylight" }"#).unwrap();
+        assert!(config.clipboard.enabled);
+        assert_eq!(config.clipboard.retention.max_entries, 500);
+    }
+
+    #[test]
+    fn clipboard_retention_can_be_changed_without_restating_the_rest() {
+        let config: Config =
+            serde_json::from_str(r#"{ "clipboard": { "retention": { "max-age-days": 7 } } }"#)
+                .unwrap();
+        assert_eq!(config.clipboard.retention.max_age_days, 7);
+        assert_eq!(config.clipboard.retention.max_entries, 500);
+        assert!(config.clipboard.enabled);
     }
 
     #[test]

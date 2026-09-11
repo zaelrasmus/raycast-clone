@@ -44,6 +44,7 @@ pub enum Kind {
     Calculation,
     Script,
     Snippet,
+    Clipboard,
 }
 
 impl Kind {
@@ -54,6 +55,7 @@ impl Kind {
             Kind::Calculation => "Calculator",
             Kind::Script => "Script",
             Kind::Snippet => "Snippet",
+            Kind::Clipboard => "Clipboard",
         }
     }
 }
@@ -188,6 +190,7 @@ mod tests {
             Kind::Calculation,
             Kind::Script,
             Kind::Snippet,
+            Kind::Clipboard,
         ] {
             assert!(!kind.label().is_empty());
         }

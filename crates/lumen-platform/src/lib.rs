@@ -17,7 +17,10 @@ use raw_window_handle::RawWindowHandle;
 pub mod events;
 pub mod geometry;
 
-pub use events::{GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier, Modifiers};
+pub use events::{
+    ClipboardEvent, ClipboardSink, GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier,
+    Modifiers,
+};
 pub use geometry::{MonitorInfo, Rect};
 
 /// How the launcher window's background is produced.
@@ -234,6 +237,14 @@ pub trait Platform: Send + Sync {
     /// Launch an entry. The launcher hides first, so this runs with the
     /// previous application already restored to the foreground.
     fn launch(&self, target: &LaunchTarget) -> Result<()>;
+
+    /// Begin delivering clipboard changes to `sink`.
+    ///
+    /// The listener is responsible for honouring whatever "do not record this"
+    /// convention the platform has -- on Windows a set of registered clipboard
+    /// formats that password managers use -- because only it can see them. The
+    /// rest of the privacy layer is in `lumen_core::clipboard::privacy`.
+    fn start_clipboard_listener(&self, sink: ClipboardSink) -> Result<()>;
 
     /// Run a script command and return what it printed.
     ///

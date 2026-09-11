@@ -38,6 +38,12 @@ an aesthetic worth looking at fifty times a day.
   copy. It stays quiet for anything that is not arithmetic, including `7-zip`.
 - **Snippets.** Blocks of text you paste often, searchable and copied with
   `Enter`.
+- **Clipboard history.** Everything you copy is kept for thirty days and found
+  by searching its text, with the application you copied it from shown beside
+  it. Entries that look like credentials are *never written down* -- not
+  redacted, not stored, skipped -- and so are entries any application marked
+  not-for-history, which is what every password manager does. It only appears
+  once you have typed something: the root list stays about applications.
 - **Script commands (tier T1).** Drop any executable into the scripts folder
   with a `@lumen.title` comment header and it becomes a searchable command.
   Headers are read at index time, never by running the file (AD-08).
@@ -63,8 +69,8 @@ Listed because a README that implies more than exists is worse than no README.
   backspace, word-delete and paste all do.
 - **No icon set.** F2 asks for one optically aligned on a 16 and 20 px grid;
   application icons come from the shell and nothing else has an icon at all.
-- **Some internal providers are missing.** The calculator, snippets and tier T1
-  are in; clipboard history, window management and file search are not.
+- **Some internal providers are missing.** The calculator, snippets, clipboard
+  history and tier T1 are in; window management and file search are not.
 - **No text expansion.** Snippets are copied from the launcher. Expanding them
   as you type anywhere would need a global keyboard hook, which is the one
   mechanism this project deliberately avoids (see R-13).
@@ -154,7 +160,11 @@ On first run Lumen writes `%APPDATA%\Lumen\config\config.json`:
   "hotkey": { "modifiers": { "alt": true }, "key": "Space", "hold": null },
   "theme": "nocturne",
   "backdrop": "system-acrylic",
-  "window": { "width": 720.0, "visible-rows": 8, "vertical-bias": 0.22 }
+  "window": { "width": 720.0, "visible-rows": 8, "vertical-bias": 0.22 },
+  "clipboard": {
+    "enabled": true,
+    "retention": { "max-entries": 500, "max-age-days": 30 }
+  }
 }
 ```
 
@@ -285,6 +295,44 @@ To change the hold key, set `hotkey.hold` in `config.json` to one of
 `right_shift`, or `null` to turn the gesture off. Avoid the Super keys —
 releasing one opens the Start menu, and suppressing that would require a
 low-level keyboard hook the project deliberately does not install.
+
+### Clipboard history
+
+Everything you copy as text is kept in
+`%APPDATA%\Lumen\data\clipboard.sqlite3` and found by searching its text. Rows
+show a preview and the application the text came from. `Enter` copies it back.
+
+The history keeps the last 500 entries or 30 days, whichever comes first, and
+re-copying something moves it back to the top rather than adding a duplicate.
+It is only searched once you have typed something, and at most eight rows come
+from it at a time, so it can never take the list over.
+
+**What is never written down.** The protection is a decision made before the
+write, not a mask applied when drawing, because a masked secret is still a
+secret sitting in an unencrypted file:
+
+- Anything copied out of a known password manager: 1Password, Bitwarden,
+  KeePass and KeePassXC, LastPass, Dashlane, Enpass, NordPass, Proton Pass.
+- Anything an application marked not-for-history, using any of the three
+  Windows clipboard formats that mean it. Password managers set these, and so
+  do most terminals when you copy a masked field.
+- Anything that matches a credential format: PEM private-key blocks, AWS access
+  keys, GitHub, Slack, OpenAI, Anthropic, Google and Stripe live keys, JWTs,
+  and URLs with a username and password in them.
+
+A rejected entry produces no row, no file and no log line containing the text.
+The cost is that a false positive is lost silently, which is the right side of
+that trade; the cases that must *not* be rejected are tests.
+
+To turn it off, set `clipboard.enabled` to `false`. The listener is then never
+started at all. To keep less, set the retention:
+
+```json
+"clipboard": {
+  "enabled": true,
+  "retention": { "max-entries": 200, "max-age-days": 7 }
+}
+```
 
 ---
 

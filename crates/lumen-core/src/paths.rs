@@ -56,6 +56,11 @@ impl Paths {
         self.themes_dir().join(format!("{name}.json"))
     }
 
+    /// The clipboard history database (F3).
+    pub fn clipboard_file(&self) -> PathBuf {
+        self.data_dir.join("clipboard.sqlite3")
+    }
+
     pub fn frecency_file(&self) -> PathBuf {
         self.data_dir.join("frecency.json")
     }

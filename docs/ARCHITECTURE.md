@@ -109,7 +109,7 @@ the README.
 | **F0** | Platform spike on Windows: transparent undecorated window, backdrop, monitor placement, global gesture, focus capture and restore | **Done** |
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Mostly done** — themes, live reload, the fade, the bundled typeface and the action panel are in. The icon set is not, and the appearance animation omits the scale (7.5) |
-| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay, settings editor, calculator and tier T1 done**, behind the `trait Provider` seam. Clipboard history, snippets, window management and file search not started |
+| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay, settings editor, calculator, snippets, clipboard history and tier T1 done**, behind the `trait Provider` seam. Window management and file search not started |
 | **F4** | View extensions, tiers T2 and T3 | Not started |
 | **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |
 
@@ -284,6 +284,57 @@ combination is taken, Lumen logs which key failed and where to change it, then
 keeps running and stays reachable over the socket. Refusing to start would turn
 "pick a different key" into "the application is broken", with the explanation
 visible only to someone who thought to run it from a terminal.
+
+### 7.13 The clipboard privacy layer skips rather than redacts
+
+The usual shape of this feature is to store the entry and mask it in the UI.
+That is the wrong place to draw the line, because the secret is then on disk in
+an unencrypted SQLite file and the protection is a rendering decision -- one
+bug, one `SELECT`, or one backup away from being no protection at all.
+
+So `lumen_core::clipboard::privacy` decides *before* the write, and a rejected
+entry produces no row. There are two halves and only one of them can live in
+`core`: the platform half honours the three Windows clipboard formats that mean
+not-for-history (`Clipboard Viewer Ignore`,
+`ExcludeClipboardContentFromMonitorProcessing`, and a zero in
+`CanIncludeInClipboardHistory`), because only the platform can see them; the
+`core` half declines anything copied out of a known password manager and
+anything matching a credential format -- PEM blocks, AWS and GitHub and Slack
+and OpenAI and Anthropic and Google and Stripe keys, JWTs, and URLs with
+embedded credentials.
+
+The rejection is logged at `debug` and without the text. A privacy layer that
+writes the secret to the log has moved the file, not solved the problem.
+
+The cost is that a false positive loses an entry silently. That is the right
+side of the trade, and it is why the false-positive cases are tests rather than
+an afterthought.
+
+### 7.14 Clipboard history is an index of its own, not a `Provider`
+
+Everything else in F3 fits the provider contract: a catalogue that joins the
+application index and is matched with it. The clipboard does not, for two
+reasons that are both about ranking rather than about results.
+
+It changes constantly. Folding it into `candidates` would mean re-preparing
+several hundred application haystacks every time the user copies anything,
+which is exactly the work the per-frame budget exists to keep out of the way.
+
+And it must not appear in the root list. With an empty query the index is shown
+in frecency order, so a hundred catalogue entries with no usage history would
+interleave alphabetically with the applications: open the launcher, see what
+you copied last Tuesday. The history is something you search, not something you
+are shown before you have asked for anything.
+
+So the view holds it as a second index, ranked separately, only when there is a
+query, and capped so that a common letter cannot fill the list with pastes. The
+provider module survives as the thing that says what a clipboard row looks
+like, which is all it was ever really doing.
+
+Refreshing it is the daemon's job and happens when an entry is recorded -- the
+only moment anything knows the history changed -- rather than on a timer or
+when the window opens, so the snapshot is already correct by the time anyone
+searches it and no query runs that nobody asked for.
 
 ---
 

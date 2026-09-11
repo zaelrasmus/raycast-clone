@@ -96,3 +96,28 @@ pub fn set_text(value: &str) -> Result<()> {
 
     Ok(())
 }
+
+/// Read a clipboard format whose contents are a single `DWORD`.
+///
+/// Used for `CanIncludeInClipboardHistory`, which is a flag rather than a
+/// marker: its value is what matters, not its presence.
+pub fn dword(format: u32) -> Result<Option<u32>> {
+    let _lock = ClipboardLock::acquire()?;
+
+    unsafe {
+        let handle = GetClipboardData(format).context("GetClipboardData")?;
+        if handle.0.is_null() {
+            return Ok(None);
+        }
+
+        let global = HGLOBAL(handle.0);
+        let pointer = GlobalLock(global) as *const u32;
+        if pointer.is_null() {
+            return Ok(None);
+        }
+
+        let value = *pointer;
+        let _ = GlobalUnlock(global);
+        Ok(Some(value))
+    }
+}

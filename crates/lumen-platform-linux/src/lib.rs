@@ -27,8 +27,8 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchTarget,
-    MonitorInfo, Platform, Rect, WindowRole,
+    AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
+    LaunchTarget, MonitorInfo, Platform, Rect, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -98,6 +98,14 @@ impl Platform for LinuxPlatform {
 
     fn launch(&self, _target: &LaunchTarget) -> Result<()> {
         todo!("F5: desktop entry activation")
+    }
+
+    fn start_clipboard_listener(&self, _sink: ClipboardSink) -> Result<()> {
+        // Wayland has no clipboard-change notification for a client that does
+        // not own the selection. The established route is the
+        // `wlr-data-control` protocol, which Hyprland supports and which exists
+        // precisely for clipboard managers.
+        todo!("F5: observe the selection through wlr-data-control")
     }
 
     fn run_script(&self, _path: &std::path::Path) -> Result<String> {

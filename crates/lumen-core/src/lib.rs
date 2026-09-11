@@ -12,6 +12,7 @@
 //! unworkable, the presentation layer is replaced without losing the project
 //! (AD-03).
 
+pub mod clipboard;
 pub mod config;
 pub mod frecency;
 pub mod item;

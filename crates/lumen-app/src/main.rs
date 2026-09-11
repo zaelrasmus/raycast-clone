@@ -25,11 +25,13 @@ use gpui::{
     App, Application, Bounds, Entity, Render, Window, WindowBackgroundAppearance, WindowBounds,
     WindowKind, WindowOptions, point, px, size,
 };
+use lumen_core::clipboard::{History, Retention};
 use lumen_core::sheets::{Sheet, SheetLibrary};
 use lumen_core::theme::Appearance;
 use lumen_core::{Builtin, Config, Paths, Theme};
 use lumen_platform::{
-    FocusOwner, GestureEvent, GestureSink, HoldPhase, MonitorInfo, Platform, Rect, WindowRole,
+    ClipboardSink, FocusOwner, GestureEvent, GestureSink, HoldPhase, MonitorInfo, Platform, Rect,
+    WindowRole,
 };
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
@@ -249,6 +251,12 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
             config.hotkey,
             paths.config_file().display()
         );
+    }
+
+    if config.clipboard.enabled {
+        start_clipboard_history(&platform, &paths, config.clipboard.retention, &window, cx);
+    } else {
+        log::info!("clipboard history is turned off in the configuration");
     }
 
     let ipc_tx = tx.clone();
@@ -894,4 +902,95 @@ fn placement(monitor: &MonitorInfo, config: &Config, rows: usize) -> Rect {
         ),
         config.window.vertical_bias,
     )
+}
+
+/// Open the clipboard history and begin recording into it (F3).
+///
+/// The privacy decision and the storage are deliberately apart: the platform
+/// declines entries the *system* marked not-for-history, `privacy::may_record`
+/// declines the ones Lumen can recognise as secrets, and only what survives
+/// both reaches the database.
+///
+/// A failure to open the database is not fatal. Clipboard history is one
+/// provider among several, and a launcher that refuses to start because a
+/// SQLite file is unreadable would be a far worse trade than one that runs
+/// without it.
+fn start_clipboard_history(
+    platform: &Arc<dyn Platform>,
+    paths: &Paths,
+    retention: Retention,
+    window: &gpui::WindowHandle<Launcher>,
+    cx: &mut App,
+) {
+    let history = match History::open(&paths.clipboard_file(), retention) {
+        Ok(history) => Arc::new(parking_lot::Mutex::new(history)),
+        Err(error) => {
+            log::error!("clipboard history is unavailable: {error:#}");
+            return;
+        }
+    };
+
+    // The launcher reads the history when it builds its index, so it needs the
+    // same handle the recorder writes through.
+    window
+        .update(cx, |launcher, _window, cx| {
+            launcher.use_clipboard_history(history.clone(), cx);
+        })
+        .ok();
+
+    let (tx, mut rx) = mpsc::unbounded::<lumen_platform::ClipboardEvent>();
+
+    let listening = platform.start_clipboard_listener(ClipboardSink::new(move |event| {
+        // On the watcher thread: push and return.
+        let _ = tx.unbounded_send(event);
+    }));
+
+    if let Err(error) = listening {
+        log::error!("clipboard history will not record: {error:#}");
+        return;
+    }
+
+    let window = *window;
+
+    cx.spawn(async move |cx| {
+        while let Some(event) = rx.next().await {
+            let verdict = lumen_core::clipboard::may_record(&event.text, event.source.as_deref());
+
+            if let Err(reason) = verdict {
+                // Logged at debug and without the text, which is the entire
+                // point: a rejected entry must not reach the log either.
+                log::debug!("clipboard entry not recorded: {reason:?}");
+                continue;
+            }
+
+            // The write is small but it is still disk I/O, so it goes to a
+            // background thread rather than blocking whatever frame the UI
+            // thread is in the middle of.
+            let history = history.clone();
+            let recorded = cx
+                .background_executor()
+                .spawn(async move {
+                    match history.lock().record(&event.text, event.source.as_deref()) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            log::warn!("could not record a clipboard entry: {error:#}");
+                            false
+                        }
+                    }
+                })
+                .await;
+
+            // The launcher matches against a snapshot, so it has to be told the
+            // snapshot is stale. Told here rather than at the moment the window
+            // opens, because this is the only place that knows the history
+            // changed, and copying is rare enough that re-reading a hundred
+            // rows each time costs less than a query nobody asked for.
+            if recorded {
+                window
+                    .update(cx, |launcher, _window, cx| launcher.refresh_clipboard(cx))
+                    .ok();
+            }
+        }
+    })
+    .detach();
 }

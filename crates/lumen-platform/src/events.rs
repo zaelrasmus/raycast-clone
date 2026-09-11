@@ -174,3 +174,40 @@ mod tests {
         assert_eq!(hotkey.to_string(), "Alt+Space");
     }
 }
+
+/// A clipboard entry the system has just accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardEvent {
+    pub text: String,
+    /// The executable that was in the foreground when the copy happened,
+    /// lowercased, or `None` when it could not be identified.
+    ///
+    /// Captured at the moment of the copy rather than looked up later, because
+    /// by the time the daemon processes the event the user has usually moved
+    /// on -- and the privacy layer's denylist is keyed on exactly this.
+    pub source: Option<String>,
+}
+
+/// Where clipboard events are delivered.
+///
+/// Like [`GestureSink`], the closure behind this runs on a platform thread and
+/// must push rather than work.
+#[derive(Clone)]
+pub struct ClipboardSink(Arc<dyn Fn(ClipboardEvent) + Send + Sync>);
+
+impl ClipboardSink {
+    pub fn new(f: impl Fn(ClipboardEvent) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    #[inline]
+    pub fn emit(&self, event: ClipboardEvent) {
+        (self.0)(event)
+    }
+}
+
+impl fmt::Debug for ClipboardSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClipboardSink")
+    }
+}

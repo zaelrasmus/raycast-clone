@@ -84,6 +84,8 @@ struct Hit {
 enum Source {
     /// An index into the application index.
     Indexed(usize),
+    /// An index into the clipboard history snapshot.
+    Clipboard(usize),
     /// An index into this keystroke's provider answers.
     Answer(usize),
 }
@@ -93,6 +95,22 @@ enum Source {
 /// Bounded because nobody scrolls to the four hundredth fuzzy match, and an
 /// unbounded list makes the sort the most expensive thing in the frame.
 const MAX_RESULTS: usize = 64;
+
+/// How many clipboard entries are held in the searchable snapshot.
+///
+/// Fewer than the history keeps. The database holds a month so that a command
+/// dedicated to browsing it has something to browse; the snapshot is what root
+/// search matches against, and reading a month of pastes into memory to answer
+/// a three-character query is not a trade worth making.
+const CLIPBOARD_ENTRIES: usize = 100;
+
+/// How many clipboard rows may appear in one set of results.
+///
+/// The history is deep and the queries are short, so without a cap a common
+/// letter fills the list with things the user once copied and pushes the
+/// application they were looking for off the bottom. Eight is enough to find a
+/// recent paste and few enough that the list is still about applications.
+const CLIPBOARD_HITS: usize = 8;
 
 pub struct Launcher {
     focus_handle: FocusHandle,
@@ -107,6 +125,19 @@ pub struct Launcher {
     candidates: Arc<Vec<Candidate>>,
     /// This keystroke's provider answers, rebuilt on every rerank.
     answers: Vec<Item>,
+    /// The clipboard history, once the daemon has opened it.
+    ///
+    /// Shared with the recorder rather than opened twice: one database, one
+    /// writer, and a read that cannot see a half-written row.
+    clipboard: Option<Arc<parking_lot::Mutex<lumen_core::clipboard::History>>>,
+    /// The clipboard history prepared for matching.
+    ///
+    /// Deliberately not folded into `candidates`. The application index is
+    /// built once and changes when something is installed; this one is rebuilt
+    /// every time the user copies anything, and merging the two would mean
+    /// re-preparing several hundred application haystacks on every copy. They
+    /// are also ranked under different rules -- see `rerank`.
+    clipboard_candidates: Arc<Vec<Candidate>>,
     providers: Providers,
     search: Search,
     frecency: Frecency,
@@ -153,6 +184,8 @@ impl Launcher {
             icons,
             candidates: Arc::new(Vec::new()),
             answers: Vec::new(),
+            clipboard: None,
+            clipboard_candidates: Arc::new(Vec::new()),
             providers: Providers::builtin(),
             search: Search::new(),
             frecency,
@@ -170,7 +203,62 @@ impl Launcher {
         launcher
     }
 
-    /// Rebuild the index: applications, scripts and snippets.
+    /// Give the launcher the clipboard history to read from.
+    pub fn use_clipboard_history(
+        &mut self,
+        history: Arc<parking_lot::Mutex<lumen_core::clipboard::History>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.clipboard = Some(history);
+        self.refresh_clipboard(cx);
+    }
+
+    /// Re-read the clipboard snapshot.
+    ///
+    /// Called by the daemon after it records an entry, rather than on a timer
+    /// or when the window opens: the recorder is the only thing that knows the
+    /// history changed, copying is rare, and doing the work then means the
+    /// snapshot is already correct by the time anybody searches it.
+    ///
+    /// The read is a hundred short rows from an indexed table, but it is still
+    /// disk I/O and matching runs inside the frame budget, so it happens on a
+    /// background task exactly like the application index.
+    pub fn refresh_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(history) = self.clipboard.clone() else {
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let candidates = cx
+                .background_executor()
+                .spawn(async move {
+                    let entries =
+                        history
+                            .lock()
+                            .recent(CLIPBOARD_ENTRIES)
+                            .unwrap_or_else(|error| {
+                                log::warn!("could not read the clipboard history: {error:#}");
+                                Vec::new()
+                            });
+
+                    lumen_core::providers::clipboard::items(entries)
+                        .into_iter()
+                        .map(Candidate::new)
+                        .collect::<Vec<_>>()
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.clipboard_candidates = Arc::new(candidates);
+                this.rerank(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Rebuild the index: applications, scripts, snippets and clipboard history.
     ///
     /// Public so the daemon can ask for it after the user edits a script or a
     /// snippet, rather than making them restart to see the change.
@@ -240,6 +328,7 @@ impl Launcher {
             providers.register(Box::new(lumen_core::providers::SnippetProvider::new(
                 snippets,
             )));
+
             let catalogue = providers.catalogue();
 
             // Preparing the haystacks is the expensive half, so it stays on the
@@ -327,6 +416,25 @@ impl Launcher {
             })
             .collect();
 
+        // The clipboard is ranked separately, and only when there is something
+        // to rank against. With an empty query `rank` returns the root list,
+        // and a root list that opens on a hundred old pastes is not a launcher:
+        // the history is something you search, not something you are shown
+        // before you have asked for anything.
+        if !self.query.trim().is_empty() {
+            let clipboard = self.clipboard_candidates.clone();
+            hits.extend(
+                self.search
+                    .rank(&self.query, &clipboard, &self.frecency, CLIPBOARD_HITS)
+                    .into_iter()
+                    .map(|m| Hit {
+                        source: Source::Clipboard(m.index),
+                        highlights: m.highlights,
+                        score: m.score,
+                    }),
+            );
+        }
+
         // Sorted before the answers are prepended, so the answers keep the top
         // regardless of how well anything else scored.
         hits.sort_by(|a, b| {
@@ -368,6 +476,7 @@ impl Launcher {
     fn item(&self, hit: &Hit) -> &Item {
         match hit.source {
             Source::Indexed(index) => &self.candidates[index].item,
+            Source::Clipboard(index) => &self.clipboard_candidates[index].item,
             Source::Answer(index) => &self.answers[index],
         }
     }
