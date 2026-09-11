@@ -74,7 +74,7 @@ The worst case is 0.85 ms against a budget of 8 ms, which is where the decision
 to keep ranking a plain linear pass over prepared haystacks comes from: there is
 no need for an index to invalidate, and nothing to get subtly wrong.
 
-**Idle resident memory** is roughly 85 MB with the window hidden and the full
+**Idle resident memory** is roughly 70 MB with the window hidden and the full
 index loaded, against a budget of 150 MB. That figure is from Task Manager on a
 debug build, not from a harness, so treat it as an indication rather than a
 measurement.
