@@ -36,10 +36,15 @@ use lumen_platform::{
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
 mod ipc;
+mod timing;
 
 use ipc::Message;
 
 fn main() -> Result<()> {
+    // First, before anything else: the cold-start budget is measured from here,
+    // and initialising the logger is already part of what the user waits for.
+    timing::mark_process_start();
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("lumen=info,warn"))
         .init();
 
@@ -215,6 +220,9 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         },
     )?;
 
+    // Copied out before `Surfaces` takes ownership, for the warm-up below.
+    let overlay_handle = overlay;
+
     let shell = Rc::new(RefCell::new(Shell {
         visible: false,
         restore_to: None,
@@ -306,7 +314,70 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     })
     .detach();
 
+    // Everything a summons needs now exists: the window, the keymap, the
+    // gesture listener and the loop that reads from both.
+    timing::report_ready();
+
+    warm_the_renderer(platform, overlay_handle, cx);
+
     Ok(())
+}
+
+/// Draw one frame nobody sees, so the first frame somebody does see is fast.
+///
+/// The first frame a GPUI process paints costs far more than every frame after
+/// it: pipelines are created, shaders compiled, and the glyph atlas filled with
+/// the first run of text. Measured on this machine the first summons took
+/// 101 ms and the second 24 ms, against a p95 budget of 80 ms; from the third
+/// onwards it is 8.
+///
+/// So the overlay -- which never activates and never takes focus, which is what
+/// makes it usable for this -- is shown once far outside the virtual screen and
+/// hidden again. GPUI's renderer state is per process, so the launcher inherits
+/// what this frame builds.
+///
+/// Deliberately *after* `report_ready`, and deliberately not awaited. The
+/// cold-start budget is "until the first search responds", the daemon already
+/// answers, and paying 100 ms of startup to save 100 ms on a keystroke that may
+/// not come for an hour is the wrong trade. A user quick enough to beat it gets
+/// exactly what they would have got anyway.
+fn warm_the_renderer(
+    platform: Arc<dyn Platform>,
+    overlay: gpui::WindowHandle<Overlay>,
+    cx: &mut App,
+) {
+    // Far outside any plausible virtual screen, so there is nothing to see even
+    // for the one frame it is mapped.
+    const OFF_SCREEN: Rect = Rect::new(-30_000, -30_000, 640, 480);
+
+    cx.spawn(async move |cx| {
+        if let Err(error) = platform.show_window(WindowRole::Overlay, OFF_SCREEN) {
+            log::debug!("could not warm the renderer: {error:#}");
+            return;
+        }
+
+        // Waited on rather than slept through: a timer would be too short on a
+        // slow machine and wasteful on a fast one.
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let asked = overlay
+            .update(cx, |_overlay, window, _cx| {
+                window.on_next_frame(move |_window, _cx| {
+                    let _ = tx.send(());
+                });
+                window.refresh();
+            })
+            .is_ok();
+
+        if asked {
+            let _ = rx.await;
+        }
+
+        if let Err(error) = platform.hide_window(WindowRole::Overlay, None) {
+            log::debug!("could not put the warm-up window away: {error:#}");
+        }
+        log::debug!("renderer warmed");
+    })
+    .detach();
 }
 
 /// The daemon's windows and the sheets they draw from.
@@ -879,11 +950,16 @@ fn show(
     window: &gpui::WindowHandle<Launcher>,
     cx: &mut gpui::AsyncApp,
 ) -> Result<()> {
+    let summoned = std::time::Instant::now();
+
     // Reset the view before the window is on screen, so the first frame the user
     // sees is already the cleared state rather than the previous search.
     let rows = window
         .update(cx, |launcher, window, cx| {
             launcher.on_shown(window, cx);
+            // Registered here rather than after `show_window`, because the
+            // frame this reports on is the one `on_shown` just asked for.
+            timing::report_first_frame(window, summoned);
             launcher.visible_rows()
         })
         .unwrap_or(config.window.visible_rows);

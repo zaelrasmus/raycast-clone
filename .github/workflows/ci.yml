@@ -60,7 +60,14 @@ jobs:
       - name: Test the portable crates
         run: cargo test -p lumen-core -p lumen-platform
 
-  benchmarks:
+  # I-8: "The performance budgets are measured in CI. A regression breaks the
+  # build." Two of the six can be enforced here and are. The other four --
+  # gesture to first frame, idle CPU, idle memory, cold start -- need a
+  # compositor presenting to a real display, a genuinely idle session and a GPU,
+  # none of which a hosted runner has. The daemon measures those itself and the
+  # README records them; see deviation 7.24 for why that gap is stated rather
+  # than filled with numbers that only look like evidence.
+  budgets:
     name: Performance budgets (I-8)
     runs-on: windows-latest
     steps:
@@ -68,12 +75,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Runs the ranking benchmark so a change that makes search quadratic
-      # cannot land unnoticed.
-      #
-      # Stated honestly: this measures and publishes, it does not yet fail the
-      # build on a regression, and the gesture-to-first-frame and idle-footprint
-      # budgets still need a harness that drives the real binary. Both gaps are
-      # listed in the README rather than left implied.
+      # Fails the build if ranking stops being linear in the size of the index,
+      # or blows past a very loose ceiling. Asserts a shape rather than a
+      # stopwatch reading, because a shared runner's clock speed is not
+      # something to assert against -- the reasoning is in the test file.
+      - name: Ranking budget
+        run: cargo test -p lumen-core --test budgets --release
+
+      - name: Build for size
+        run: cargo build --release --bin lumen
+
+      # Installed size (< 40 MB). Bytes, so there is nothing to be noisy about.
+      # The binary is the whole install: the font, the icons, the themes and the
+      # example script are all compiled in, and the config folder is written on
+      # first run rather than shipped.
+      - name: Installed size budget
+        shell: pwsh
+        run: |
+          $budget = 40MB
+          $size = (Get-Item target/release/lumen.exe).Length
+          "lumen.exe is {0:N1} MB (budget: {1:N0} MB)" -f ($size / 1MB), ($budget / 1MB)
+          if ($size -gt $budget) {
+            throw "installed size is over budget by $([math]::Round(($size - $budget) / 1MB, 1)) MB"
+          }
+
+      # Published for the record rather than asserted on: the real figures
+      # belong next to a machine they were taken on, and the README says which.
       - name: Search benchmark
         run: cargo bench -p lumen-core --bench search -- --warm-up-time 1 --measurement-time 3

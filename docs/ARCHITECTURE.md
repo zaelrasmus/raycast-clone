@@ -496,6 +496,58 @@ A test reads the files back and asserts the viewBox, the stroke width and
 like it belongs with the others, and they are exactly the three things an
 edit six months from now will get wrong.
 
+### 7.24 I-8 is enforced for two budgets of six, and says so
+
+I-8 reads "The performance budgets below are measured in CI. A regression
+breaks the build." Two of the six are, and four cannot be.
+
+**Enforced.** Ranking, by `crates/lumen-core/tests/budgets.rs`, and installed
+size, by comparing bytes in the workflow. Both fail the build.
+
+**Not enforced, and why.** Gesture to first frame needs a compositor presenting
+to a real display. Idle CPU and idle memory need a session that is genuinely
+idle. Cold start needs a GPU. A hosted runner has none of those. A figure taken
+there would be a measurement of the runner, not of Lumen, and it would sit in a
+table looking exactly like evidence.
+
+So the daemon measures those four itself, on whatever machine it is running,
+and logs them at `info`; the README records what they were and on what
+hardware. Someone who wants to check them runs the daemon and reads the log,
+which is a weaker guarantee than CI and a stronger one than a green tick over a
+number nobody can reproduce.
+
+**The ranking gate asserts a shape, not a stopwatch reading.** A shared
+runner's clock speed varies with the host, so "under 8 milliseconds" is either
+tight enough to fail on a busy afternoon or loose enough to catch nothing. What
+actually threatens this budget is somebody making ranking super-linear -- an
+inner loop over the index, a sort inside the match, a per-candidate allocation
+that grows -- and that is a change of shape, which is measurable anywhere:
+quadruple the index and the cost should roughly quadruple. The test asserts
+under 8× for 4× the entries (linear is 4, quadratic would be 16), plus a
+ceiling fifty times the measured figure to catch a constant-factor
+catastrophe.
+
+### 7.25 The first frame is drawn before anyone asks for it
+
+The first frame a GPUI process paints costs far more than every frame after it:
+pipelines created, shaders compiled, the glyph atlas filled with the first run
+of text. Measured here, the first summons took 101 ms and the second 24 ms
+against a p95 budget of 80 ms; from the third onwards it was 8 ms. The budget
+was being missed exactly once per launch, which is the once that forms an
+impression.
+
+So once the daemon is already summonable it shows the overlay -- which never
+activates and never takes focus, which is what makes it usable for this -- far
+outside the virtual screen, waits for one frame, and hides it again. GPUI's
+renderer state is per process, so the launcher inherits what that frame built.
+First summons: 20 ms.
+
+It happens *after* `report_ready` and is not awaited. Cold start is "until the
+first search responds", the daemon already responds, and paying 100 ms of
+startup to save 100 ms on a keystroke that may not come for an hour is the
+wrong trade. Someone quick enough to beat it gets exactly what they would have
+got anyway.
+
 ---
 
 ## 8. Risk register
