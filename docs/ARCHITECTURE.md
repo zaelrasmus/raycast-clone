@@ -108,7 +108,7 @@ the README.
 | ----- | ---- | ------ |
 | **F0** | Platform spike on Windows: transparent undecorated window, backdrop, monitor placement, global gesture, focus capture and restore | **Done** |
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
-| **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Started** — themes, live reload and the fade are in; bundled font, icon set and action panel are not |
+| **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Mostly done** — themes, live reload, the fade, the bundled typeface and the action panel are in. The icon set is not, and the appearance animation omits the scale (7.5) |
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay, settings editor, calculator and tier T1 done**, behind the `trait Provider` seam. Clipboard history, snippets, window management and file search not started |
 | **F4** | View extensions, tiers T2 and T3 | Not started |
 | **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |

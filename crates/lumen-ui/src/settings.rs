@@ -526,7 +526,7 @@ impl Render for Settings {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.theme.colors.clone();
 
-        div()
+        let mut root = div()
             .key_context("Settings")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::save))
@@ -539,8 +539,13 @@ impl Render for Settings {
             .border_1()
             .border_color(color(colors.border_subtle))
             .bg(color(colors.surface_background))
-            .text_color(color(colors.text_primary))
-            .child(self.render_header(&colors))
+            .text_color(color(colors.text_primary));
+
+        if let Some(family) = &self.theme.font_family {
+            root = root.font_family(SharedString::from(family.clone()));
+        }
+
+        root.child(self.render_header(&colors))
             .child(
                 div()
                     .flex()

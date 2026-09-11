@@ -42,6 +42,8 @@ an aesthetic worth looking at fifty times a day.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
+- **Inter bundled into the binary** rather than the system font, so the interface
+  is the same typeface on Windows and on Hyprland.
 - **Themes and sheets as data** with live reload for themes: edit the JSON, see
   it on screen, no rebuild. Two in-house themes ship, one dark and one light.
 - **Windows 11 chrome**: acrylic backdrop, rounded corners, dark mode, out of
@@ -57,9 +59,6 @@ Listed because a README that implies more than exists is worse than no README.
 - **No IME.** The search field is a plain string with a drawn caret, not a GPUI
   `EntityInputHandler`, so composition input does not work. ASCII typing,
   backspace, word-delete and paste all do.
-- **No bundled typeface.** F2 calls for Inter or Geist compiled into the binary;
-  today the system font is used, which is the one thing that visibly differs
-  between Windows and Linux.
 - **No icon set.** F2 asks for one optically aligned on a 16 and 20 px grid;
   application icons come from the shell and nothing else has an icon at all.
 - **Most internal providers are missing.** The calculator and tier T1 are in;

@@ -26,6 +26,13 @@ use serde::{Deserialize, Serialize};
 /// The schema version this build writes and understands.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// The typeface compiled into the binary, used unless a theme names another.
+///
+/// Declared here rather than in the presentation layer because it is the
+/// default *value* of a theme token, and themes are core's concern. The font
+/// files themselves live with the renderer that loads them.
+pub const BUNDLED_FONT: &str = "Inter";
+
 /// A colour as straight, non-premultiplied RGBA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
@@ -202,7 +209,10 @@ impl Theme {
         Self {
             name: "Nocturne".into(),
             appearance: Appearance::Dark,
-            font_family: None,
+            // The bundled face, so the interface looks the same on Windows and
+            // on Hyprland. A theme may name a different family; it may not
+            // change any size, because sizes are geometry (AD-13, I-11).
+            font_family: Some(BUNDLED_FONT.into()),
             colors: Colors {
                 // Alpha below 255 on purpose: this surface sits over the system
                 // acrylic, and an opaque value would hide the backdrop that F0
@@ -229,7 +239,7 @@ impl Theme {
         Self {
             name: "Daylight".into(),
             appearance: Appearance::Light,
-            font_family: None,
+            font_family: Some(BUNDLED_FONT.into()),
             colors: Colors {
                 surface_background: Color::rgba(0xF7, 0xF7, 0xFA, 0xDE),
                 surface_elevated: Color::rgba(0xFF, 0xFF, 0xFF, 0xF2),

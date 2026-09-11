@@ -180,7 +180,7 @@ impl Render for Overlay {
         let colors = &self.theme.colors;
         let columns = self.sheet.columns(metrics::COLUMNS);
 
-        let panel = div()
+        let mut panel = div()
             .size_full()
             .flex()
             .flex_col()
@@ -189,7 +189,13 @@ impl Render for Overlay {
             .border_1()
             .border_color(color(colors.border_subtle))
             .bg(color(colors.surface_background))
-            .text_color(color(colors.text_primary))
+            .text_color(color(colors.text_primary));
+
+        if let Some(family) = &self.theme.font_family {
+            panel = panel.font_family(SharedString::from(family.clone()));
+        }
+
+        let panel = panel
             .child(
                 div()
                     .h(px(metrics::HEADER_HEIGHT))
