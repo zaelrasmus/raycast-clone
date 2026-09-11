@@ -127,6 +127,20 @@ impl Platform for LinuxPlatform {
         todo!("F5: arrange through Hyprland's IPC socket")
     }
 
+    fn spawn_extension(
+        &self,
+        _program: &str,
+        _arguments: &[String],
+        _working_directory: &std::path::Path,
+    ) -> Result<std::process::Child> {
+        // Nearly portable: `std::process` does the work on both sides. What
+        // differs is the policy around it -- no console window to suppress
+        // here, but the executable bit and the shebang matter, and a manifest
+        // naming `./main.sh` has to be resolved against the extension's folder
+        // rather than against `PATH`.
+        todo!("F5: spawn with the executable bit and shebang honoured")
+    }
+
     fn clipboard_text(&self) -> Result<Option<String>> {
         todo!("F5: wl_data_device")
     }

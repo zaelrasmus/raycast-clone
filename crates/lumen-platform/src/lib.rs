@@ -278,6 +278,30 @@ pub trait Platform: Send + Sync {
     /// silently and there is nothing to be done about it from here.
     fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()>;
 
+    /// Start a long-lived extension process with its input and output piped
+    /// (F4, step 3).
+    ///
+    /// Separate from [`Platform::run_script`] because the two are different
+    /// shapes, not different flavours: a script command is started, waited for
+    /// and read once, while an extension is a conversation that lasts as long
+    /// as its view is open.
+    ///
+    /// Returns `std::process::Child`, which is portable. What is *not*
+    /// portable, and is why this crosses the boundary at all, is how it has to
+    /// be configured: Windows needs `CREATE_NO_WINDOW` or every extension
+    /// flashes a console, and Linux needs the executable bit honoured and a
+    /// shebang respected.
+    ///
+    /// `working_directory` is the extension's own folder, so that a manifest
+    /// can name `main.ps1` rather than an absolute path that only exists on the
+    /// machine it was written on.
+    fn spawn_extension(
+        &self,
+        program: &str,
+        arguments: &[String],
+        working_directory: &std::path::Path,
+    ) -> Result<std::process::Child>;
+
     /// Read the system clipboard as text, if it currently holds text.
     fn clipboard_text(&self) -> Result<Option<String>>;
 

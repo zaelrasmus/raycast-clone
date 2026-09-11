@@ -23,6 +23,7 @@ pub mod arrange;
 pub mod calculator;
 pub mod clipboard;
 pub mod commands;
+pub mod extensions;
 pub mod files;
 pub mod scripts;
 pub mod snippets;
@@ -30,6 +31,7 @@ pub mod snippets;
 pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;
 pub use commands::CommandsProvider;
+pub use extensions::ExtensionProvider;
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
 pub use snippets::{Snippet, SnippetProvider};
 

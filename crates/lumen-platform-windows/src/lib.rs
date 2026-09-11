@@ -168,6 +168,15 @@ impl Platform for WindowsPlatform {
         arrange::arrange(window, layout)
     }
 
+    fn spawn_extension(
+        &self,
+        program: &str,
+        arguments: &[String],
+        working_directory: &std::path::Path,
+    ) -> Result<std::process::Child> {
+        scripts::spawn(program, arguments, working_directory)
+    }
+
     fn clipboard_text(&self) -> Result<Option<String>> {
         clipboard::text()
     }

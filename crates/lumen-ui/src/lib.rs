@@ -31,7 +31,7 @@ pub mod view;
 
 pub use assets::Assets;
 pub use fonts::FAMILY as FONT_FAMILY;
-pub use launcher::{Launcher, LauncherEvent};
+pub use launcher::{Launcher, LauncherEvent, ViewSink};
 pub use overlay::{Overlay, OverlayEvent};
 pub use settings::{Settings, SettingsEvent};
 pub use text_field::TextField;

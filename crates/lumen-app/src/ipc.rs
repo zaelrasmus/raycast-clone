@@ -27,7 +27,7 @@ const SOCKET: &str = "lumen-launcher.sock";
 /// Newline-delimited JSON rather than a packed binary encoding: this carries a
 /// handful of messages per day, and being able to drive the daemon from a
 /// terminal while debugging is worth more than the bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Message {
     /// Show the launcher if hidden, hide it if shown.
@@ -47,6 +47,16 @@ pub enum Message {
     Quit,
     /// Used by the client to detect a running daemon without side effects.
     Ping,
+    /// Start an extension's command and give it the launcher (F4).
+    ///
+    /// In the same enum as the rest even though no client sends it. One queue
+    /// means one order of events -- a view opening cannot overtake the hide
+    /// that was already on its way -- and it costs a variant rather than a
+    /// second channel with its own ordering to reason about.
+    RunExtension {
+        extension: std::path::PathBuf,
+        command: String,
+    },
 }
 
 /// Send `message` to a running daemon.

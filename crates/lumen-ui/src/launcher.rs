@@ -151,6 +151,22 @@ const ROOT_PLACEHOLDER: &str = "Search for apps and commands...";
 /// The fallback for a view that did not name its own.
 const FIND: &str = "Search...";
 
+/// A view's item, prepared for the host's matcher.
+///
+/// The same `Candidate` the root list uses, so that filtering a view is the
+/// same matching as filtering applications -- one notion of "matches", not two.
+fn candidate_for(item: &lumen_core::view::Item) -> Candidate {
+    Candidate::new(Item {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        subtitle: item.subtitle.clone(),
+        icon: None,
+        keywords: item.keywords.clone(),
+        actions: Vec::new(),
+        kind: lumen_core::Kind::Command,
+    })
+}
+
 /// One row of the action panel, whichever mode produced it.
 struct PanelEntry {
     title: String,
@@ -184,8 +200,39 @@ enum Mode {
     View(Box<ViewState>),
 }
 
+/// Where a view's events go.
+///
+/// A sink rather than a channel type, for the same reason
+/// [`GestureSink`](lumen_platform::GestureSink) is one: the launcher must not
+/// know what is on the other end. Today it is a subprocess; when the transport
+/// is the component model it will be a call into a runtime, and nothing in the
+/// view layer will notice.
+#[derive(Clone)]
+pub struct ViewSink(Arc<dyn Fn(lumen_core::view::Event) + Send + Sync>);
+
+impl ViewSink {
+    pub fn new(f: impl Fn(lumen_core::view::Event) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    fn emit(&self, event: lumen_core::view::Event) {
+        (self.0)(event)
+    }
+}
+
 /// A view, and everything the launcher needs to draw and drive it.
 struct ViewState {
+    /// Where events go. `None` for the bundled example, which has nobody to
+    /// tell.
+    sink: Option<ViewSink>,
+    /// True until the extension's first view arrives.
+    ///
+    /// A state rather than a wait: the launcher is already open, already
+    /// focused and already accepting keystrokes. I-3 is about root search and
+    /// this is not root search -- but the same discipline applies, because a
+    /// launcher that freezes while a process starts is a launcher that feels
+    /// broken whichever invariant technically covers it.
+    loading: bool,
     view: lumen_core::view::View,
     /// The flattened rows after the current filter. Rebuilt when the query
     /// changes, not on every frame.
@@ -199,6 +246,11 @@ struct ViewState {
     /// The view's items prepared for matching, when the host is doing the
     /// filtering. Built once when the view opens.
     candidates: Arc<Vec<Candidate>>,
+    /// The query the extension was last told about.
+    ///
+    /// Kept so that a re-rank triggered by something other than typing does not
+    /// report a change that did not happen -- see `rerank`.
+    sent_query: String,
 }
 
 pub struct Launcher {
@@ -397,8 +449,18 @@ impl Launcher {
     }
 
     /// Replace one aside and re-rank against it.
+    ///
+    /// An aside is a *root-list* index, so when a view is open this stores it
+    /// and stops. Re-ranking a list nobody is looking at is wasted work, and --
+    /// as the first extension proved -- re-ranking is not free of consequence:
+    /// it is on the path that tells an extension about the query.
     fn set_aside(&mut self, aside: Aside, candidates: Vec<Candidate>, cx: &mut Context<Self>) {
         self.asides[aside.slot()] = Arc::new(candidates);
+
+        if matches!(self.mode, Mode::View(_)) {
+            return;
+        }
+
         self.rerank(cx);
         cx.notify();
     }
@@ -420,6 +482,7 @@ impl Launcher {
         let platform = self.platform.clone();
         let scripts_dir = self.paths.scripts_dir();
         let snippets_file = self.paths.snippets_file();
+        let extensions_dir = self.paths.extensions_dir();
 
         cx.spawn(async move |this, cx| {
             let entries = cx
@@ -474,6 +537,24 @@ impl Launcher {
             providers.register(Box::new(lumen_core::providers::SnippetProvider::new(
                 snippets,
             )));
+
+            // Manifests only. No extension process is started to build this,
+            // which is AD-08 and what lets the root list offer an extension's
+            // commands without I-3 having to make an exception.
+            let extensions = cx
+                .background_executor()
+                .spawn(async move { lumen_core::extension::scan(&extensions_dir) })
+                .await;
+
+            if !extensions.is_empty() {
+                let provider = lumen_core::providers::ExtensionProvider::new(&extensions);
+                log::info!(
+                    "indexed {} commands from {} extensions",
+                    provider.len(),
+                    extensions.len()
+                );
+                providers.register(Box::new(provider));
+            }
 
             let catalogue = providers.catalogue();
 
@@ -560,6 +641,7 @@ impl Launcher {
 
         match &self.mode {
             Mode::Root => self.config.window_height(self.visible_rows()),
+            Mode::View(state) if state.loading => self.loading_height(),
             Mode::View(state) => {
                 lumen_core::layout::SEARCH_HEIGHT
                     + lumen_core::layout::LIST_PADDING * 2.0
@@ -578,6 +660,13 @@ impl Launcher {
     /// next one would not fit is what keeps I-10's promise here: a partial row
     /// is never left clipped at the bottom edge.
     fn view_rows_height(&self, state: &ViewState) -> f32 {
+        // A list with nothing in it still has something to say, and needs room
+        // to say it. Without this the window is sized to zero rows and the
+        // empty state spills over the footer.
+        if state.rows.is_empty() && !state.loading {
+            return lumen_core::layout::view::EMPTY_HEIGHT;
+        }
+
         let cap = self.config.window.visible_rows as f32 * lumen_core::layout::ROW_HEIGHT;
 
         let mut used = 0.0;
@@ -621,6 +710,28 @@ impl Launcher {
         if matches!(self.mode, Mode::View(_)) {
             self.refilter_view();
             self.action_panel = None;
+
+            // Sent only when the extension asked to do its own filtering, and
+            // only when the query has actually changed.
+            //
+            // The second condition is not belt and braces. Re-ranking happens
+            // for reasons that have nothing to do with typing -- a background
+            // index landing, for one -- and an extension told its query changed
+            // re-renders. The first extension found this the hard way: copying
+            // a character updated the clipboard history, which re-ranked, which
+            // reported a query change that had not happened, which made the
+            // extension redraw the list and wipe the "copied" tag it had just
+            // put there. A spurious event is not a harmless one.
+            let query = self.query.clone();
+            if let Mode::View(state) = &mut self.mode
+                && let lumen_core::view::View::List(list) = &state.view
+                && list.filtering == lumen_core::view::Filtering::Extension
+                && state.sent_query != query
+            {
+                state.sent_query = query.clone();
+                self.tell_extension(lumen_core::view::Event::QueryChanged { query });
+            }
+
             self.resize_if_needed(previous_height, cx);
             return;
         }
@@ -718,25 +829,23 @@ impl Launcher {
                     }
                 }
             }
+            // Starting a process is the daemon's business, not the list's, so
+            // this leaves. The daemon calls `begin_view` straight back, which
+            // is what puts the loading state on screen; the view itself arrives
+            // whenever the extension gets round to sending one.
+            lumen_core::ViewSource::Command { extension, command } => {
+                cx.emit(LauncherEvent::RunExtension {
+                    extension: extension.clone(),
+                    command: command.clone(),
+                });
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
         // is the same matcher the root list uses and it runs in the same frame.
         let candidates = match &view {
-            lumen_core::view::View::List(list) => list
-                .items()
-                .map(|item| {
-                    Candidate::new(Item {
-                        id: item.id.clone(),
-                        title: item.title.clone(),
-                        subtitle: item.subtitle.clone(),
-                        icon: None,
-                        keywords: item.keywords.clone(),
-                        actions: Vec::new(),
-                        kind: lumen_core::Kind::Command,
-                    })
-                })
-                .collect(),
+            lumen_core::view::View::List(list) => list.items().map(candidate_for).collect(),
             lumen_core::view::View::Detail(_) => Vec::new(),
         };
 
@@ -749,10 +858,13 @@ impl Launcher {
         self.cursor = 0;
         self.action_panel = None;
         self.mode = Mode::View(Box::new(ViewState {
+            sink: None,
+            loading: false,
             list: crate::view::list_state(rows.len()),
             selected: 0,
             rows,
             candidates: Arc::new(candidates),
+            sent_query: String::new(),
             view,
         }));
 
@@ -760,8 +872,93 @@ impl Launcher {
         cx.notify();
     }
 
+    /// Take over the list for an extension that is starting (F4, step 3).
+    ///
+    /// Called before the extension has said anything. The launcher shows that
+    /// it is loading rather than freezing or staying on the root list: the user
+    /// pressed Enter and something has to acknowledge it.
+    /// How tall a view is while it is still starting.
+    ///
+    /// The same as an empty state's, so that a view which turns out to have
+    /// nothing in it does not resize the window on arrival.
+    pub fn loading_height(&self) -> f32 {
+        lumen_core::layout::SEARCH_HEIGHT
+            + lumen_core::layout::LIST_PADDING * 2.0
+            + lumen_core::layout::view::EMPTY_HEIGHT
+            + lumen_core::layout::FOOTER_HEIGHT
+    }
+
+    pub fn begin_view(&mut self, sink: ViewSink, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+
+        self.query.clear();
+        self.cursor = 0;
+        self.action_panel = None;
+        self.mode = Mode::View(Box::new(ViewState {
+            sink: Some(sink),
+            loading: true,
+            view: lumen_core::view::View::List(Default::default()),
+            rows: Vec::new(),
+            list: crate::view::list_state(0),
+            selected: 0,
+            candidates: Arc::new(Vec::new()),
+            sent_query: String::new(),
+        }));
+
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// Draw what the extension has sent.
+    ///
+    /// Replaces whatever was there. An extension re-renders as often as it
+    /// likes and the last one wins, which is what makes the protocol
+    /// declarative rather than a list of mutations to apply in order.
+    pub fn show_view(&mut self, view: lumen_core::view::View, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+
+        let Mode::View(state) = &mut self.mode else {
+            // The user left before it arrived. Nothing to draw and nothing to
+            // report: leaving is allowed.
+            return;
+        };
+
+        state.candidates = Arc::new(match &view {
+            lumen_core::view::View::List(list) => list.items().map(candidate_for).collect(),
+            lumen_core::view::View::Detail(_) => Vec::new(),
+        });
+        state.view = view;
+        state.loading = false;
+
+        // Rebuilt through the filter rather than wholesale, so a re-render
+        // arriving while the user is typing does not silently widen the list
+        // back out underneath them.
+        self.refilter_view();
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// The extension has gone. Return to the root list.
+    pub fn end_view(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::View(_)) {
+            self.leave_view(cx);
+        }
+    }
+
+    /// Tell the extension something, if there is one listening.
+    fn tell_extension(&self, event: lumen_core::view::Event) {
+        if let Mode::View(state) = &self.mode
+            && let Some(sink) = &state.sink
+        {
+            sink.emit(event);
+        }
+    }
+
     /// Return to the root list.
     fn leave_view(&mut self, cx: &mut Context<Self>) {
+        // Told before the mode changes, or there is nothing left to tell.
+        self.tell_extension(lumen_core::view::Event::Dismissed);
+
         let previous_height = self.content_height();
         self.mode = Mode::Root;
         self.query.clear();
@@ -889,7 +1086,27 @@ impl Launcher {
             state.list.scroll_to_reveal_item(row);
         }
 
+        // Told about the move, so an extension that wants to follow the
+        // selection -- a detail pane, a preview -- can.
+        self.tell_selection();
         cx.notify();
+    }
+
+    /// Tell the extension which row is selected now.
+    fn tell_selection(&self) {
+        let Mode::View(state) = &self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &state.view else {
+            return;
+        };
+        let Some(item) = list.item(state.selected) else {
+            return;
+        };
+
+        self.tell_extension(lumen_core::view::Event::SelectionChanged {
+            item: item.id.clone(),
+        });
     }
 
     fn item(&self, hit: &Hit) -> &Item {
@@ -1162,7 +1379,14 @@ impl Launcher {
             item,
             action: action.id.clone(),
         };
-        log::info!("view event, with nowhere to send it yet: {event:?}");
+
+        match &state.sink {
+            Some(_) => self.tell_extension(event),
+            // The bundled example has nobody to tell. Logged rather than
+            // silently dropped, because "did that do anything?" is the first
+            // question anyone looking at step 1 asks.
+            None => log::info!("the example view has nowhere to send {event:?}"),
+        }
 
         self.action_panel = None;
         cx.notify();
@@ -1310,11 +1534,20 @@ fn word_start_before(text: &str, cursor: usize) -> usize {
 ///
 /// An event rather than a direct call because showing and hiding is the
 /// platform's business (I-4), and the view must not reach across that boundary.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LauncherEvent {
     Dismissed,
     /// One of Lumen's own commands was run.
     Builtin(lumen_core::Builtin),
+    /// An extension's command was chosen, and the daemon should start it.
+    ///
+    /// Carries the folder and the command rather than anything already
+    /// running: at this point nothing is (AD-08), which is the whole reason
+    /// the root list can offer it without waiting on anything (I-3).
+    RunExtension {
+        extension: std::path::PathBuf,
+        command: String,
+    },
     /// A layout was chosen for the window that held the foreground.
     ///
     /// Carries no window handle: the daemon is the only thing that has one,
@@ -1482,6 +1715,19 @@ impl Launcher {
                 - lumen_core::layout::SEARCH_HEIGHT
                 - lumen_core::layout::FOOTER_HEIGHT,
         );
+
+        if state.loading {
+            return crate::view::render_loading(&self.theme, height);
+        }
+
+        // The loading state and the empty state are given the same room, so
+        // the window does not jump when the first render turns out to be an
+        // empty list.
+        let height = if state.rows.is_empty() {
+            gpui::px(lumen_core::layout::view::EMPTY_HEIGHT)
+        } else {
+            height
+        };
 
         match &state.view {
             lumen_core::view::View::List(list) => crate::view::render_list(

@@ -102,6 +102,14 @@ pub mod view {
     /// The empty state, centred where the list would be.
     pub const EMPTY_ICON_SIZE: f32 = 32.0;
     pub const EMPTY_GAP: f32 = 8.0;
+
+    /// How much room an empty state is given.
+    ///
+    /// A list with no rows would otherwise size the window to nothing, and the
+    /// icon, the title and the description would spill over the footer. Three
+    /// rows is enough for all three with air around them, and small enough
+    /// that a search matching nothing does not open a tall empty box.
+    pub const EMPTY_HEIGHT: f32 = super::ROW_HEIGHT * 3.0;
 }
 
 /// Type sizes. Not themeable (I-11); a theme may change the family only.

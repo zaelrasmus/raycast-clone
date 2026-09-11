@@ -1,0 +1,14 @@
+{
+  "schema-version": 1,
+  "name": "Characters",
+  "description": "Find a character by name. The second extension, written to correct the protocol rather than to confirm it.",
+  "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "main.ps1"],
+  "commands": [
+    {
+      "id": "search",
+      "title": "Search Characters",
+      "subtitle": "Arrows, dashes, quotes and the rest",
+      "keywords": ["unicode", "symbol", "emoji", "character", "arrow", "dash"]
+    }
+  ]
+}

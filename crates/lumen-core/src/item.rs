@@ -47,6 +47,7 @@ pub enum Kind {
     Clipboard,
     Window,
     File,
+    Extension,
 }
 
 impl Kind {
@@ -60,6 +61,7 @@ impl Kind {
             Kind::Clipboard => "Clipboard",
             Kind::Window => "Window",
             Kind::File => "File",
+            Kind::Extension => "Extension",
         }
     }
 }
@@ -125,6 +127,14 @@ pub enum ViewSource {
     /// static file. No protocol, no processes." A renderer proved against a
     /// file is a renderer nothing can blame on a transport.
     Example,
+    /// A command declared by an installed extension (F4, step 3).
+    ///
+    /// The folder rather than a name, because the folder is the identity and
+    /// it is also the working directory the process is started in.
+    Command {
+        extension: std::path::PathBuf,
+        command: String,
+    },
 }
 
 impl Action {

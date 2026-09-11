@@ -1,0 +1,14 @@
+{
+  "schema-version": 1,
+  "name": "World Clock",
+  "description": "The time in a few places, and the first extension written against the protocol.",
+  "run": ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "main.ps1"],
+  "commands": [
+    {
+      "id": "times",
+      "title": "World Clock",
+      "subtitle": "The time somewhere else",
+      "keywords": ["time", "timezone", "utc", "clock"]
+    }
+  ]
+}

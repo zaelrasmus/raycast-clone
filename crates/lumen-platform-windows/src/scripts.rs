@@ -15,7 +15,7 @@
 
 use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
 
 use anyhow::{Context as _, Result};
 
@@ -29,6 +29,30 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// user has already moved on -- the launcher was dismissed the moment they
 /// pressed Enter.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Start an extension process with its input and output piped (F4, step 3).
+///
+/// Shares `CREATE_NO_WINDOW` with [`run`] and for the same reason -- a launcher
+/// summoned by a keystroke must not flash a black rectangle -- and shares
+/// nothing else. A script is started, waited for and read once; an extension is
+/// a conversation, so its streams stay open and nothing here waits.
+///
+/// `stderr` is inherited rather than piped. Piping it would mean a third thread
+/// to drain it, and a pipe nobody drains is a pipe that fills and blocks the
+/// child forever the first time an extension author is noisy. Inheriting sends
+/// it to Lumen's own log, which is where somebody debugging an extension will
+/// look anyway.
+pub fn spawn(program: &str, arguments: &[String], working_directory: &Path) -> Result<Child> {
+    Command::new(program)
+        .args(arguments)
+        .current_dir(working_directory)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("starting {program} in {}", working_directory.display()))
+}
 
 pub fn run(path: &Path) -> Result<String> {
     let mut command = interpreter_for(path);

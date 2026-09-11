@@ -35,6 +35,7 @@ use lumen_platform::{
 };
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
+mod extensions;
 mod ipc;
 mod timing;
 
@@ -96,7 +97,7 @@ fn print_help() {
 
 /// Send `message`; if nothing is listening, become the daemon.
 fn dispatch(message: Message) -> Result<()> {
-    if ipc::send(message)? {
+    if ipc::send(message.clone())? {
         log::debug!("handed {message:?} to the running daemon");
         return Ok(());
     }
@@ -107,7 +108,7 @@ fn dispatch(message: Message) -> Result<()> {
 ///
 /// Starting a whole launcher because someone released a key would be absurd.
 fn forward_only(message: Message) -> Result<()> {
-    if !ipc::send(message)? {
+    if !ipc::send(message.clone())? {
         log::debug!("no daemon is running; {message:?} dropped");
     }
     Ok(())
@@ -139,6 +140,7 @@ fn run_daemon() -> Result<()> {
     lumen_core::install_builtin_themes(&paths.themes_dir())?;
     lumen_core::install_builtin_sheets(&paths.sheets_dir())?;
     lumen_core::install_example_script(&paths.scripts_dir())?;
+    lumen_core::install_example_extensions(&paths.extensions_dir())?;
     lumen_core::providers::snippets::install_example(&paths.snippets_file())?;
     Config::write_default(&paths.config_file())?;
 
@@ -305,9 +307,10 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         let config = config.clone();
         async move |cx| {
             while let Some(message) = rx.next().await {
+                let described = format!("{message:?}");
                 let outcome = handle(message, &platform, &config, &shell, &surfaces, cx);
                 if let Err(error) = outcome {
-                    log::error!("could not handle {message:?}: {error:#}");
+                    log::error!("could not handle {described}: {error:#}");
                 }
             }
         }
@@ -711,13 +714,26 @@ fn subscribe_to_launcher(
         let shell = shell.clone();
         let config = config.clone();
         let commands = commands.clone();
-        let event = *event;
+        let event = event.clone();
+
+        // Starting a process needs the `App` this callback is holding, so it
+        // goes back through the same queue the hotkey and the socket use
+        // rather than being done here. One queue, one order of events.
+        if let LauncherEvent::RunExtension { extension, command } = &event {
+            let _ = commands.unbounded_send(Message::RunExtension {
+                extension: extension.clone(),
+                command: command.clone(),
+            });
+            return;
+        }
 
         off_the_callback(cx, move || {
             let outcome = match event {
                 LauncherEvent::Dismissed => hide(&platform, &shell),
                 LauncherEvent::Resized(height) => resize(&platform, &config, &shell, height),
                 LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
+                // Handled above, before this task was spawned.
+                LauncherEvent::RunExtension { .. } => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,
                 // and it means `lumen settings` from a terminal and "Configure
@@ -848,6 +864,9 @@ fn handle(
                 .update(cx, |launcher, _window, cx| launcher.reindex(cx))
                 .ok();
             Ok(())
+        }
+        Message::RunExtension { extension, command } => {
+            run_extension(platform, surfaces, extension, command, cx)
         }
         Message::Quit => {
             log::info!("stopping the daemon");
@@ -988,6 +1007,37 @@ fn hide(platform: &Arc<dyn Platform>, shell: &Rc<RefCell<Shell>>) -> Result<()> 
     };
 
     platform.hide_window(WindowRole::Launcher, restore_to)
+}
+
+/// Start an extension's command (F4, step 3).
+///
+/// The manifest is re-read here rather than taken from the index, for two
+/// reasons. The index holds what a command *is called*, which is all the root
+/// list needs; and a manifest edited since the daemon started should be the one
+/// that runs, because the alternative is telling an extension author to restart
+/// the launcher after every change.
+fn run_extension(
+    platform: &Arc<dyn Platform>,
+    surfaces: &Surfaces,
+    directory: std::path::PathBuf,
+    command: String,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
+    let manifest = directory.join(lumen_core::extension::MANIFEST);
+    let source = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let manifest: lumen_core::extension::Manifest =
+        serde_json::from_str(&source).with_context(|| format!("parsing {}", manifest.display()))?;
+
+    let extension = lumen_core::extension::Extension {
+        directory,
+        manifest,
+    };
+
+    let window = surfaces.launcher;
+    let platform = platform.clone();
+    cx.update(move |cx| extensions::run(platform, extension, command, window, cx))
+        .context("reaching the app to start an extension")?
 }
 
 /// Hide, give the foreground back, and then move that window.

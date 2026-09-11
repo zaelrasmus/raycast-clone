@@ -336,6 +336,25 @@ fn render_empty(empty: Option<&EmptyState>, theme: &Theme, height: gpui::Pixels)
         .into_any_element()
 }
 
+/// Draw a view that has been asked for but has not arrived.
+///
+/// A state, not a spinner. The launcher is already open, already focused and
+/// already taking keystrokes; what is missing is the content, and saying so
+/// plainly is better than animating to fill a gap that is usually gone in a
+/// few tens of milliseconds. An animation here would draw the eye to the one
+/// moment the interface is not ready.
+pub fn render_loading(theme: &Theme, height: gpui::Pixels) -> AnyElement {
+    div()
+        .h(height)
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(type_scale::subtitle())
+        .text_color(color(theme.colors.text_placeholder))
+        .child("Starting…")
+        .into_any_element()
+}
+
 /// Draw a detail view.
 ///
 /// The Markdown is drawn as plain paragraphs for now, which is honest about

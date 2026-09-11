@@ -56,6 +56,15 @@ impl Paths {
         self.themes_dir().join(format!("{name}.json"))
     }
 
+    /// Installed extensions, one folder each (F4).
+    ///
+    /// Under `config` rather than `data`: an extension is something the user
+    /// installed and may edit, like a theme or a script, not state Lumen keeps
+    /// on their behalf.
+    pub fn extensions_dir(&self) -> PathBuf {
+        self.config_dir.join("extensions")
+    }
+
     /// The clipboard history database (F3).
     pub fn clipboard_file(&self) -> PathBuf {
         self.data_dir.join("clipboard.sqlite3")
