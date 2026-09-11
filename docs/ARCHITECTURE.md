@@ -548,6 +548,41 @@ startup to save 100 ms on a keystroke that may not come for an hour is the
 wrong trade. Someone quick enough to beat it gets exactly what they would have
 got anyway.
 
+### 7.26 An aside keeps three quarters of its score
+
+The cap in 7.21 stops an aside from filling the list. It does not stop one from
+taking the *top* of it, and with file search in place that is what happened:
+typing `co` returned six files before `Command Prompt`, because
+`COMPLETE.png` matches two letters exactly as well as an application does.
+
+A launcher is a launcher. Asides are ranked with a discount -- six eighths of
+the score they earned -- which is enough to break a near-tie in favour of the
+application and not enough to bury a clear match: `colonialismo` still puts the
+file first, because by then it is not close. The discount is applied to the
+score rather than by sorting asides below applications, which would bury them
+permanently and make file search useless.
+
+The same query, before and after: `co` went from six files and no applications
+to `Command Palette`, `Command Prompt`, `Component Services`,
+`Computer Management` and `Control Panel`.
+
+### 7.27 The resize event carries a height, not a row count
+
+The launcher hugs its content, so the view tells the daemon when its size
+changed. That event carried a *row count*, which was right while there was one
+kind of content.
+
+The action panel is not made of the same rows -- a result row is tall enough
+for a title and a subtitle, an action row holds one line -- so a panel of two
+actions was drawn into a window still sized for eight results, with six rows of
+nothing beneath it. Converting one into the other in "equivalent result rows"
+would round, and rounding leaves exactly the band of empty space the change is
+meant to remove.
+
+So the event carries the height, `Config` grows a `panel_height` beside
+`window_height`, and the view answers one question -- how tall am I -- rather
+than two.
+
 ---
 
 ## 8. Risk register

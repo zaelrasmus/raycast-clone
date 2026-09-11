@@ -716,7 +716,7 @@ fn subscribe_to_launcher(
         off_the_callback(cx, move || {
             let outcome = match event {
                 LauncherEvent::Dismissed => hide(&platform, &shell),
-                LauncherEvent::RowsChanged(rows) => resize(&platform, &config, &shell, rows),
+                LauncherEvent::Resized(height) => resize(&platform, &config, &shell, height),
                 LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,
@@ -954,18 +954,18 @@ fn show(
 
     // Reset the view before the window is on screen, so the first frame the user
     // sees is already the cleared state rather than the previous search.
-    let rows = window
+    let height = window
         .update(cx, |launcher, window, cx| {
             launcher.on_shown(window, cx);
             // Registered here rather than after `show_window`, because the
             // frame this reports on is the one `on_shown` just asked for.
             timing::report_first_frame(window, summoned);
-            launcher.visible_rows()
+            launcher.content_height()
         })
-        .unwrap_or(config.window.visible_rows);
+        .unwrap_or_else(|_| config.window_height(config.window.visible_rows));
 
     let monitor = platform.cursor_monitor()?;
-    let bounds = placement(&monitor, config, rows);
+    let bounds = placement(&monitor, config, height);
 
     let restore_to = platform.show_window(WindowRole::Launcher, bounds)?;
 
@@ -1019,7 +1019,7 @@ fn resize(
     platform: &Arc<dyn Platform>,
     config: &Config,
     shell: &Rc<RefCell<Shell>>,
-    rows: usize,
+    height: f32,
 ) -> Result<()> {
     let shell = shell.borrow();
     if !shell.visible {
@@ -1029,16 +1029,13 @@ fn resize(
         return Ok(());
     };
 
-    platform.set_window_bounds(WindowRole::Launcher, placement(&monitor, config, rows))
+    platform.set_window_bounds(WindowRole::Launcher, placement(&monitor, config, height))
 }
 
 /// Where the window goes, in physical pixels.
-fn placement(monitor: &MonitorInfo, config: &Config, rows: usize) -> Rect {
+fn placement(monitor: &MonitorInfo, config: &Config, height: f32) -> Rect {
     monitor.place(
-        Rect::size(
-            config.window.width as i32,
-            config.window_height(rows) as i32,
-        ),
+        Rect::size(config.window.width as i32, height as i32),
         config.window.vertical_bias,
     )
 }

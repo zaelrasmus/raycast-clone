@@ -126,6 +126,23 @@ impl Aside {
             Aside::Clipboard | Aside::Files => 8,
         }
     }
+
+    /// What fraction of its earned score an aside row keeps, in eighths.
+    ///
+    /// Asides are secondary and have to be ranked as such. Typing `co` matches
+    /// `Command Prompt` and a file called `COMPLETE.png` about equally well,
+    /// and the launcher is a launcher: the application should win. Typing
+    /// `complete` is no longer ambiguous, the file scores far higher than
+    /// anything else, and the discount does not change the outcome.
+    ///
+    /// Six eighths, because that is enough to break a near-tie and not enough
+    /// to bury a clear match. Applied to the score rather than by sorting
+    /// asides after applications, which would bury them permanently.
+    fn weight(self) -> u32 {
+        match self {
+            Aside::Clipboard | Aside::Files => 6,
+        }
+    }
 }
 
 /// How many results are kept behind the visible window.
@@ -474,13 +491,36 @@ impl Launcher {
         self.theme.appearance
     }
 
-    /// How many rows the window should currently be sized for.
+    /// How many result rows the window should currently be sized for.
     pub fn visible_rows(&self) -> usize {
         self.hits.len().min(self.config.window.visible_rows)
     }
 
+    /// How tall the window should be for whatever it is currently showing.
+    ///
+    /// The action panel replaces the list (7.11), and it is not made of the
+    /// same rows, so it does not have the same height.
+    pub fn content_height(&self) -> f32 {
+        match self.action_panel {
+            Some(_) => self.config.panel_height(self.available_actions().len()),
+            None => self.config.window_height(self.visible_rows()),
+        }
+    }
+
+    /// Ask for a resize, but only when the height actually changed.
+    ///
+    /// Emitting on every keystroke would ask the platform to move the window to
+    /// the rectangle it is already in, which is a `SetWindowPos` and a fresh
+    /// swap-chain buffer for nothing.
+    fn resize_if_needed(&mut self, previous: f32, cx: &mut Context<Self>) {
+        let height = self.content_height();
+        if height != previous {
+            cx.emit(LauncherEvent::Resized(height));
+        }
+    }
+
     fn rerank(&mut self, cx: &mut Context<Self>) {
-        let previous_rows = self.visible_rows();
+        let previous_height = self.content_height();
 
         // Answers run first and synchronously. Providers are contractually
         // instant (see `lumen_core::providers`), so this stays inside the frame
@@ -516,7 +556,7 @@ impl Launcher {
                         .map(|m| Hit {
                             source: Source::Aside(aside, m.index),
                             highlights: m.highlights,
-                            score: m.score,
+                            score: m.score / 8 * aside.weight(),
                         }),
                 );
             }
@@ -552,12 +592,7 @@ impl Launcher {
         // one, or Enter runs an action the user can no longer see.
         self.action_panel = None;
 
-        // Only on an actual change: emitting on every keystroke would ask the
-        // platform to resize the window to the size it already has.
-        let rows = self.visible_rows();
-        if rows != previous_rows {
-            cx.emit(LauncherEvent::RowsChanged(rows));
-        }
+        self.resize_if_needed(previous_height, cx);
     }
 
     fn item(&self, hit: &Hit) -> &Item {
@@ -591,6 +626,8 @@ impl Launcher {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let previous_height = self.content_height();
+
         self.action_panel = match self.action_panel {
             Some(_) => None,
             // Opens on the *second* action, not the first: the first is what
@@ -600,6 +637,8 @@ impl Launcher {
             None if !self.available_actions().is_empty() => Some(0),
             None => None,
         };
+
+        self.resize_if_needed(previous_height, cx);
         cx.notify();
     }
 
@@ -848,7 +887,7 @@ fn word_start_before(text: &str, cursor: usize) -> usize {
 ///
 /// An event rather than a direct call because showing and hiding is the
 /// platform's business (I-4), and the view must not reach across that boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LauncherEvent {
     Dismissed,
     /// One of Lumen's own commands was run.
@@ -860,9 +899,14 @@ pub enum LauncherEvent {
     /// also *replaces* `Dismissed` rather than following it, because hiding
     /// takes that handle and the arrangement still needs it.
     ArrangeWindow(lumen_platform::WindowLayout),
-    /// The number of visible rows changed, so the window should be resized to
-    /// hug its content.
-    RowsChanged(usize),
+    /// The content changed size, so the window should be resized to hug it.
+    ///
+    /// A height rather than a row count, because the launcher has two kinds of
+    /// content and they are not made of the same rows: a result row is tall
+    /// enough for a title and a subtitle, an action row holds one line. When
+    /// this carried a row count the action panel was drawn into a window still
+    /// sized for eight results, and two actions sat above six rows of nothing.
+    Resized(f32),
 }
 
 impl gpui::EventEmitter<LauncherEvent> for Launcher {}
@@ -1192,7 +1236,6 @@ impl Launcher {
         // Escape leaves it, and nothing is hidden behind it.
         Some(
             div()
-                .h(self.results_height())
                 .p(gpui::px(panel::PADDING))
                 .flex()
                 .flex_col()

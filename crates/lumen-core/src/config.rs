@@ -184,6 +184,26 @@ impl Config {
             + rows as f32 * layout::ROW_HEIGHT
             + layout::FOOTER_HEIGHT
     }
+
+    /// Total window height for the action panel showing `actions` rows.
+    ///
+    /// A separate calculation from [`Config::window_height`] rather than a
+    /// conversion into "equivalent result rows", because an action row is a
+    /// different height from a result row -- one line against a title and a
+    /// subtitle -- and rounding one into the other leaves exactly the band of
+    /// empty space this exists to remove.
+    pub fn panel_height(&self, actions: usize) -> f32 {
+        use crate::layout;
+
+        if actions == 0 {
+            return layout::SEARCH_HEIGHT + layout::FOOTER_HEIGHT;
+        }
+
+        layout::SEARCH_HEIGHT
+            + layout::action_panel::PADDING * 2.0
+            + actions as f32 * layout::action_panel::ROW_HEIGHT
+            + layout::FOOTER_HEIGHT
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +269,33 @@ mod tests {
         let parsed: Config = serde_json::from_str(&source).unwrap();
         assert_eq!(parsed.hotkey, Config::default().hotkey);
         assert_eq!(parsed.backdrop, BackdropMode::SystemAcrylic);
+    }
+
+    /// The panel is shorter than a list of the same length, which is the whole
+    /// reason it is measured separately.
+    #[test]
+    fn the_action_panel_is_shorter_than_the_list_it_replaces() {
+        let config = Config::default();
+
+        assert!(config.panel_height(3) < config.window_height(3));
+        assert!(config.panel_height(1) < config.window_height(1));
+    }
+
+    #[test]
+    fn the_panel_grows_in_whole_action_rows() {
+        let config = Config::default();
+        let step = crate::layout::action_panel::ROW_HEIGHT;
+
+        assert_eq!(config.panel_height(3) - config.panel_height(2), step);
+    }
+
+    /// Unlike the result list, the panel is not capped at `visible-rows`: an
+    /// item with ten actions has to show all ten, because there is nothing else
+    /// on screen to scroll.
+    #[test]
+    fn the_panel_is_not_capped_at_the_visible_row_count() {
+        let config = Config::default();
+        assert!(config.panel_height(12) > config.panel_height(8));
     }
 
     #[test]
