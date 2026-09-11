@@ -273,6 +273,38 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         log::info!("clipboard history is turned off in the configuration");
     }
 
+    // The one place a deliberately invisible process admits to running.
+    //
+    // Onto the same queue as everything else: the tray menu, `lumen settings`
+    // in a terminal and "Configure Shortcuts" in the list all arrive at the
+    // same code by the same route, in one order.
+    let tray_tx = tx.clone();
+    let tray = platform.install_tray(
+        lumen_platform::TrayInfo {
+            // The hotkey, because "is it running and what do I press" is one
+            // question and this is the only place to answer it. Taken from the
+            // configuration rather than written out, so it stays true when the
+            // user changes it.
+            tooltip: format!("Lumen — press {} to open", config.hotkey),
+        },
+        lumen_platform::TraySink::new(move |command| {
+            let message = match command {
+                lumen_platform::TrayCommand::Toggle => Message::Toggle,
+                lumen_platform::TrayCommand::Settings => Message::Settings,
+                lumen_platform::TrayCommand::Reload => Message::ReloadSheets,
+                lumen_platform::TrayCommand::Quit => Message::Quit,
+            };
+            let _ = tray_tx.unbounded_send(message);
+        }),
+    );
+
+    // Not fatal. A daemon without a tray icon is harder to find and works
+    // exactly as well, and refusing to start over a missing icon would be the
+    // tail wagging the dog.
+    if let Err(error) = tray {
+        log::warn!("no notification area icon: {error:#}");
+    }
+
     let ipc_tx = tx.clone();
     ipc::serve(move |message| {
         let _ = ipc_tx.unbounded_send(message);

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchTarget, MonitorInfo, Platform, Rect, WindowLayout, WindowRole,
+    LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -28,6 +28,7 @@ mod icons;
 mod input;
 mod monitor;
 mod scripts;
+mod tray;
 mod window;
 
 pub use lumen_platform::BackdropMode;
@@ -175,6 +176,10 @@ impl Platform for WindowsPlatform {
         working_directory: &std::path::Path,
     ) -> Result<std::process::Child> {
         scripts::spawn(program, arguments, working_directory)
+    }
+
+    fn install_tray(&self, info: TrayInfo, sink: TraySink) -> Result<()> {
+        tray::start(info, sink)
     }
 
     fn clipboard_text(&self) -> Result<Option<String>> {

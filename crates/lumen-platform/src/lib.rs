@@ -17,6 +17,7 @@ use raw_window_handle::RawWindowHandle;
 pub mod events;
 pub mod geometry;
 pub mod tiling;
+pub mod tray;
 
 pub use events::{
     ClipboardEvent, ClipboardSink, GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier,
@@ -24,6 +25,7 @@ pub use events::{
 };
 pub use geometry::{MonitorInfo, Rect};
 pub use tiling::WindowLayout;
+pub use tray::{TrayCommand, TrayInfo, TraySink};
 
 /// How the launcher window's background is produced.
 ///
@@ -301,6 +303,14 @@ pub trait Platform: Send + Sync {
         arguments: &[String],
         working_directory: &std::path::Path,
     ) -> Result<std::process::Child>;
+
+    /// Put an icon in the notification area and deliver its commands.
+    ///
+    /// A launcher is deliberately invisible -- no taskbar button, no Alt+Tab
+    /// entry -- and this is the one place it admits to running. Failure is not
+    /// fatal: a daemon with no tray icon is harder to find and works exactly
+    /// as well.
+    fn install_tray(&self, info: TrayInfo, sink: TraySink) -> Result<()>;
 
     /// Read the system clipboard as text, if it currently holds text.
     fn clipboard_text(&self) -> Result<Option<String>>;

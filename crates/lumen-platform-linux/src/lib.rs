@@ -28,7 +28,7 @@
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchTarget, MonitorInfo, Platform, Rect, WindowLayout, WindowRole,
+    LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -139,6 +139,14 @@ impl Platform for LinuxPlatform {
         // naming `./main.sh` has to be resolved against the extension's folder
         // rather than against `PATH`.
         todo!("F5: spawn with the executable bit and shebang honoured")
+    }
+
+    fn install_tray(&self, _info: TrayInfo, _sink: TraySink) -> Result<()> {
+        // No notification area on Wayland: the equivalent is the
+        // StatusNotifierItem D-Bus interface, which Waybar and the other
+        // Hyprland status bars implement. A different mechanism for the same
+        // idea, which is why it is behind the same method.
+        todo!("F5: StatusNotifierItem over D-Bus")
     }
 
     fn clipboard_text(&self) -> Result<Option<String>> {
