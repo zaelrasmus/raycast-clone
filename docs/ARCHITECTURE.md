@@ -110,7 +110,7 @@ the README.
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Done.** Themes, live reload, the fade, the bundled typeface, the icon set and the action panel are all in; the appearance animation omits the scale, deliberately (7.5) |
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
-| **F4** | View extensions, tiers T2 and T3 | Not started |
+| **F4** | View extensions, tiers T2 and T3 | **Steps 1 and 2 of four done.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws a list with virtualisation, sections, accessories and an empty state; a hand-written example is rendered in the launcher. No protocol and no process yet, which is step 3 |
 | **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |
 
 ### F4 build order is not optional
@@ -582,6 +582,76 @@ meant to remove.
 So the event carries the height, `Config` grows a `panel_height` beside
 `window_height`, and the view answers one question -- how tall am I -- rather
 than two.
+
+### 7.28 An extension's view takes over the launcher rather than opening a window
+
+The obvious shape for F4 is a window per extension. It is the wrong one.
+
+An extension's results *are* the launcher, showing somebody else's rows. A
+separate surface means a second search field, a second focus owner, a second
+thing to dismiss and a second place for the geometry to drift -- and it makes
+the transition from "I typed a command" to "I am in its list" a window swap
+instead of a change of contents.
+
+So the launcher gains a mode. `Mode::View` replaces the list's region and
+nothing else: the search field and the footer stay the launcher's, and the
+extension supplies rows. That split is exactly the one AD-07 describes -- an
+extension chooses what to show and never how the chrome around it looks -- and
+making it structural means it cannot be negotiated later.
+
+Escape unwinds one layer at a time, as it already did: the action panel, then
+the view's query, then the view, then the launcher. And a view does not survive
+the launcher being hidden. Coming back a day later to somebody else's list,
+with no memory of opening it, is the kind of state that makes an interface feel
+haunted.
+
+### 7.29 The view renderer uses `list`, not `uniform_list`
+
+The root list is uniform: every row is `ROW_HEIGHT` whether or not it has a
+subtitle, which is I-10 and which makes `uniform_list` -- cheaper, and
+constant-time to scroll -- the right element.
+
+A view has section headers, and a header is deliberately shorter than a row: it
+is a label, not an entry, and giving it a full row's height makes a two-item
+section look like a four-item one. That rules `uniform_list` out, so views use
+`list`, which virtualises with variable heights.
+
+The consequence is a sizing rule that had to be written out rather than assumed:
+the window cannot be `total.min(cap)`, because with mixed heights the cap lands
+mid-row -- for the bundled example, two thirds of the way through the last row
+it shows. Whole rows are accumulated until the next will not fit. I-10's promise
+that a partial row is never left clipped is the same promise either way; only
+the arithmetic differs.
+
+### 7.30 Host filtering keeps the extension's order, not the score's
+
+A list defaults to [`Filtering::Host`], and the default is the one the frame
+budget can promise: the same matcher as the root list, in the same frame,
+waiting on nothing. `Filtering::Extension` exists for a search that hits a
+network, and it is the caller's problem that it is slower.
+
+When the host filters, the surviving items keep the order and the sections the
+extension gave them rather than being re-sorted by score. The extension chose
+that order -- and the sections are *labelled*, so reordering across them would
+put rows under headings that no longer describe them. A section that loses
+every item loses its heading too, because a heading with nothing under it is a
+heading about nothing.
+
+### 7.31 Step 3 is written down but not wired up
+
+`lumen_core::view::Event` exists and the launcher builds a real one when a view's
+action is run -- `ActionInvoked { item: Some("pr-395"), action: "copy-url" }` --
+and then logs it and drops it, because there is nowhere to send it.
+
+That is deliberate and it is the plan's build order: the tree moves across a
+channel only after the renderer is finished, and nothing in the protocol is
+stabilised until a *second* extension has been written against it, because the
+first one lies -- it fits perfectly because the protocol was designed while
+looking at it.
+
+The events are in the contract file rather than in a later commit for a
+different reason: AD-06 says the contract is one artefact. Splitting it across
+two commits is how it becomes two artefacts that have to be kept in step.
 
 ---
 

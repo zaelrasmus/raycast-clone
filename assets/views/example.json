@@ -1,0 +1,169 @@
+{
+  "type": "list",
+  "placeholder": "Search pull requests…",
+  "filtering": "host",
+  "empty": {
+    "title": "Nothing to review",
+    "description": "Every pull request assigned to you has been merged.",
+    "icon": { "type": "glyph", "name": "command" }
+  },
+  "sections": [
+    {
+      "title": "Assigned to you",
+      "items": [
+        {
+          "id": "pr-412",
+          "title": "Compensate for the invisible resize border",
+          "subtitle": "lumen#412 · gabriela",
+          "icon": { "type": "text", "text": "🪟" },
+          "keywords": ["tiling", "dwm", "window"],
+          "accessories": [
+            { "type": "text", "text": "2 hours ago" },
+            { "type": "tag", "text": "approved", "tone": "positive" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" },
+            { "id": "copy-url", "title": "Copy URL", "shortcut": "Ctrl+Shift+C" },
+            { "id": "checkout", "title": "Check Out Branch" }
+          ]
+        },
+        {
+          "id": "pr-408",
+          "title": "Skip rather than redact in the clipboard privacy layer",
+          "subtitle": "lumen#408 · you",
+          "icon": { "type": "text", "text": "🔒" },
+          "keywords": ["clipboard", "privacy", "secrets"],
+          "accessories": [
+            { "type": "text", "text": "yesterday" },
+            { "type": "tag", "text": "changes requested", "tone": "caution" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" },
+            { "id": "copy-url", "title": "Copy URL", "shortcut": "Ctrl+Shift+C" }
+          ]
+        },
+        {
+          "id": "pr-401",
+          "title": "Stop touching windows from inside GPUI callbacks",
+          "subtitle": "lumen#401 · marcus",
+          "icon": { "type": "text", "text": "🧵" },
+          "keywords": ["refcell", "borrow", "callback"],
+          "accessories": [
+            { "type": "text", "text": "2 days ago" },
+            { "type": "tag", "text": "draft", "tone": "neutral" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" },
+            { "id": "copy-url", "title": "Copy URL", "shortcut": "Ctrl+Shift+C" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Watching",
+      "items": [
+        {
+          "id": "pr-399",
+          "title": "Bound the file index by measurement, not by taste",
+          "subtitle": "lumen#399 · priya",
+          "icon": { "type": "glyph", "name": "file" },
+          "keywords": ["budget", "benchmark", "files"],
+          "accessories": [
+            { "type": "text", "text": "3 days ago" },
+            { "type": "tag", "text": "needs review", "tone": "accent" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" },
+            { "id": "copy-url", "title": "Copy URL", "shortcut": "Ctrl+Shift+C" }
+          ]
+        },
+        {
+          "id": "pr-395",
+          "title": "Draw an icon set on a sixteen and twenty pixel grid",
+          "subtitle": "lumen#395 · you",
+          "icon": { "type": "glyph", "name": "application" },
+          "keywords": ["icons", "svg", "design"],
+          "accessories": [
+            { "type": "text", "text": "4 days ago" },
+            { "type": "tag", "text": "approved", "tone": "positive" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" },
+            { "id": "copy-url", "title": "Copy URL", "shortcut": "Ctrl+Shift+C" }
+          ]
+        },
+        {
+          "id": "pr-388",
+          "title": "Rank asides below applications",
+          "subtitle": "lumen#388 · gabriela",
+          "icon": { "type": "glyph", "name": "clipboard" },
+          "keywords": ["ranking", "score", "aside"],
+          "accessories": [
+            { "type": "text", "text": "5 days ago" },
+            { "type": "tag", "text": "merged", "tone": "accent" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" }
+          ]
+        },
+        {
+          "id": "pr-380",
+          "title": "Generate Lumen's own shortcut sheet from the keymap table",
+          "subtitle": "lumen#380 · marcus",
+          "icon": { "type": "glyph", "name": "window" },
+          "keywords": ["overlay", "keymap", "sheet"],
+          "accessories": [
+            { "type": "text", "text": "a week ago" },
+            { "type": "tag", "text": "merged", "tone": "accent" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" }
+          ]
+        },
+        {
+          "id": "pr-377",
+          "title": "Split the gesture listener by concern, not by mechanism",
+          "subtitle": "lumen#377 · you",
+          "icon": { "type": "glyph", "name": "script" },
+          "keywords": ["hotkey", "raw input", "gesture"],
+          "accessories": [
+            { "type": "text", "text": "a week ago" },
+            { "type": "tag", "text": "merged", "tone": "accent" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" }
+          ]
+        },
+        {
+          "id": "pr-361",
+          "title": "Fail the build when the search stops being linear",
+          "subtitle": "lumen#361 · priya",
+          "icon": { "type": "glyph", "name": "calculator" },
+          "keywords": ["ci", "budget", "regression"],
+          "accessories": [
+            { "type": "text", "text": "two weeks ago" },
+            { "type": "tag", "text": "closed", "tone": "danger" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" },
+            { "id": "reopen", "title": "Reopen" }
+          ]
+        },
+        {
+          "id": "pr-350",
+          "title": "Bundle Inter so the interface is one typeface everywhere",
+          "subtitle": "lumen#350 · gabriela",
+          "icon": { "type": "glyph", "name": "snippet" },
+          "keywords": ["font", "inter", "typography"],
+          "accessories": [
+            { "type": "text", "text": "three weeks ago" },
+            { "type": "tag", "text": "merged", "tone": "accent" }
+          ],
+          "actions": [
+            { "id": "open", "title": "Open in Browser", "shortcut": "Ctrl+O" }
+          ]
+        }
+      ]
+    }
+  ]
+}

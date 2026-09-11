@@ -77,6 +77,33 @@ pub mod action_panel {
     pub const ROW_RADIUS: f32 = 5.0;
 }
 
+/// Extension views (F4).
+///
+/// A view's list is drawn with the same row height and gutter as the root list,
+/// deliberately: an extension's results must not look like a different
+/// application, and they cannot if the geometry is not theirs to choose (AD-07).
+/// What is here is only what a view has and the root list does not.
+pub mod view {
+    /// Height of a section header.
+    ///
+    /// Shorter than a row and not a whole row's worth: a header is a label, not
+    /// an entry, and giving it the same height makes a two-item section look
+    /// like a four-item one.
+    pub const SECTION_HEIGHT: f32 = 28.0;
+
+    /// Gap between an accessory and the next thing to its left.
+    pub const ACCESSORY_GAP: f32 = 8.0;
+
+    /// Padding inside a tag pill.
+    pub const TAG_PADDING_X: f32 = 7.0;
+    pub const TAG_PADDING_Y: f32 = 2.0;
+    pub const TAG_RADIUS: f32 = 4.0;
+
+    /// The empty state, centred where the list would be.
+    pub const EMPTY_ICON_SIZE: f32 = 32.0;
+    pub const EMPTY_GAP: f32 = 8.0;
+}
+
 /// Type sizes. Not themeable (I-11); a theme may change the family only.
 pub mod text {
     pub const QUERY: f32 = 17.0;

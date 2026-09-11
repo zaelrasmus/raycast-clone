@@ -58,6 +58,12 @@ an aesthetic worth looking at fifty times a day.
   `Enter` opens with the default application, `Ctrl+K` copies the path.
   Dependency and build trees are never walked into, so the index is about your
   files rather than about `node_modules`.
+- **The extension view vocabulary and its renderer** (F4, steps 1 and 2 of the
+  four the plan sets out). Run **Example Extension View** to see it: sections,
+  icons, accessories, coloured status tags, an action panel carrying the
+  extension's own verbs and key hints, and the host filtering as you type. The
+  tree is a hand-written JSON file; there is no protocol and no process yet,
+  deliberately — that is step 3.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -103,6 +109,12 @@ Listed because a README that implies more than exists is worse than no README.
   size break the build on a regression. The other four are measured by the
   daemon on a real desktop and recorded below, because a hosted runner has no
   GPU, no display and no idle session to measure them on.
+- **Extensions cannot be written yet.** F4's renderer exists and is driven from
+  a static file; nothing loads WebAssembly, nothing runs in a sandbox, and the
+  event the launcher builds when you run a view's action is logged and dropped
+  because there is nowhere to send it. The plan's build order says the tree
+  goes across a channel only after the renderer is proved, and that the second
+  extension is written before anything in the protocol is stabilised.
 - **Linux is stubs.** `lumen-platform-linux` compiles on every commit and every
   method is `todo!()`. That is deliberate — see I-2.
 

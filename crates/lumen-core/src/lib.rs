@@ -22,11 +22,12 @@ pub mod providers;
 pub mod search;
 pub mod sheets;
 pub mod theme;
+pub mod view;
 pub mod watcher;
 
 pub use config::Config;
 pub use frecency::Frecency;
-pub use item::{Action, Builtin, Item, Kind};
+pub use item::{Action, Builtin, Item, Kind, ViewSource};
 pub use paths::Paths;
 pub use providers::{Provider, Providers};
 pub use search::{Candidate, Match, Search};

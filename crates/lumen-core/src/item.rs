@@ -86,6 +86,14 @@ pub enum Action {
     /// front at the moment the action runs would be a race, and losing it
     /// means resizing a window the user did not choose.
     ArrangeWindow(lumen_platform::WindowLayout),
+    /// Replace the launcher's list with an extension's view (F4).
+    ///
+    /// Handled by the launcher itself rather than carried back to the daemon
+    /// like a [`Builtin`]: a view takes over the list's own region, which is
+    /// the list's business and not the shell's. Today the only source is the
+    /// example compiled into the binary; when there are extensions it is
+    /// whichever one's command was run.
+    OpenView(ViewSource),
     /// Run a tier-T1 script command.
     ///
     /// Execution goes through `trait Platform` rather than `std::process` here,
@@ -104,6 +112,21 @@ pub enum Builtin {
     Quit,
 }
 
+/// Where a view comes from.
+///
+/// One variant, and it is a variant rather than a bare unit type because the
+/// next one is an extension identifier and the shape of the call site should
+/// not have to change when it arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewSource {
+    /// The hand-written list compiled into the binary (F4, step 1).
+    ///
+    /// The plan's build order starts here on purpose: "Render it in GPUI from a
+    /// static file. No protocol, no processes." A renderer proved against a
+    /// file is a renderer nothing can blame on a transport.
+    Example,
+}
+
 impl Action {
     /// The verb shown in the footer and the action panel.
     pub fn verb(&self) -> &'static str {
@@ -114,6 +137,7 @@ impl Action {
             Action::Builtin(Builtin::ReloadSheets) => "Reload",
             Action::Builtin(Builtin::Quit) => "Quit",
             Action::ArrangeWindow(_) => "Arrange",
+            Action::OpenView(_) => "Open",
             Action::RunScript(_) => "Run",
         }
     }

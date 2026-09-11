@@ -5,7 +5,7 @@
 //! by use like anything else, and reachable without the user learning a second
 //! way to reach things.
 
-use crate::item::{Action, Builtin, Item, Kind};
+use crate::item::{Action, Builtin, Item, Kind, ViewSource};
 use crate::providers::Provider;
 
 pub struct CommandsProvider;
@@ -37,7 +37,25 @@ impl Provider for CommandsProvider {
     // Filtering here as well would mean two different notions of "matches",
     // and the one in this file would be the worse of them.
     fn catalogue(&self) -> Vec<Item> {
-        COMMANDS.iter().map(item).collect()
+        COMMANDS.iter().map(item).chain([example_view()]).collect()
+    }
+}
+
+/// The command that opens F4's hand-written example view.
+///
+/// A real row in the real list rather than a hidden developer flag, because the
+/// point of step 1 is to look at the thing in the interface it will live in.
+/// It goes away when there are extensions to open instead -- and the note in
+/// its subtitle is there so that whoever finds it knows that.
+fn example_view() -> Item {
+    Item {
+        id: "command:example-view".into(),
+        title: "Example Extension View".into(),
+        subtitle: Some("A hand-written view, for developing the renderer".into()),
+        icon: None,
+        keywords: vec!["extension".into(), "view".into(), "developer".into()],
+        actions: vec![Action::OpenView(ViewSource::Example)],
+        kind: Kind::Command,
     }
 }
 
@@ -65,8 +83,19 @@ mod tests {
     #[test]
     fn offers_its_commands_in_the_catalogue() {
         let items = CommandsProvider.catalogue();
-        assert_eq!(items.len(), COMMANDS.len());
+        assert_eq!(items.len(), COMMANDS.len() + 1);
         assert!(items.iter().all(|item| item.kind == Kind::Command));
+    }
+
+    #[test]
+    fn the_example_view_is_reachable_from_the_launcher() {
+        let items = CommandsProvider.catalogue();
+        let example = items
+            .iter()
+            .find(|item| item.title == "Example Extension View")
+            .expect("the example view has a row");
+
+        assert_eq!(example.primary(), Action::OpenView(ViewSource::Example));
     }
 
     #[test]

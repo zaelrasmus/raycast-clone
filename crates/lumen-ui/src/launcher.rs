@@ -145,6 +145,20 @@ impl Aside {
     }
 }
 
+/// What the search field says when it is empty and nothing else applies.
+const ROOT_PLACEHOLDER: &str = "Search for apps and commands...";
+
+/// The fallback for a view that did not name its own.
+const FIND: &str = "Search...";
+
+/// One row of the action panel, whichever mode produced it.
+struct PanelEntry {
+    title: String,
+    /// The key combination shown beside it, when there is one. Shown, never
+    /// bound -- see `lumen_core::view::Action::shortcut`.
+    shortcut: Option<String>,
+}
+
 /// How many results are kept behind the visible window.
 ///
 /// Bounded because nobody scrolls to the four hundredth fuzzy match, and an
@@ -158,6 +172,34 @@ const MAX_RESULTS: usize = 64;
 /// search matches against, and reading a month of pastes into memory to answer
 /// a three-character query is not a trade worth making.
 const CLIPBOARD_ENTRIES: usize = 100;
+
+/// What the launcher is currently showing.
+///
+/// A view takes over the list's region rather than opening a window of its own
+/// (F4). That is what an extension's results are: the launcher, showing
+/// somebody else's rows. Giving them a separate surface would mean a second
+/// search field, a second focus owner and a second thing to dismiss.
+enum Mode {
+    Root,
+    View(Box<ViewState>),
+}
+
+/// A view, and everything the launcher needs to draw and drive it.
+struct ViewState {
+    view: lumen_core::view::View,
+    /// The flattened rows after the current filter. Rebuilt when the query
+    /// changes, not on every frame.
+    rows: Vec<crate::view::Row>,
+    /// GPUI's virtualised-list state. Replaced whenever `rows` changes length,
+    /// because it caches measured heights by index.
+    list: gpui::ListState,
+    /// An index into the view's *unfiltered* flat item order, so that a row
+    /// keeps its identity when the filter changes underneath it.
+    selected: usize,
+    /// The view's items prepared for matching, when the host is doing the
+    /// filtering. Built once when the view opens.
+    candidates: Arc<Vec<Candidate>>,
+}
 
 pub struct Launcher {
     focus_handle: FocusHandle,
@@ -195,6 +237,9 @@ pub struct Launcher {
     hits: Vec<Hit>,
     selected: usize,
     scroll: UniformListScrollHandle,
+
+    /// The root list, or an extension's view (F4).
+    mode: Mode,
 
     /// Which action is highlighted in the action panel, when it is open.
     ///
@@ -241,6 +286,7 @@ impl Launcher {
             hits: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
+            mode: Mode::Root,
             action_panel: None,
             appearances: 0,
             _theme_reload: None,
@@ -465,6 +511,12 @@ impl Launcher {
         self.selected = 0;
         self.appearances = self.appearances.wrapping_add(1);
 
+        // A view does not survive the launcher being dismissed. Coming back to
+        // somebody else's list a day later, with no memory of opening it, is
+        // the kind of state that makes an interface feel haunted.
+        self.mode = Mode::Root;
+        self.action_panel = None;
+
         // Point GPUI's focus tree at this view. Without it GPUI has nothing to
         // resolve keystrokes against and the keymap of AD-15 never fires, even
         // once the operating system is delivering input to this window.
@@ -498,13 +550,56 @@ impl Launcher {
 
     /// How tall the window should be for whatever it is currently showing.
     ///
-    /// The action panel replaces the list (7.11), and it is not made of the
-    /// same rows, so it does not have the same height.
+    /// Three kinds of content, three heights. The action panel replaces the
+    /// list (7.11) and an action row is shorter than a result row; a view's
+    /// rows are result-height but its section headers are not.
     pub fn content_height(&self) -> f32 {
-        match self.action_panel {
-            Some(_) => self.config.panel_height(self.available_actions().len()),
-            None => self.config.window_height(self.visible_rows()),
+        if self.action_panel.is_some() {
+            return self.config.panel_height(self.panel_entries().len());
         }
+
+        match &self.mode {
+            Mode::Root => self.config.window_height(self.visible_rows()),
+            Mode::View(state) => {
+                lumen_core::layout::SEARCH_HEIGHT
+                    + lumen_core::layout::LIST_PADDING * 2.0
+                    + self.view_rows_height(state)
+                    + lumen_core::layout::FOOTER_HEIGHT
+            }
+        }
+    }
+
+    /// How much vertical space a view's rows take, rounded down to a whole row.
+    ///
+    /// Not `total.min(cap)`. A view's rows are not all the same height -- a
+    /// section header is shorter than an item -- so capping the sum lands
+    /// wherever it lands, which for the bundled example is two thirds of the
+    /// way through the last row it shows. Accumulating whole rows until the
+    /// next one would not fit is what keeps I-10's promise here: a partial row
+    /// is never left clipped at the bottom edge.
+    fn view_rows_height(&self, state: &ViewState) -> f32 {
+        let cap = self.config.window.visible_rows as f32 * lumen_core::layout::ROW_HEIGHT;
+
+        let mut used = 0.0;
+        for row in &state.rows {
+            let height = crate::view::row_height(row);
+            if used + height > cap {
+                break;
+            }
+            used += height;
+        }
+
+        // A single row taller than the whole cap is shown anyway: an empty
+        // window is worse than one row that does not quite fit.
+        if used == 0.0 {
+            return state
+                .rows
+                .first()
+                .map(crate::view::row_height)
+                .unwrap_or_default();
+        }
+
+        used
     }
 
     /// Ask for a resize, but only when the height actually changed.
@@ -521,6 +616,14 @@ impl Launcher {
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
         let previous_height = self.content_height();
+
+        // A view filters its own rows and has no use for the root index.
+        if matches!(self.mode, Mode::View(_)) {
+            self.refilter_view();
+            self.action_panel = None;
+            self.resize_if_needed(previous_height, cx);
+            return;
+        }
 
         // Answers run first and synchronously. Providers are contractually
         // instant (see `lumen_core::providers`), so this stays inside the frame
@@ -595,6 +698,200 @@ impl Launcher {
         self.resize_if_needed(previous_height, cx);
     }
 
+    // -- Extension views (F4) ----------------------------------------------
+
+    /// Open a view in place of the root list.
+    fn open_view(&mut self, source: &lumen_core::ViewSource, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+
+        let view = match source {
+            // `include_str!`, not a read: this is the file the plan's step 1
+            // asks to render, it ships with the binary, and a demonstration
+            // that can fail because a path moved demonstrates nothing.
+            lumen_core::ViewSource::Example => {
+                let source = include_str!("../../../assets/views/example.json");
+                match lumen_core::view::from_json(source) {
+                    Ok(view) => view,
+                    Err(error) => {
+                        log::error!("the example view is not valid: {error}");
+                        return;
+                    }
+                }
+            }
+        };
+
+        // Prepared once, here, rather than on each keystroke: filtering a view
+        // is the same matcher the root list uses and it runs in the same frame.
+        let candidates = match &view {
+            lumen_core::view::View::List(list) => list
+                .items()
+                .map(|item| {
+                    Candidate::new(Item {
+                        id: item.id.clone(),
+                        title: item.title.clone(),
+                        subtitle: item.subtitle.clone(),
+                        icon: None,
+                        keywords: item.keywords.clone(),
+                        actions: Vec::new(),
+                        kind: lumen_core::Kind::Command,
+                    })
+                })
+                .collect(),
+            lumen_core::view::View::Detail(_) => Vec::new(),
+        };
+
+        let rows = match &view {
+            lumen_core::view::View::List(list) => crate::view::rows(list),
+            lumen_core::view::View::Detail(_) => Vec::new(),
+        };
+
+        self.query.clear();
+        self.cursor = 0;
+        self.action_panel = None;
+        self.mode = Mode::View(Box::new(ViewState {
+            list: crate::view::list_state(rows.len()),
+            selected: 0,
+            rows,
+            candidates: Arc::new(candidates),
+            view,
+        }));
+
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// Return to the root list.
+    fn leave_view(&mut self, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+        self.mode = Mode::Root;
+        self.query.clear();
+        self.cursor = 0;
+        self.action_panel = None;
+        self.rerank(cx);
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// Narrow the open view to the current query.
+    ///
+    /// Only under [`Filtering::Host`](lumen_core::view::Filtering::Host), which
+    /// is the default and the one the frame budget can promise: the same
+    /// matcher as the root list, in the same frame, waiting on nothing. Under
+    /// `Extension` the view is left exactly as it was sent, because narrowing
+    /// it here would fight whatever the extension is about to send back.
+    ///
+    /// The surviving items keep the order and the sections the view gave them
+    /// rather than being re-sorted by score. The extension chose that order --
+    /// and the sections are labelled, so reordering across them would put rows
+    /// under headings that do not describe them.
+    fn refilter_view(&mut self) {
+        let query = self.query.trim().to_string();
+
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &state.view else {
+            return;
+        };
+
+        let keep: Option<std::collections::HashSet<usize>> =
+            if query.is_empty() || list.filtering == lumen_core::view::Filtering::Extension {
+                None
+            } else {
+                let candidates = state.candidates.clone();
+                Some(
+                    self.search
+                        .rank(&query, &candidates, &self.frecency, usize::MAX)
+                        .into_iter()
+                        .map(|matched| matched.index)
+                        .collect(),
+                )
+            };
+
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &state.view else {
+            return;
+        };
+
+        let mut rows = Vec::new();
+        let mut index = 0;
+        for section in &list.sections {
+            let first = rows.len();
+            for _ in &section.items {
+                if keep.as_ref().is_none_or(|keep| keep.contains(&index)) {
+                    rows.push(crate::view::Row::Item(index));
+                }
+                index += 1;
+            }
+            // A heading with nothing under it is a heading about nothing.
+            if rows.len() > first
+                && let Some(title) = &section.title
+            {
+                rows.insert(first, crate::view::Row::Section(title.clone().into()));
+            }
+        }
+
+        // The selection lands on the first surviving row. Keeping it on an item
+        // the filter just removed would leave Enter pointing at something that
+        // is no longer on screen.
+        state.selected = rows
+            .iter()
+            .find_map(|row| match row {
+                crate::view::Row::Item(index) => Some(*index),
+                crate::view::Row::Section(_) => None,
+            })
+            .unwrap_or(0);
+
+        state.list = crate::view::list_state(rows.len());
+        state.rows = rows;
+    }
+
+    /// The items currently on screen in a view, in display order.
+    fn view_items(&self) -> Vec<usize> {
+        let Mode::View(state) = &self.mode else {
+            return Vec::new();
+        };
+        state
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                crate::view::Row::Item(index) => Some(*index),
+                crate::view::Row::Section(_) => None,
+            })
+            .collect()
+    }
+
+    /// Move the selection within a view by `delta` places.
+    fn move_view_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let items = self.view_items();
+        if items.is_empty() {
+            return;
+        }
+
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+
+        let current = items
+            .iter()
+            .position(|index| *index == state.selected)
+            .unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(items.len() as isize) as usize;
+        state.selected = items[next];
+
+        // Told about the row, not the item: a header occupies a row too, and
+        // scrolling to the item's index would stop short by one per section.
+        if let Some(row) = state.rows.iter().position(
+            |row| matches!(row, crate::view::Row::Item(index) if *index == state.selected),
+        ) {
+            state.list.scroll_to_reveal_item(row);
+        }
+
+        cx.notify();
+    }
+
     fn item(&self, hit: &Hit) -> &Item {
         match hit.source {
             Source::Indexed(index) => &self.candidates[index].item,
@@ -620,6 +917,34 @@ impl Launcher {
             .unwrap_or_default()
     }
 
+    /// The action panel's rows, whichever mode is showing.
+    ///
+    /// One shape for both, because the panel is one piece of interface. A root
+    /// row's actions are Lumen's own and name themselves with a verb; a view's
+    /// are the extension's and name themselves with whatever it chose, plus the
+    /// key combination it wants shown beside them.
+    fn panel_entries(&self) -> Vec<PanelEntry> {
+        match &self.mode {
+            Mode::Root => self
+                .available_actions()
+                .into_iter()
+                .map(|action| PanelEntry {
+                    title: action.verb().to_string(),
+                    shortcut: None,
+                })
+                .collect(),
+            Mode::View(state) => state
+                .view
+                .actions(state.selected)
+                .iter()
+                .map(|action| PanelEntry {
+                    title: action.title.clone(),
+                    shortcut: action.shortcut.clone(),
+                })
+                .collect(),
+        }
+    }
+
     fn toggle_action_panel(
         &mut self,
         _: &ToggleActionPanel,
@@ -633,8 +958,8 @@ impl Launcher {
             // Opens on the *second* action, not the first: the first is what
             // Enter already does, so landing on it would make the panel's own
             // Enter a no-op and waste the gesture.
-            None if self.available_actions().len() > 1 => Some(1),
-            None if !self.available_actions().is_empty() => Some(0),
+            None if self.panel_entries().len() > 1 => Some(1),
+            None if !self.panel_entries().is_empty() => Some(0),
             None => None,
         };
 
@@ -646,11 +971,16 @@ impl Launcher {
         // While the panel is open the arrow keys move within it. Two lists on
         // screen and one set of arrow keys: whichever is in front wins.
         if let Some(selected) = self.action_panel {
-            let count = self.available_actions().len();
+            let count = self.panel_entries().len();
             if count > 0 {
                 self.action_panel = Some((selected + 1) % count);
                 cx.notify();
             }
+            return;
+        }
+
+        if matches!(self.mode, Mode::View(_)) {
+            self.move_view_selection(1, cx);
             return;
         }
 
@@ -666,11 +996,16 @@ impl Launcher {
 
     fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(selected) = self.action_panel {
-            let count = self.available_actions().len();
+            let count = self.panel_entries().len();
             if count > 0 {
                 self.action_panel = Some(selected.checked_sub(1).unwrap_or(count - 1));
                 cx.notify();
             }
+            return;
+        }
+
+        if matches!(self.mode, Mode::View(_)) {
+            self.move_view_selection(-1, cx);
             return;
         }
 
@@ -682,11 +1017,32 @@ impl Launcher {
     }
 
     fn select_first(&mut self, _: &SelectFirst, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::View(_)) {
+            let first = self.view_items().first().copied();
+            if let (Some(first), Mode::View(state)) = (first, &mut self.mode) {
+                state.selected = first;
+                state.list.scroll_to_reveal_item(0);
+                cx.notify();
+            }
+            return;
+        }
+
         self.selected = 0;
         self.reveal_selection(cx);
     }
 
     fn select_last(&mut self, _: &SelectLast, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::View(_)) {
+            let last = self.view_items().last().copied();
+            if let (Some(last), Mode::View(state)) = (last, &mut self.mode) {
+                state.selected = last;
+                let rows = state.rows.len().saturating_sub(1);
+                state.list.scroll_to_reveal_item(rows);
+                cx.notify();
+            }
+            return;
+        }
+
         self.selected = self.hits.len().saturating_sub(1);
         self.reveal_selection(cx);
     }
@@ -704,6 +1060,11 @@ impl Launcher {
     }
 
     fn activate(&mut self, _: &Activate, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::View(_)) {
+            self.activate_in_view(cx);
+            return;
+        }
+
         let Some(item) = self.selected_item() else {
             return;
         };
@@ -735,6 +1096,13 @@ impl Launcher {
             return;
         }
 
+        // A view replaces the list rather than doing something and going away,
+        // so this neither dismisses nor reaches the platform.
+        if let Action::OpenView(source) = action {
+            self.open_view(&source, cx);
+            return;
+        }
+
         cx.emit(LauncherEvent::Dismissed);
 
         // Lumen's own commands open windows or stop the process, which is the
@@ -751,14 +1119,53 @@ impl Launcher {
                 Action::Launch(target) => platform.launch(target),
                 Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
                 Action::RunScript(run) => run_script(platform.as_ref(), run),
-                // Both handled above, before this task was spawned.
-                Action::Builtin(_) | Action::ArrangeWindow(_) => Ok(()),
+                // All handled above, before this task was spawned.
+                Action::Builtin(_) | Action::ArrangeWindow(_) | Action::OpenView(_) => Ok(()),
             };
             if let Err(error) = outcome {
                 log::error!("could not run {action:?}: {error:#}");
             }
         })
         .detach();
+    }
+
+    /// Run the selected action inside a view.
+    ///
+    /// This is where step 3 begins: the event below is exactly what will be
+    /// sent to the extension once there is a channel to send it down. Until
+    /// then it is built, logged and dropped -- which is the honest state of a
+    /// renderer that has been proved against a static file and has nothing to
+    /// talk to.
+    fn activate_in_view(&mut self, cx: &mut Context<Self>) {
+        let Mode::View(state) = &self.mode else {
+            return;
+        };
+
+        let actions = state.view.actions(state.selected);
+        let action = match self.action_panel {
+            Some(index) => actions.get(index).or_else(|| actions.first()),
+            None => actions.first(),
+        };
+
+        let Some(action) = action else {
+            return;
+        };
+
+        let item = match &state.view {
+            lumen_core::view::View::List(list) => {
+                list.item(state.selected).map(|item| item.id.clone())
+            }
+            lumen_core::view::View::Detail(_) => None,
+        };
+
+        let event = lumen_core::view::Event::ActionInvoked {
+            item,
+            action: action.id.clone(),
+        };
+        log::info!("view event, with nowhere to send it yet: {event:?}");
+
+        self.action_panel = None;
+        cx.notify();
     }
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
@@ -794,6 +1201,22 @@ impl Launcher {
         // steps because the first one happened to be empty".
         if self.action_panel.take().is_some() {
             cx.notify();
+            return;
+        }
+
+        // In a view the layers are one deeper: the panel, the view's query,
+        // the view, and only then the launcher. Leaving the view on the same
+        // key is what makes it feel like somewhere you went rather than
+        // somewhere you are stuck.
+        if matches!(self.mode, Mode::View(_)) {
+            if self.query.is_empty() {
+                self.leave_view(cx);
+            } else {
+                self.query.clear();
+                self.cursor = 0;
+                self.rerank(cx);
+                cx.notify();
+            }
             return;
         }
 
@@ -958,11 +1381,13 @@ impl Render for Launcher {
             root = root.font_family(SharedString::from(family.clone()));
         }
 
-        // The panel replaces the list when it is open: one region, one height,
-        // and no window resize to swap between them.
-        let body = match self.render_action_panel(cx) {
-            Some(panel) => panel,
-            None => self.render_results(cx).into_any_element(),
+        // One region, three possible occupants, in order of precedence: the
+        // action panel over whatever it was opened from, then an extension's
+        // view, then the root list.
+        let body = match (self.render_action_panel(cx), &self.mode) {
+            (Some(panel), _) => panel,
+            (None, Mode::View(state)) => self.render_view(state),
+            (None, Mode::Root) => self.render_results(cx).into_any_element(),
         };
 
         root.child(self.render_search_field(window))
@@ -1002,9 +1427,17 @@ impl Launcher {
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::query())
             .child(if self.query.is_empty() {
+                // A view says what its own search does. "Search for apps and
+                // commands" over somebody's pull requests is the launcher
+                // talking over an extension in its own window.
+                let placeholder = match &self.mode {
+                    Mode::View(state) => state.view.placeholder().unwrap_or(FIND),
+                    Mode::Root => ROOT_PLACEHOLDER,
+                };
+
                 div()
                     .text_color(color(colors.text_placeholder))
-                    .child("Search for apps and commands...")
+                    .child(placeholder.to_string())
                     .into_any_element()
             } else {
                 div()
@@ -1036,6 +1469,33 @@ impl Launcher {
     /// cannot disagree and the window never has to resize to swap between them.
     fn results_height(&self) -> gpui::Pixels {
         metrics::row_height() * self.visible_rows() as f32 + metrics::list_padding() * 2.0
+    }
+
+    /// Draw the open view (F4, step 2).
+    ///
+    /// The launcher owns the search field and the footer; the renderer owns
+    /// everything between them. That split is the one an extension will see:
+    /// it supplies rows, and the chrome around them is never its to change.
+    fn render_view(&self, state: &ViewState) -> gpui::AnyElement {
+        let height = gpui::px(
+            self.content_height()
+                - lumen_core::layout::SEARCH_HEIGHT
+                - lumen_core::layout::FOOTER_HEIGHT,
+        );
+
+        match &state.view {
+            lumen_core::view::View::List(list) => crate::view::render_list(
+                list,
+                &state.rows,
+                &state.list,
+                state.selected,
+                &self.theme,
+                height,
+            ),
+            lumen_core::view::View::Detail(detail) => {
+                crate::view::render_detail(detail, &self.theme, height)
+            }
+        }
     }
 
     fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1175,10 +1635,26 @@ impl Launcher {
 
     fn render_footer(&self) -> impl IntoElement {
         let colors = &self.theme.colors;
-        let verb = self
-            .selected_item()
-            .map(|item| item.primary().verb())
-            .unwrap_or("Open");
+        let entries = self.panel_entries();
+        let verb = match &self.mode {
+            Mode::Root => self
+                .selected_item()
+                .map(|item| item.primary().verb().to_string())
+                .unwrap_or_else(|| "Open".to_string()),
+            // The extension's own word for what Enter does. It is the first
+            // thing a view gets to say in the launcher's own chrome, and
+            // overriding it with "Open" would make every extension sound the
+            // same.
+            Mode::View(_) => entries
+                .first()
+                .map(|entry| entry.title.clone())
+                .unwrap_or_else(|| "Open".to_string()),
+        };
+
+        let count = match &self.mode {
+            Mode::Root => self.hits.len(),
+            Mode::View(_) => self.view_items().len(),
+        };
 
         div()
             .flex()
@@ -1190,7 +1666,7 @@ impl Launcher {
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::footer())
             .text_color(color(colors.text_muted))
-            .child(div().child(format!("{} results", self.hits.len())))
+            .child(div().child(format!("{count} results")))
             .child(
                 div()
                     .flex()
@@ -1199,10 +1675,11 @@ impl Launcher {
                     // Advertised only when there is a second action to reach.
                     // A hint for a panel that would open empty teaches the user
                     // that the hint lies.
-                    .when(self.available_actions().len() > 1, |footer| {
-                        footer.child("Actions  Ctrl+K")
-                    })
-                    .child("Dismiss  Esc"),
+                    .when(entries.len() > 1, |footer| footer.child("Actions  Ctrl+K"))
+                    .child(match self.mode {
+                        Mode::Root => "Dismiss  Esc",
+                        Mode::View(_) => "Back  Esc",
+                    }),
             )
     }
 
@@ -1216,8 +1693,8 @@ impl Launcher {
         use lumen_core::layout::action_panel as panel;
 
         let selected = self.action_panel?;
-        let actions = self.available_actions();
-        if actions.is_empty() {
+        let entries = self.panel_entries();
+        if entries.is_empty() {
             return None;
         }
 
@@ -1240,7 +1717,7 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .bg(color(colors.surface_elevated))
-                .children(actions.into_iter().enumerate().map(|(index, action)| {
+                .children(entries.into_iter().enumerate().map(|(index, entry)| {
                     let entity = entity.clone();
                     div()
                         .id(("action", index))
@@ -1265,7 +1742,18 @@ impl Launcher {
                                 this.activate(&Activate, window, cx);
                             });
                         })
-                        .child(action.verb())
+                        .child(entry.title)
+                        // What the extension asked to have shown beside it, when
+                        // it asked. Shown, never bound: see
+                        // `lumen_core::view::Action::shortcut`.
+                        .when_some(entry.shortcut, |row, shortcut| {
+                            row.child(
+                                div()
+                                    .text_size(type_scale::footer())
+                                    .text_color(color(colors.text_muted))
+                                    .child(shortcut),
+                            )
+                        })
                         // The first action is what Enter already does; saying so
                         // is what stops the panel looking like a list of things
                         // Enter cannot reach.

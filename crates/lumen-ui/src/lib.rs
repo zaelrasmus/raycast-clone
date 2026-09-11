@@ -27,6 +27,7 @@ pub mod overlay;
 pub mod settings;
 pub mod styling;
 pub mod text_field;
+pub mod view;
 
 pub use assets::Assets;
 pub use fonts::FAMILY as FONT_FAMILY;
