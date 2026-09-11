@@ -573,8 +573,10 @@ fn open_settings(
             lumen_core::layout::settings::WIDTH as i32,
             lumen_core::layout::settings::HEIGHT as i32,
         ),
-        // Centred rather than biased upward: this is a window to work in, not a
-        // flyout to glance at.
+        // Centred both ways rather than biased upward: this is a window to
+        // work in, not a flyout to glance at, and it does not follow the
+        // launcher wherever the user has put that.
+        0.5,
         0.5,
     );
     platform.show_window(WindowRole::Settings, bounds)?;
@@ -955,6 +957,10 @@ fn show_overlay(
         let monitor = platform.cursor_monitor()?;
         let bounds = monitor.place(
             Rect::size(width as i32, height as i32),
+            // The overlay is always centred: it documents the application under
+            // it, so it belongs where the eye already is rather than wherever the
+            // launcher was moved to.
+            0.5,
             lumen_core::layout::overlay::VERTICAL_BIAS,
         );
         platform.show_window(WindowRole::Overlay, bounds)?;
@@ -970,6 +976,10 @@ fn show_overlay(
         {
             let bounds = monitor.place(
                 Rect::size(width as i32, height as i32),
+                // The overlay is always centred: it documents the application under
+                // it, so it belongs where the eye already is rather than wherever the
+                // launcher was moved to.
+                0.5,
                 lumen_core::layout::overlay::VERTICAL_BIAS,
             );
             platform.set_window_bounds(WindowRole::Overlay, bounds).ok();
@@ -1118,6 +1128,7 @@ fn resize(
 fn placement(monitor: &MonitorInfo, config: &Config, height: f32) -> Rect {
     monitor.place(
         Rect::size(config.window.width as i32, height as i32),
+        config.window.horizontal_bias,
         config.window.vertical_bias,
     )
 }

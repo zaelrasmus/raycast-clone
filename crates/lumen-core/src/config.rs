@@ -98,9 +98,18 @@ pub struct WindowConfig {
     pub visible_rows: usize,
     /// Where the window sits vertically in the work area, 0.0 to 1.0.
     ///
-    /// Above the optical centre on purpose: 0.5 reads as low, because the eye
-    /// weights the top of the screen.
+    /// 0.0 is against the top edge, 1.0 against the bottom, 0.5 centred. The
+    /// default sits above the optical centre on purpose: 0.5 reads as low,
+    /// because the eye weights the top of the screen.
     pub vertical_bias: f32,
+    /// Where the window sits horizontally, 0.0 to 1.0.
+    ///
+    /// 0.0 is against the left edge, 1.0 against the right, and 0.5 -- the
+    /// default -- centred. Worth having as a setting rather than a constant:
+    /// where a launcher should appear is about where the person using it
+    /// habitually looks, and on an ultrawide monitor the centre of the screen
+    /// is nowhere near the centre of anybody's attention.
+    pub horizontal_bias: f32,
     /// Whether clicking away closes the launcher.
     ///
     /// On by default, because a launcher that stays on top of whatever you just
@@ -117,6 +126,7 @@ impl Default for WindowConfig {
             width: 720.0,
             visible_rows: 8,
             vertical_bias: 0.22,
+            horizontal_bias: 0.5,
             dismiss_on_focus_loss: true,
         }
     }
@@ -233,6 +243,15 @@ mod tests {
         let config: Config = serde_json::from_str(r#"{ "window": { "width": 800.0 } }"#).unwrap();
         assert!(config.window.dismiss_on_focus_loss);
         assert_eq!(config.window.width, 800.0);
+    }
+
+    /// A config written before the setting existed must keep the launcher
+    /// where it has always been rather than jumping to a corner.
+    #[test]
+    fn the_launcher_stays_centred_for_a_config_that_predates_the_setting() {
+        let config: Config = serde_json::from_str(r#"{ "window": { "width": 800.0 } }"#).unwrap();
+        assert_eq!(config.window.horizontal_bias, 0.5);
+        assert_eq!(config.window.vertical_bias, 0.22);
     }
 
     #[test]

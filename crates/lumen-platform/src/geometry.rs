@@ -55,12 +55,18 @@ pub struct MonitorInfo {
 }
 
 impl MonitorInfo {
-    /// Place a window of `size` logical pixels horizontally centred on this
-    /// monitor and vertically at `vertical_bias` of the work area.
+    /// Place a window of `size` logical pixels within this monitor's work
+    /// area, at the given fractions across and down.
     ///
-    /// A launcher sits above the optical centre: 0.5 reads as low, because the
-    /// eye weights the top of the screen.
-    pub fn place(&self, size: Rect, vertical_bias: f32) -> Rect {
+    /// Both biases are "how far through the *free* space", not "where the
+    /// centre goes": 0.0 is flush against the left or top edge, 1.0 flush
+    /// against the right or bottom, 0.5 centred. That definition is what makes
+    /// the window stay on screen at every value, whatever its size -- a centre
+    /// coordinate at 1.0 would hang half the window off the edge.
+    ///
+    /// A launcher sits above the optical centre: 0.5 vertically reads as low,
+    /// because the eye weights the top of the screen.
+    pub fn place(&self, size: Rect, horizontal_bias: f32, vertical_bias: f32) -> Rect {
         // Clamped to the work area first. A window asked for at a size that does
         // not fit -- the settings editor on a small laptop, or any window on a
         // scaled display where the logical size multiplies up past the screen --
@@ -71,11 +77,19 @@ impl MonitorInfo {
         let height =
             ((size.height as f32 * self.scale_factor).round() as i32).min(self.work_area.height);
 
-        let x = self.work_area.x + (self.work_area.width - width) / 2;
-        let y = self.work_area.y
-            + ((self.work_area.height - height) as f32 * vertical_bias).round() as i32;
+        // Clamped rather than trusted: these come from a file the user edits,
+        // and a typed `5` instead of `0.5` must not put the launcher off the
+        // side of the screen where it cannot be dismissed.
+        let across = horizontal_bias.clamp(0.0, 1.0);
+        let down = vertical_bias.clamp(0.0, 1.0);
 
-        Rect::new(x, y.max(self.work_area.y), width, height)
+        let free_x = (self.work_area.width - width).max(0);
+        let free_y = (self.work_area.height - height).max(0);
+
+        let x = self.work_area.x + (free_x as f32 * across).round() as i32;
+        let y = self.work_area.y + (free_y as f32 * down).round() as i32;
+
+        Rect::new(x, y, width, height)
     }
 }
 
@@ -91,7 +105,7 @@ mod tests {
             scale_factor: 1.0,
         };
 
-        let placed = monitor.place(Rect::size(700, 400), 0.25);
+        let placed = monitor.place(Rect::size(700, 400), 0.5, 0.25);
 
         assert_eq!(placed.x, (1920 - 700) / 2);
         assert_eq!(placed.y, ((1040 - 400) as f32 * 0.25).round() as i32);
@@ -106,7 +120,7 @@ mod tests {
             scale_factor: 1.5,
         };
 
-        let placed = monitor.place(Rect::size(700, 400), 0.25);
+        let placed = monitor.place(Rect::size(700, 400), 0.5, 0.25);
 
         assert_eq!(placed.width, 1050);
         assert_eq!(placed.height, 600);
@@ -125,7 +139,7 @@ mod tests {
         };
 
         // 900 x 620 logical is 1350 x 930 physical: wider and taller than this.
-        let placed = monitor.place(Rect::size(900, 620), 0.5);
+        let placed = monitor.place(Rect::size(900, 620), 0.5, 0.5);
 
         assert!(placed.width <= monitor.work_area.width);
         assert!(placed.height <= monitor.work_area.height);
@@ -142,10 +156,89 @@ mod tests {
             scale_factor: 1.0,
         };
 
-        let placed = monitor.place(Rect::size(900, 620), 0.5);
+        let placed = monitor.place(Rect::size(900, 620), 0.5, 0.5);
 
         assert_eq!(placed.width, 900);
         assert_eq!(placed.height, 620);
+    }
+
+    /// The two extremes and the middle, which is the whole of what the setting
+    /// promises: flush left, centred, flush right, and never off the screen.
+    #[test]
+    fn horizontal_bias_runs_from_one_edge_to_the_other() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.0,
+        };
+        let size = Rect::size(720, 400);
+
+        assert_eq!(monitor.place(size, 0.0, 0.0).x, 0);
+        assert_eq!(monitor.place(size, 0.5, 0.0).x, (1920 - 720) / 2);
+        assert_eq!(monitor.place(size, 1.0, 0.0).x, 1920 - 720);
+    }
+
+    #[test]
+    fn vertical_bias_runs_from_one_edge_to_the_other() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 40, 1920, 1000),
+            scale_factor: 1.0,
+        };
+        let size = Rect::size(720, 400);
+
+        assert_eq!(monitor.place(size, 0.5, 0.0).y, 40);
+        assert_eq!(monitor.place(size, 0.5, 1.0).y, 40 + 1000 - 400);
+    }
+
+    /// The setting comes from a file somebody edits by hand, so a `5` typed
+    /// where `0.5` was meant must not put the launcher somewhere it cannot be
+    /// reached or dismissed.
+    #[test]
+    fn a_bias_outside_the_range_is_clamped_rather_than_obeyed() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.0,
+        };
+        let size = Rect::size(720, 400);
+
+        let far = monitor.place(size, 5.0, 5.0);
+        assert_eq!(far.x, 1920 - 720);
+        assert_eq!(far.y, 1040 - 400);
+
+        let negative = monitor.place(size, -3.0, -3.0);
+        assert_eq!(negative.x, 0);
+        assert_eq!(negative.y, 0);
+    }
+
+    /// Every position, on an awkward monitor, with a window that only just
+    /// fits: the window stays entirely on the work area at all of them.
+    #[test]
+    fn no_bias_can_push_the_window_off_the_screen() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(-1920, 137, 1919, 1081),
+            work_area: Rect::new(-1920, 137, 1919, 1037),
+            scale_factor: 1.0,
+        };
+        let size = Rect::size(900, 700);
+
+        for across in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            for down in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let placed = monitor.place(size, across, down);
+
+                assert!(placed.x >= monitor.work_area.x, "{across} {down}");
+                assert!(placed.y >= monitor.work_area.y, "{across} {down}");
+                assert!(
+                    placed.x + placed.width <= monitor.work_area.x + monitor.work_area.width,
+                    "{across} {down}"
+                );
+                assert!(
+                    placed.y + placed.height <= monitor.work_area.y + monitor.work_area.height,
+                    "{across} {down}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -156,7 +249,7 @@ mod tests {
             scale_factor: 1.0,
         };
 
-        let placed = monitor.place(Rect::size(700, 600), 0.25);
+        let placed = monitor.place(Rect::size(700, 600), 0.5, 0.25);
 
         assert!(placed.y >= monitor.work_area.y);
     }

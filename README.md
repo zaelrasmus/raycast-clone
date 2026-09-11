@@ -235,7 +235,13 @@ On first run Lumen writes `%APPDATA%\Lumen\config\config.json`:
   "hotkey": { "modifiers": { "alt": true }, "key": "Space", "hold": null },
   "theme": "nocturne",
   "backdrop": "system-acrylic",
-  "window": { "width": 720.0, "visible-rows": 8, "vertical-bias": 0.22 },
+  "window": {
+    "width": 720.0,
+    "visible-rows": 8,
+    "horizontal-bias": 0.5,
+    "vertical-bias": 0.22,
+    "dismiss-on-focus-loss": true
+  },
   "clipboard": {
     "enabled": true,
     "retention": { "max-entries": 500, "max-age-days": 30 }
@@ -247,6 +253,33 @@ On first run Lumen writes `%APPDATA%\Lumen\config\config.json`:
   }
 }
 ```
+
+### Where the launcher appears
+
+`horizontal-bias` and `vertical-bias` place the window in the work area of
+whichever monitor holds the cursor. Both are fractions of the free space, so
+the window is always fully on screen whatever you set:
+
+| Value | Horizontal | Vertical |
+| ----- | ---------- | -------- |
+| `0.0` | against the left edge | against the top edge |
+| `0.5` | centred | centred |
+| `1.0` | against the right edge | against the bottom edge |
+
+The defaults are `0.5` and `0.22` — centred, and above the optical centre,
+because 0.5 vertically reads as low: the eye weights the top of the screen.
+
+On an ultrawide monitor the centre of the screen is often nowhere near the
+centre of your attention, which is the case this setting exists for. Try
+`0.3` horizontally if you work on the left of a wide display.
+
+Values outside 0–1 are clamped rather than obeyed, so a `5` typed where `0.5`
+was meant cannot put the launcher somewhere you can neither see nor dismiss.
+Changes need a restart: `lumen quit` then `lumen`.
+
+The shortcut overlay and the settings window ignore both and stay centred. The
+overlay documents whatever is underneath it, so it belongs where the eye
+already is rather than wherever the launcher has been moved to.
 
 **If the launcher does not respond to `Alt+Space`,** another application already
 holds that combination — global hotkeys on Windows are first come, first served.
