@@ -11,6 +11,7 @@ use lumen_platform::{BackdropMode, Hotkey};
 use serde::{Deserialize, Serialize};
 
 use crate::clipboard::Retention;
+use crate::providers::files::{self, FileLimits};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -21,6 +22,44 @@ pub struct Config {
     pub backdrop: BackdropMode,
     pub window: WindowConfig,
     pub clipboard: ClipboardConfig,
+    pub files: FileSearchConfig,
+}
+
+/// File search (F3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct FileSearchConfig {
+    pub enabled: bool,
+    /// Folders to walk. Empty means the user's own directories --
+    /// [`files::default_roots`].
+    ///
+    /// Empty rather than the resolved list, so that the defaults follow the
+    /// machine: a config file copied to another computer, or a Documents
+    /// folder redirected to OneDrive after Lumen was first run, keeps working
+    /// instead of pointing at a path that no longer exists.
+    pub roots: Vec<std::path::PathBuf>,
+    pub limits: FileLimits,
+}
+
+impl Default for FileSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            roots: Vec::new(),
+            limits: FileLimits::default(),
+        }
+    }
+}
+
+impl FileSearchConfig {
+    /// The folders to actually walk.
+    pub fn roots(&self) -> Vec<std::path::PathBuf> {
+        if self.roots.is_empty() {
+            files::default_roots()
+        } else {
+            self.roots.clone()
+        }
+    }
 }
 
 /// Clipboard history (F3).
@@ -82,6 +121,7 @@ impl Default for Config {
             backdrop: BackdropMode::default(),
             window: WindowConfig::default(),
             clipboard: ClipboardConfig::default(),
+            files: FileSearchConfig::default(),
         }
     }
 }
@@ -181,6 +221,26 @@ mod tests {
         assert_eq!(config.clipboard.retention.max_age_days, 7);
         assert_eq!(config.clipboard.retention.max_entries, 500);
         assert!(config.clipboard.enabled);
+    }
+
+    #[test]
+    fn file_search_is_on_for_a_config_that_predates_the_setting() {
+        let config: Config = serde_json::from_str(r#"{ "theme": "daylight" }"#).unwrap();
+        assert!(config.files.enabled);
+        assert!(config.files.roots.is_empty());
+        assert_eq!(config.files.limits.max_depth, 6);
+    }
+
+    /// Naming roots must not also mean restating the limits.
+    #[test]
+    fn file_roots_can_be_named_without_restating_the_limits() {
+        let config: Config =
+            serde_json::from_str(r#"{ "files": { "roots": ["D:/work"] } }"#).unwrap();
+        assert_eq!(
+            config.files.roots(),
+            vec![std::path::PathBuf::from("D:/work")]
+        );
+        assert_eq!(config.files.limits.max_entries, 5_000);
     }
 
     #[test]

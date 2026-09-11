@@ -46,6 +46,7 @@ pub enum Kind {
     Snippet,
     Clipboard,
     Window,
+    File,
 }
 
 impl Kind {
@@ -58,6 +59,7 @@ impl Kind {
             Kind::Snippet => "Snippet",
             Kind::Clipboard => "Clipboard",
             Kind::Window => "Window",
+            Kind::File => "File",
         }
     }
 }

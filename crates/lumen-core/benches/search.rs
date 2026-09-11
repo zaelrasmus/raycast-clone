@@ -60,9 +60,11 @@ fn index(count: usize) -> Vec<Candidate> {
 fn ranking(c: &mut Criterion) {
     let mut group = c.benchmark_group("rank");
 
-    // 500 is a typical Start menu; 5000 is a machine with every SDK installed,
-    // and is the size the budget actually has to hold at.
-    for count in [500usize, 2000, 5000] {
+    // 500 is a typical Start menu; 5000 is a machine with every SDK installed.
+    // 20000 is the file-search cap (`FileLimits::max_entries`), which is now
+    // the largest thing ranked on a keystroke and so the size the budget
+    // actually has to hold at.
+    for count in [500usize, 2000, 5000, 20_000] {
         let candidates = index(count);
         let mut frecency = Frecency::new();
         for i in 0..count / 10 {

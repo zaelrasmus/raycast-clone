@@ -53,6 +53,11 @@ an aesthetic worth looking at fifty times a day.
   The edges land flush: Windows draws a window's resize border outside what you
   see, and Lumen compensates for it, so tiled windows meet with no seam and do
   not hang off the screen.
+- **File search** across the folders you keep your own things in -- Desktop,
+  Documents, Downloads, Pictures, Video, Music, plus anything else you name.
+  `Enter` opens with the default application, `Ctrl+K` copies the path.
+  Dependency and build trees are never walked into, so the index is about your
+  files rather than about `node_modules`.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -75,8 +80,11 @@ Listed because a README that implies more than exists is worse than no README.
   backspace, word-delete and paste all do.
 - **No icon set.** F2 asks for one optically aligned on a 16 and 20 px grid;
   application icons come from the shell and nothing else has an icon at all.
-- **File search is missing.** The calculator, snippets, clipboard history,
-  window management and tier T1 are in; searching the filesystem is not.
+- **File search is not a search of the whole disk.** It walks the folders
+  listed above, to a bounded depth and a bounded count, and matches from
+  memory. It finds the file you were working on, not every file on the machine.
+  Nothing watches those folders yet either, so a file created after the daemon
+  started is found on the next restart or `lumen reload-sheets`.
 - **Windows at a higher integrity level cannot be arranged.** A layout applied
   to an elevated window does nothing, and Windows reports no error for it to
   report back.
@@ -103,13 +111,22 @@ release build, median of criterion's samples:
 
 | Index size | Root list | One character typed | Typical query |
 | ---------- | --------- | ------------------- | ------------- |
-| 500 entries (a normal Start menu) | 58 µs | 69 µs | 41 µs |
-| 2 000 entries | 294 µs | 306 µs | 175 µs |
-| 5 000 entries (every SDK installed) | 846 µs | 812 µs | 421 µs |
+| 500 entries (a normal Start menu) | 73 µs | 90 µs | 53 µs |
+| 2 000 entries | 374 µs | 395 µs | 235 µs |
+| 5 000 entries (every SDK installed, and the file-search cap) | 1.09 ms | 1.06 ms | 558 µs |
+| 20 000 entries | 7.03 ms | 7.42 ms | 2.81 ms |
 
-The worst case is 0.85 ms against a budget of 8 ms, which is where the decision
-to keep ranking a plain linear pass over prepared haystacks comes from: there is
-no need for an index to invalidate, and nothing to get subtly wrong.
+The worst case at 5 000 is 1.1 ms against a budget of 8 ms for the whole frame,
+which is where the decision to keep ranking a plain linear pass over prepared
+haystacks comes from: there is no index to invalidate and nothing to get subtly
+wrong.
+
+The 20 000 row is why `files.limits.max-entries` defaults to 5 000 rather than
+to something more generous. Ranking is linear in the number of candidates, and
+the worst case is a single character typed — where nothing is filtered out
+early. At 20 000 entries that one list spends the entire frame budget. The
+number was chosen by running this benchmark, not by taste, and raising it is
+supported with the cost stated above.
 
 **Idle resident memory** is roughly 70 MB with the window hidden and the full
 index loaded, against a budget of 150 MB. That figure is from Task Manager on a
@@ -143,7 +160,7 @@ Then run the binary once to start the daemon:
 | `lumen overlay-press`   | Report that the hold gesture began (Hyprland `bind`)  |
 | `lumen overlay-release` | Report that it ended (Hyprland `bindr`)       |
 | `lumen settings`        | Open the settings window                      |
-| `lumen reload-sheets`   | Re-read sheets, scripts and snippets from disk |
+| `lumen reload-sheets`   | Re-read sheets, scripts, snippets and files from disk |
 | `lumen quit`            | Stop the daemon                               |
 
 ### Keys
@@ -173,6 +190,11 @@ On first run Lumen writes `%APPDATA%\Lumen\config\config.json`:
   "clipboard": {
     "enabled": true,
     "retention": { "max-entries": 500, "max-age-days": 30 }
+  },
+  "files": {
+    "enabled": true,
+    "roots": [],
+    "limits": { "max-entries": 5000, "max-depth": 6 }
   }
 }
 ```
@@ -342,6 +364,39 @@ started at all. To keep less, set the retention:
   "retention": { "max-entries": 200, "max-age-days": 7 }
 }
 ```
+
+### File search
+
+By default Lumen walks your Desktop, Documents, Downloads, Pictures, Video and
+Music folders — resolved through the system's own idea of where those are, so a
+Documents folder redirected to OneDrive is followed. `Enter` opens a file with
+its default application; `Ctrl+K` offers to copy its path.
+
+To search somewhere else instead, name the folders:
+
+```json
+"files": {
+  "enabled": true,
+  "roots": ["D:/work", "C:/Users/me/notes"],
+  "limits": { "max-entries": 5000, "max-depth": 6 }
+}
+```
+
+Leaving `roots` empty keeps the defaults, which is why it is empty rather than
+pre-filled: a config file copied to another machine still works.
+
+**`max-entries` is a frame-budget number.** Ranking is linear in the number of
+candidates and the worst case is one character typed. The measurements section
+above has the cost of raising it; 5 000 leaves the frame room to spare and
+20 000 does not.
+
+Not walked into, ever: `node_modules`, `target`, `build`, `dist`, `.git`,
+`.venv`, `AppData` and about fifteen others, matched by directory name. Files
+beginning with a dot are skipped.
+
+The index is built once when the daemon starts. A file created afterwards is
+found on the next restart, or by running `lumen reload-sheets`, which also
+rebuilds it.
 
 ---
 

@@ -109,7 +109,7 @@ the README.
 | **F0** | Platform spike on Windows: transparent undecorated window, backdrop, monitor placement, global gesture, focus capture and restore | **Done** |
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Mostly done** — themes, live reload, the fade, the bundled typeface and the action panel are in. The icon set is not, and the appearance animation omits the scale (7.5) |
-| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay, settings editor, calculator, snippets, clipboard history, window management and tier T1 done**, behind the `trait Provider` seam. File search not started |
+| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
 | **F4** | View extensions, tiers T2 and T3 | Not started |
 | **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |
 
@@ -406,6 +406,54 @@ So every subscription handler that touches a window now goes through
 thread, same order, no borrow held. The three handlers are the launcher's
 (dismiss, resize, arrange), the overlay's fade-out, and the settings window's
 close.
+
+### 7.19 File search walks folders rather than querying the system index
+
+Windows keeps an index of its own, reachable through `ISearchQueryHelper` and
+OLE DB. Not using it is a deliberate choice with two reasons, and the second is
+the one that settles it.
+
+The first is cost: a COM interface with no safe binding and an OLE DB query
+path, for results the user has already told us where to find by configuring
+their folders.
+
+The second is I-3. Root search never waits on anything, so a query to the
+system index would have to be answered from a cache anyway -- at which point it
+is a bounded walk with more moving parts in front of it. A bounded walk of
+Desktop, Documents, Downloads, Pictures, Video and Music takes about 220 ms on
+a background thread and never touches the frame.
+
+The honest description of what this is, and it is the one in the README: Lumen
+finds the file you were working on, not every file on the machine.
+
+### 7.20 The file-search cap is a measurement, not a preference
+
+`files.limits.max-entries` defaults to 5 000, which looks arbitrary and is not.
+Ranking is a linear pass over prepared haystacks, and the worst case is a
+one-character query where nothing is filtered out early. The benchmark says
+1.06 ms at 5 000 entries and 7.42 ms at 20 000 -- and the per-frame budget is
+8 ms for *everything*, render included.
+
+So the first implementation, which capped at 20 000, was wrong: it worked,
+indexed in 1.3 seconds, and would have spent the whole frame budget on one
+list. The benchmark was extended to 20 000 before the number was chosen, which
+is what the working rule about writing the measurement first is for. The cost
+of raising it is in the README next to the figures rather than buried in a
+commit message.
+
+### 7.21 Secondary indexes are searched but never browsed
+
+Clipboard history and file search are both large, both change without the user
+touching the launcher, and neither belongs in the root list -- with an empty
+query the index is shown in frecency order, so entries with no usage history
+sort alphabetically among the applications. Open the launcher, see what you
+copied last Tuesday and a folder called `Archive`.
+
+So they are *asides*: separate candidate lists, ranked only when there is a
+query, each capped at eight rows so a common letter cannot fill the list with
+one kind of thing. Keeping them out of `candidates` also keeps the application
+index cheap to hold -- merging would mean re-preparing several hundred
+application haystacks every time the user copies something.
 
 ---
 

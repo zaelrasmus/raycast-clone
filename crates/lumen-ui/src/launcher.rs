@@ -75,19 +75,57 @@ struct Hit {
 
 /// Which list a hit came from.
 ///
-/// Two lists rather than one because they have opposite lifetimes: the
-/// application index is built once and reused for thousands of queries, while
-/// provider results are rebuilt for every keystroke. Concatenating them per
-/// keystroke would mean cloning several hundred prepared haystacks to add three
-/// rows, which is exactly the kind of work the per-frame budget cannot absorb.
+/// Several lists rather than one because they have different lifetimes and
+/// different ranking rules. The application index is built once and reused for
+/// thousands of queries; provider answers are rebuilt for every keystroke; the
+/// asides change when the user copies something or saves a file. Concatenating
+/// them per keystroke would mean cloning several hundred prepared haystacks to
+/// add three rows, which is exactly the work the per-frame budget cannot
+/// absorb.
 #[derive(Clone, Copy)]
 enum Source {
     /// An index into the application index.
     Indexed(usize),
-    /// An index into the clipboard history snapshot.
-    Clipboard(usize),
+    /// An aside, and a row within it.
+    Aside(Aside, usize),
     /// An index into this keystroke's provider answers.
     Answer(usize),
+}
+
+/// A secondary index: searched, but never browsed.
+///
+/// Both of these are large, both change without the user doing anything to the
+/// launcher, and neither belongs in the root list. With an empty query `rank`
+/// returns the index in frecency order, so entries with no usage history sort
+/// alphabetically among the applications -- open the launcher, see what you
+/// copied last Tuesday, and a folder called `Archive`. So an aside is matched
+/// only when there is a query, and capped so that a common letter cannot fill
+/// the list with one kind of thing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Aside {
+    Clipboard,
+    Files,
+}
+
+impl Aside {
+    const ALL: [Aside; 2] = [Aside::Clipboard, Aside::Files];
+
+    fn slot(self) -> usize {
+        match self {
+            Aside::Clipboard => 0,
+            Aside::Files => 1,
+        }
+    }
+
+    /// How many of this aside's rows may appear in one set of results.
+    ///
+    /// Eight is enough to find a recent paste or the file you were just
+    /// editing, and few enough that the list is still about applications.
+    fn cap(self) -> usize {
+        match self {
+            Aside::Clipboard | Aside::Files => 8,
+        }
+    }
 }
 
 /// How many results are kept behind the visible window.
@@ -103,14 +141,6 @@ const MAX_RESULTS: usize = 64;
 /// search matches against, and reading a month of pastes into memory to answer
 /// a three-character query is not a trade worth making.
 const CLIPBOARD_ENTRIES: usize = 100;
-
-/// How many clipboard rows may appear in one set of results.
-///
-/// The history is deep and the queries are short, so without a cap a common
-/// letter fills the list with things the user once copied and pushes the
-/// application they were looking for off the bottom. Eight is enough to find a
-/// recent paste and few enough that the list is still about applications.
-const CLIPBOARD_HITS: usize = 8;
 
 pub struct Launcher {
     focus_handle: FocusHandle,
@@ -130,14 +160,14 @@ pub struct Launcher {
     /// Shared with the recorder rather than opened twice: one database, one
     /// writer, and a read that cannot see a half-written row.
     clipboard: Option<Arc<parking_lot::Mutex<lumen_core::clipboard::History>>>,
-    /// The clipboard history prepared for matching.
+    /// The secondary indexes, in [`Aside::slot`] order.
     ///
     /// Deliberately not folded into `candidates`. The application index is
-    /// built once and changes when something is installed; this one is rebuilt
-    /// every time the user copies anything, and merging the two would mean
-    /// re-preparing several hundred application haystacks on every copy. They
-    /// are also ranked under different rules -- see `rerank`.
-    clipboard_candidates: Arc<Vec<Candidate>>,
+    /// built once and changes when something is installed; these are rebuilt
+    /// whenever the user copies something or edits a file, and merging them
+    /// would mean re-preparing several hundred application haystacks every
+    /// time. They are also ranked under different rules -- see [`Aside`].
+    asides: [Arc<Vec<Candidate>>; 2],
     providers: Providers,
     search: Search,
     frecency: Frecency,
@@ -185,7 +215,7 @@ impl Launcher {
             candidates: Arc::new(Vec::new()),
             answers: Vec::new(),
             clipboard: None,
-            clipboard_candidates: Arc::new(Vec::new()),
+            asides: std::array::from_fn(|_| Arc::new(Vec::new())),
             providers: Providers::builtin(),
             search: Search::new(),
             frecency,
@@ -200,6 +230,7 @@ impl Launcher {
         };
 
         launcher.start_indexing(cx);
+        launcher.refresh_files(cx);
         launcher
     }
 
@@ -249,13 +280,64 @@ impl Launcher {
                 .await;
 
             this.update(cx, |this, cx| {
-                this.clipboard_candidates = Arc::new(candidates);
-                this.rerank(cx);
-                cx.notify();
+                this.set_aside(Aside::Clipboard, candidates, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Re-read the files under the configured roots.
+    ///
+    /// Separate from `start_indexing` and started alongside it rather than
+    /// inside it, because the two have nothing to do with each other and the
+    /// file walk is much the slower of the two. Sequencing them would mean the
+    /// application list -- the thing the launcher is mostly for -- waited on a
+    /// walk of Documents.
+    pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
+        if !self.config.files.enabled {
+            return;
+        }
+
+        let roots = self.config.files.roots();
+        let limits = self.config.files.limits;
+
+        if roots.is_empty() {
+            log::info!("file search has no folders to look in");
+            return;
+        }
+
+        cx.spawn(async move |this, cx| {
+            let started = std::time::Instant::now();
+            let candidates = cx
+                .background_executor()
+                .spawn(async move {
+                    lumen_core::providers::files::scan(&roots, limits)
+                        .into_iter()
+                        .map(Candidate::new)
+                        .collect::<Vec<_>>()
+                })
+                .await;
+
+            log::info!(
+                "indexed {} files in {} ms",
+                candidates.len(),
+                started.elapsed().as_millis()
+            );
+
+            this.update(cx, |this, cx| {
+                this.set_aside(Aside::Files, candidates, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Replace one aside and re-rank against it.
+    fn set_aside(&mut self, aside: Aside, candidates: Vec<Candidate>, cx: &mut Context<Self>) {
+        self.asides[aside.slot()] = Arc::new(candidates);
+        self.rerank(cx);
+        cx.notify();
     }
 
     /// Rebuild the index: applications, scripts, snippets and clipboard history.
@@ -264,6 +346,7 @@ impl Launcher {
     /// snippet, rather than making them restart to see the change.
     pub fn reindex(&mut self, cx: &mut Context<Self>) {
         self.start_indexing(cx);
+        self.refresh_files(cx);
     }
 
     /// Build the application index off the UI thread.
@@ -416,23 +499,27 @@ impl Launcher {
             })
             .collect();
 
-        // The clipboard is ranked separately, and only when there is something
-        // to rank against. With an empty query `rank` returns the root list,
-        // and a root list that opens on a hundred old pastes is not a launcher:
-        // the history is something you search, not something you are shown
-        // before you have asked for anything.
+        // The asides are ranked separately, and only when there is something
+        // to rank against -- see [`Aside`] for why they must stay out of the
+        // root list.
         if !self.query.trim().is_empty() {
-            let clipboard = self.clipboard_candidates.clone();
-            hits.extend(
-                self.search
-                    .rank(&self.query, &clipboard, &self.frecency, CLIPBOARD_HITS)
-                    .into_iter()
-                    .map(|m| Hit {
-                        source: Source::Clipboard(m.index),
-                        highlights: m.highlights,
-                        score: m.score,
-                    }),
-            );
+            for aside in Aside::ALL {
+                let candidates = self.asides[aside.slot()].clone();
+                if candidates.is_empty() {
+                    continue;
+                }
+
+                hits.extend(
+                    self.search
+                        .rank(&self.query, &candidates, &self.frecency, aside.cap())
+                        .into_iter()
+                        .map(|m| Hit {
+                            source: Source::Aside(aside, m.index),
+                            highlights: m.highlights,
+                            score: m.score,
+                        }),
+                );
+            }
         }
 
         // Sorted before the answers are prepended, so the answers keep the top
@@ -476,7 +563,7 @@ impl Launcher {
     fn item(&self, hit: &Hit) -> &Item {
         match hit.source {
             Source::Indexed(index) => &self.candidates[index].item,
-            Source::Clipboard(index) => &self.clipboard_candidates[index].item,
+            Source::Aside(aside, index) => &self.asides[aside.slot()][index].item,
             Source::Answer(index) => &self.answers[index],
         }
     }
@@ -950,6 +1037,12 @@ impl Launcher {
         div()
             .id(index)
             .h(metrics::row_height())
+            // Full width, and this is load-bearing rather than tidy. Without it
+            // the row is only as wide as its content, `flex_1` below has no
+            // free space to claim, and the kind label ends up butted against
+            // the subtitle -- so it sits at a different horizontal position on
+            // every row, which is precisely the layout shift I-10 forbids.
+            .w_full()
             .mx(metrics::row_inset())
             .px(metrics::gutter() - metrics::row_inset())
             .flex()
@@ -997,6 +1090,12 @@ impl Launcher {
                             div()
                                 .text_size(type_scale::subtitle())
                                 .text_color(color(colors.text_muted))
+                                // A file's subtitle is a path and can be longer
+                                // than the window. Ending it in an ellipsis is
+                                // the difference between a row that is too long
+                                // and a row that is cut through the middle of a
+                                // letter.
+                                .truncate()
                                 .child(subtitle.clone()),
                         )
                     }),
@@ -1004,6 +1103,7 @@ impl Launcher {
             .child(
                 div()
                     .flex_none()
+                    .pl(metrics::icon_gap())
                     .text_size(type_scale::footer())
                     .text_color(color(colors.text_muted))
                     .child(item.kind_label()),
