@@ -104,11 +104,17 @@ impl Item {
     pub fn from_app(entry: AppEntry) -> Self {
         Self {
             id: entry.id,
-            title: entry.name,
+            title: entry.name.clone(),
             subtitle: entry.detail,
             icon: entry.icon,
             keywords: entry.keywords,
-            actions: vec![Action::Launch(entry.target)],
+            actions: vec![
+                Action::Launch(entry.target),
+                // A secondary action exists so the action panel has something to
+                // show, and copying the name is the one thing people reliably
+                // want from an application row besides launching it.
+                Action::CopyToClipboard(entry.name),
+            ],
             kind: Kind::Application,
         }
     }

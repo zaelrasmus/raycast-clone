@@ -30,7 +30,7 @@ use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::launcher::{
     Activate, ClearQuery, DeleteBackward, DeleteWordBackward, Dismiss, Paste, SelectFirst,
-    SelectLast, SelectNext, SelectPrevious,
+    SelectLast, SelectNext, SelectPrevious, ToggleActionPanel,
 };
 use crate::settings::{CloseSettings, SaveSheet};
 
@@ -140,6 +140,11 @@ const BINDINGS: &[Binding] = &[
         group: "Editing",
         description: Some("Paste"),
     },
+    Binding {
+        keys: "ctrl-k",
+        group: "Actions",
+        description: Some("Show all actions"),
+    },
 ];
 
 /// Install the default bindings.
@@ -168,6 +173,8 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("ctrl-w", DeleteWordBackward, Some(CONTEXT)),
         KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
         KeyBinding::new("ctrl-u", ClearQuery, Some(CONTEXT)),
+        // The action panel, on the chord every launcher uses for it.
+        KeyBinding::new("ctrl-k", ToggleActionPanel, Some(CONTEXT)),
     ]);
 
     // Bound without a context so it works even if focus has somehow left the

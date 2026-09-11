@@ -80,10 +80,15 @@ impl Script {
             subtitle: self.subtitle,
             icon: None,
             keywords: self.keywords,
-            actions: vec![Action::RunScript(ScriptRun {
-                path: self.path,
-                mode: self.mode,
-            })],
+            actions: vec![
+                Action::RunScript(ScriptRun {
+                    path: self.path.clone(),
+                    mode: self.mode,
+                }),
+                // Copying the path is what you want when a script misbehaves
+                // and you need to open it.
+                Action::CopyToClipboard(self.path.display().to_string()),
+            ],
             kind: Kind::Script,
         }
     }

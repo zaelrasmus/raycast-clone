@@ -260,7 +260,24 @@ window to save a few hundred milliseconds twice a month is the wrong side of the
 budget in section 5, so it is created on first open -- and from then on kept and
 only hidden, exactly like the others.
 
-### 7.11 A hotkey conflict does not stop the daemon
+### 7.11 The action panel replaces the list rather than floating over it
+
+F2 asks that every action be reachable from the keyboard; it does not say the
+panel has to be an overlay. The first attempt made it one, and it does not
+survive contact with the layout.
+
+The launcher window is sized exactly to its content -- search field, rows,
+footer -- so there is no spare room for a floating element. And an absolutely
+positioned element with only `right` and `bottom` set gives taffy no way to
+derive a height: it lays out at zero and is never painted. The element rendered
+correctly and was simply invisible, which took a log inside the render function
+to establish.
+
+Replacing the list reuses the one region whose height is already known to be
+right, and it reads better as an interaction anyway: the panel is a mode,
+Escape leaves it, and nothing is hidden behind it.
+
+### 7.12 A hotkey conflict does not stop the daemon
 
 Global hotkeys are first come, first served on Windows. If the configured
 combination is taken, Lumen logs which key failed and where to change it, then

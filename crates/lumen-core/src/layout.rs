@@ -66,6 +66,17 @@ pub const ROW_RADIUS: f32 = 7.0;
 /// Inset of the selected row's highlight from the window edge.
 pub const ROW_INSET: f32 = 7.0;
 
+/// The action panel, opened with Ctrl+K over the bottom-right of the launcher.
+pub mod action_panel {
+    /// One action row.
+    pub const ROW_HEIGHT: f32 = 30.0;
+
+    /// Padding inside the panel.
+    pub const PADDING: f32 = 6.0;
+
+    pub const ROW_RADIUS: f32 = 5.0;
+}
+
 /// Type sizes. Not themeable (I-11); a theme may change the family only.
 pub mod text {
     pub const QUERY: f32 = 17.0;

@@ -40,6 +40,8 @@ an aesthetic worth looking at fifty times a day.
   with a `@lumen.title` comment header and it becomes a searchable command.
   Headers are read at index time, never by running the file (AD-08).
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
+- **An action panel** on `Ctrl+K`: every action a row has, reachable from the
+  keyboard, which is what F2 asks for.
 - **Themes and sheets as data** with live reload for themes: edit the JSON, see
   it on screen, no rebuild. Two in-house themes ship, one dark and one light.
 - **Windows 11 chrome**: acrylic backdrop, rounded corners, dark mode, out of
@@ -58,8 +60,8 @@ Listed because a README that implies more than exists is worse than no README.
 - **No bundled typeface.** F2 calls for Inter or Geist compiled into the binary;
   today the system font is used, which is the one thing that visibly differs
   between Windows and Linux.
-- **No action panel and no icon set.** `Enter` runs the primary action; there is
-  no `Ctrl+K` panel behind it yet.
+- **No icon set.** F2 asks for one optically aligned on a 16 and 20 px grid;
+  application icons come from the shell and nothing else has an icon at all.
 - **Most internal providers are missing.** The calculator and tier T1 are in;
   clipboard history, snippets, window management and file search are not.
 - **Browsers and Electron apps report their container.** A sheet keyed on
@@ -135,6 +137,7 @@ Then run the binary once to start the daemon:
 | `Ctrl+W`, `Ctrl+Backspace` | Delete the previous word |
 | `Ctrl+U` | Clear the query |
 | `Ctrl+V` | Paste |
+| `Ctrl+K` | Show every action for the selected row |
 
 ---
 

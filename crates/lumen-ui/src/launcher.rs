@@ -57,6 +57,8 @@ actions!(
         ClearQuery,
         /// Insert the clipboard's text at the cursor.
         Paste,
+        /// Show or hide the action panel for the selected row.
+        ToggleActionPanel,
     ]
 );
 
@@ -116,6 +118,12 @@ pub struct Launcher {
     selected: usize,
     scroll: UniformListScrollHandle,
 
+    /// Which action is highlighted in the action panel, when it is open.
+    ///
+    /// `None` means the panel is closed. Holding the selection here rather than
+    /// a separate `bool` plus index makes the two impossible to disagree.
+    action_panel: Option<usize>,
+
     /// How many times the window has been shown.
     ///
     /// Used as part of the appearance animation's element id, so that showing
@@ -153,6 +161,7 @@ impl Launcher {
             hits: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
+            action_panel: None,
             appearances: 0,
             _theme_reload: None,
         };
@@ -320,6 +329,10 @@ impl Launcher {
         // makes a launcher feel unpredictable.
         self.selected = 0;
 
+        // A panel describing the previous row must not survive into the next
+        // one, or Enter runs an action the user can no longer see.
+        self.action_panel = None;
+
         // Only on an actual change: emitting on every keystroke would ask the
         // platform to resize the window to the size it already has.
         let rows = self.visible_rows();
@@ -345,7 +358,43 @@ impl Launcher {
 
     // -- Commands ----------------------------------------------------------
 
+    /// The actions available for the selected row.
+    fn available_actions(&self) -> Vec<Action> {
+        self.selected_item()
+            .map(|item| item.actions.clone())
+            .unwrap_or_default()
+    }
+
+    fn toggle_action_panel(
+        &mut self,
+        _: &ToggleActionPanel,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.action_panel = match self.action_panel {
+            Some(_) => None,
+            // Opens on the *second* action, not the first: the first is what
+            // Enter already does, so landing on it would make the panel's own
+            // Enter a no-op and waste the gesture.
+            None if self.available_actions().len() > 1 => Some(1),
+            None if !self.available_actions().is_empty() => Some(0),
+            None => None,
+        };
+        cx.notify();
+    }
+
     fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        // While the panel is open the arrow keys move within it. Two lists on
+        // screen and one set of arrow keys: whichever is in front wins.
+        if let Some(selected) = self.action_panel {
+            let count = self.available_actions().len();
+            if count > 0 {
+                self.action_panel = Some((selected + 1) % count);
+                cx.notify();
+            }
+            return;
+        }
+
         if self.hits.is_empty() {
             return;
         }
@@ -357,6 +406,15 @@ impl Launcher {
     }
 
     fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(selected) = self.action_panel {
+            let count = self.available_actions().len();
+            if count > 0 {
+                self.action_panel = Some(selected.checked_sub(1).unwrap_or(count - 1));
+                cx.notify();
+            }
+            return;
+        }
+
         if self.hits.is_empty() {
             return;
         }
@@ -375,6 +433,9 @@ impl Launcher {
     }
 
     fn reveal_selection(&mut self, cx: &mut Context<Self>) {
+        // Moving the row selection closes the panel: it belonged to the row the
+        // user has just moved off.
+        self.action_panel = None;
         // F2 acceptance criterion: the list jumps directly to the selection.
         // There is no smooth scrolling, because smooth scrolling in a list being
         // driven by arrow keys is motion the user did not ask for.
@@ -387,7 +448,17 @@ impl Launcher {
         let Some(item) = self.selected_item() else {
             return;
         };
-        let (id, action) = (item.id.clone(), item.primary());
+
+        // Whichever action the panel is pointing at, or the primary when it is
+        // closed. Falling back to the primary rather than doing nothing means a
+        // panel left open on a row whose actions have changed still does the
+        // obvious thing.
+        let action = match self.action_panel {
+            Some(index) => item.actions.get(index).cloned().unwrap_or(item.primary()),
+            None => item.primary(),
+        };
+        let id = item.id.clone();
+        self.action_panel = None;
 
         // Record and persist before launching. A launch that hands the
         // foreground to another application immediately is a launch whose
@@ -451,8 +522,15 @@ impl Launcher {
     }
 
     fn clear_query(&mut self, _: &ClearQuery, _: &mut Window, cx: &mut Context<Self>) {
+        // Escape unwinds one layer at a time: the panel, then the query, then
+        // the launcher. One key, and it always means "back" -- never "back two
+        // steps because the first one happened to be empty".
+        if self.action_panel.take().is_some() {
+            cx.notify();
+            return;
+        }
+
         // Escape on a non-empty query clears it; on an empty one it dismisses.
-        // One key, and it always means "back".
         if self.query.is_empty() {
             cx.emit(LauncherEvent::Dismissed);
             return;
@@ -586,6 +664,7 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::delete_word_backward))
             .on_action(cx.listener(Self::clear_query))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::toggle_action_panel))
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
             .flex()
@@ -600,8 +679,15 @@ impl Render for Launcher {
             root = root.font_family(SharedString::from(family.clone()));
         }
 
+        // The panel replaces the list when it is open: one region, one height,
+        // and no window resize to swap between them.
+        let body = match self.render_action_panel(cx) {
+            Some(panel) => panel,
+            None => self.render_results(cx).into_any_element(),
+        };
+
         root.child(self.render_search_field(window))
-            .child(self.render_results(cx))
+            .child(body)
             .child(self.render_footer())
             // F2: a fade over roughly 120 ms. Nothing more.
             //
@@ -665,9 +751,15 @@ impl Launcher {
             })
     }
 
-    fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.visible_rows();
+    /// The height of the region the list occupies.
+    ///
+    /// Shared with the action panel, which takes that region over, so the two
+    /// cannot disagree and the window never has to resize to swap between them.
+    fn results_height(&self) -> gpui::Pixels {
+        metrics::row_height() * self.visible_rows() as f32 + metrics::list_padding() * 2.0
+    }
 
+    fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
         if self.hits.is_empty() {
             return div().h(gpui::px(0.0)).into_any_element();
         }
@@ -677,7 +769,7 @@ impl Launcher {
 
         div()
             .py(metrics::list_padding())
-            .h(metrics::row_height() * rows as f32 + metrics::list_padding() * 2.0)
+            .h(self.results_height())
             .child(
                 uniform_list(
                     "results",
@@ -794,8 +886,91 @@ impl Launcher {
                     .flex()
                     .gap(metrics::icon_gap())
                     .child(format!("{verb}  ⏎"))
+                    // Advertised only when there is a second action to reach.
+                    // A hint for a panel that would open empty teaches the user
+                    // that the hint lies.
+                    .when(self.available_actions().len() > 1, |footer| {
+                        footer.child("Actions  Ctrl+K")
+                    })
                     .child("Dismiss  Esc"),
             )
+    }
+
+    /// The action panel, when it is open.
+    ///
+    /// Drawn inside the launcher's own window rather than given one of its own:
+    /// unlike the shortcut overlay it is an ordinary part of the list's
+    /// interface, it wants the focus the launcher already has, and it would
+    /// gain nothing from being a separate surface but the cost of being one.
+    fn render_action_panel(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use lumen_core::layout::action_panel as panel;
+
+        let selected = self.action_panel?;
+        let actions = self.available_actions();
+        if actions.is_empty() {
+            return None;
+        }
+
+        let colors = &self.theme.colors;
+        let entity = cx.entity();
+
+        // The panel takes the list's place rather than floating over it.
+        //
+        // An overlay was the first design and it does not survive contact with
+        // the layout: the window is sized exactly to its content, so there is
+        // no spare room for a floating element, and an absolutely positioned
+        // one with only `right` and `bottom` set gives taffy no way to derive a
+        // height -- it lays out at zero and is never seen. Replacing the list
+        // reuses the one region whose height is already known to be right, and
+        // it is arguably the better interaction anyway: the panel is a mode,
+        // Escape leaves it, and nothing is hidden behind it.
+        Some(
+            div()
+                .h(self.results_height())
+                .p(gpui::px(panel::PADDING))
+                .flex()
+                .flex_col()
+                .bg(color(colors.surface_elevated))
+                .children(actions.into_iter().enumerate().map(|(index, action)| {
+                    let entity = entity.clone();
+                    div()
+                        .id(("action", index))
+                        .h(gpui::px(panel::ROW_HEIGHT))
+                        .px(metrics::gutter())
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .rounded(gpui::px(panel::ROW_RADIUS))
+                        .text_size(type_scale::title())
+                        .when(index == selected, |row| {
+                            row.bg(color(colors.selection_background))
+                                .text_color(color(colors.text_primary))
+                        })
+                        .when(index != selected, |row| {
+                            row.text_color(color(colors.text_muted))
+                        })
+                        .cursor_pointer()
+                        .on_click(move |_event, window, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.action_panel = Some(index);
+                                this.activate(&Activate, window, cx);
+                            });
+                        })
+                        .child(action.verb())
+                        // The first action is what Enter already does; saying so
+                        // is what stops the panel looking like a list of things
+                        // Enter cannot reach.
+                        .when(index == 0, |row| {
+                            row.child(
+                                div()
+                                    .text_size(type_scale::footer())
+                                    .text_color(color(colors.text_muted))
+                                    .child("⏎"),
+                            )
+                        })
+                }))
+                .into_any_element(),
+        )
     }
 }
 
@@ -865,6 +1040,74 @@ fn run_script(
 #[cfg(test)]
 mod tests {
     use super::{previous_char_boundary, word_start_before};
+
+    use lumen_core::item::{Builtin, Kind};
+    use lumen_core::{Action, Item};
+
+    fn item_with(actions: Vec<Action>) -> Item {
+        Item {
+            id: "x".into(),
+            title: "X".into(),
+            subtitle: None,
+            icon: None,
+            keywords: Vec::new(),
+            actions,
+            kind: Kind::Application,
+        }
+    }
+
+    /// The panel opens on the *second* action, because the first is what Enter
+    /// already does.
+    #[test]
+    fn opening_the_panel_skips_the_primary_action() {
+        let item = item_with(vec![
+            Action::Builtin(Builtin::OpenSettings),
+            Action::CopyToClipboard("x".into()),
+        ]);
+
+        let opened = opening_selection(item.actions.len());
+        assert_eq!(opened, Some(1));
+    }
+
+    /// With only one action there is nothing the panel adds, so it lands on it
+    /// rather than on nothing.
+    #[test]
+    fn a_single_action_still_opens_somewhere_valid() {
+        assert_eq!(opening_selection(1), Some(0));
+    }
+
+    #[test]
+    fn an_item_with_no_actions_does_not_open_a_panel() {
+        assert_eq!(opening_selection(0), None);
+    }
+
+    /// Mirrors `toggle_action_panel`'s choice of starting index, kept beside it
+    /// so the rule is checkable without standing up a GPUI app.
+    fn opening_selection(action_count: usize) -> Option<usize> {
+        match action_count {
+            0 => None,
+            1 => Some(0),
+            _ => Some(1),
+        }
+    }
+
+    #[test]
+    fn an_application_offers_a_second_action_for_the_panel_to_show() {
+        use lumen_platform::{AppEntry, LaunchTarget};
+
+        let item = Item::from_app(AppEntry {
+            id: "app:x".into(),
+            name: "Firefox".into(),
+            detail: None,
+            target: LaunchTarget::ShellExecute("x".into()),
+            icon: None,
+            keywords: Vec::new(),
+        });
+
+        assert!(item.actions.len() > 1, "the panel would open empty");
+        assert_eq!(item.primary().verb(), "Open");
+        assert_eq!(item.actions[1], Action::CopyToClipboard("Firefox".into()));
+    }
 
     #[test]
     fn backspace_removes_a_whole_character_not_one_byte() {
