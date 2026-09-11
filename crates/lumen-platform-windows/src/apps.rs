@@ -18,8 +18,8 @@
 use anyhow::{Context as _, Result};
 use lumen_platform::{AppEntry, IconSource, LaunchTarget};
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, IEnumShellItems, IShellItem, SHCreateItemFromParsingName, SIGDN_NORMALDISPLAY,
-    SIGDN_PARENTRELATIVEPARSING,
+    BHID_EnumItems, IEnumShellItems, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
 };
 
 use crate::com;
@@ -88,6 +88,24 @@ fn describe(item: &IShellItem) -> Result<AppEntry> {
             icon: Some(IconSource::ShellItem(full_parsing_name)),
             keywords: Vec::new(),
         })
+    }
+}
+
+/// The filesystem path behind an AppsFolder item, when it has one.
+///
+/// Win32 entries in that folder *are* shortcuts on disk, and the shell will
+/// hand back where. Packaged entries have no path and return , which is
+/// the correct answer rather than a failure: they are identified by their
+/// model id instead.
+pub fn filesystem_path(parsing_name: &str) -> Option<String> {
+    // The caller may be on any thread, including one that has never touched
+    // COM. Entering an apartment here rather than assuming one is what makes
+    // this safe to call from the launch path.
+    let _apartment = com::Apartment::enter().ok()?;
+
+    unsafe {
+        let item: IShellItem = SHCreateItemFromParsingName(&com::wide(parsing_name), None).ok()?;
+        com::take_pwstr(item.GetDisplayName(SIGDN_FILESYSPATH).ok()?).ok()
     }
 }
 

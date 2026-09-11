@@ -28,7 +28,8 @@
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
+    LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout,
+    WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -96,8 +97,11 @@ impl Platform for LinuxPlatform {
         todo!("F5: XDG icon theme resolution with size fallbacks")
     }
 
-    fn launch(&self, _target: &LaunchTarget) -> Result<()> {
-        todo!("F5: desktop entry activation")
+    fn launch(&self, _target: &LaunchTarget, _mode: LaunchMode) -> Result<()> {
+        // Reuse is the compositor's business here rather than the shell's:
+        // Hyprland can be asked for the client list over the same IPC socket
+        // AD-02 already uses, and told to focus one.
+        todo!("F5: desktop entry activation, and `hyprctl dispatch focuswindow`")
     }
 
     fn start_clipboard_listener(&self, _sink: ClipboardSink) -> Result<()> {

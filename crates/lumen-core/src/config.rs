@@ -101,6 +101,14 @@ pub struct WindowConfig {
     /// Above the optical centre on purpose: 0.5 reads as low, because the eye
     /// weights the top of the screen.
     pub vertical_bias: f32,
+    /// Whether clicking away closes the launcher.
+    ///
+    /// On by default, because a launcher that stays on top of whatever you just
+    /// clicked is one you have to dismiss before you can use the thing you
+    /// chose. Configurable because the opposite preference is legitimate:
+    /// people who drive it entirely from the keyboard sometimes want it to sit
+    /// there while they read something behind it.
+    pub dismiss_on_focus_loss: bool,
 }
 
 impl Default for WindowConfig {
@@ -109,6 +117,7 @@ impl Default for WindowConfig {
             width: 720.0,
             visible_rows: 8,
             vertical_bias: 0.22,
+            dismiss_on_focus_loss: true,
         }
     }
 }
@@ -215,6 +224,15 @@ mod tests {
         let config = Config::load(Path::new("no/such/file.json"));
         assert_eq!(config.theme, "nocturne");
         assert_eq!(config.hotkey.to_string(), "Alt+Space");
+    }
+
+    /// A config written before the setting existed must keep the behaviour
+    /// people expect rather than silently turning it off.
+    #[test]
+    fn dismiss_on_focus_loss_is_on_for_a_config_that_predates_it() {
+        let config: Config = serde_json::from_str(r#"{ "window": { "width": 800.0 } }"#).unwrap();
+        assert!(config.window.dismiss_on_focus_loss);
+        assert_eq!(config.window.width, 800.0);
     }
 
     #[test]

@@ -299,6 +299,16 @@ pub struct Launcher {
     /// a separate `bool` plus index makes the two impossible to disagree.
     action_panel: Option<usize>,
 
+    /// Whether the window has actually held focus since it was last shown.
+    ///
+    /// The guard that makes dismiss-on-focus-loss safe. Showing is two steps --
+    /// the view resets, then the platform takes the foreground -- and the
+    /// activation observer can report "not active" in between. Without this the
+    /// launcher would dismiss itself on the way up, every time.
+    focused_once: bool,
+    /// Kept alive so the activation observer keeps firing; never read.
+    _activation: Option<gpui::Subscription>,
+
     /// How many times the window has been shown.
     ///
     /// Used as part of the appearance animation's element id, so that showing
@@ -339,6 +349,8 @@ impl Launcher {
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             mode: Mode::Root,
+            focused_once: false,
+            _activation: None,
             action_panel: None,
             appearances: 0,
             _theme_reload: None,
@@ -611,8 +623,49 @@ impl Launcher {
         // monitor holding the cursor.
         window.focus(&self.focus_handle);
 
+        // Registered on the first show rather than at construction, because it
+        // needs a `Window` and the launcher is built before one exists. Once,
+        // not per show: a subscription per invocation would dismiss the
+        // launcher as many times as it had ever been opened.
+        self.focused_once = false;
+        if self._activation.is_none() {
+            self._activation = Some(cx.observe_window_activation(
+                window,
+                |launcher, window, cx| {
+                    launcher.on_activation_changed(window.is_window_active(), cx);
+                },
+            ));
+        }
+
         self.rerank(cx);
         cx.notify();
+    }
+
+    /// The window gained or lost focus.
+    ///
+    /// Losing it means the user clicked something else, and a launcher that
+    /// stays on top of whatever they clicked is a launcher they have to dismiss
+    /// before they can use the thing they just chose. So it goes away -- which
+    /// is also what every other launcher on every platform does, and therefore
+    /// what people expect without being told.
+    fn on_activation_changed(&mut self, active: bool, cx: &mut Context<Self>) {
+        if active {
+            self.focused_once = true;
+            return;
+        }
+
+        // Not yet focused: this is the gap during the show sequence, not the
+        // user clicking away.
+        if !self.focused_once {
+            return;
+        }
+
+        if !self.config.window.dismiss_on_focus_loss {
+            return;
+        }
+
+        self.focused_once = false;
+        cx.emit(LauncherEvent::Dismissed);
     }
 
     pub fn apply_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
@@ -1333,7 +1386,12 @@ impl Launcher {
         let platform = self.platform.clone();
         cx.background_spawn(async move {
             let outcome = match &action {
-                Action::Launch(target) => platform.launch(target),
+                Action::Launch(target) => {
+                    platform.launch(target, lumen_platform::LaunchMode::Reuse)
+                }
+                Action::LaunchNew(target) => {
+                    platform.launch(target, lumen_platform::LaunchMode::Fresh)
+                }
                 Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
                 Action::RunScript(run) => run_script(platform.as_ref(), run),
                 // All handled above, before this task was spawned.
@@ -1470,9 +1528,6 @@ impl Launcher {
 
     /// The one place raw keystrokes are inspected, and only for text.
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(character) = event.keystroke.key_char.as_ref() else {
-            return;
-        };
         // Anything with a modifier is a command, and commands are actions. A
         // control chord that produced a character must not be typed into the
         // field.
@@ -1480,6 +1535,10 @@ impl Launcher {
         if modifiers.control || modifiers.alt || modifiers.platform {
             return;
         }
+
+        let Some(character) = typed_character(&event.keystroke) else {
+            return;
+        };
         if character.chars().any(|c| c.is_control()) {
             return;
         }
@@ -1499,6 +1558,27 @@ impl Launcher {
 
     fn previous_boundary(&self) -> Option<usize> {
         previous_char_boundary(&self.query, self.cursor)
+    }
+}
+
+/// The character a keystroke types, if it types one.
+///
+/// GPUI reports a set of keys by name -- `enter`, `tab`, `backspace`, `space`
+/// -- and for those it leaves `key_char` empty, because a named key is a key
+/// and not a character. That is right for every one of them except space,
+/// which is a key *and* a character, and is the only one of the set a person
+/// expects to appear in a search field.
+///
+/// So space is spelled out here. I-14 forbids hand-written key comparisons in
+/// UI code "with exactly one deliberate exception: inserting typed
+/// characters", and this is inside that exception rather than beside it: there
+/// is no action named "the space bar" any more than there is one named "the
+/// letter k".
+pub(crate) fn typed_character(keystroke: &gpui::Keystroke) -> Option<&str> {
+    match keystroke.key_char.as_deref() {
+        Some(character) => Some(character),
+        None if keystroke.key == "space" => Some(" "),
+        None => None,
     }
 }
 
@@ -2148,8 +2228,15 @@ mod tests {
         });
 
         assert!(item.actions.len() > 1, "the panel would open empty");
+
+        // Enter reuses a running copy; a fresh one is a deliberate second
+        // choice, and copying the name is the third.
         assert_eq!(item.primary().verb(), "Open");
-        assert_eq!(item.actions[1], Action::CopyToClipboard("Firefox".into()));
+        assert_eq!(
+            item.actions[1],
+            Action::LaunchNew(LaunchTarget::ShellExecute("x".into()))
+        );
+        assert_eq!(item.actions[2], Action::CopyToClipboard("Firefox".into()));
     }
 
     #[test]

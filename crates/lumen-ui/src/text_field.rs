@@ -107,15 +107,20 @@ impl TextField {
             return;
         }
 
-        let Some(character) = keystroke.key_char.as_ref() else {
-            return;
-        };
         // A chord is a command, and commands are actions. Without this, Ctrl+S
         // would type an "s" into whichever field happens to hold focus.
         let modifiers = keystroke.modifiers;
         if modifiers.control || modifiers.alt || modifiers.platform {
             return;
         }
+
+        // Space arrives as a named key with no character attached -- see
+        // `crate::launcher::typed_character`, which is where the reasoning
+        // lives. A shortcut sheet is full of entries like "Split right", so a
+        // field that cannot take a space is a field that cannot be used.
+        let Some(character) = crate::launcher::typed_character(keystroke) else {
+            return;
+        };
         if character.chars().any(char::is_control) {
             return;
         }

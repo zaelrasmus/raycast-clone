@@ -165,6 +165,25 @@ pub struct AppEntry {
     pub keywords: Vec<String>,
 }
 
+/// Whether opening something may reuse a copy that is already running.
+///
+/// Handing a shortcut to the shell always starts a *new* copy, and for a
+/// launcher that is the wrong default. "Open Zed" when Zed is already open
+/// means the window you already have; a second one is a thing you ask for.
+/// Worse, an application that refuses to run twice does nothing at all, so the
+/// user presses Enter and the machine appears not to have noticed.
+///
+/// A parameter rather than two methods because it is one decision with two
+/// answers, and because the call site then has to say which it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LaunchMode {
+    /// Raise a running instance if there is one, and start it otherwise.
+    #[default]
+    Reuse,
+    /// Always start another copy, whatever is already running.
+    Fresh,
+}
+
 /// How an [`AppEntry`] is started.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LaunchTarget {
@@ -238,9 +257,11 @@ pub trait Platform: Send + Sync {
     /// Resolve an icon to pixels at the requested size. Called off the UI thread.
     fn load_icon(&self, source: &IconSource, size_px: u32) -> Result<IconImage>;
 
-    /// Launch an entry. The launcher hides first, so this runs with the
+    /// Open an entry. The launcher hides first, so this runs with the
     /// previous application already restored to the foreground.
-    fn launch(&self, target: &LaunchTarget) -> Result<()>;
+    ///
+    /// See [`LaunchMode`] for why this takes one.
+    fn launch(&self, target: &LaunchTarget, mode: LaunchMode) -> Result<()>;
 
     /// Begin delivering clipboard changes to `sink`.
     ///

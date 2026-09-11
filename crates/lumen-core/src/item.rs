@@ -72,7 +72,16 @@ impl Kind {
 /// clone, and eventually serialisable across the extension boundary (AD-06).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// Open it, raising a copy that is already running rather than starting a
+    /// second one.
     Launch(LaunchTarget),
+    /// Start another copy, whatever is already running.
+    ///
+    /// A separate action rather than a modifier on the first, because it is a
+    /// separate *intention* and the action panel is where intentions live. An
+    /// editor is the case that needs it: one window per project is normal, and
+    /// "open Zed" cannot mean both things.
+    LaunchNew(LaunchTarget),
     CopyToClipboard(String),
     /// Something Lumen does to itself. Carried back to the daemon as an event
     /// rather than performed in the view, because opening a window or quitting
@@ -142,6 +151,7 @@ impl Action {
     pub fn verb(&self) -> &'static str {
         match self {
             Action::Launch(_) => "Open",
+            Action::LaunchNew(_) => "Open New Window",
             Action::CopyToClipboard(_) => "Copy",
             Action::Builtin(Builtin::OpenSettings) => "Open Settings",
             Action::Builtin(Builtin::ReloadSheets) => "Reload",
@@ -162,10 +172,13 @@ impl Item {
             icon: entry.icon,
             keywords: entry.keywords,
             actions: vec![
-                Action::Launch(entry.target),
-                // A secondary action exists so the action panel has something to
-                // show, and copying the name is the one thing people reliably
-                // want from an application row besides launching it.
+                Action::Launch(entry.target.clone()),
+                // Second, so Ctrl+K reaches it and Enter does not. An editor
+                // legitimately wants a window per project; everything else
+                // wants the window it already has.
+                Action::LaunchNew(entry.target),
+                // Copying the name is the one thing people reliably want from
+                // an application row besides opening it.
                 Action::CopyToClipboard(entry.name),
             ],
             kind: Kind::Application,

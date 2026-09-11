@@ -209,7 +209,12 @@ fn perform(platform: &Arc<dyn Platform>, capability: Capability) -> Answer {
         Capability::CopyToClipboard { text } => platform.set_clipboard_text(&text).map(|_| None),
         Capability::ReadClipboard => platform.clipboard_text(),
         Capability::Open { target } => platform
-            .launch(&LaunchTarget::ShellExecute(target))
+            // Reuse: an extension asking to open a URL means "put it in front
+            // of me", and a second browser window is not that.
+            .launch(
+                &LaunchTarget::ShellExecute(target),
+                lumen_platform::LaunchMode::Reuse,
+            )
             .map(|_| None),
     };
 

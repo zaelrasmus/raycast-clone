@@ -13,11 +13,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
+    LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout,
+    WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
 
+mod activate;
 mod apps;
 mod arrange;
 mod clipboard;
@@ -146,7 +148,20 @@ impl Platform for WindowsPlatform {
         icons::load(source, size_px)
     }
 
-    fn launch(&self, target: &LaunchTarget) -> Result<()> {
+    fn launch(&self, target: &LaunchTarget, mode: LaunchMode) -> Result<()> {
+        // Tried first and allowed to fail quietly: not finding a window is the
+        // ordinary case, and an error looking for one must not stop the thing
+        // from opening.
+        if mode == LaunchMode::Reuse {
+            match activate::raise_existing(target) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    log::debug!("could not look for a running copy: {error:#}");
+                }
+            }
+        }
+
         let parsing_name = match target {
             LaunchTarget::ShellExecute(name) => name.clone(),
             LaunchTarget::AppUserModelId(aumid) => format!("shell:AppsFolder\\{aumid}"),

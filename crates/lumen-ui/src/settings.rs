@@ -287,6 +287,20 @@ impl Settings {
         let Some(sheet) = self.compose(cx) else {
             return;
         };
+
+        // A sheet keyed on an application with no application named matches
+        // nothing at all. It saves, it appears in this list, it looks finished
+        // -- and it never shows up, with no way to tell from here why.
+        //
+        // This is not hypothetical: it is how a Global sheet became invisible
+        // after somebody clicked "Application" while exploring and saved. The
+        // failure is silent, permanent, and indistinguishable from the overlay
+        // being broken.
+        if let Some(problem) = unmatchable(&sheet.match_rule) {
+            self.status = Some(problem.into());
+            cx.notify();
+            return;
+        };
         let Some(draft) = self.drafts.get(self.selected) else {
             return;
         };
@@ -435,6 +449,22 @@ impl Settings {
             draft.dirty = true;
         }
         cx.notify();
+    }
+}
+
+/// Why a rule would never match anything, if it would not.
+///
+/// Returned as the sentence to show rather than a bool, because the useful
+/// half is telling the user which box to fill in.
+fn unmatchable(rule: &MatchRule) -> Option<&'static str> {
+    match rule {
+        MatchRule::Executable { any } if any.is_empty() => {
+            Some("Name at least one program, or choose Everything")
+        }
+        MatchRule::TitleContains { any } if any.is_empty() => {
+            Some("Name at least one word from the window title, or choose Everything")
+        }
+        _ => None,
     }
 }
 
@@ -644,6 +674,7 @@ impl Settings {
                     .border_t_1()
                     .border_color(color(colors.border_subtle))
                     .child(text_button(
+                        "new-sheet",
                         "New sheet",
                         colors,
                         cx.listener(|this, _event, _window, cx| this.add_sheet(None, cx)),
@@ -652,6 +683,7 @@ impl Settings {
                     // has nothing to delete.
                     .when(deletable, |column| {
                         column.child(text_button(
+                            "delete-sheet",
                             "Delete this sheet",
                             colors,
                             cx.listener(|this, _event, _window, cx| this.delete_sheet(cx)),
@@ -662,6 +694,7 @@ impl Settings {
                     // that is sometimes absent.
                     .when_some(seed, |column, (executable, title)| {
                         column.child(text_button(
+                            "seed-sheet",
                             format!("New sheet for {executable}"),
                             colors,
                             cx.listener(move |this, _event, _window, cx| {
@@ -788,6 +821,7 @@ impl Settings {
                     .gap(px(metrics::GROUP_GAP))
                     .children(groups)
                     .child(div().pt(px(metrics::GAP)).child(text_button(
+                        "add-group",
                         "Add group",
                         colors,
                         cx.listener(|this, _event, _window, cx| this.add_group(cx)),
@@ -818,6 +852,7 @@ impl Settings {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         div()
+            .id(SharedString::from(format!("group-{index}")))
             .flex()
             .flex_col()
             .gap(px(metrics::GAP))
@@ -828,6 +863,7 @@ impl Settings {
                     .gap(px(metrics::GAP))
                     .child(div().flex_1().child(group.title.clone()))
                     .child(icon_button(
+                        SharedString::from(format!("remove-group-{index}")),
                         "−",
                         colors,
                         cx.listener(move |this, _event, _window, cx| this.remove_group(index, cx)),
@@ -835,6 +871,7 @@ impl Settings {
             )
             .children(group.shortcuts.iter().enumerate().map(|(row, shortcut)| {
                 div()
+                    .id(SharedString::from(format!("shortcut-{index}-{row}")))
                     .h(px(metrics::ROW_HEIGHT))
                     .flex()
                     .items_center()
@@ -847,6 +884,7 @@ impl Settings {
                     )
                     .child(div().flex_1().child(shortcut.description.clone()))
                     .child(icon_button(
+                        SharedString::from(format!("remove-shortcut-{index}-{row}")),
                         "−",
                         colors,
                         cx.listener(move |this, _event, _window, cx| {
@@ -855,6 +893,7 @@ impl Settings {
                     ))
             }))
             .child(text_button(
+                SharedString::from(format!("add-shortcut-{index}")),
                 "Add shortcut",
                 colors,
                 cx.listener(move |this, _event, _window, cx| this.add_shortcut(index, cx)),
@@ -899,7 +938,21 @@ fn section_label(text: &'static str, colors: &Colors) -> impl IntoElement {
         .child(text.to_uppercase())
 }
 
+/// A button.
+///
+/// The id is a parameter rather than derived from the label, and that is the
+/// whole bug this signature exists to prevent. GPUI identifies an interactive
+/// element by a path of ids, and two siblings sharing one do not both work --
+/// they share the hitbox bookkeeping, and clicks land on one of them or on
+/// neither. Deriving the id from the label looked tidy and meant every group's
+/// "Add shortcut" button was the same element as every other group's, and
+/// every "−" was the same element as every other "−".
+///
+/// So the caller passes something that includes the position. It reads as
+/// noise until the day somebody renders two of these in a loop, which in an
+/// editor for a list of groups of shortcuts is immediately.
 fn text_button(
+    id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     colors: &Colors,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
@@ -907,7 +960,7 @@ fn text_button(
     let label = label.into();
 
     div()
-        .id(SharedString::from(format!("button-{label}")))
+        .id(id)
         .h(px(metrics::FIELD_HEIGHT))
         .px(px(metrics::FIELD_PADDING))
         .flex()
@@ -959,13 +1012,15 @@ fn choice_button(
         .child(label)
 }
 
+/// A small square button. See [`text_button`] for why the id is a parameter.
 fn icon_button(
+    id: impl Into<gpui::ElementId>,
     glyph: &'static str,
     colors: &Colors,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("icon-{glyph}")))
+        .id(id)
         .size(px(metrics::BUTTON_SIZE))
         .flex_none()
         .flex()
@@ -1008,6 +1063,25 @@ mod tests {
                 any: vec!["code.exe".into(), "zed.exe".into()]
             }
         );
+    }
+
+    /// The guard that stops a sheet being saved into invisibility.
+    #[test]
+    fn a_rule_with_nothing_to_match_on_is_refused() {
+        assert!(unmatchable(&MatchRule::Executable { any: Vec::new() }).is_some());
+        assert!(unmatchable(&MatchRule::TitleContains { any: Vec::new() }).is_some());
+    }
+
+    #[test]
+    fn a_rule_that_can_match_is_allowed() {
+        assert!(
+            unmatchable(&MatchRule::Executable {
+                any: vec!["zed.exe".into()]
+            })
+            .is_none()
+        );
+        // Global matches by definition and has no values to check.
+        assert!(unmatchable(&MatchRule::Global).is_none());
     }
 
     #[test]
