@@ -20,7 +20,7 @@
 //! returns a sheet rather than an `Option`, and the type system carries the
 //! guarantee.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use lumen_platform::ForegroundApp;
@@ -184,6 +184,68 @@ impl Sheet {
         overlay::HEADER_HEIGHT + body + overlay::PADDING * 2.0
     }
 
+    /// Write this sheet to `path` as pretty JSON.
+    ///
+    /// Pretty rather than compact because the file is meant to be edited by
+    /// hand as well as by the settings window, and a sheet saved from the UI
+    /// must not become harder to read than one the user wrote themselves.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let source = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, source).with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// A new, empty sheet keyed on `executable`.
+    pub fn for_executable(name: &str, executable: &str) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            name: name.to_string(),
+            match_rule: MatchRule::Executable {
+                any: vec![executable.to_lowercase()],
+            },
+            groups: vec![Group {
+                title: "Shortcuts".into(),
+                shortcuts: Vec::new(),
+            }],
+        }
+    }
+
+    /// A file name for this sheet, derived from its name.
+    ///
+    /// Reduced to lowercase ASCII words joined by hyphens, because the name is
+    /// free text and may contain anything at all -- including path separators,
+    /// which would otherwise let a sheet called `../../evil` write outside the
+    /// sheets folder.
+    pub fn file_stem(&self) -> String {
+        let stem: String = self
+            .name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+
+        let stem = stem.trim_matches('-').to_string();
+        let collapsed = stem
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+
+        if collapsed.is_empty() {
+            "sheet".to_string()
+        } else {
+            collapsed
+        }
+    }
+
     /// The panel's logical width, which narrows with the column count.
     ///
     /// A column keeps the width it would have had in a full-width panel, so
@@ -214,11 +276,30 @@ fn group_height(group: &Group) -> f32 {
 /// Every sheet available, ordered so that resolution is a linear scan.
 #[derive(Debug, Default)]
 pub struct SheetLibrary {
-    sheets: Vec<Sheet>,
+    entries: Vec<SheetEntry>,
+}
+
+/// A sheet plus where it came from.
+///
+/// The origin matters because the settings editor writes sheets back: a sheet
+/// loaded from a file can be saved to that file, while the generated Lumen sheet
+/// has no file and must be presented as read-only rather than silently failing
+/// to save.
+#[derive(Debug, Clone)]
+pub struct SheetEntry {
+    pub sheet: Sheet,
+    pub path: Option<PathBuf>,
+}
+
+impl SheetEntry {
+    /// Whether the settings editor may change this sheet.
+    pub fn is_editable(&self) -> bool {
+        self.path.is_some()
+    }
 }
 
 impl SheetLibrary {
-    /// Load every `*.json` in `dir`, plus any sheets added afterwards.
+    /// Load every `*.json` in `dir`.
     ///
     /// A malformed sheet is reported and skipped rather than fatal. One bad file
     /// must not cost the user every other sheet they have written.
@@ -229,13 +310,18 @@ impl SheetLibrary {
             return library;
         };
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
+        // Sorted so the order in the settings list is stable between runs,
+        // rather than whatever order the filesystem happened to hand over.
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+            .collect();
+        paths.sort();
+
+        for path in paths {
             match read_sheet(&path) {
-                Ok(sheet) => library.add(sheet),
+                Ok(sheet) => library.insert(sheet, Some(path)),
                 Err(error) => log::warn!("ignoring shortcut sheet: {error:#}"),
             }
         }
@@ -243,27 +329,53 @@ impl SheetLibrary {
         library
     }
 
-    /// Add a sheet, keeping the collection ordered most-specific first.
-    ///
-    /// An empty sheet is dropped: it could win the chain over a less specific
-    /// sheet that actually has content, and produce exactly the blank overlay
-    /// the fallback chain exists to prevent.
+    /// Add a sheet that has no file behind it, such as the generated one.
     pub fn add(&mut self, sheet: Sheet) {
-        if sheet.is_empty() {
-            log::debug!("ignoring empty shortcut sheet {:?}", sheet.name);
-            return;
-        }
-        self.sheets.push(sheet);
-        self.sheets
-            .sort_by_key(|sheet| sheet.match_rule.specificity());
+        self.insert(sheet, None);
     }
 
+    /// Add a sheet, keeping the collection ordered most-specific first.
+    ///
+    /// An empty sheet is dropped from *matching*: it could win the chain over a
+    /// less specific sheet that actually has content, and produce exactly the
+    /// blank overlay the fallback chain exists to prevent. It is still listed
+    /// for editing, because a sheet the user has just created and not yet filled
+    /// in has to be visible somewhere or it cannot be filled in at all.
+    pub fn insert(&mut self, sheet: Sheet, path: Option<PathBuf>) {
+        self.entries.push(SheetEntry { sheet, path });
+        self.entries
+            .sort_by_key(|entry| entry.sheet.match_rule.specificity());
+    }
+
+    /// The number of sheets that can actually be shown.
     pub fn len(&self) -> usize {
-        self.sheets.len()
+        self.entries
+            .iter()
+            .filter(|entry| !entry.sheet.is_empty())
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.sheets.is_empty()
+        self.len() == 0
+    }
+
+    /// Every sheet, including empty ones, for the settings editor.
+    pub fn entries(&self) -> &[SheetEntry] {
+        &self.entries
+    }
+
+    /// Replace the sheet at `index` and re-sort, after an edit.
+    pub fn replace(&mut self, index: usize, sheet: Sheet) {
+        if let Some(entry) = self.entries.get_mut(index) {
+            entry.sheet = sheet;
+        }
+        self.entries
+            .sort_by_key(|entry| entry.sheet.match_rule.specificity());
+    }
+
+    /// Forget the sheet at `index`. Does not touch the file.
+    pub fn remove(&mut self, index: usize) -> Option<SheetEntry> {
+        (index < self.entries.len()).then(|| self.entries.remove(index))
     }
 
     /// The sheet to show for `app`, following the mandatory fallback chain.
@@ -271,8 +383,17 @@ impl SheetLibrary {
     /// Never returns nothing. When no sheet matches and no global sheet was
     /// supplied, the built-in one is used, so the overlay always has content.
     pub fn resolve<'a>(&'a self, app: Option<&ForegroundApp>, fallback: &'a Sheet) -> &'a Sheet {
+        // Empty sheets are skipped throughout: they would satisfy the chain
+        // without satisfying the user.
+        let usable = || {
+            self.entries
+                .iter()
+                .map(|entry| &entry.sheet)
+                .filter(|sheet| !sheet.is_empty())
+        };
+
         if let Some(app) = app {
-            for sheet in &self.sheets {
+            for sheet in usable() {
                 if sheet.match_rule.matches(app) {
                     return sheet;
                 }
@@ -281,8 +402,7 @@ impl SheetLibrary {
 
         // With no foreground application at all, a global sheet is still the
         // right answer -- the user asked to see their shortcuts.
-        self.sheets
-            .iter()
+        usable()
             .find(|sheet| sheet.match_rule == MatchRule::Global)
             .unwrap_or(fallback)
     }
@@ -603,6 +723,95 @@ mod tests {
         assert_eq!(one.effective_columns(3), 1);
         assert!(one.measured_width(3) > crate::layout::overlay::PADDING * 2.0);
         assert!(one.measured_height(3) > crate::layout::overlay::HEADER_HEIGHT);
+    }
+
+    /// The name is free text and reaches the filesystem, so it must not be able
+    /// to escape the sheets folder.
+    #[test]
+    fn a_file_stem_cannot_contain_a_path() {
+        let sheet = Sheet::for_executable("../../evil", "x.exe");
+        let stem = sheet.file_stem();
+
+        assert!(!stem.contains('/'), "{stem}");
+        assert!(!stem.contains('\\'), "{stem}");
+        assert!(!stem.contains(".."), "{stem}");
+        assert_eq!(stem, "evil");
+    }
+
+    #[test]
+    fn a_file_stem_is_readable() {
+        assert_eq!(
+            Sheet::for_executable("Visual Studio Code", "code.exe").file_stem(),
+            "visual-studio-code"
+        );
+        assert_eq!(Sheet::for_executable("Zed", "zed.exe").file_stem(), "zed");
+    }
+
+    /// A name with nothing usable in it still has to produce a valid file name.
+    #[test]
+    fn an_unusable_name_still_yields_a_file_stem() {
+        assert_eq!(Sheet::for_executable("???", "x.exe").file_stem(), "sheet");
+        assert_eq!(Sheet::for_executable("", "x.exe").file_stem(), "sheet");
+    }
+
+    #[test]
+    fn a_new_sheet_is_keyed_on_a_lowercased_executable() {
+        let sheet = Sheet::for_executable("Zed", "ZED.EXE");
+        assert_eq!(
+            sheet.match_rule,
+            MatchRule::Executable {
+                any: vec!["zed.exe".into()]
+            }
+        );
+    }
+
+    /// A sheet the user has created but not filled in must still be listed for
+    /// editing, or there is no way to fill it in.
+    #[test]
+    fn empty_sheets_are_listed_for_editing_but_never_matched() {
+        let mut library = SheetLibrary::default();
+        library.insert(
+            Sheet::for_executable("New", "new.exe"),
+            Some("new.json".into()),
+        );
+
+        assert_eq!(library.entries().len(), 1);
+        assert!(
+            library.is_empty(),
+            "an empty sheet must not count as usable"
+        );
+
+        let resolved = library.resolve(Some(&app("new.exe", "x")), &FALLBACK);
+        assert!(
+            resolved.shortcut_count() > 0,
+            "must fall through to the fallback"
+        );
+    }
+
+    #[test]
+    fn generated_sheets_are_not_editable() {
+        let mut library = SheetLibrary::default();
+        library.add(sheet("Generated", MatchRule::Global));
+
+        assert!(!library.entries()[0].is_editable());
+    }
+
+    #[test]
+    fn a_saved_sheet_round_trips_through_the_file() {
+        let dir = std::env::temp_dir().join(format!("lumen-sheets-{}", std::process::id()));
+        let path = dir.join("round-trip.json");
+        let original = sheet(
+            "Round Trip",
+            MatchRule::Executable {
+                any: vec!["a.exe".into()],
+            },
+        );
+
+        original.save(&path).unwrap();
+        let reloaded = read_sheet(&path).unwrap();
+
+        assert_eq!(reloaded, original);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

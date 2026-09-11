@@ -20,7 +20,38 @@ pub struct Item {
     pub icon: Option<IconSource>,
     /// Matched against, never displayed.
     pub keywords: Vec<String>,
-    pub action: Action,
+    /// What this row can do, most important first.
+    ///
+    /// A list rather than a single action because F2 requires every action to
+    /// be reachable from the keyboard, which means there has to be somewhere
+    /// for the secondary ones to live. `Enter` runs the first; the action panel
+    /// shows all of them.
+    ///
+    /// Never empty -- see [`Item::primary`].
+    pub actions: Vec<Action>,
+    /// The right-hand label describing what kind of thing this row is.
+    ///
+    /// Drawn from a small fixed vocabulary rather than computed per item, so
+    /// the column never changes width between keystrokes (I-10).
+    pub kind: Kind,
+}
+
+/// What sort of result a row is, for the label on its right-hand edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Application,
+    Command,
+    Calculation,
+}
+
+impl Kind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Application => "Application",
+            Kind::Command => "Command",
+            Kind::Calculation => "Calculator",
+        }
+    }
 }
 
 /// What activating a row does.
@@ -31,14 +62,29 @@ pub struct Item {
 pub enum Action {
     Launch(LaunchTarget),
     CopyToClipboard(String),
+    /// Something Lumen does to itself. Carried back to the daemon as an event
+    /// rather than performed in the view, because opening a window or quitting
+    /// is the shell's business and not the list's.
+    Builtin(Builtin),
+}
+
+/// Commands Lumen provides for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builtin {
+    OpenSettings,
+    ReloadSheets,
+    Quit,
 }
 
 impl Action {
-    /// The verb shown for this action in the footer and the action panel.
+    /// The verb shown in the footer and the action panel.
     pub fn verb(&self) -> &'static str {
         match self {
             Action::Launch(_) => "Open",
             Action::CopyToClipboard(_) => "Copy",
+            Action::Builtin(Builtin::OpenSettings) => "Open Settings",
+            Action::Builtin(Builtin::ReloadSheets) => "Reload",
+            Action::Builtin(Builtin::Quit) => "Quit",
         }
     }
 }
@@ -51,19 +97,26 @@ impl Item {
             subtitle: entry.detail,
             icon: entry.icon,
             keywords: entry.keywords,
-            action: Action::Launch(entry.target),
+            actions: vec![Action::Launch(entry.target)],
+            kind: Kind::Application,
         }
     }
 
-    /// The right-hand label describing what this row is.
+    /// The action `Enter` runs.
     ///
-    /// Fixed per action kind rather than per item, so the column never changes
-    /// width between keystrokes (I-10).
+    /// Falls back to a copy of the title rather than returning an `Option`: a
+    /// row with no action at all is a bug in whichever provider produced it,
+    /// and the useful response at the point of use is to do something harmless
+    /// rather than to make every call site handle a case that should not exist.
+    pub fn primary(&self) -> Action {
+        self.actions
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Action::CopyToClipboard(self.title.clone()))
+    }
+
     pub fn kind_label(&self) -> &'static str {
-        match self.action {
-            Action::Launch(_) => "Application",
-            Action::CopyToClipboard(_) => "Text",
-        }
+        self.kind.label()
     }
 }
 
@@ -86,8 +139,32 @@ mod tests {
 
         assert_eq!(item.title, "Firefox");
         assert_eq!(item.kind_label(), "Application");
-        assert_eq!(item.action.verb(), "Open");
+        assert_eq!(item.primary().verb(), "Open");
         // The id must survive the conversion, or frecency resets on reindex.
         assert_eq!(item.id, "app:Firefox.lnk");
+    }
+
+    /// A provider that forgets to give a row an action must not make `Enter`
+    /// panic or do something destructive.
+    #[test]
+    fn an_item_with_no_actions_still_has_a_harmless_primary() {
+        let item = Item {
+            id: "broken".into(),
+            title: "Broken".into(),
+            subtitle: None,
+            icon: None,
+            keywords: Vec::new(),
+            actions: Vec::new(),
+            kind: Kind::Command,
+        };
+
+        assert_eq!(item.primary(), Action::CopyToClipboard("Broken".into()));
+    }
+
+    #[test]
+    fn every_kind_has_a_label() {
+        for kind in [Kind::Application, Kind::Command, Kind::Calculation] {
+            assert!(!kind.label().is_empty());
+        }
     }
 }

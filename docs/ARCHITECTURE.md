@@ -109,7 +109,7 @@ the README.
 | **F0** | Platform spike on Windows: transparent undecorated window, backdrop, monitor placement, global gesture, focus capture and restore | **Done** |
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Started** — themes, live reload and the fade are in; bundled font, icon set and action panel are not |
-| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay done**; providers and T1 not started |
+| **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Overlay, settings editor and calculator done**; the `trait Provider` seam exists. Clipboard history, snippets, window management, file search and T1 not started |
 | **F4** | View extensions, tiers T2 and T3 | Not started |
 | **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |
 
@@ -232,7 +232,35 @@ user needs "Move down". The registry is still consulted, by
 `verify_against_registry`, to report any registered action the table has
 forgotten.
 
-### 7.9 A hotkey conflict does not stop the daemon
+### 7.9 Providers distinguish a catalogue from an answer
+
+Not in the plan, and found by running it. F3 says only "each one behind a
+`trait Provider` in `core`", which leaves open how a provider's results reach
+the list.
+
+The first attempt ranked every provider result through the fuzzy matcher, like
+applications. That silently discards every calculation: matching compares the
+query `12*7` against the result's title `84`, which do not resemble each other
+at all, so the row scored nothing and never appeared.
+
+So a provider contributes in one of two ways. A **catalogue** exists independently
+of the query -- Lumen's commands, later the snippets of F3 -- joins the
+application index and is matched exactly like an application. An **answer** is
+computed from the query, already *is* what the user asked for, and is shown
+without matching, above the fuzzy guesses.
+
+### 7.10 The settings window is created lazily
+
+I-4 says the window is created once at startup and thereafter only shown and
+hidden. That invariant exists to keep *invocation* instant, and it is honoured
+for the launcher and the overlay, which are both summoned by a gesture.
+
+Settings is opened deliberately and rarely. Paying idle memory for a third warm
+window to save a few hundred milliseconds twice a month is the wrong side of the
+budget in section 5, so it is created on first open -- and from then on kept and
+only hidden, exactly like the others.
+
+### 7.11 A hotkey conflict does not stop the daemon
 
 Global hotkeys are first come, first served on Windows. If the configured
 combination is taken, Lumen logs which key failed and where to change it, then

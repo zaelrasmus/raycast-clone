@@ -27,11 +27,11 @@ use gpui::{
 };
 use lumen_core::sheets::{Sheet, SheetLibrary};
 use lumen_core::theme::Appearance;
-use lumen_core::{Config, Paths, Theme};
+use lumen_core::{Builtin, Config, Paths, Theme};
 use lumen_platform::{
     FocusOwner, GestureEvent, GestureSink, HoldPhase, MonitorInfo, Platform, Rect, WindowRole,
 };
-use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, keymap};
+use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
 mod ipc;
 
@@ -50,6 +50,9 @@ fn main() -> Result<()> {
         // duration -- no input capture and no special permissions.
         Some("overlay-press") => forward_only(Message::OverlayPress),
         Some("overlay-release") => forward_only(Message::OverlayRelease),
+        Some("settings") => dispatch(Message::Settings),
+        Some("reload-sheets") => forward_only(Message::ReloadSheets),
+        Some("quit") => forward_only(Message::Quit),
         Some("--version" | "-V") => {
             println!("lumen {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -76,8 +79,11 @@ fn print_help() {
          show               Show the launcher\n    \
          hide               Hide the launcher\n    \
          overlay-press      Report that the hold gesture began\n    \
-         overlay-release    Report that the hold gesture ended\n\n\
-         With no running daemon, `toggle` and `show` start one."
+         overlay-release    Report that the hold gesture ended\n    \
+         settings           Open the settings window\n    \
+         reload-sheets      Re-read the shortcut sheets from disk\n    \
+         quit               Stop the running daemon\n\n\
+         With no running daemon, `toggle`, `show` and `settings` start one."
     );
 }
 
@@ -248,16 +254,28 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     })
     .context("starting the IPC listener")?;
 
-    subscribe_to_launcher(cx, &window, platform.clone(), config.clone(), shell.clone());
+    subscribe_to_launcher(
+        cx,
+        &window,
+        platform.clone(),
+        config.clone(),
+        shell.clone(),
+        tx.clone(),
+    );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
     watch_theme(cx, &window, &overlay, &paths, &config);
 
     let surfaces = Surfaces {
         launcher: window,
         overlay,
-        sheets: Rc::new(sheets),
+        settings: Rc::new(RefCell::new(None)),
+        sheets: Rc::new(RefCell::new(sheets)),
         fallback: Rc::new(fallback),
+        paths: paths.clone(),
+        theme: Rc::new(RefCell::new(theme.clone())),
     };
+
+    watch_sheets(cx, &surfaces);
 
     cx.spawn({
         let platform = platform.clone();
@@ -276,15 +294,38 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     Ok(())
 }
 
-/// The two warm windows and the sheets one of them draws from.
+/// The daemon's windows and the sheets they draw from.
 ///
-/// Grouped rather than threaded through every function as four more parameters,
+/// Grouped rather than threaded through every function as six more parameters,
 /// which is what the event loop would otherwise become.
+///
+/// The sheet library sits behind `RefCell` because saving from the settings
+/// window replaces it while the overlay may be holding a borrow of the sheet it
+/// is currently drawing.
 struct Surfaces {
     launcher: gpui::WindowHandle<Launcher>,
     overlay: gpui::WindowHandle<Overlay>,
-    sheets: Rc<SheetLibrary>,
+    /// Created the first time settings is opened, then kept and hidden.
+    settings: Rc<RefCell<Option<gpui::WindowHandle<Settings>>>>,
+    sheets: Rc<RefCell<SheetLibrary>>,
     fallback: Rc<Sheet>,
+    paths: Paths,
+    theme: Rc<RefCell<Theme>>,
+}
+
+impl Surfaces {
+    /// Re-read the sheets folder and put the generated Lumen sheet back.
+    ///
+    /// Called after a save, a delete, and whenever the watcher notices someone
+    /// editing a file by hand. Rebuilt from scratch rather than patched: the
+    /// library is small, and reconciling an in-place edit with a file that may
+    /// have been renamed underneath is more ways to be wrong than it is worth.
+    fn reload_sheets(&self) {
+        let mut library = SheetLibrary::load(&self.paths.sheets_dir());
+        library.add(keymap::sheet());
+        log::info!("reloaded {} shortcut sheets", library.len());
+        *self.sheets.borrow_mut() = library;
+    }
 }
 
 /// Hide the overlay's window once its fade has actually finished.
@@ -312,6 +353,165 @@ fn subscribe_to_overlay(
 
         if let Err(error) = platform.hide_window(WindowRole::Overlay, None) {
             log::error!("could not hide the overlay: {error:#}");
+        }
+    })
+    .detach();
+}
+
+/// Re-read the sheets folder when anything in it changes.
+///
+/// Themes have had live reload since F1 (AD-05); sheets get the same treatment
+/// for the same reason. Editing a sheet by hand and having to restart the daemon
+/// to see it is exactly the friction that stops people iterating.
+fn watch_sheets(cx: &mut App, surfaces: &Surfaces) {
+    use lumen_core::watcher::DirectoryWatcher;
+
+    let watcher = match DirectoryWatcher::start(&surfaces.paths.sheets_dir()) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            log::warn!("shortcut sheets will not reload automatically: {error:#}");
+            return;
+        }
+    };
+
+    let sheets = surfaces.sheets.clone();
+    let paths = surfaces.paths.clone();
+
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(400))
+                .await;
+
+            if !watcher.changed() {
+                continue;
+            }
+
+            let mut library = SheetLibrary::load(&paths.sheets_dir());
+            library.add(keymap::sheet());
+            log::info!("reloaded {} shortcut sheets", library.len());
+            *sheets.borrow_mut() = library;
+        }
+    })
+    .detach();
+}
+
+/// Show the settings window, creating it the first time.
+///
+/// Lazy on purpose: see the note on [`WindowRole::Settings`]. Once created it is
+/// kept and only hidden, so the second open is as instant as the launcher's.
+fn open_settings(
+    platform: &Arc<dyn Platform>,
+    config: &Config,
+    surfaces: &Surfaces,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
+    // Captured before the window appears, so the offer to "make a sheet for
+    // what I was just using" names the application the user actually came from.
+    let foreground = platform.foreground_application().unwrap_or(None);
+
+    let existing = *surfaces.settings.borrow();
+    let window = match existing {
+        Some(window) => window,
+        None => {
+            let created =
+                cx.update(|cx| create_settings_window(cx, platform, config, surfaces))??;
+            *surfaces.settings.borrow_mut() = Some(created);
+            created
+        }
+    };
+
+    // Always reloaded from disk on open. The user may have edited a file by
+    // hand since last time, and showing them a stale editor would invite them
+    // to save over their own work.
+    let entries = surfaces
+        .sheets
+        .borrow()
+        .entries()
+        .iter()
+        .map(|entry| (entry.sheet.clone(), entry.path.clone()))
+        .collect::<Vec<_>>();
+
+    window
+        .update(cx, |settings, window, cx| {
+            settings.load(entries, cx);
+            if let Some(app) = foreground {
+                settings.set_foreground(app.executable, app.title);
+            }
+            settings.focus(window);
+        })
+        .ok();
+
+    let monitor = platform.cursor_monitor()?;
+    let bounds = monitor.place(
+        Rect::size(
+            lumen_core::layout::settings::WIDTH as i32,
+            lumen_core::layout::settings::HEIGHT as i32,
+        ),
+        // Centred rather than biased upward: this is a window to work in, not a
+        // flyout to glance at.
+        0.5,
+    );
+    platform.show_window(WindowRole::Settings, bounds)?;
+
+    Ok(())
+}
+
+fn create_settings_window(
+    cx: &mut App,
+    platform: &Arc<dyn Platform>,
+    config: &Config,
+    surfaces: &Surfaces,
+) -> Result<gpui::WindowHandle<Settings>> {
+    let theme = surfaces.theme.borrow().clone();
+    let sheets_dir = surfaces.paths.sheets_dir();
+
+    let window = open_hidden_window(
+        cx,
+        platform,
+        WindowRole::Settings,
+        config,
+        size(
+            px(lumen_core::layout::settings::WIDTH),
+            px(lumen_core::layout::settings::HEIGHT),
+        ),
+        move |_window, cx| cx.new(|cx| Settings::new(theme, sheets_dir, cx)),
+    )?;
+
+    subscribe_to_settings(cx, &window, platform.clone(), surfaces);
+
+    Ok(window)
+}
+
+/// React to saves, deletions and closing.
+fn subscribe_to_settings(
+    cx: &mut App,
+    window: &gpui::WindowHandle<Settings>,
+    platform: Arc<dyn Platform>,
+    surfaces: &Surfaces,
+) {
+    let Ok(entity) = window.entity(cx) else {
+        return;
+    };
+
+    let sheets = surfaces.sheets.clone();
+    let paths = surfaces.paths.clone();
+
+    cx.subscribe(&entity, move |_entity: Entity<Settings>, event, _cx| {
+        match event {
+            // A save or a delete changes what the overlay should show, so the
+            // library is rebuilt immediately rather than at the next restart.
+            SettingsEvent::Saved { path } | SettingsEvent::Deleted { path } => {
+                log::debug!("sheets changed at {}", path.display());
+                let mut library = SheetLibrary::load(&paths.sheets_dir());
+                library.add(keymap::sheet());
+                *sheets.borrow_mut() = library;
+            }
+            SettingsEvent::Closed => {
+                if let Err(error) = platform.hide_window(WindowRole::Settings, None) {
+                    log::error!("could not hide the settings window: {error:#}");
+                }
+            }
         }
     })
     .detach();
@@ -410,6 +610,7 @@ fn subscribe_to_launcher(
     platform: Arc<dyn Platform>,
     config: Config,
     shell: Rc<RefCell<Shell>>,
+    commands: mpsc::UnboundedSender<Message>,
 ) {
     let Ok(entity) = window.entity(cx) else {
         return;
@@ -419,6 +620,18 @@ fn subscribe_to_launcher(
         let outcome = match event {
             LauncherEvent::Dismissed => hide(&platform, &shell),
             LauncherEvent::RowsChanged(rows) => resize(&platform, &config, &shell, *rows),
+            // Sent back through the same channel the hotkey and the socket use,
+            // rather than acted on here. One queue means one order of events,
+            // and it means `lumen settings` from a terminal and "Configure
+            // Shortcuts" from the launcher take the identical path.
+            LauncherEvent::Builtin(command) => {
+                let _ = commands.unbounded_send(match command {
+                    Builtin::OpenSettings => Message::Settings,
+                    Builtin::ReloadSheets => Message::ReloadSheets,
+                    Builtin::Quit => Message::Quit,
+                });
+                Ok(())
+            }
         };
         if let Err(error) = outcome {
             log::error!("could not apply {event:?}: {error:#}");
@@ -504,6 +717,16 @@ fn handle(
         Message::Hide => hide(platform, shell),
         Message::OverlayPress => show_overlay(platform, shell, surfaces, cx),
         Message::OverlayRelease => hide_overlay(surfaces, cx),
+        Message::Settings => open_settings(platform, config, surfaces, cx),
+        Message::ReloadSheets => {
+            surfaces.reload_sheets();
+            Ok(())
+        }
+        Message::Quit => {
+            log::info!("stopping the daemon");
+            cx.update(|cx| cx.quit()).ok();
+            Ok(())
+        }
         Message::Ping => Ok(()),
     }
 }
@@ -523,9 +746,15 @@ fn show_overlay(
         None
     });
 
+    // Cloned out of the library rather than borrowed across the rest of this
+    // function: the settings window and the watcher can both replace the
+    // library while the overlay is up, and a live borrow would make that a
+    // panic instead of a reload.
     let sheet = surfaces
         .sheets
-        .resolve(foreground.as_ref(), &surfaces.fallback);
+        .borrow()
+        .resolve(foreground.as_ref(), &surfaces.fallback)
+        .clone();
 
     log::debug!(
         "overlay: {:?} -> sheet {:?}",
@@ -538,7 +767,6 @@ fn show_overlay(
     let columns = lumen_core::layout::overlay::COLUMNS;
     let height = sheet.measured_height(columns);
     let width = sheet.measured_width(columns);
-    let sheet = sheet.clone();
 
     // The window is positioned and mapped while its content is still at zero
     // opacity, and only then told to fade in. That ordering is what F3 means by

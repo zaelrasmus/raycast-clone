@@ -31,6 +31,12 @@ an aesthetic worth looking at fifty times a day.
   The shortcuts are *yours*, written by you, and the sheet follows the
   foreground application. It never takes focus, is click-through, and is not in
   the keyboard path at all, so it cannot swallow the keystroke that follows it.
+- **A settings window** for writing those sheets, so configuring the overlay
+  does not mean hand-editing JSON. It offers to start a sheet for whichever
+  application you were just using.
+- **Inline calculator.** Type `12*7` and the answer is the first row, ready to
+  copy. It stays quiet for anything that is not arithmetic, including `7-zip`.
+- **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **Themes and sheets as data** with live reload for themes: edit the JSON, see
   it on screen, no rebuild. Two in-house themes ship, one dark and one light.
 - **Windows 11 chrome**: acrylic backdrop, rounded corners, dark mode, out of
@@ -51,10 +57,10 @@ Listed because a README that implies more than exists is worse than no README.
   between Windows and Linux.
 - **No action panel and no icon set.** `Enter` runs the primary action; there is
   no `Ctrl+K` panel behind it yet.
-- **No internal providers.** No calculator, clipboard history, snippets or file
-  search — the rest of F3.
-- **Sheets do not live-reload.** Themes do; sheets are read once at startup, so
-  editing one means restarting the daemon.
+- **Most internal providers are missing.** The calculator is in; clipboard
+  history, snippets, window management and file search are not. Nor is tier T1
+  (script commands), which the plan rates the best effort-to-value ratio in the
+  project.
 - **Browsers and Electron apps report their container.** A sheet keyed on
   `chrome.exe` covers every tab, because the window does not say what is open
   inside it. Key those on the window title instead. Packaged apps *are* resolved
@@ -114,6 +120,9 @@ Then run the binary once to start the daemon:
 | `lumen show` / `hide`   | Show or hide explicitly                       |
 | `lumen overlay-press`   | Report that the hold gesture began (Hyprland `bind`)  |
 | `lumen overlay-release` | Report that it ended (Hyprland `bindr`)       |
+| `lumen settings`        | Open the settings window                      |
+| `lumen reload-sheets`   | Re-read the shortcut sheets from disk         |
+| `lumen quit`            | Stop the daemon                               |
 
 ### Keys
 
@@ -184,8 +193,17 @@ whole project exists to protect.
 ### Shortcut sheets
 
 Hold **Right Ctrl** for about a third of a second and Lumen shows the shortcuts
-for whatever application is in front. Sheets are distributed exactly like themes:
-drop a JSON file into `%APPDATA%\Lumen\config\sheets\` and restart the daemon.
+for whatever application is in front.
+
+The easiest way to write them is the settings window: run `lumen settings`, or
+search for **Configure Shortcuts** in the launcher. It lists your sheets and lets
+you edit the name, what the sheet matches, and the groups of shortcuts — and it
+offers to start a sheet for whichever application you were using a moment ago, so
+you never have to look up your own executable's file name. `Ctrl+S` saves, `Esc`
+closes, and the overlay picks the change up immediately.
+
+Sheets remain plain files, distributed exactly like themes: drop a JSON file into
+`%APPDATA%\Lumen\config\sheets\` and it is picked up without a restart.
 
 ```json
 {

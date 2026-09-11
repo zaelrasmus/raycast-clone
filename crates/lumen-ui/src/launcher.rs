@@ -26,7 +26,9 @@ use gpui::{
     ease_out_quint, img, uniform_list,
 };
 use lumen_core::theme::Appearance;
-use lumen_core::{Action, Candidate, Config, Frecency, Item, Paths, Search, Theme, layout};
+use lumen_core::{
+    Action, Candidate, Config, Frecency, Item, Paths, Providers, Search, Theme, layout,
+};
 use lumen_platform::Platform;
 
 use crate::icons::IconCache;
@@ -63,9 +65,25 @@ actions!(
 /// Re-ranking happens on every keystroke; cloning several hundred items each
 /// time would spend the per-frame budget on allocation alone.
 struct Hit {
-    candidate: usize,
+    source: Source,
     /// Character offsets into the title that matched, for highlighting.
     highlights: Vec<u32>,
+    score: u32,
+}
+
+/// Which list a hit came from.
+///
+/// Two lists rather than one because they have opposite lifetimes: the
+/// application index is built once and reused for thousands of queries, while
+/// provider results are rebuilt for every keystroke. Concatenating them per
+/// keystroke would mean cloning several hundred prepared haystacks to add three
+/// rows, which is exactly the kind of work the per-frame budget cannot absorb.
+#[derive(Clone, Copy)]
+enum Source {
+    /// An index into the application index.
+    Indexed(usize),
+    /// An index into this keystroke's provider answers.
+    Answer(usize),
 }
 
 /// How many results are kept behind the visible window.
@@ -85,6 +103,9 @@ pub struct Launcher {
     /// The searchable index. Empty until the first enumeration completes, which
     /// is why the root list is allowed to be empty rather than treated as a bug.
     candidates: Arc<Vec<Candidate>>,
+    /// This keystroke's provider answers, rebuilt on every rerank.
+    answers: Vec<Item>,
+    providers: Providers,
     search: Search,
     frecency: Frecency,
 
@@ -123,6 +144,8 @@ impl Launcher {
             theme,
             icons,
             candidates: Arc::new(Vec::new()),
+            answers: Vec::new(),
+            providers: Providers::builtin(),
             search: Search::new(),
             frecency,
             query: String::new(),
@@ -161,6 +184,11 @@ impl Launcher {
 
             log::info!("indexed {} applications", entries.len());
 
+            // The provider catalogue joins the same index as the applications,
+            // so Lumen's own commands are found by typing part of their name
+            // exactly like anything else -- one notion of "matches", not two.
+            let catalogue = Providers::builtin().catalogue();
+
             // Preparing the haystacks is the expensive half, so it stays on the
             // background thread too: handing the UI raw entries would just move
             // the cost into the first keystroke.
@@ -170,6 +198,7 @@ impl Launcher {
                     entries
                         .into_iter()
                         .map(Candidate::from_app)
+                        .chain(catalogue.into_iter().map(Candidate::new))
                         .collect::<Vec<_>>()
                 })
                 .await;
@@ -227,18 +256,44 @@ impl Launcher {
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
         let previous_rows = self.visible_rows();
-        let candidates = self.candidates.clone();
-        let matches = self
-            .search
-            .rank(&self.query, &candidates, &self.frecency, MAX_RESULTS);
 
-        self.hits = matches
+        // Answers run first and synchronously. Providers are contractually
+        // instant (see `lumen_core::providers`), so this stays inside the frame
+        // budget and I-3 is not at risk: nothing here waits on anything.
+        self.answers = self.providers.answers(&self.query);
+
+        let candidates = self.candidates.clone();
+        let mut hits: Vec<Hit> = self
+            .search
+            .rank(&self.query, &candidates, &self.frecency, MAX_RESULTS)
             .into_iter()
             .map(|m| Hit {
-                candidate: m.index,
+                source: Source::Indexed(m.index),
                 highlights: m.highlights,
+                score: m.score,
             })
             .collect();
+
+        // Sorted before the answers are prepended, so the answers keep the top
+        // regardless of how well anything else scored.
+        hits.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| self.title_of(a).cmp(self.title_of(b)))
+        });
+
+        // An answer *is* what the user asked for -- it was computed from their
+        // exact query -- so it goes above every fuzzy guess rather than
+        // competing with them on a score it has no meaningful way to earn.
+        let answers = (0..self.answers.len()).map(|index| Hit {
+            source: Source::Answer(index),
+            highlights: Vec::new(),
+            score: u32::MAX,
+        });
+        hits.splice(0..0, answers);
+
+        hits.truncate(MAX_RESULTS);
+        self.hits = hits;
 
         // The selection always returns to the top on a new query. Trying to keep
         // it on "the same item" across a re-rank is the kind of cleverness that
@@ -254,7 +309,14 @@ impl Launcher {
     }
 
     fn item(&self, hit: &Hit) -> &Item {
-        &self.candidates[hit.candidate].item
+        match hit.source {
+            Source::Indexed(index) => &self.candidates[index].item,
+            Source::Answer(index) => &self.answers[index],
+        }
+    }
+
+    fn title_of(&self, hit: &Hit) -> &str {
+        &self.item(hit).title
     }
 
     fn selected_item(&self) -> Option<&Item> {
@@ -305,7 +367,7 @@ impl Launcher {
         let Some(item) = self.selected_item() else {
             return;
         };
-        let (id, action) = (item.id.clone(), item.action.clone());
+        let (id, action) = (item.id.clone(), item.primary());
 
         // Record and persist before launching. A launch that hands the
         // foreground to another application immediately is a launch whose
@@ -317,11 +379,21 @@ impl Launcher {
 
         cx.emit(LauncherEvent::Dismissed);
 
+        // Lumen's own commands open windows or stop the process, which is the
+        // shell's business and not the list's (I-4 lives out there). They go
+        // back as an event; everything else the platform can do directly.
+        if let Action::Builtin(command) = action {
+            cx.emit(LauncherEvent::Builtin(command));
+            return;
+        }
+
         let platform = self.platform.clone();
         cx.background_spawn(async move {
             let outcome = match &action {
                 Action::Launch(target) => platform.launch(target),
                 Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
+                // Handled above, before this task was spawned.
+                Action::Builtin(_) => Ok(()),
             };
             if let Err(error) = outcome {
                 log::error!("could not run {action:?}: {error:#}");
@@ -452,6 +524,8 @@ fn word_start_before(text: &str, cursor: usize) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LauncherEvent {
     Dismissed,
+    /// One of Lumen's own commands was run.
+    Builtin(lumen_core::Builtin),
     /// The number of visible rows changed, so the window should be resized to
     /// hug its content.
     RowsChanged(usize),
@@ -680,7 +754,7 @@ impl Launcher {
         let colors = &self.theme.colors;
         let verb = self
             .selected_item()
-            .map(|item| item.action.verb())
+            .map(|item| item.primary().verb())
             .unwrap_or("Open");
 
         div()

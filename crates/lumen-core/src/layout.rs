@@ -161,3 +161,66 @@ pub mod overlay {
         pub const KEYS: f32 = 11.5;
     }
 }
+
+/// Geometry for the settings window.
+///
+/// A third set, because the settings window is a different kind of surface
+/// again: it is a document the user works in rather than a flyout they glance
+/// at, so it is larger, denser, and sized once rather than per invocation.
+pub mod settings {
+    /// Logical size of the window. Fixed: the content is a two-pane editor whose
+    /// proportions are calibrated, not something that benefits from resizing.
+    pub const WIDTH: f32 = 900.0;
+    pub const HEIGHT: f32 = 620.0;
+
+    /// Width of the sheet list down the left-hand side.
+    pub const SIDEBAR_WIDTH: f32 = 240.0;
+
+    /// Padding inside each pane.
+    pub const PADDING: f32 = 18.0;
+
+    /// The title bar the application draws for itself, since the window has no
+    /// system decoration.
+    pub const HEADER_HEIGHT: f32 = 46.0;
+
+    /// The footer carrying the save state and its hint.
+    pub const FOOTER_HEIGHT: f32 = 44.0;
+
+    /// One row in the sheet list.
+    pub const SIDEBAR_ROW_HEIGHT: f32 = 34.0;
+
+    /// One editable shortcut row.
+    pub const ROW_HEIGHT: f32 = 36.0;
+
+    /// Gap between stacked controls.
+    pub const GAP: f32 = 8.0;
+
+    /// Gap between one group of shortcuts and the next.
+    pub const GROUP_GAP: f32 = 18.0;
+
+    pub const RADIUS: f32 = 10.0;
+
+    /// A text field's height, padding and corner.
+    pub const FIELD_HEIGHT: f32 = 28.0;
+    pub const FIELD_PADDING: f32 = 8.0;
+    pub const FIELD_RADIUS: f32 = 6.0;
+
+    /// Width of the keys field, which holds short chords and should not take
+    /// space from the description beside it.
+    pub const KEYS_FIELD_WIDTH: f32 = 180.0;
+
+    /// A square button, for the add and remove controls.
+    pub const BUTTON_SIZE: f32 = 28.0;
+
+    pub mod text {
+        pub const TITLE: f32 = 15.0;
+        pub const SECTION: f32 = 11.0;
+        pub const FIELD: f32 = 12.5;
+        pub const LABEL: f32 = 12.0;
+        pub const HINT: f32 = 11.5;
+    }
+}
+
+/// A settings field has to fit inside the row that contains it.
+const _: () = assert!(settings::FIELD_HEIGHT < settings::ROW_HEIGHT);
+const _: () = assert!(settings::KEYS_FIELD_WIDTH * 2.0 < settings::WIDTH - settings::SIDEBAR_WIDTH);

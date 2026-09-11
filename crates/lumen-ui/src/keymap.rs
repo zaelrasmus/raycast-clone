@@ -32,9 +32,21 @@ use crate::launcher::{
     Activate, ClearQuery, DeleteBackward, DeleteWordBackward, Dismiss, Paste, SelectFirst,
     SelectLast, SelectNext, SelectPrevious,
 };
+use crate::settings::{CloseSettings, SaveSheet};
 
 /// The key context these bindings apply in, matching `Launcher`'s.
 const CONTEXT: &str = "Launcher";
+
+/// The settings window's key context.
+const SETTINGS_CONTEXT: &str = "Settings";
+
+/// A text field's key context, inside the settings window.
+///
+/// Separate from the launcher's so that backspace in a settings field edits the
+/// field rather than the launcher's query. Two windows, two contexts, and GPUI
+/// resolves against whichever holds focus -- which is the whole reason I-14
+/// insists on declared bindings rather than hand-written key comparisons.
+const FIELD_CONTEXT: &str = "TextField";
 
 /// One row of the table: what to bind, what it does, and where it belongs on
 /// the sheet.
@@ -162,6 +174,21 @@ pub fn install(cx: &mut App) {
     // launcher's subtree. A launcher that cannot be dismissed is a launcher that
     // has to be killed from Task Manager.
     cx.bind_keys([KeyBinding::new("ctrl-escape", Dismiss, None)]);
+
+    // The settings window. Its own context, so Escape closes the window rather
+    // than clearing whichever field happens to hold focus.
+    cx.bind_keys([
+        KeyBinding::new("ctrl-s", SaveSheet, Some(SETTINGS_CONTEXT)),
+        KeyBinding::new("escape", CloseSettings, Some(SETTINGS_CONTEXT)),
+    ]);
+
+    // Text editing inside a settings field. Bound in the field's own context so
+    // backspace in a field does not reach the launcher's query (I-14).
+    cx.bind_keys([
+        KeyBinding::new("backspace", DeleteBackward, Some(FIELD_CONTEXT)),
+        KeyBinding::new("ctrl-backspace", DeleteWordBackward, Some(FIELD_CONTEXT)),
+        KeyBinding::new("ctrl-w", DeleteWordBackward, Some(FIELD_CONTEXT)),
+    ]);
 }
 
 /// The shortcut sheet shown while Lumen itself is in front.

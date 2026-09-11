@@ -17,6 +17,7 @@ pub mod frecency;
 pub mod item;
 pub mod layout;
 pub mod paths;
+pub mod providers;
 pub mod search;
 pub mod sheets;
 pub mod theme;
@@ -24,10 +25,11 @@ pub mod watcher;
 
 pub use config::Config;
 pub use frecency::Frecency;
-pub use item::{Action, Item};
+pub use item::{Action, Builtin, Item, Kind};
 pub use paths::Paths;
+pub use providers::{Provider, Providers};
 pub use search::{Candidate, Match, Search};
-pub use sheets::{Sheet, SheetLibrary};
+pub use sheets::{Sheet, SheetEntry, SheetLibrary};
 pub use theme::{Appearance, Color, Theme};
 
 use std::path::Path;

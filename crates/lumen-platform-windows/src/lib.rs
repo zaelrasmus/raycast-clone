@@ -50,6 +50,8 @@ pub struct WindowsPlatform {
     launcher: AtomicU64,
     /// The overlay window's handle. Two warm windows in memory, not one (F3).
     overlay: AtomicU64,
+    /// The settings window's handle, published only once it has been opened.
+    settings: AtomicU64,
 }
 
 impl WindowsPlatform {
@@ -58,6 +60,7 @@ impl WindowsPlatform {
             options,
             launcher: AtomicU64::new(0),
             overlay: AtomicU64::new(0),
+            settings: AtomicU64::new(0),
         }
     }
 
@@ -65,6 +68,7 @@ impl WindowsPlatform {
         match role {
             WindowRole::Launcher => &self.launcher,
             WindowRole::Overlay => &self.overlay,
+            WindowRole::Settings => &self.settings,
         }
     }
 
@@ -87,6 +91,11 @@ impl Platform for WindowsPlatform {
             WindowRole::Overlay => {
                 window::attach_overlay(hwnd, self.options.backdrop, self.options.dark)?
             }
+            // Settings gets the launcher's chrome: rounded, dark-aware, out of
+            // Alt+Tab. It differs from the launcher only in that it is opened
+            // deliberately rather than summoned, which is a question of when it
+            // is created, not of how it looks.
+            WindowRole::Settings => window::attach(hwnd, self.options.backdrop, self.options.dark)?,
         }
         self.slot(role).store(hwnd.0 as u64, Ordering::Release);
         Ok(())
@@ -101,6 +110,7 @@ impl Platform for WindowsPlatform {
             // stealing that window's focus would break the shortcuts it is
             // describing.
             WindowRole::Overlay => window::show_passive(hwnd, bounds).map(|()| None),
+            WindowRole::Settings => window::show(hwnd, bounds),
         }
     }
 

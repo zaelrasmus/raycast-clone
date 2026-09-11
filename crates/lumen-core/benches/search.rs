@@ -14,7 +14,7 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lumen_core::frecency::Frecency;
-use lumen_core::item::{Action, Item};
+use lumen_core::item::{Action, Item, Kind};
 use lumen_core::search::{Candidate, Search};
 use lumen_platform::LaunchTarget;
 
@@ -48,7 +48,10 @@ fn index(count: usize) -> Vec<Candidate> {
                 subtitle: Some("Publisher".into()),
                 icon: None,
                 keywords: vec!["tool".into(), "utility".into()],
-                action: Action::Launch(LaunchTarget::ShellExecute(format!("app-{i}"))),
+                actions: vec![Action::Launch(LaunchTarget::ShellExecute(format!(
+                    "app-{i}"
+                )))],
+                kind: Kind::Application,
             })
         })
         .collect()

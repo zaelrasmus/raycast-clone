@@ -193,7 +193,8 @@ mod tests {
             subtitle: None,
             icon: None,
             keywords: keywords.iter().map(|k| k.to_string()).collect(),
-            action: Action::Launch(LaunchTarget::ShellExecute(title.into())),
+            actions: vec![Action::Launch(LaunchTarget::ShellExecute(title.into()))],
+            kind: crate::item::Kind::Application,
         })
     }
 

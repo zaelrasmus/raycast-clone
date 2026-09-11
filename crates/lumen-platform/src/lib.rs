@@ -78,6 +78,14 @@ pub enum WindowRole {
     /// The shortcut overlay: never activates, never takes focus, click-through,
     /// and never consumes the keystroke that follows it.
     Overlay,
+    /// The settings window: an ordinary focusable window, created lazily.
+    ///
+    /// Unlike the other two it is *not* pre-created at startup. I-4 exists to
+    /// keep invocation instant, and settings is opened deliberately and rarely;
+    /// paying idle memory for a third warm window to save a few hundred
+    /// milliseconds twice a month is the wrong side of the budget in section 5.
+    /// Once created it is kept and only hidden, exactly like the others.
+    Settings,
 }
 
 /// The application currently in the foreground.

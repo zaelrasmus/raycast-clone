@@ -99,6 +99,55 @@ fn same_file(a: &Path, b: &Path) -> bool {
     key(a) == key(b)
 }
 
+/// Watches a directory and reports whether anything in it has changed.
+///
+/// Deliberately coarser than [`ThemeWatcher`]: a theme watch knows which file it
+/// cares about and can hand back a parsed value, while a sheets folder holds
+/// many files that are read together. Reporting "something changed, reload the
+/// lot" is both simpler and more correct here -- renaming a sheet, deleting one
+/// and editing one all have to produce the same response anyway.
+pub struct DirectoryWatcher {
+    _watcher: notify::RecommendedWatcher,
+    changes: mpsc::Receiver<()>,
+}
+
+impl DirectoryWatcher {
+    pub fn start(dir: &Path) -> Result<Self> {
+        // Created if absent: watching a directory that does not exist fails, and
+        // the sheets folder is legitimately missing on a first run.
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+
+        let (tx, changes) = mpsc::channel();
+
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+            let Ok(event) = event else { return };
+            // Access events fire when a file is merely read, including by this
+            // process. Reloading on those would be a loop.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                return;
+            }
+            let _ = tx.send(());
+        })
+        .context("creating a filesystem watcher")?;
+
+        watcher
+            .watch(dir, RecursiveMode::NonRecursive)
+            .with_context(|| format!("watching {}", dir.display()))?;
+
+        Ok(Self {
+            _watcher: watcher,
+            changes,
+        })
+    }
+
+    /// Whether anything changed since the last call.
+    ///
+    /// Coalescing: a save that arrives as a truncate, a write and a rename is
+    /// one answer, not three reloads.
+    pub fn changed(&self) -> bool {
+        self.changes.try_iter().count() > 0
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

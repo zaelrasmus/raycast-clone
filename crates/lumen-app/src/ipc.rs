@@ -39,6 +39,12 @@ pub enum Message {
     OverlayPress,
     /// The hold gesture ended, from Hyprland's `bindr`.
     OverlayRelease,
+    /// Open the settings window.
+    Settings,
+    /// Re-read the sheets folder from disk.
+    ReloadSheets,
+    /// Stop the daemon.
+    Quit,
     /// Used by the client to detect a running daemon without side effects.
     Ping,
 }

@@ -61,8 +61,15 @@ impl MonitorInfo {
     /// A launcher sits above the optical centre: 0.5 reads as low, because the
     /// eye weights the top of the screen.
     pub fn place(&self, size: Rect, vertical_bias: f32) -> Rect {
-        let width = (size.width as f32 * self.scale_factor).round() as i32;
-        let height = (size.height as f32 * self.scale_factor).round() as i32;
+        // Clamped to the work area first. A window asked for at a size that does
+        // not fit -- the settings editor on a small laptop, or any window on a
+        // scaled display where the logical size multiplies up past the screen --
+        // must be shrunk rather than hung off the bottom edge with its footer
+        // and its buttons unreachable.
+        let width =
+            ((size.width as f32 * self.scale_factor).round() as i32).min(self.work_area.width);
+        let height =
+            ((size.height as f32 * self.scale_factor).round() as i32).min(self.work_area.height);
 
         let x = self.work_area.x + (self.work_area.width - width) / 2;
         let y = self.work_area.y
@@ -105,6 +112,40 @@ mod tests {
         assert_eq!(placed.height, 600);
         // Still inside the monitor it was placed on, not the primary one.
         assert!(placed.x >= monitor.work_area.x);
+    }
+
+    /// A window larger than the screen must be shrunk to fit, not left hanging
+    /// off the edge with its footer unreachable.
+    #[test]
+    fn place_clamps_a_window_too_large_for_the_work_area() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(0, 0, 1280, 800),
+            work_area: Rect::new(0, 0, 1280, 760),
+            scale_factor: 1.5,
+        };
+
+        // 900 x 620 logical is 1350 x 930 physical: wider and taller than this.
+        let placed = monitor.place(Rect::size(900, 620), 0.5);
+
+        assert!(placed.width <= monitor.work_area.width);
+        assert!(placed.height <= monitor.work_area.height);
+        assert!(placed.x >= monitor.work_area.x);
+        assert!(placed.y >= monitor.work_area.y);
+        assert!(placed.y + placed.height <= monitor.work_area.y + monitor.work_area.height);
+    }
+
+    #[test]
+    fn place_leaves_a_window_that_already_fits_alone() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.0,
+        };
+
+        let placed = monitor.place(Rect::size(900, 620), 0.5);
+
+        assert_eq!(placed.width, 900);
+        assert_eq!(placed.height, 620);
     }
 
     #[test]

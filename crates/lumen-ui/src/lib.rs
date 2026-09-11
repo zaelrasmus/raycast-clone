@@ -22,7 +22,11 @@ pub mod icons;
 pub mod keymap;
 pub mod launcher;
 pub mod overlay;
+pub mod settings;
 pub mod styling;
+pub mod text_field;
 
 pub use launcher::{Launcher, LauncherEvent};
 pub use overlay::{Overlay, OverlayEvent};
+pub use settings::{Settings, SettingsEvent};
+pub use text_field::TextField;
