@@ -382,6 +382,31 @@ deliberate and one that looks approximate.
 A window DWM will not describe is placed as asked rather than not placed at
 all.
 
+### 7.18 No window is touched from inside a GPUI callback
+
+A subscription callback runs while GPUI holds a mutable borrow of the `App`.
+Showing, hiding, moving or resizing a window sends window messages
+*synchronously* to our own window procedure, on the same thread; GPUI's
+procedure then tries to take the borrow it cannot have, and the message is
+dropped.
+
+Nothing reports this. The only sign is a line in the log reading
+`RefCell already borrowed`, with no target and no indication of what it was
+about, produced by an internal `log_err` on a `try_borrow_mut` several frames
+away from the cause. It had been happening on every show and every dismiss
+since F1 and was found by reading the log during unrelated work, which is
+exactly how long a silent failure survives.
+
+What gets dropped is size and position notification for a window that is being
+resized at that moment -- the launcher hugs its content, so it is resized on
+almost every keystroke.
+
+So every subscription handler that touches a window now goes through
+`off_the_callback`, which spawns the work onto the foreground executor: same
+thread, same order, no borrow held. The three handlers are the launcher's
+(dismiss, resize, arrange), the overlay's fade-out, and the settings window's
+close.
+
 ---
 
 ## 8. Risk register

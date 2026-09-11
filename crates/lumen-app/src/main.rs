@@ -350,21 +350,25 @@ fn subscribe_to_overlay(
         return;
     };
 
-    cx.subscribe(&entity, move |_entity: Entity<Overlay>, event, _cx| {
+    cx.subscribe(&entity, move |_entity: Entity<Overlay>, event, cx| {
         let OverlayEvent::FadedOut = event;
 
-        // Hiding at the start of the fade would mean there was no fade; hiding
-        // here, after it, is what lets the window stop compositing once it is
-        // genuinely invisible.
-        let mut shell = shell.borrow_mut();
-        if !shell.overlay_shown {
-            return;
-        }
-        shell.overlay_shown = false;
+        let platform = platform.clone();
+        let shell = shell.clone();
 
-        if let Err(error) = platform.hide_window(WindowRole::Overlay, None) {
-            log::error!("could not hide the overlay: {error:#}");
-        }
+        // Off the callback before touching a window. See `off_the_callback`.
+        off_the_callback(cx, move || {
+            // Hiding at the start of the fade would mean there was no fade;
+            // hiding here, after it, is what lets the window stop compositing
+            // once it is genuinely invisible.
+            let mut shell = shell.borrow_mut();
+            if !shell.overlay_shown {
+                return Ok(());
+            }
+            shell.overlay_shown = false;
+
+            platform.hide_window(WindowRole::Overlay, None)
+        });
     })
     .detach();
 }
@@ -508,10 +512,11 @@ fn subscribe_to_settings(
     let sheets = surfaces.sheets.clone();
     let paths = surfaces.paths.clone();
 
-    cx.subscribe(&entity, move |_entity: Entity<Settings>, event, _cx| {
+    cx.subscribe(&entity, move |_entity: Entity<Settings>, event, cx| {
         match event {
             // A save or a delete changes what the overlay should show, so the
             // library is rebuilt immediately rather than at the next restart.
+            // No window is touched, so this stays on the callback.
             SettingsEvent::Saved { path } | SettingsEvent::Deleted { path } => {
                 log::debug!("sheets changed at {}", path.display());
                 let mut library = SheetLibrary::load(&paths.sheets_dir());
@@ -519,9 +524,8 @@ fn subscribe_to_settings(
                 *sheets.borrow_mut() = library;
             }
             SettingsEvent::Closed => {
-                if let Err(error) = platform.hide_window(WindowRole::Settings, None) {
-                    log::error!("could not hide the settings window: {error:#}");
-                }
+                let platform = platform.clone();
+                off_the_callback(cx, move || platform.hide_window(WindowRole::Settings, None));
             }
         }
     })
@@ -627,26 +631,55 @@ fn subscribe_to_launcher(
         return;
     };
 
-    cx.subscribe(&entity, move |_entity: Entity<Launcher>, event, _cx| {
-        let outcome = match event {
-            LauncherEvent::Dismissed => hide(&platform, &shell),
-            LauncherEvent::RowsChanged(rows) => resize(&platform, &config, &shell, *rows),
-            LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, *layout),
-            // Sent back through the same channel the hotkey and the socket use,
-            // rather than acted on here. One queue means one order of events,
-            // and it means `lumen settings` from a terminal and "Configure
-            // Shortcuts" from the launcher take the identical path.
-            LauncherEvent::Builtin(command) => {
-                let _ = commands.unbounded_send(match command {
-                    Builtin::OpenSettings => Message::Settings,
-                    Builtin::ReloadSheets => Message::ReloadSheets,
-                    Builtin::Quit => Message::Quit,
-                });
-                Ok(())
-            }
-        };
-        if let Err(error) = outcome {
-            log::error!("could not apply {event:?}: {error:#}");
+    cx.subscribe(&entity, move |_entity: Entity<Launcher>, event, cx| {
+        let platform = platform.clone();
+        let shell = shell.clone();
+        let config = config.clone();
+        let commands = commands.clone();
+        let event = *event;
+
+        off_the_callback(cx, move || {
+            let outcome = match event {
+                LauncherEvent::Dismissed => hide(&platform, &shell),
+                LauncherEvent::RowsChanged(rows) => resize(&platform, &config, &shell, rows),
+                LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
+                // Sent back through the same channel the hotkey and the socket use,
+                // rather than acted on here. One queue means one order of events,
+                // and it means `lumen settings` from a terminal and "Configure
+                // Shortcuts" from the launcher take the identical path.
+                LauncherEvent::Builtin(command) => {
+                    let _ = commands.unbounded_send(match command {
+                        Builtin::OpenSettings => Message::Settings,
+                        Builtin::ReloadSheets => Message::ReloadSheets,
+                        Builtin::Quit => Message::Quit,
+                    });
+                    Ok(())
+                }
+            };
+            outcome.with_context(|| format!("could not apply {event:?}"))
+        });
+    })
+    .detach();
+}
+
+/// Run `work` on the next turn of the run loop rather than here.
+///
+/// Every caller is inside a GPUI subscription callback, which runs while the
+/// `App` is mutably borrowed. That is fine until the work shows, hides, moves
+/// or resizes a window: those calls send window messages *synchronously* to our
+/// own window procedure on this same thread, GPUI tries to take the borrow it
+/// cannot have, and the message is dropped -- silently, apart from a
+/// `RefCell already borrowed` line in the log with no indication of what it
+/// was about.
+///
+/// What gets dropped is size and position notifications for a window that was
+/// being resized at that moment, which is not the kind of thing to leave to
+/// luck. Spawning puts the work on the foreground executor, where it runs on
+/// this thread, in order, with no borrow held.
+fn off_the_callback(cx: &mut App, work: impl FnOnce() -> Result<()> + 'static) {
+    cx.spawn(async move |_cx| {
+        if let Err(error) = work() {
+            log::error!("{error:#}");
         }
     })
     .detach();
