@@ -339,7 +339,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         tx.clone(),
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
-    watch_theme(cx, &window, &overlay, &paths, live.clone());
+    let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone());
 
     let surfaces = Surfaces {
         launcher: window,
@@ -350,6 +350,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         paths: paths.clone(),
         theme: Rc::new(RefCell::new(theme.clone())),
         config: live,
+        reload_theme,
     };
 
     watch_sheets(cx, &surfaces);
@@ -453,6 +454,8 @@ struct Surfaces {
     theme: Rc<RefCell<Theme>>,
     /// The current configuration, replaced when the file changes.
     config: Rc<RefCell<Config>>,
+    /// Asks the theme watch to reload, for when `theme` names another file.
+    reload_theme: mpsc::UnboundedSender<()>,
 }
 
 impl Surfaces {
@@ -512,7 +515,8 @@ fn subscribe_to_overlay(
 fn watch_sheets(cx: &mut App, surfaces: &Surfaces) {
     use lumen_core::watcher::DirectoryWatcher;
 
-    let watcher = match DirectoryWatcher::start(&surfaces.paths.sheets_dir()) {
+    let (sink, mut changes) = change_channel();
+    let watcher = match DirectoryWatcher::start(&surfaces.paths.sheets_dir(), sink) {
         Ok(watcher) => watcher,
         Err(error) => {
             log::warn!("shortcut sheets will not reload automatically: {error:#}");
@@ -524,15 +528,9 @@ fn watch_sheets(cx: &mut App, surfaces: &Surfaces) {
     let paths = surfaces.paths.clone();
 
     cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(400))
-                .await;
-
-            if !watcher.changed() {
-                continue;
-            }
-
+        // Owned by the task: the watch lasts exactly as long as this loop.
+        let _watcher = watcher;
+        while next_change(&mut changes, cx).await {
             let mut library = SheetLibrary::load(&paths.sheets_dir());
             library.add(keymap::sheet());
             log::info!("reloaded {} shortcut sheets", library.len());
@@ -835,47 +833,40 @@ fn off_the_callback(cx: &mut App, work: impl FnOnce() -> Result<()> + 'static) {
 
 /// Re-read the theme when its file changes, or when the configuration names a
 /// different one (AD-05).
+///
+/// Returns the sender that asks for a reload, which the configuration reload
+/// uses when `theme` names a different file. It works even if the folder
+/// could not be watched.
 fn watch_theme(
     cx: &mut App,
     window: &gpui::WindowHandle<Launcher>,
     overlay: &gpui::WindowHandle<Overlay>,
     paths: &Paths,
     config: Rc<RefCell<Config>>,
-) {
+) -> mpsc::UnboundedSender<()> {
     use lumen_core::watcher::DirectoryWatcher;
+
+    let (reload, mut changes) = mpsc::unbounded::<()>();
 
     // The folder rather than one file: which file is "the theme" is whatever
     // config.json says right now, and that can change while this runs.
-    let watcher = match DirectoryWatcher::start(&paths.themes_dir()) {
-        Ok(watcher) => watcher,
-        Err(error) => {
-            // Live reload is a convenience. Losing it must not stop the
-            // launcher from running.
-            log::warn!("theme live reload is unavailable: {error:#}");
-            return;
-        }
-    };
+    let sink = reload.clone();
+    let watcher = DirectoryWatcher::start(&paths.themes_dir(), move || {
+        let _ = sink.unbounded_send(());
+    })
+    // Live reload is a convenience. Losing it must not stop the launcher
+    // from running.
+    .inspect_err(|error| log::warn!("theme live reload is unavailable: {error:#}"))
+    .ok();
 
     let window = *window;
     let overlay = *overlay;
     let paths = paths.clone();
-    let mut current = config.borrow().theme.clone();
 
     cx.spawn(async move |cx| {
-        loop {
-            // Polled rather than pushed because `notify` hands back a std
-            // channel, and blocking a background thread on it for the life of
-            // the process to save a poll would be the more expensive choice.
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(250))
-                .await;
-
+        let _watcher = watcher;
+        while next_change(&mut changes, cx).await {
             let wanted = config.borrow().theme.clone();
-            let renamed = wanted != current;
-            if !watcher.changed() && !renamed {
-                continue;
-            }
-
             let theme = match Theme::load(&paths.theme_file(&wanted)) {
                 Ok(theme) => theme,
                 // Keep the current theme. A syntax error mid-edit is the
@@ -886,7 +877,6 @@ fn watch_theme(
                     continue;
                 }
             };
-            current = wanted;
             log::info!("reloaded theme {:?}", theme.name);
 
             // Both surfaces follow the same theme file. Reloading one and not
@@ -907,6 +897,8 @@ fn watch_theme(
         }
     })
     .detach();
+
+    reload
 }
 
 /// Tell the event loop when config.json changes.
@@ -917,7 +909,8 @@ fn watch_theme(
 fn watch_config(cx: &mut App, paths: &Paths, commands: mpsc::UnboundedSender<Message>) {
     use lumen_core::watcher::FileWatcher;
 
-    let watcher = match FileWatcher::start(&paths.config_file()) {
+    let (sink, mut changes) = change_channel();
+    let watcher = match FileWatcher::start(&paths.config_file(), sink) {
         Ok(watcher) => watcher,
         Err(error) => {
             log::warn!("configuration changes will need `lumen reload` or a restart: {error:#}");
@@ -926,17 +919,43 @@ fn watch_config(cx: &mut App, paths: &Paths, commands: mpsc::UnboundedSender<Mes
     };
 
     cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(300))
-                .await;
-
-            if watcher.changed() && commands.unbounded_send(Message::ReloadConfig).is_err() {
+        let _watcher = watcher;
+        while next_change(&mut changes, cx).await {
+            if commands.unbounded_send(Message::ReloadConfig).is_err() {
                 break;
             }
         }
     })
     .detach();
+}
+
+/// How long a burst of filesystem events is given to finish.
+///
+/// An editor's save is a truncate, a write and a rename, reported as several
+/// events within a few milliseconds. Waiting this long after the first turns
+/// them into one reload. It is a one-shot timer started by a change, not a
+/// poll: with nothing being edited, nothing wakes.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// A sink for a watcher to push into, and the receiving end to await.
+fn change_channel() -> (impl Fn() + Send + 'static, mpsc::UnboundedReceiver<()>) {
+    let (sender, receiver) = mpsc::unbounded();
+    let sink = move || {
+        let _ = sender.unbounded_send(());
+    };
+    (sink, receiver)
+}
+
+/// Wait for the next change, then let the burst it belongs to settle.
+///
+/// Returns `false` once nothing can report a change any more.
+async fn next_change(changes: &mut mpsc::UnboundedReceiver<()>, cx: &gpui::AsyncApp) -> bool {
+    if changes.next().await.is_none() {
+        return false;
+    }
+    cx.background_executor().timer(SETTLE).await;
+    while changes.try_recv().is_ok() {}
+    true
 }
 
 /// Re-read config.json and apply what can be applied without a restart.
@@ -977,6 +996,10 @@ fn reload_config(
     }
     *surfaces.config.borrow_mut() = applied.clone();
     log::info!("reloaded the configuration");
+
+    if applied.theme != older.theme {
+        let _ = surfaces.reload_theme.unbounded_send(());
+    }
 
     // The launcher first, so the height used to place the window is the one
     // for the new row count.
