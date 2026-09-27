@@ -111,7 +111,7 @@ the README.
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Done.** Themes, live reload, the fade, the bundled typeface, the icon set and the action panel are all in; the appearance animation omits the scale, deliberately (7.5) |
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
 | **F4** | View extensions, tiers T2 and T3 | **Steps 1 and 2 of four done.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws a list with virtualisation, sections, accessories and an empty state; a hand-written example is rendered in the launcher. No protocol and no process yet, which is step 3 |
-| **F5** | Port to Linux and Wayland | Stubbed and cross-checked in CI (I-2) |
+| **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 
 ### F4 build order is not optional
 
@@ -652,6 +652,55 @@ looking at it.
 The events are in the contract file rather than in a later commit for a
 different reason: AD-06 says the contract is one artefact. Splitting it across
 two commits is how it becomes two artefacts that have to be kept in step.
+
+### 7.32 Text input is one component with a real input handler
+
+The F1 search field was a `String` with a drawn caret, and it had the gaps that
+implies: no IME, no dead keys, no caret movement, no selection. Changing one
+digit of a calculation meant deleting back to it. The settings window had a
+second copy of the same field with the same gaps.
+
+Both are now one `TextField` that implements GPUI's `EntityInputHandler` with
+its own shaped-text element. Typed text arrives as text from the system, so a
+dead key followed by a letter gives one accented letter and an input method
+can compose. That also removes the last hand-written keystroke inspection from
+the launcher, so I-14 no longer needs an exception. The editing arithmetic
+(graphemes, words, selection, UTF-16 offsets for the input method) is in
+`lumen_ui::edit`, apart from GPUI, and tested there.
+
+Two key contexts, not one: `Home`/`End` jump through the list in the
+launcher's `SearchField` and move the caret in a settings `TextField`.
+
+### 7.33 The configuration reloads live, except three settings
+
+Editing `config.json` used to need a restart, which is exactly the friction
+AD-05 removed for themes. The daemon now watches the file and applies position,
+size, row count, theme and file search at once, re-placing an open launcher.
+
+`hotkey`, `backdrop` and `clipboard` are the exceptions. Each is wired into
+something made once at startup: the registered hotkey, the window's DWM
+attributes, the clipboard listener thread. Re-creating those live is possible,
+but it is three new code paths for settings that change once. So they are
+reported as waiting for a restart, and the daemon keeps holding the values
+actually in effect (`Config::merge_live`), so the warning keeps appearing until
+the restart happens.
+
+A config file caught half saved fails to parse and the running configuration
+is kept. Startup still falls back to defaults on a broken file, as before.
+
+### 7.34 The application index follows installs by watching, not by polling
+
+A full `AppsFolder` enumeration was measured at 600–1000 ms of CPU, so
+re-enumerating on a timer or on every summons would break the idle and
+gesture budgets. Instead `Platform::watch_applications` waits on kernel change
+notifications for the two Start Menu folders and the per-user package key in
+the registry, then signals once the changes have been quiet for 1.5 s.
+
+It signals a second time 5 s later. The shell rebuilds `AppsFolder` from those
+sources asynchronously, and a new shortcut was measured taking 2.5–4 s to be
+listed, so the first re-index usually still sees the old list. The launcher
+drops a re-index whose result is identical to the current one, so neither
+signal moves the selection unless something actually changed.
 
 ---
 

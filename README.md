@@ -6,9 +6,10 @@ A native command palette written entirely in Rust, with its interface built on
 The priority is quality: imperceptible latency, a near-zero idle footprint, and
 an aesthetic worth looking at fifty times a day.
 
-> **Status: early.** F0 (the platform spike) is done and most of F1 (the minimum
-> usable launcher) works. It indexes and launches applications, and it is
-> pleasant to use. It is not yet the author's default launcher.
+> **Status: in daily use on Windows.** The launcher, the application index, the
+> shortcut overlay and its settings window are what the author uses every day.
+> Extensions (F4) and the Linux port (F5) are frozen; see
+> [`docs/F5-LINUX.md`](docs/F5-LINUX.md) for where the port starts.
 
 ---
 
@@ -20,7 +21,9 @@ an aesthetic worth looking at fifty times a day.
 - **Global hotkey** (`Alt+Space` by default), suppressed so it does not also
   reach the focused application.
 - **Application index** covering Win32 shortcuts *and* packaged apps in one pass,
-  read from the shell's `AppsFolder` — the same list as Start → All apps.
+  read from the shell's `AppsFolder` — the same list as Start → All apps. It
+  follows installs and uninstalls by itself, a few seconds after they happen,
+  by watching the Start Menu folders and the packaged-app registry.
 - **High-resolution icons** via `IShellItemImageFactory`, extracted off the UI
   thread, cached, and requested well above their drawn size so they stay crisp
   at any display scale.
@@ -85,16 +88,14 @@ an aesthetic worth looking at fifty times a day.
 
 Listed because a README that implies more than exists is worse than no README.
 
-- **No IME.** The search field is a plain string with a drawn caret, not a GPUI
-  `EntityInputHandler`, so composition input does not work. ASCII typing,
-  backspace, word-delete and paste all do.
 - **The settings window has no icons.** The launcher's rows do; the sheet
   editor is still text and buttons.
 - **File search is not a search of the whole disk.** It walks the folders
   listed above, to a bounded depth and a bounded count, and matches from
   memory. It finds the file you were working on, not every file on the machine.
   Nothing watches those folders yet either, so a file created after the daemon
-  started is found on the next restart or `lumen reload-sheets`.
+  started is found on the next restart or `lumen reload`. (Newly installed
+  *applications* are picked up by themselves.)
 - **Windows at a higher integrity level cannot be arranged.** A layout applied
   to an elevated window does nothing, and Windows reports no error for it to
   report back.
@@ -116,7 +117,8 @@ Listed because a README that implies more than exists is worse than no README.
   goes across a channel only after the renderer is proved, and that the second
   extension is written before anything in the protocol is stabilised.
 - **Linux is stubs.** `lumen-platform-linux` compiles on every commit and every
-  method is `todo!()`. That is deliberate — see I-2.
+  method is `todo!()`. That is deliberate — see I-2. The plan for the port,
+  method by method, is in [`docs/F5-LINUX.md`](docs/F5-LINUX.md).
 
 ---
 
@@ -209,7 +211,7 @@ Then run the binary once to start the daemon:
 | `lumen overlay-press`   | Report that the hold gesture began (Hyprland `bind`)  |
 | `lumen overlay-release` | Report that it ended (Hyprland `bindr`)       |
 | `lumen settings`        | Open the settings window                      |
-| `lumen reload-sheets`   | Re-read sheets, scripts, snippets and files from disk |
+| `lumen reload`          | Re-read the configuration, sheets, scripts, snippets and files |
 | `lumen quit`            | Stop the daemon                               |
 
 ### Keys
@@ -219,16 +221,31 @@ Then run the binary once to start the daemon:
 | `↓` / `↑`, `Ctrl+N` / `Ctrl+P` | Move the selection |
 | `Enter` | Run the selected item |
 | `Esc` | Clear the query; dismiss when already empty |
-| `Ctrl+W`, `Ctrl+Backspace` | Delete the previous word |
+| `Home` / `End`, `PgUp` / `PgDn` | Jump to the first or last result |
+| `←` / `→` | Move the caret |
+| `Ctrl+←` / `Ctrl+→` | Move the caret a word at a time |
+| `Shift` + any of those, `Shift+Home` / `Shift+End` | Select text |
+| `Ctrl+A` | Select the whole query |
+| `Delete`, `Backspace` | Delete forward, back, or the selection |
+| `Ctrl+W`, `Ctrl+Backspace` / `Ctrl+Delete` | Delete the previous / next word |
 | `Ctrl+U` | Clear the query |
-| `Ctrl+V` | Paste |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy, cut, paste |
 | `Ctrl+K` | Show every action for the selected row |
+
+The query is a real text field: the mouse places the caret and drags a
+selection, double-click selects a word, and dead keys, AltGr and input-method
+composition all work (`´` then `e` gives `é` on a US-International layout).
+In the settings window `Home` and `End` move the caret instead.
 
 ---
 
 ## Configuring
 
-On first run Lumen writes `%APPDATA%\Lumen\config\config.json`:
+On first run Lumen writes `%APPDATA%\Lumen\config\config.json`. Save it and
+the change applies at once, even with the launcher open: position, size, row
+count, theme and file search. Three settings are wired into things created at
+startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
+`clipboard`. The log says so when one of them is waiting.
 
 ```json
 {
@@ -275,7 +292,6 @@ centre of your attention, which is the case this setting exists for. Try
 
 Values outside 0–1 are clamped rather than obeyed, so a `5` typed where `0.5`
 was meant cannot put the launcher somewhere you can neither see nor dismiss.
-Changes need a restart: `lumen quit` then `lumen`.
 
 The shortcut overlay and the settings window ignore both and stay centred. The
 overlay documents whatever is underneath it, so it belongs where the eye
@@ -481,7 +497,7 @@ Not walked into, ever: `node_modules`, `target`, `build`, `dist`, `.git`,
 beginning with a dot are skipped.
 
 The index is built once when the daemon starts. A file created afterwards is
-found on the next restart, or by running `lumen reload-sheets`, which also
+found on the next restart, or by running `lumen reload`, which also
 rebuilds it.
 
 ---
