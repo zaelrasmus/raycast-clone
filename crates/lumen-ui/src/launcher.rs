@@ -26,9 +26,10 @@ use gpui::{
     SharedString, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div,
     ease_out_quint, img, svg, uniform_list,
 };
+use lumen_core::root::{Aside, CLIPBOARD_ENTRIES, Hit};
 use lumen_core::theme::Appearance;
 use lumen_core::{
-    Action, Candidate, Config, Frecency, Item, Paths, Providers, Search, Theme, layout,
+    Action, Candidate, Config, Frecency, Item, Paths, Providers, RootSearch, Theme, layout,
 };
 use lumen_platform::Platform;
 
@@ -57,89 +58,6 @@ actions!(
         ToggleActionPanel,
     ]
 );
-
-/// One result, held as an index into the index rather than a copy of it.
-///
-/// Re-ranking happens on every keystroke; cloning several hundred items each
-/// time would spend the per-frame budget on allocation alone.
-struct Hit {
-    source: Source,
-    /// Character offsets into the title that matched, for highlighting.
-    highlights: Vec<u32>,
-    score: u32,
-}
-
-/// Which list a hit came from.
-///
-/// Several lists rather than one because they have different lifetimes and
-/// different ranking rules. The application index is built once and reused for
-/// thousands of queries; provider answers are rebuilt for every keystroke; the
-/// asides change when the user copies something or saves a file. Concatenating
-/// them per keystroke would mean cloning several hundred prepared haystacks to
-/// add three rows, which is exactly the work the per-frame budget cannot
-/// absorb.
-#[derive(Clone, Copy)]
-enum Source {
-    /// An index into the application index.
-    Indexed(usize),
-    /// An aside, and a row within it.
-    Aside(Aside, usize),
-    /// An index into this keystroke's provider answers.
-    Answer(usize),
-}
-
-/// A secondary index: searched, but never browsed.
-///
-/// Both of these are large, both change without the user doing anything to the
-/// launcher, and neither belongs in the root list. With an empty query `rank`
-/// returns the index in frecency order, so entries with no usage history sort
-/// alphabetically among the applications -- open the launcher, see what you
-/// copied last Tuesday, and a folder called `Archive`. So an aside is matched
-/// only when there is a query, and capped so that a common letter cannot fill
-/// the list with one kind of thing.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Aside {
-    Clipboard,
-    Files,
-}
-
-impl Aside {
-    const ALL: [Aside; 2] = [Aside::Clipboard, Aside::Files];
-
-    fn slot(self) -> usize {
-        match self {
-            Aside::Clipboard => 0,
-            Aside::Files => 1,
-        }
-    }
-
-    /// How many of this aside's rows may appear in one set of results.
-    ///
-    /// Eight is enough to find a recent paste or the file you were just
-    /// editing, and few enough that the list is still about applications.
-    fn cap(self) -> usize {
-        match self {
-            Aside::Clipboard | Aside::Files => 8,
-        }
-    }
-
-    /// What fraction of its earned score an aside row keeps, in eighths.
-    ///
-    /// Asides are secondary and have to be ranked as such. Typing `co` matches
-    /// `Command Prompt` and a file called `COMPLETE.png` about equally well,
-    /// and the launcher is a launcher: the application should win. Typing
-    /// `complete` is no longer ambiguous, the file scores far higher than
-    /// anything else, and the discount does not change the outcome.
-    ///
-    /// Six eighths, because that is enough to break a near-tie and not enough
-    /// to bury a clear match. Applied to the score rather than by sorting
-    /// asides after applications, which would bury them permanently.
-    fn weight(self) -> u32 {
-        match self {
-            Aside::Clipboard | Aside::Files => 6,
-        }
-    }
-}
 
 /// What the search field says when it is empty and nothing else applies.
 const ROOT_PLACEHOLDER: &str = "Search for apps and commands...";
@@ -170,20 +88,6 @@ struct PanelEntry {
     /// bound -- see `lumen_core::view::Action::shortcut`.
     shortcut: Option<String>,
 }
-
-/// How many results are kept behind the visible window.
-///
-/// Bounded because nobody scrolls to the four hundredth fuzzy match, and an
-/// unbounded list makes the sort the most expensive thing in the frame.
-const MAX_RESULTS: usize = 64;
-
-/// How many clipboard entries are held in the searchable snapshot.
-///
-/// Fewer than the history keeps. The database holds a month so that a command
-/// dedicated to browsing it has something to browse; the snapshot is what root
-/// search matches against, and reading a month of pastes into memory to answer
-/// a three-character query is not a trade worth making.
-const CLIPBOARD_ENTRIES: usize = 100;
 
 /// What the launcher is currently showing.
 ///
@@ -262,33 +166,19 @@ pub struct Launcher {
     theme: Theme,
     icons: IconCache,
 
-    /// The searchable index. Empty until the first enumeration completes, which
-    /// is why the root list is allowed to be empty rather than treated as a bug.
-    candidates: Arc<Vec<Candidate>>,
-    /// This keystroke's provider answers, rebuilt on every rerank.
-    answers: Vec<Item>,
+    /// What the root list is ranked from, and how (AD-03: the policy is in
+    /// `core`, and this view only draws its hits).
+    root: RootSearch,
     /// The clipboard history, once the daemon has opened it.
     ///
     /// Shared with the recorder rather than opened twice: one database, one
     /// writer, and a read that cannot see a half-written row.
     clipboard: Option<Arc<parking_lot::Mutex<lumen_core::clipboard::History>>>,
-    /// The secondary indexes, in [`Aside::slot`] order.
-    ///
-    /// Deliberately not folded into `candidates`. The application index is
-    /// built once and changes when something is installed; these are rebuilt
-    /// whenever the user copies something or edits a file, and merging them
-    /// would mean re-preparing several hundred application haystacks every
-    /// time. They are also ranked under different rules -- see [`Aside`].
-    asides: [Arc<Vec<Candidate>>; 2],
-    providers: Providers,
-    search: Search,
-    frecency: Frecency,
 
     /// A copy of the field's text, updated on every edit. Ranking reads it on
     /// every keystroke, and reaching into another entity for it each time
     /// would need an `App` everywhere a query is read.
     query: String,
-    hits: Vec<Hit>,
     selected: usize,
     scroll: UniformListScrollHandle,
 
@@ -348,15 +238,9 @@ impl Launcher {
             config,
             theme,
             icons,
-            candidates: Arc::new(Vec::new()),
-            answers: Vec::new(),
+            root: RootSearch::new(Providers::builtin(), frecency),
             clipboard: None,
-            asides: std::array::from_fn(|_| Arc::new(Vec::new())),
-            providers: Providers::builtin(),
-            search: Search::new(),
-            frecency,
             query: String::new(),
-            hits: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             mode: Mode::Root,
@@ -442,7 +326,7 @@ impl Launcher {
             }
             // Emptied rather than left alone, so turning file search off in a
             // running daemon takes the files out of the results too.
-            if !self.asides[Aside::Files.slot()].is_empty() {
+            if !self.root.aside_is_empty(Aside::Files) {
                 self.set_aside(Aside::Files, Vec::new(), cx);
             }
             return;
@@ -481,7 +365,7 @@ impl Launcher {
     /// as the first extension proved -- re-ranking is not free of consequence:
     /// it is on the path that tells an extension about the query.
     fn set_aside(&mut self, aside: Aside, candidates: Vec<Candidate>, cx: &mut Context<Self>) {
-        self.asides[aside.slot()] = Arc::new(candidates);
+        self.root.replace_aside(aside, candidates);
 
         if matches!(self.mode, Mode::View(_)) {
             return;
@@ -515,118 +399,33 @@ impl Launcher {
     /// empty, and the user can already type.
     fn start_indexing(&mut self, cx: &mut Context<Self>) {
         let platform = self.platform.clone();
-        let previous = self.candidates.clone();
-        let scripts_dir = self.paths.scripts_dir();
-        let snippets_file = self.paths.snippets_file();
-        let extensions_dir = self.paths.extensions_dir();
+        let paths = self.paths.clone();
+        let current = self.root.index();
 
         cx.spawn(async move |this, cx| {
-            let entries = cx
+            // Built and compared on the background thread: enumeration and
+            // preparing the haystacks are the expensive halves, and the answer
+            // to a re-index is usually "nothing changed".
+            let rebuilt = cx
                 .background_executor()
-                .spawn(async move { platform.enumerate_applications() })
+                .spawn(async move {
+                    let rebuilt = lumen_core::root::build_index(platform.as_ref(), &paths)?;
+                    let unchanged = lumen_core::root::same_index(&current, &rebuilt);
+                    anyhow::Ok((!unchanged).then_some(rebuilt))
+                })
                 .await;
 
-            let entries = match entries {
-                Ok(entries) => entries,
+            let index = match rebuilt {
+                Ok(Some(index)) => index,
+                Ok(None) => return,
                 Err(error) => {
                     log::error!("could not index applications: {error:#}");
                     return;
                 }
             };
 
-            log::info!("indexed {} applications", entries.len());
-
-            // Script commands are read here, on the background task, because
-            // scanning a folder and parsing headers is disk work -- and because
-            // AD-08 requires the index to be built without running anything.
-            let scripts = cx
-                .background_executor()
-                .spawn({
-                    let dir = scripts_dir.clone();
-                    async move { lumen_core::providers::scripts::scan(&dir) }
-                })
-                .await;
-
-            if !scripts.is_empty() {
-                log::info!("indexed {} script commands", scripts.len());
-            }
-
-            let snippets = cx
-                .background_executor()
-                .spawn({
-                    let file = snippets_file.clone();
-                    async move { lumen_core::providers::snippets::load(&file) }
-                })
-                .await;
-
-            if !snippets.is_empty() {
-                log::info!("indexed {} snippets", snippets.len());
-            }
-
-            // The provider catalogue joins the same index as the applications,
-            // so Lumen's own commands are found by typing part of their name
-            // exactly like anything else -- one notion of "matches", not two.
-            let mut providers = Providers::builtin();
-            providers.register(Box::new(lumen_core::providers::ScriptProvider::new(
-                scripts,
-            )));
-            providers.register(Box::new(lumen_core::providers::SnippetProvider::new(
-                snippets,
-            )));
-
-            // Manifests only. No extension process is started to build this,
-            // which is AD-08 and what lets the root list offer an extension's
-            // commands without I-3 having to make an exception.
-            let extensions = cx
-                .background_executor()
-                .spawn(async move { lumen_core::extension::scan(&extensions_dir) })
-                .await;
-
-            if !extensions.is_empty() {
-                let provider = lumen_core::providers::ExtensionProvider::new(&extensions);
-                log::info!(
-                    "indexed {} commands from {} extensions",
-                    provider.len(),
-                    extensions.len()
-                );
-                providers.register(Box::new(provider));
-            }
-
-            let catalogue = providers.catalogue();
-
-            // Preparing the haystacks is the expensive half, so it stays on the
-            // background thread too: handing the UI raw entries would just move
-            // the cost into the first keystroke.
-            let candidates = cx
-                .background_executor()
-                .spawn(async move {
-                    let candidates = entries
-                        .into_iter()
-                        .map(Candidate::from_app)
-                        .chain(catalogue.into_iter().map(Candidate::new))
-                        .collect::<Vec<_>>();
-                    // Compared here, off the UI thread, because the answer is
-                    // usually "nothing changed": a re-index is asked for on
-                    // every install the system reports, and most of those
-                    // touch nothing Lumen lists.
-                    let unchanged = previous.len() == candidates.len()
-                        && previous
-                            .iter()
-                            .zip(&candidates)
-                            .all(|(before, after)| before.item == after.item);
-                    (!unchanged).then_some(candidates)
-                })
-                .await;
-
-            // Nothing new: leave the list alone. Re-ranking would put the
-            // selection back on the first row under somebody who had just
-            // moved it.
-            let Some(candidates) = candidates else {
-                return;
-            };
-
             this.update(cx, |this, cx| {
-                this.candidates = Arc::new(candidates);
+                this.root.replace_index(index);
                 this.rerank(cx);
                 cx.notify();
             })
@@ -739,7 +538,7 @@ impl Launcher {
 
     /// How many result rows the window should currently be sized for.
     pub fn visible_rows(&self) -> usize {
-        self.hits.len().min(self.config.window.visible_rows)
+        self.hits().len().min(self.config.window.visible_rows)
     }
 
     /// How tall the window should be for whatever it is currently showing.
@@ -849,66 +648,9 @@ impl Launcher {
             return;
         }
 
-        // Answers run first and synchronously. Providers are contractually
-        // instant (see `lumen_core::providers`), so this stays inside the frame
-        // budget and I-3 is not at risk: nothing here waits on anything.
-        self.answers = self.providers.answers(&self.query);
-
-        let candidates = self.candidates.clone();
-        let mut hits: Vec<Hit> = self
-            .search
-            .rank(&self.query, &candidates, &self.frecency, MAX_RESULTS)
-            .into_iter()
-            .map(|m| Hit {
-                source: Source::Indexed(m.index),
-                highlights: m.highlights,
-                score: m.score,
-            })
-            .collect();
-
-        // The asides are ranked separately, and only when there is something
-        // to rank against -- see [`Aside`] for why they must stay out of the
-        // root list.
-        if !self.query.trim().is_empty() {
-            for aside in Aside::ALL {
-                let candidates = self.asides[aside.slot()].clone();
-                if candidates.is_empty() {
-                    continue;
-                }
-
-                hits.extend(
-                    self.search
-                        .rank(&self.query, &candidates, &self.frecency, aside.cap())
-                        .into_iter()
-                        .map(|m| Hit {
-                            source: Source::Aside(aside, m.index),
-                            highlights: m.highlights,
-                            score: m.score / 8 * aside.weight(),
-                        }),
-                );
-            }
-        }
-
-        // Sorted before the answers are prepended, so the answers keep the top
-        // regardless of how well anything else scored.
-        hits.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| self.title_of(a).cmp(self.title_of(b)))
-        });
-
-        // An answer *is* what the user asked for -- it was computed from their
-        // exact query -- so it goes above every fuzzy guess rather than
-        // competing with them on a score it has no meaningful way to earn.
-        let answers = (0..self.answers.len()).map(|index| Hit {
-            source: Source::Answer(index),
-            highlights: Vec::new(),
-            score: u32::MAX,
-        });
-        hits.splice(0..0, answers);
-
-        hits.truncate(MAX_RESULTS);
-        self.hits = hits;
+        // The ordering rules -- answers first, asides discounted and capped --
+        // are `RootSearch`'s. Nothing in it waits on anything (I-3).
+        self.root.rank(&self.query);
 
         // The selection always returns to the top on a new query. Trying to keep
         // it on "the same item" across a re-rank is the kind of cleverness that
@@ -1106,13 +848,7 @@ impl Launcher {
                 None
             } else {
                 let candidates = state.candidates.clone();
-                Some(
-                    self.search
-                        .rank(&query, &candidates, &self.frecency, usize::MAX)
-                        .into_iter()
-                        .map(|matched| matched.index)
-                        .collect(),
-                )
+                Some(self.root.filter(&query, &candidates).into_iter().collect())
             };
 
         let Mode::View(state) = &mut self.mode else {
@@ -1219,20 +955,16 @@ impl Launcher {
         });
     }
 
-    fn item(&self, hit: &Hit) -> &Item {
-        match hit.source {
-            Source::Indexed(index) => &self.candidates[index].item,
-            Source::Aside(aside, index) => &self.asides[aside.slot()][index].item,
-            Source::Answer(index) => &self.answers[index],
-        }
+    fn hits(&self) -> &[Hit] {
+        self.root.hits()
     }
 
-    fn title_of(&self, hit: &Hit) -> &str {
-        &self.item(hit).title
+    fn item(&self, hit: &Hit) -> &Item {
+        self.root.item(hit)
     }
 
     fn selected_item(&self) -> Option<&Item> {
-        self.hits.get(self.selected).map(|hit| self.item(hit))
+        self.hits().get(self.selected).map(|hit| self.item(hit))
     }
 
     // -- Commands ----------------------------------------------------------
@@ -1311,13 +1043,13 @@ impl Launcher {
             return;
         }
 
-        if self.hits.is_empty() {
+        if self.hits().is_empty() {
             return;
         }
         // Wrapping, both ways. Pressing down at the bottom of a short list and
         // having nothing happen is the kind of dead end that makes a keyboard
         // interface feel unfinished.
-        self.selected = (self.selected + 1) % self.hits.len();
+        self.selected = (self.selected + 1) % self.hits().len();
         self.reveal_selection(cx);
     }
 
@@ -1336,10 +1068,13 @@ impl Launcher {
             return;
         }
 
-        if self.hits.is_empty() {
+        if self.hits().is_empty() {
             return;
         }
-        self.selected = self.selected.checked_sub(1).unwrap_or(self.hits.len() - 1);
+        self.selected = self
+            .selected
+            .checked_sub(1)
+            .unwrap_or(self.hits().len() - 1);
         self.reveal_selection(cx);
     }
 
@@ -1370,7 +1105,7 @@ impl Launcher {
             return;
         }
 
-        self.selected = self.hits.len().saturating_sub(1);
+        self.selected = self.hits().len().saturating_sub(1);
         self.reveal_selection(cx);
     }
 
@@ -1410,10 +1145,16 @@ impl Launcher {
         // Record and persist before launching. A launch that hands the
         // foreground to another application immediately is a launch whose
         // bookkeeping is easy to lose.
-        self.frecency.record(&id);
-        if let Err(error) = self.frecency.save(&self.paths.frecency_file()) {
-            log::warn!("could not persist usage statistics: {error:#}");
-        }
+        // The write goes to a background thread: it is disk I/O on the path
+        // between Enter and the launch, and nothing here needs to wait for it.
+        let history = self.root.record_use(&id);
+        let path = self.paths.frecency_file();
+        cx.background_spawn(async move {
+            if let Err(error) = history.save(&path) {
+                log::warn!("could not persist usage statistics: {error:#}");
+            }
+        })
+        .detach();
 
         // Arranging has to hide *and* keep the handle that hiding would
         // otherwise consume, so it replaces the dismissal rather than
@@ -1744,11 +1485,11 @@ impl Launcher {
     }
 
     fn render_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.hits.is_empty() {
+        if self.hits().is_empty() {
             return div().h(gpui::px(0.0)).into_any_element();
         }
 
-        let count = self.hits.len();
+        let count = self.hits().len();
         let entity = cx.entity();
 
         div()
@@ -1772,7 +1513,7 @@ impl Launcher {
 
     fn render_row(&self, index: usize, entity: &Entity<Self>, cx: &mut App) -> gpui::AnyElement {
         let colors = &self.theme.colors;
-        let hit = &self.hits[index];
+        let hit = &self.hits()[index];
         let item = self.item(hit);
         let selected = index == self.selected;
 
@@ -1897,7 +1638,7 @@ impl Launcher {
         };
 
         let count = match &self.mode {
-            Mode::Root => self.hits.len(),
+            Mode::Root => self.hits().len(),
             Mode::View(_) => self.view_items().len(),
         };
 

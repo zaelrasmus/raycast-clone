@@ -33,7 +33,7 @@ struct Usage {
 }
 
 /// Per-entry launch history, persisted between sessions.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Frecency {
     #[serde(default)]
     entries: HashMap<String, Usage>,
@@ -68,7 +68,12 @@ impl Frecency {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
         let source = serde_json::to_string(self)?;
-        std::fs::write(path, source).with_context(|| format!("writing {}", path.display()))
+        // Written beside and renamed over, so a daemon stopped mid-write
+        // leaves the previous history rather than half of the new one.
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, source)
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        std::fs::rename(&temporary, path).with_context(|| format!("replacing {}", path.display()))
     }
 
     /// Record that `id` was launched.
