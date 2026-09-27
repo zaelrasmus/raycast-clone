@@ -28,6 +28,12 @@ pub const ROW_HEIGHT: f32 = 44.0;
 /// Height of the search field.
 pub const SEARCH_HEIGHT: f32 = 56.0;
 
+/// Width of the text caret in every field.
+///
+/// One pixel, not two: at the sizes Lumen sets text, a wider caret reads as a
+/// character of its own.
+pub const CARET_WIDTH: f32 = 1.0;
+
 /// Height of the footer carrying the action hints.
 pub const FOOTER_HEIGHT: f32 = 38.0;
 

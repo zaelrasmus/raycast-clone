@@ -15,6 +15,7 @@
     "selection.background": "#FFFFFF14",
     "selection.border": "#FFFFFF1A",
     "match.highlight": "#A89BEC",
+    "text.selection": "#7C6BD666",
     "shadow": "#00000099"
   }
 }

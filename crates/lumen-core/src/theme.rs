@@ -177,6 +177,9 @@ pub struct Colors {
     pub selection_background: Color,
     pub selection_border: Color,
     pub match_highlight: Color,
+    /// Behind text selected in a field. Translucent, so the glyphs it covers
+    /// keep their own colour and stay legible.
+    pub text_selection: Color,
     pub shadow: Color,
 }
 
@@ -200,6 +203,7 @@ impl Colors {
             "selection.background" => &mut self.selection_background,
             "selection.border" => &mut self.selection_border,
             "match.highlight" => &mut self.match_highlight,
+            "text.selection" => &mut self.text_selection,
             "shadow" => &mut self.shadow,
             _ => return false,
         };
@@ -235,6 +239,7 @@ impl Theme {
                 selection_background: Color::rgba(0xFF, 0xFF, 0xFF, 0x14),
                 selection_border: Color::rgba(0xFF, 0xFF, 0xFF, 0x1A),
                 match_highlight: Color::rgb(0xA8, 0x9B, 0xEC),
+                text_selection: Color::rgba(0x7C, 0x6B, 0xD6, 0x66),
                 shadow: Color::rgba(0x00, 0x00, 0x00, 0x99),
             },
         }
@@ -260,6 +265,7 @@ impl Theme {
                 selection_background: Color::rgba(0x1A, 0x1A, 0x2E, 0x0E),
                 selection_border: Color::rgba(0x1A, 0x1A, 0x2E, 0x14),
                 match_highlight: Color::rgb(0x4A, 0x39, 0xB0),
+                text_selection: Color::rgba(0x5B, 0x4A, 0xC4, 0x40),
                 shadow: Color::rgba(0x1A, 0x1A, 0x2E, 0x33),
             },
         }

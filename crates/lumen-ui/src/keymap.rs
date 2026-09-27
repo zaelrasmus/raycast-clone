@@ -29,10 +29,15 @@ use gpui::{App, KeyBinding};
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::launcher::{
-    Activate, ClearQuery, DeleteBackward, DeleteWordBackward, Dismiss, Paste, SelectFirst,
-    SelectLast, SelectNext, SelectPrevious, ToggleActionPanel,
+    Activate, ClearQuery, Dismiss, SelectFirst, SelectLast, SelectNext, SelectPrevious,
+    ToggleActionPanel,
 };
 use crate::settings::{CloseSettings, SaveSheet};
+use crate::text_field::{
+    Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
+    MoveRight, MoveToEnd, MoveToStart, MoveWordLeft, MoveWordRight, Paste, SelectAll, SelectLeft,
+    SelectRight, SelectToEnd, SelectToStart, SelectWordLeft, SelectWordRight,
+};
 
 /// The key context these bindings apply in, matching `Launcher`'s.
 const CONTEXT: &str = "Launcher";
@@ -47,6 +52,14 @@ const SETTINGS_CONTEXT: &str = "Settings";
 /// resolves against whichever holds focus -- which is the whole reason I-14
 /// insists on declared bindings rather than hand-written key comparisons.
 const FIELD_CONTEXT: &str = "TextField";
+
+/// The launcher's query field.
+///
+/// A context of its own, inside `Launcher`, because two keys mean something
+/// different there. `Home` and `End` jump through the *list* in the launcher
+/// -- the query is one short line, and the results are what gets navigated --
+/// while in a settings field they move the caret, as in any other field.
+const SEARCH_FIELD_CONTEXT: &str = "SearchField";
 
 /// One row of the table: what to bind, what it does, and where it belongs on
 /// the sheet.
@@ -131,9 +144,84 @@ const BINDINGS: &[Binding] = &[
         description: None,
     },
     Binding {
+        keys: "delete",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
+        keys: "ctrl-delete",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
         keys: "ctrl-u",
         group: "Editing",
         description: Some("Clear the query"),
+    },
+    Binding {
+        keys: "left",
+        group: "Editing",
+        description: Some("Move the caret"),
+    },
+    Binding {
+        keys: "right",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
+        keys: "ctrl-left",
+        group: "Editing",
+        description: Some("Move by word"),
+    },
+    Binding {
+        keys: "ctrl-right",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
+        keys: "shift-left",
+        group: "Editing",
+        description: Some("Select"),
+    },
+    Binding {
+        keys: "shift-right",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
+        keys: "ctrl-shift-left",
+        group: "Editing",
+        description: Some("Select by word"),
+    },
+    Binding {
+        keys: "ctrl-shift-right",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
+        keys: "shift-home",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
+        keys: "shift-end",
+        group: "Editing",
+        description: None,
+    },
+    Binding {
+        keys: "ctrl-a",
+        group: "Editing",
+        description: Some("Select all"),
+    },
+    Binding {
+        keys: "ctrl-c",
+        group: "Editing",
+        description: Some("Copy"),
+    },
+    Binding {
+        keys: "ctrl-x",
+        group: "Editing",
+        description: Some("Cut"),
     },
     Binding {
         keys: "ctrl-v",
@@ -168,10 +256,6 @@ pub fn install(cx: &mut App) {
         // Escape clears a query and dismisses an empty one, so it always means
         // "back" rather than sometimes meaning "quit".
         KeyBinding::new("escape", ClearQuery, Some(CONTEXT)),
-        KeyBinding::new("backspace", DeleteBackward, Some(CONTEXT)),
-        KeyBinding::new("ctrl-backspace", DeleteWordBackward, Some(CONTEXT)),
-        KeyBinding::new("ctrl-w", DeleteWordBackward, Some(CONTEXT)),
-        KeyBinding::new("ctrl-v", Paste, Some(CONTEXT)),
         KeyBinding::new("ctrl-u", ClearQuery, Some(CONTEXT)),
         // The action panel, on the chord every launcher uses for it.
         KeyBinding::new("ctrl-k", ToggleActionPanel, Some(CONTEXT)),
@@ -189,12 +273,39 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_CONTEXT)),
     ]);
 
-    // Text editing inside a settings field. Bound in the field's own context so
-    // backspace in a field does not reach the launcher's query (I-14).
+    // Text editing, identical in the launcher's query and in every settings
+    // field. Each field has its own context, so backspace edits the field that
+    // holds focus and nothing else (I-14).
+    for context in [FIELD_CONTEXT, SEARCH_FIELD_CONTEXT] {
+        let context = Some(context);
+        cx.bind_keys([
+            KeyBinding::new("backspace", DeleteBackward, context),
+            KeyBinding::new("delete", DeleteForward, context),
+            KeyBinding::new("ctrl-backspace", DeleteWordBackward, context),
+            KeyBinding::new("ctrl-w", DeleteWordBackward, context),
+            KeyBinding::new("ctrl-delete", DeleteWordForward, context),
+            KeyBinding::new("left", MoveLeft, context),
+            KeyBinding::new("right", MoveRight, context),
+            KeyBinding::new("ctrl-left", MoveWordLeft, context),
+            KeyBinding::new("ctrl-right", MoveWordRight, context),
+            KeyBinding::new("shift-left", SelectLeft, context),
+            KeyBinding::new("shift-right", SelectRight, context),
+            KeyBinding::new("ctrl-shift-left", SelectWordLeft, context),
+            KeyBinding::new("ctrl-shift-right", SelectWordRight, context),
+            KeyBinding::new("shift-home", SelectToStart, context),
+            KeyBinding::new("shift-end", SelectToEnd, context),
+            KeyBinding::new("ctrl-a", SelectAll, context),
+            KeyBinding::new("ctrl-c", Copy, context),
+            KeyBinding::new("ctrl-x", Cut, context),
+            KeyBinding::new("ctrl-v", Paste, context),
+        ]);
+    }
+
+    // Home and End move the caret only in a settings field. In the launcher
+    // they stay on the list; see `SEARCH_FIELD_CONTEXT`.
     cx.bind_keys([
-        KeyBinding::new("backspace", DeleteBackward, Some(FIELD_CONTEXT)),
-        KeyBinding::new("ctrl-backspace", DeleteWordBackward, Some(FIELD_CONTEXT)),
-        KeyBinding::new("ctrl-w", DeleteWordBackward, Some(FIELD_CONTEXT)),
+        KeyBinding::new("home", MoveToStart, Some(FIELD_CONTEXT)),
+        KeyBinding::new("end", MoveToEnd, Some(FIELD_CONTEXT)),
     ]);
 }
 

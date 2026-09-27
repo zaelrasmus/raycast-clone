@@ -2,12 +2,13 @@
 //!
 //! # Keyboard handling (AD-15, I-14)
 //!
-//! Every command is a GPUI action bound from a keymap. There are no hand-written
-//! key comparisons here with exactly one deliberate exception: inserting typed
-//! characters, in [`Launcher::on_key_down`]. Text entry is not a command and
-//! cannot be expressed as one -- there is no action named "the letter k" -- so
-//! the character is read from the keystroke directly. Everything that *is* a
-//! command goes through `on_action`.
+//! Every command is a GPUI action bound from a keymap, and there are no
+//! hand-written key comparisons here at all. The query is a
+//! [`TextField`](crate::text_field::TextField), which receives typed text
+//! through the system input handler and owns every editing command; the
+//! launcher only hears that the text changed. Everything that is about the
+//! *list* -- moving the selection, running a row, the action panel -- is bound
+//! here, in the `Launcher` context that encloses the field.
 //!
 //! # Layout stability (I-10)
 //!
@@ -21,8 +22,8 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, KeyDownEvent,
-    ScrollStrategy, SharedString, Styled, Task, UniformListScrollHandle, Window, actions, div,
+    Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, ScrollStrategy,
+    SharedString, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div,
     ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::theme::Appearance;
@@ -33,6 +34,7 @@ use lumen_platform::Platform;
 
 use crate::icons::IconCache;
 use crate::styling::{color, metrics, type_scale};
+use crate::text_field::{TextField, TextFieldEvent};
 
 actions!(
     lumen,
@@ -49,14 +51,8 @@ actions!(
         Activate,
         /// Hide the launcher, restoring focus to where it came from.
         Dismiss,
-        /// Delete the character before the cursor.
-        DeleteBackward,
-        /// Delete the word before the cursor.
-        DeleteWordBackward,
         /// Clear the whole query.
         ClearQuery,
-        /// Insert the clipboard's text at the cursor.
-        Paste,
         /// Show or hide the action panel for the selected row.
         ToggleActionPanel,
     ]
@@ -254,7 +250,12 @@ struct ViewState {
 }
 
 pub struct Launcher {
-    focus_handle: FocusHandle,
+    /// The query. Holds focus for the whole launcher: it is the one thing in
+    /// the window that takes input, and everything else is reached through
+    /// actions that bubble up from it.
+    query_field: Entity<TextField>,
+    /// Kept alive so edits keep arriving; never read.
+    _query_changes: Subscription,
     platform: Arc<dyn Platform>,
     paths: Paths,
     config: Config,
@@ -283,9 +284,10 @@ pub struct Launcher {
     search: Search,
     frecency: Frecency,
 
+    /// A copy of the field's text, updated on every edit. Ranking reads it on
+    /// every keystroke, and reaching into another entity for it each time
+    /// would need an `App` everywhere a query is read.
     query: String,
-    /// Byte offset of the caret within `query`.
-    cursor: usize,
     hits: Vec<Hit>,
     selected: usize,
     scroll: UniformListScrollHandle,
@@ -329,8 +331,19 @@ impl Launcher {
         let frecency = Frecency::load(&paths.frecency_file());
         let icons = IconCache::new(platform.clone(), layout::ICON_RESOLUTION);
 
+        let query_field =
+            cx.new(|cx| TextField::search(ROOT_PLACEHOLDER, theme.colors.clone(), cx));
+        let query_changes = cx.subscribe(&query_field, |launcher, _, event, cx| {
+            if let TextFieldEvent::Changed(text) = event {
+                launcher.query.clone_from(text);
+                launcher.rerank(cx);
+                cx.notify();
+            }
+        });
+
         let mut launcher = Self {
-            focus_handle: cx.focus_handle(),
+            query_field,
+            _query_changes: query_changes,
             platform,
             paths,
             config,
@@ -344,7 +357,6 @@ impl Launcher {
             search: Search::new(),
             frecency,
             query: String::new(),
-            cursor: 0,
             hits: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
@@ -422,12 +434,12 @@ impl Launcher {
     /// application list -- the thing the launcher is mostly for -- waited on a
     /// walk of Documents.
     pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
+        let roots = self.config.files.roots();
+        let limits = self.config.files.limits;
+
         if !self.config.files.enabled {
             return;
         }
-
-        let roots = self.config.files.roots();
-        let limits = self.config.files.limits;
 
         if roots.is_empty() {
             log::info!("file search has no folders to look in");
@@ -599,8 +611,7 @@ impl Launcher {
     /// The launcher always opens empty. Preserving the previous query means the
     /// user has to clear it before typing, every single time.
     pub fn on_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.query.clear();
-        self.cursor = 0;
+        self.clear_query_text(cx);
         self.selected = 0;
         self.appearances = self.appearances.wrapping_add(1);
 
@@ -621,7 +632,7 @@ impl Launcher {
         // drags the window back to the rectangle it was created with -- which
         // is how the launcher ends up in the top-left corner instead of on the
         // monitor holding the cursor.
-        window.focus(&self.focus_handle);
+        self.query_field.read(cx).focus(window);
 
         // Registered on the first show rather than at construction, because it
         // needs a `Window` and the launcher is built before one exists. Once,
@@ -669,6 +680,9 @@ impl Launcher {
     }
 
     pub fn apply_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        let colors = theme.colors.clone();
+        self.query_field
+            .update(cx, |field, cx| field.set_colors(colors, cx));
         self.theme = theme;
         cx.notify();
     }
@@ -907,8 +921,7 @@ impl Launcher {
             lumen_core::view::View::Detail(_) => Vec::new(),
         };
 
-        self.query.clear();
-        self.cursor = 0;
+        self.clear_query_text(cx);
         self.action_panel = None;
         self.mode = Mode::View(Box::new(ViewState {
             sink: None,
@@ -944,8 +957,7 @@ impl Launcher {
     pub fn begin_view(&mut self, sink: ViewSink, cx: &mut Context<Self>) {
         let previous_height = self.content_height();
 
-        self.query.clear();
-        self.cursor = 0;
+        self.clear_query_text(cx);
         self.action_panel = None;
         self.mode = Mode::View(Box::new(ViewState {
             sink: Some(sink),
@@ -1014,8 +1026,7 @@ impl Launcher {
 
         let previous_height = self.content_height();
         self.mode = Mode::Root;
-        self.query.clear();
-        self.cursor = 0;
+        self.clear_query_text(cx);
         self.action_panel = None;
         self.rerank(cx);
         self.resize_if_needed(previous_height, cx);
@@ -1454,29 +1465,6 @@ impl Launcher {
         cx.emit(LauncherEvent::Dismissed);
     }
 
-    fn delete_backward(&mut self, _: &DeleteBackward, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(previous) = self.previous_boundary() else {
-            return;
-        };
-        self.query.replace_range(previous..self.cursor, "");
-        self.cursor = previous;
-        self.rerank(cx);
-        cx.notify();
-    }
-
-    fn delete_word_backward(
-        &mut self,
-        _: &DeleteWordBackward,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let start = word_start_before(&self.query, self.cursor);
-        self.query.replace_range(start..self.cursor, "");
-        self.cursor = start;
-        self.rerank(cx);
-        cx.notify();
-    }
-
     fn clear_query(&mut self, _: &ClearQuery, _: &mut Window, cx: &mut Context<Self>) {
         // Escape unwinds one layer at a time: the panel, then the query, then
         // the launcher. One key, and it always means "back" -- never "back two
@@ -1494,8 +1482,7 @@ impl Launcher {
             if self.query.is_empty() {
                 self.leave_view(cx);
             } else {
-                self.query.clear();
-                self.cursor = 0;
+                self.clear_query_text(cx);
                 self.rerank(cx);
                 cx.notify();
             }
@@ -1507,107 +1494,21 @@ impl Launcher {
             cx.emit(LauncherEvent::Dismissed);
             return;
         }
+        self.clear_query_text(cx);
+        self.rerank(cx);
+        cx.notify();
+    }
+
+    /// Empty the query without treating it as an edit.
+    ///
+    /// The field does not report this back, so callers re-rank themselves when
+    /// they need to -- most of them are changing mode at the same moment and
+    /// re-rank once for both.
+    fn clear_query_text(&mut self, cx: &mut Context<Self>) {
         self.query.clear();
-        self.cursor = 0;
-        self.rerank(cx);
-        cx.notify();
+        self.query_field
+            .update(cx, |field, cx| field.set_text(String::new(), cx));
     }
-
-    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        match self.platform.clipboard_text() {
-            Ok(Some(text)) => {
-                // A pasted newline would silently become part of the query and
-                // match nothing, with no visible reason why.
-                let text = text.replace(['\r', '\n'], " ");
-                self.insert(&text, cx);
-            }
-            Ok(None) => {}
-            Err(error) => log::warn!("could not read the clipboard: {error:#}"),
-        }
-    }
-
-    /// The one place raw keystrokes are inspected, and only for text.
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        // Anything with a modifier is a command, and commands are actions. A
-        // control chord that produced a character must not be typed into the
-        // field.
-        let modifiers = event.keystroke.modifiers;
-        if modifiers.control || modifiers.alt || modifiers.platform {
-            return;
-        }
-
-        let Some(character) = typed_character(&event.keystroke) else {
-            return;
-        };
-        if character.chars().any(|c| c.is_control()) {
-            return;
-        }
-
-        self.insert(character, cx);
-    }
-
-    fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
-        if text.is_empty() {
-            return;
-        }
-        self.query.insert_str(self.cursor, text);
-        self.cursor += text.len();
-        self.rerank(cx);
-        cx.notify();
-    }
-
-    fn previous_boundary(&self) -> Option<usize> {
-        previous_char_boundary(&self.query, self.cursor)
-    }
-}
-
-/// The character a keystroke types, if it types one.
-///
-/// GPUI reports a set of keys by name -- `enter`, `tab`, `backspace`, `space`
-/// -- and for those it leaves `key_char` empty, because a named key is a key
-/// and not a character. That is right for every one of them except space,
-/// which is a key *and* a character, and is the only one of the set a person
-/// expects to appear in a search field.
-///
-/// So space is spelled out here. I-14 forbids hand-written key comparisons in
-/// UI code "with exactly one deliberate exception: inserting typed
-/// characters", and this is inside that exception rather than beside it: there
-/// is no action named "the space bar" any more than there is one named "the
-/// letter k".
-pub(crate) fn typed_character(keystroke: &gpui::Keystroke) -> Option<&str> {
-    match keystroke.key_char.as_deref() {
-        Some(character) => Some(character),
-        None if keystroke.key == "space" => Some(" "),
-        None => None,
-    }
-}
-
-/// The byte offset of the character before `cursor`.
-///
-/// Character, not byte: backspacing through an accented letter or an emoji must
-/// remove the whole thing rather than half of its encoding, which is the
-/// difference between deleting a character and corrupting the string.
-fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {
-    if cursor == 0 {
-        return None;
-    }
-    text[..cursor]
-        .char_indices()
-        .next_back()
-        .map(|(index, _)| index)
-}
-
-/// The byte offset where the word before `cursor` starts.
-///
-/// Trailing whitespace is skipped first, so deleting just after a space removes
-/// the word rather than only the space -- pressing the shortcut twice to get rid
-/// of one word is the thing that makes it feel broken.
-fn word_start_before(text: &str, cursor: usize) -> usize {
-    let trimmed = text[..cursor].trim_end();
-    trimmed
-        .rfind(char::is_whitespace)
-        .map(|index| index + 1)
-        .unwrap_or(0)
 }
 
 /// What the launcher asks the window to do.
@@ -1648,13 +1549,13 @@ pub enum LauncherEvent {
 impl gpui::EventEmitter<LauncherEvent> for Launcher {}
 
 impl Focusable for Launcher {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.query_field.focus_handle(cx)
     }
 }
 
 impl Render for Launcher {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.theme.colors;
 
         // The surface must stay translucent for the system backdrop to be
@@ -1667,20 +1568,18 @@ impl Render for Launcher {
         };
 
         let mut root = div()
+            // No `track_focus` here. Focus lives in the query field, and a
+            // focusable root would take it back on every click anywhere in
+            // the window -- after which typing would go nowhere.
             .key_context("Launcher")
-            .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::select_first))
             .on_action(cx.listener(Self::select_last))
             .on_action(cx.listener(Self::activate))
             .on_action(cx.listener(Self::dismiss))
-            .on_action(cx.listener(Self::delete_backward))
-            .on_action(cx.listener(Self::delete_word_backward))
             .on_action(cx.listener(Self::clear_query))
-            .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::toggle_action_panel))
-            .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
             .flex()
             .flex_col()
@@ -1703,7 +1602,7 @@ impl Render for Launcher {
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
         };
 
-        root.child(self.render_search_field(window))
+        root.child(self.render_search_field(cx))
             .child(body)
             .child(self.render_footer())
             // F2: a fade over roughly 120 ms. Nothing more.
@@ -1725,11 +1624,19 @@ impl Render for Launcher {
 }
 
 impl Launcher {
-    fn render_search_field(&self, window: &Window) -> impl IntoElement {
+    fn render_search_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.theme.colors;
-        let focused = self.focus_handle.is_focused(window);
 
-        let (before, after) = self.query.split_at(self.cursor);
+        // A view says what its own search does. "Search for apps and
+        // commands" over somebody's pull requests is the launcher talking
+        // over an extension in its own window.
+        let placeholder = match &self.mode {
+            Mode::View(state) => state.view.placeholder().unwrap_or(FIND),
+            Mode::Root => ROOT_PLACEHOLDER,
+        };
+        self.query_field.update(cx, |field, _| {
+            field.set_placeholder(placeholder.to_string())
+        });
 
         div()
             .flex()
@@ -1739,41 +1646,7 @@ impl Launcher {
             .border_b_1()
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::query())
-            .child(if self.query.is_empty() {
-                // A view says what its own search does. "Search for apps and
-                // commands" over somebody's pull requests is the launcher
-                // talking over an extension in its own window.
-                let placeholder = match &self.mode {
-                    Mode::View(state) => state.view.placeholder().unwrap_or(FIND),
-                    Mode::Root => ROOT_PLACEHOLDER,
-                };
-
-                div()
-                    .text_color(color(colors.text_placeholder))
-                    .child(placeholder.to_string())
-                    .into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .items_center()
-                    .child(before.to_string())
-                    // A one-pixel caret drawn as an element rather than shaped
-                    // into the text. Full text shaping with an input handler is
-                    // what brings IME support, and it is deliberately deferred:
-                    // see the note in `lib.rs`.
-                    .child(
-                        div()
-                            .w(gpui::px(1.0))
-                            .h(type_scale::query())
-                            .bg(color(if focused {
-                                colors.accent
-                            } else {
-                                colors.text_placeholder
-                            })),
-                    )
-                    .child(after.to_string())
-                    .into_any_element()
-            })
+            .child(self.query_field.clone())
     }
 
     /// The height of the region the list occupies.
@@ -2162,7 +2035,6 @@ fn run_script(
 }
 #[cfg(test)]
 mod tests {
-    use super::{previous_char_boundary, word_start_before};
 
     use lumen_core::item::{Builtin, Kind};
     use lumen_core::{Action, Item};
@@ -2237,42 +2109,5 @@ mod tests {
             Action::LaunchNew(LaunchTarget::ShellExecute("x".into()))
         );
         assert_eq!(item.actions[2], Action::CopyToClipboard("Firefox".into()));
-    }
-
-    #[test]
-    fn backspace_removes_a_whole_character_not_one_byte() {
-        let query = "café";
-        let start = previous_char_boundary(query, query.len()).unwrap();
-        assert_eq!(&query[..start], "caf");
-    }
-
-    #[test]
-    fn backspace_at_the_start_has_nothing_to_remove() {
-        assert_eq!(previous_char_boundary("anything", 0), None);
-    }
-
-    #[test]
-    fn backspace_handles_characters_outside_the_basic_plane() {
-        let query = "ok 🚀";
-        let start = previous_char_boundary(query, query.len()).unwrap();
-        assert_eq!(&query[..start], "ok ");
-    }
-
-    #[test]
-    fn deleting_a_word_removes_the_word() {
-        assert_eq!(word_start_before("visual studio code", 18), 14);
-    }
-
-    /// The case that separates a usable shortcut from an irritating one: just
-    /// after a space, one press must remove the word before it, not the space.
-    #[test]
-    fn deleting_a_word_skips_trailing_whitespace_first() {
-        assert_eq!(word_start_before("visual studio ", 14), 7);
-    }
-
-    #[test]
-    fn deleting_the_only_word_clears_the_query() {
-        assert_eq!(word_start_before("visual", 6), 0);
-        assert_eq!(word_start_before("", 0), 0);
     }
 }

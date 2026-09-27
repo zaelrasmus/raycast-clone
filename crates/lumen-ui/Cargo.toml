@@ -16,4 +16,5 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image = "0.25"
+unicode-segmentation = "1.12"
 parking_lot.workspace = true
