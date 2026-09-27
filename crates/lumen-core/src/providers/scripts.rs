@@ -101,6 +101,38 @@ pub struct ScriptRun {
     pub mode: ScriptMode,
 }
 
+impl ScriptRun {
+    /// Run the script and deal with its output.
+    ///
+    /// Blocking, and called off the UI thread after the launcher has been
+    /// dismissed: a script may take as long as it likes and nothing waits for
+    /// it. That is also why `Copy` is the only mode that does anything with
+    /// the output -- by the time a script finishes there is no list left to
+    /// show it in, and the clipboard is where the user wanted it anyway.
+    pub fn run(&self, platform: &dyn lumen_platform::Platform) -> anyhow::Result<()> {
+        let output = platform.run_script(&self.path)?;
+        match self.to_copy(&output) {
+            Some(text) => platform.set_clipboard_text(text),
+            None => Ok(()),
+        }
+    }
+
+    /// What goes on the clipboard once the script has printed `output`.
+    fn to_copy<'a>(&self, output: &'a str) -> Option<&'a str> {
+        match self.mode {
+            ScriptMode::Silent => None,
+            ScriptMode::Copy if output.is_empty() => {
+                // Clearing the clipboard because a script printed nothing
+                // would destroy whatever the user had copied earlier, which is
+                // a far worse outcome than doing nothing.
+                log::warn!("{} printed nothing to copy", self.path.display());
+                None
+            }
+            ScriptMode::Copy => Some(output),
+        }
+    }
+}
+
 /// Read the script commands in `dir`.
 ///
 /// Touches the disk, so it belongs on a background task -- never in
@@ -249,6 +281,29 @@ pub const EXAMPLE: &str = include_str!("../../../../assets/scripts/example.ps1")
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(mode: ScriptMode) -> ScriptRun {
+        ScriptRun {
+            path: PathBuf::from("x.ps1"),
+            mode,
+        }
+    }
+
+    #[test]
+    fn a_copy_script_copies_what_it_printed() {
+        assert_eq!(run(ScriptMode::Copy).to_copy("10.0.0.4"), Some("10.0.0.4"));
+    }
+
+    /// Printing nothing must not wipe what the user had copied before.
+    #[test]
+    fn a_copy_script_that_printed_nothing_leaves_the_clipboard_alone() {
+        assert_eq!(run(ScriptMode::Copy).to_copy(""), None);
+    }
+
+    #[test]
+    fn a_silent_script_never_touches_the_clipboard() {
+        assert_eq!(run(ScriptMode::Silent).to_copy("output"), None);
+    }
 
     #[test]
     fn reads_headers_whatever_the_comment_prefix_is() {

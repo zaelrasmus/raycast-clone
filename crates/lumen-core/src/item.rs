@@ -161,6 +161,30 @@ impl Action {
             Action::RunScript(_) => "Run",
         }
     }
+
+    /// Carry out an action that needs nothing but the platform.
+    ///
+    /// Blocking -- a launch or a script can take a while -- so it is called off
+    /// the UI thread, after the launcher has been dismissed.
+    ///
+    /// The other three are refused rather than silently ignored, because each
+    /// needs something only its caller holds: a [`Builtin`] opens windows or
+    /// stops the process (the daemon's business), `ArrangeWindow` needs the
+    /// window captured before the launcher appeared (7.15), and `OpenView`
+    /// replaces the list the launcher is drawing.
+    pub fn perform(&self, platform: &dyn lumen_platform::Platform) -> anyhow::Result<()> {
+        use lumen_platform::LaunchMode;
+
+        match self {
+            Action::Launch(target) => platform.launch(target, LaunchMode::Reuse),
+            Action::LaunchNew(target) => platform.launch(target, LaunchMode::Fresh),
+            Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
+            Action::RunScript(run) => run.run(platform),
+            Action::Builtin(_) | Action::ArrangeWindow(_) | Action::OpenView(_) => {
+                anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
+            }
+        }
+    }
 }
 
 impl Item {
