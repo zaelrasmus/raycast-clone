@@ -48,6 +48,9 @@ pub enum Message {
     /// The configuration file changed on disk. Sent by the daemon's own
     /// watcher, through the same queue as everything else.
     ReloadConfig,
+    /// Something was installed or removed, so the application index is stale.
+    /// Sent by the platform's watch on the places applications register.
+    ApplicationsChanged,
     /// Stop the daemon.
     Quit,
     /// Used by the client to detect a running daemon without side effects.

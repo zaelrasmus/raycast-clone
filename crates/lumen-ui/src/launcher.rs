@@ -501,12 +501,22 @@ impl Launcher {
         self.refresh_files(cx);
     }
 
+    /// Rebuild the application index after something was installed or removed.
+    ///
+    /// The same work as the index built at startup -- scripts, snippets and
+    /// extensions included, since they share the one index -- and like it,
+    /// never waited on (I-3). The old list stays up until the new one lands.
+    pub fn reindex_applications(&mut self, cx: &mut Context<Self>) {
+        self.start_indexing(cx);
+    }
+
     /// Build the application index off the UI thread.
     ///
     /// I-3: root search never waits on this. Until it lands the list is simply
     /// empty, and the user can already type.
     fn start_indexing(&mut self, cx: &mut Context<Self>) {
         let platform = self.platform.clone();
+        let previous = self.candidates.clone();
         let scripts_dir = self.paths.scripts_dir();
         let snippets_file = self.paths.snippets_file();
         let extensions_dir = self.paths.extensions_dir();
@@ -591,13 +601,30 @@ impl Launcher {
             let candidates = cx
                 .background_executor()
                 .spawn(async move {
-                    entries
+                    let candidates = entries
                         .into_iter()
                         .map(Candidate::from_app)
                         .chain(catalogue.into_iter().map(Candidate::new))
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    // Compared here, off the UI thread, because the answer is
+                    // usually "nothing changed": a re-index is asked for on
+                    // every install the system reports, and most of those
+                    // touch nothing Lumen lists.
+                    let unchanged = previous.len() == candidates.len()
+                        && previous
+                            .iter()
+                            .zip(&candidates)
+                            .all(|(before, after)| before.item == after.item);
+                    (!unchanged).then_some(candidates)
                 })
                 .await;
+
+            // Nothing new: leave the list alone. Re-ranking would put the
+            // selection back on the first row under somebody who had just
+            // moved it.
+            let Some(candidates) = candidates else {
+                return;
+            };
 
             this.update(cx, |this, cx| {
                 this.candidates = Arc::new(candidates);

@@ -12,14 +12,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout,
-    WindowRole,
+    AppEntry, ApplicationsSink, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey,
+    IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
+    TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
 
 mod activate;
+mod app_watch;
 mod apps;
 mod arrange;
 mod clipboard;
@@ -142,6 +143,10 @@ impl Platform for WindowsPlatform {
 
     fn enumerate_applications(&self) -> Result<Vec<AppEntry>> {
         apps::enumerate()
+    }
+
+    fn watch_applications(&self, sink: ApplicationsSink) -> Result<()> {
+        app_watch::start(sink)
     }
 
     fn load_icon(&self, source: &IconSource, size_px: u32) -> Result<IconImage> {

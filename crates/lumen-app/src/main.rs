@@ -311,6 +311,19 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     })
     .context("starting the IPC listener")?;
 
+    // Installing or removing an application re-indexes, rather than waiting
+    // for the next restart. Through the queue like everything else: the
+    // platform's watch thread only pushes.
+    let apps_tx = tx.clone();
+    let watching = platform.watch_applications(lumen_platform::ApplicationsSink::new(move || {
+        let _ = apps_tx.unbounded_send(Message::ApplicationsChanged);
+    }));
+    if let Err(error) = watching {
+        log::warn!(
+            "newly installed applications will appear after `lumen reload` or a restart: {error:#}"
+        );
+    }
+
     // The configuration as it is *now*. Everything that runs after startup
     // reads it from here rather than holding the copy taken at launch, which
     // is what lets an edit to config.json apply without a restart.
@@ -1014,6 +1027,16 @@ fn handle(
         Message::OverlayRelease => hide_overlay(surfaces, cx),
         Message::Settings => open_settings(platform, config, surfaces, cx),
         Message::ReloadConfig => reload_config(platform, shell, surfaces, cx),
+        Message::ApplicationsChanged => {
+            log::info!("applications changed; re-indexing");
+            surfaces
+                .launcher
+                .update(cx, |launcher, _window, cx| {
+                    launcher.reindex_applications(cx)
+                })
+                .ok();
+            Ok(())
+        }
         Message::ReloadSheets => {
             // The watcher normally has this covered; asked for explicitly,
             // the answer should not depend on whether it noticed.

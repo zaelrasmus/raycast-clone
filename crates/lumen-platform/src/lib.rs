@@ -20,8 +20,8 @@ pub mod tiling;
 pub mod tray;
 
 pub use events::{
-    ClipboardEvent, ClipboardSink, GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier,
-    Modifiers,
+    ApplicationsSink, ClipboardEvent, ClipboardSink, GestureEvent, GestureSink, HoldPhase, Hotkey,
+    Modifier, Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
 pub use tiling::WindowLayout;
@@ -253,6 +253,18 @@ pub trait Platform: Send + Sync {
 
     /// Enumerate installed applications. Called off the UI thread.
     fn enumerate_applications(&self) -> Result<Vec<AppEntry>>;
+
+    /// Report when the set of installed applications may have changed.
+    ///
+    /// Only a signal: the answer to "something was installed" is to call
+    /// [`Platform::enumerate_applications`] again, off the UI thread, and let
+    /// the result replace the index. Watching the places applications register
+    /// -- rather than re-enumerating on a timer -- is what keeps idle CPU at
+    /// zero: a full enumeration costs hundreds of milliseconds.
+    ///
+    /// Implementations should coalesce: an installer writes dozens of files,
+    /// and one install should be one signal.
+    fn watch_applications(&self, sink: ApplicationsSink) -> Result<()>;
 
     /// Resolve an icon to pixels at the requested size. Called off the UI thread.
     fn load_icon(&self, source: &IconSource, size_px: u32) -> Result<IconImage>;

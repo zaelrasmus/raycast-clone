@@ -13,6 +13,8 @@
 //!
 //! # What F5 will fill in
 //!
+//! The full plan, method by method, is in `docs/F5-LINUX.md`.
+//!
 //! - A `wlr-layer-shell` surface on `LAYER_OVERLAY` with exclusive keyboard
 //!   interactivity. GPUI does not implement the protocol, so R-6 accepts a
 //!   maintained patch to its Wayland backend as a planned task.
@@ -27,9 +29,9 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource,
-    LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo, TraySink, WindowLayout,
-    WindowRole,
+    AppEntry, ApplicationsSink, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey,
+    IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
+    TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -91,6 +93,14 @@ impl Platform for LinuxPlatform {
 
     fn enumerate_applications(&self) -> Result<Vec<AppEntry>> {
         todo!("F5: XDG desktop entries")
+    }
+
+    fn watch_applications(&self, _sink: ApplicationsSink) -> Result<()> {
+        // inotify on every `applications/` folder under `` and
+        // ``. Package managers write `.desktop` files there and
+        // nowhere else, so the watch is simpler than Windows', which needs a
+        // registry key as well as the Start Menu for packaged applications.
+        todo!("F5: inotify on the XDG applications folders")
     }
 
     fn load_icon(&self, _source: &IconSource, _size_px: u32) -> Result<IconImage> {

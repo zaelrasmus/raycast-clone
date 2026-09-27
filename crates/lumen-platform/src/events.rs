@@ -211,3 +211,29 @@ impl fmt::Debug for ClipboardSink {
         f.write_str("ClipboardSink")
     }
 }
+
+/// Where "the installed applications changed" is delivered.
+///
+/// Carries nothing: the platform knows *that* something was installed or
+/// removed long before it could say what, and the answer is to re-enumerate
+/// either way. Like the other sinks, the closure runs on a platform thread and
+/// must push rather than work.
+#[derive(Clone)]
+pub struct ApplicationsSink(Arc<dyn Fn() + Send + Sync>);
+
+impl ApplicationsSink {
+    pub fn new(f: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    #[inline]
+    pub fn emit(&self) {
+        (self.0)()
+    }
+}
+
+impl fmt::Debug for ApplicationsSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ApplicationsSink")
+    }
+}
