@@ -1,2 +1,4 @@
 /target
 **/*.rs.bk
+# Local Pi runtime state
+.atl/
