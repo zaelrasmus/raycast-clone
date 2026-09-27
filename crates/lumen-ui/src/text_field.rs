@@ -19,9 +19,8 @@
 //!
 //! Every editing command -- moving, selecting, deleting, the clipboard -- is a
 //! GPUI action bound from the keymap. Typed text is not a command and arrives
-//! through the input handler, so there is no longer any keystroke inspected by
-//! hand to insert a character. The one remaining key comparison is `Enter` in
-//! a settings field, which submits it.
+//! through the input handler, so no keystroke is inspected by hand anywhere in
+//! this file.
 //!
 //! The editing arithmetic itself lives in [`crate::edit`], where it is tested
 //! without a window.
@@ -31,10 +30,10 @@ use std::ops::Range;
 use gpui::prelude::*;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyDownEvent, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle, Window,
-    actions, div, fill, point, px, relative, size,
+    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
+    SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
+    fill, point, px, relative, size,
 };
 use lumen_core::layout;
 use lumen_core::theme::Colors;
@@ -92,8 +91,7 @@ actions!(
 /// dress and in one binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// A boxed field in the settings window. `Home` and `End` move the caret,
-    /// and `Enter` submits.
+    /// A boxed field in the settings window. `Home` and `End` move the caret.
     Form,
     /// The launcher's query. Unboxed -- the launcher draws the chrome around
     /// it -- and `Home`, `End` and `Enter` are left to the list.
@@ -144,8 +142,6 @@ pub enum TextFieldEvent {
     /// The text changed. Carries the new value so the owner does not have to
     /// reach back into the entity to read it.
     Changed(String),
-    /// `Enter` was pressed in a settings field.
-    Submitted,
 }
 
 impl gpui::EventEmitter<TextFieldEvent> for TextField {}
@@ -359,13 +355,6 @@ impl TextField {
         self.edit(cx, |buffer| buffer.replace(None, &text));
     }
 
-    /// `Enter` submits a settings field. The launcher binds `Enter` itself.
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.kind == Kind::Form && event.keystroke.key == "enter" {
-            cx.emit(TextFieldEvent::Submitted);
-        }
-    }
-
     fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.offset_at(event.position);
 
@@ -552,7 +541,6 @@ impl Render for TextField {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
-            .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))

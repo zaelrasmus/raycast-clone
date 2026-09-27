@@ -270,19 +270,23 @@ fn render_shortcut(shortcut: &Shortcut, colors: &Colors) -> impl IntoElement {
                 .text_color(color(colors.text_primary))
                 .child(shortcut.description.clone()),
         )
-        .child(div().flex().flex_none().gap(px(4.0)).children(
-            keycaps(&shortcut.keys).into_iter().map(|cap| {
-                div()
-                    .px(px(5.0))
-                    .rounded(px(4.0))
-                    .border_1()
-                    .border_color(color(colors.border_subtle))
-                    .bg(color(colors.surface_elevated))
-                    .text_size(px(metrics::text::KEYS))
-                    .text_color(color(colors.text_muted))
-                    .child(SharedString::from(cap))
-            }),
-        ))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .gap(px(metrics::KEYCAP_GAP))
+                .children(keycaps(&shortcut.keys).into_iter().map(|cap| {
+                    div()
+                        .px(px(metrics::KEYCAP_PADDING_X))
+                        .rounded(px(metrics::KEYCAP_RADIUS))
+                        .border_1()
+                        .border_color(color(colors.border_subtle))
+                        .bg(color(colors.surface_elevated))
+                        .text_size(px(metrics::text::KEYS))
+                        .text_color(color(colors.text_muted))
+                        .child(SharedString::from(cap))
+                })),
+        )
 }
 
 /// Split a chord into the individual caps to draw.

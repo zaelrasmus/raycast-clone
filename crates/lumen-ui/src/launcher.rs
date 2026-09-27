@@ -334,11 +334,10 @@ impl Launcher {
         let query_field =
             cx.new(|cx| TextField::search(ROOT_PLACEHOLDER, theme.colors.clone(), cx));
         let query_changes = cx.subscribe(&query_field, |launcher, _, event, cx| {
-            if let TextFieldEvent::Changed(text) = event {
-                launcher.query.clone_from(text);
-                launcher.rerank(cx);
-                cx.notify();
-            }
+            let TextFieldEvent::Changed(text) = event;
+            launcher.query.clone_from(text);
+            launcher.rerank(cx);
+            cx.notify();
         });
 
         let mut launcher = Self {

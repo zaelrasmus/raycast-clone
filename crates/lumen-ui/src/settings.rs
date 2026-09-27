@@ -519,10 +519,8 @@ fn new_field(
 ) -> Entity<TextField> {
     let field = cx.new(|cx| TextField::new(text, placeholder, colors, cx));
 
-    cx.subscribe(&field, |settings, _field, event, cx| {
-        if matches!(event, TextFieldEvent::Changed(_)) {
-            settings.mark_dirty(cx);
-        }
+    cx.subscribe(&field, |settings, _field, _: &TextFieldEvent, cx| {
+        settings.mark_dirty(cx);
     })
     .detach();
 

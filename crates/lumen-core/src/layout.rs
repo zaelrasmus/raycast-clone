@@ -200,6 +200,15 @@ pub mod overlay {
     /// Corner radius of the panel.
     pub const RADIUS: f32 = 14.0;
 
+    /// Gap between the keycaps of one chord.
+    pub const KEYCAP_GAP: f32 = 4.0;
+
+    /// Horizontal padding inside a keycap.
+    pub const KEYCAP_PADDING_X: f32 = 5.0;
+
+    /// Corner radius of a keycap.
+    pub const KEYCAP_RADIUS: f32 = 4.0;
+
     /// Where the panel sits vertically in the work area.
     ///
     /// Nearer the middle than the launcher: the overlay is read, not typed
