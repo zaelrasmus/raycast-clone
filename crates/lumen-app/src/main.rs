@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         Some("overlay-press") => forward_only(Message::OverlayPress),
         Some("overlay-release") => forward_only(Message::OverlayRelease),
         Some("settings") => dispatch(Message::Settings),
-        Some("reload-sheets") => forward_only(Message::ReloadSheets),
+        Some("reload" | "reload-sheets") => forward_only(Message::ReloadSheets),
         Some("quit") => forward_only(Message::Quit),
         Some("--version" | "-V") => {
             println!("lumen {}", env!("CARGO_PKG_VERSION"));
@@ -89,7 +89,7 @@ fn print_help() {
          overlay-press      Report that the hold gesture began\n    \
          overlay-release    Report that the hold gesture ended\n    \
          settings           Open the settings window\n    \
-         reload-sheets      Re-read the shortcut sheets from disk\n    \
+         reload             Re-read the configuration, sheets, scripts and snippets\n    \
          quit               Stop the running daemon\n\n\
          With no running daemon, `toggle`, `show` and `settings` start one."
     );
@@ -311,16 +311,22 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     })
     .context("starting the IPC listener")?;
 
+    // The configuration as it is *now*. Everything that runs after startup
+    // reads it from here rather than holding the copy taken at launch, which
+    // is what lets an edit to config.json apply without a restart.
+    let live = Rc::new(RefCell::new(config.clone()));
+    watch_config(cx, &paths, tx.clone());
+
     subscribe_to_launcher(
         cx,
         &window,
         platform.clone(),
-        config.clone(),
+        live.clone(),
         shell.clone(),
         tx.clone(),
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
-    watch_theme(cx, &window, &overlay, &paths, &config);
+    watch_theme(cx, &window, &overlay, &paths, live.clone());
 
     let surfaces = Surfaces {
         launcher: window,
@@ -330,17 +336,17 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         fallback: Rc::new(fallback),
         paths: paths.clone(),
         theme: Rc::new(RefCell::new(theme.clone())),
+        config: live,
     };
 
     watch_sheets(cx, &surfaces);
 
     cx.spawn({
         let platform = platform.clone();
-        let config = config.clone();
         async move |cx| {
             while let Some(message) = rx.next().await {
                 let described = format!("{message:?}");
-                let outcome = handle(message, &platform, &config, &shell, &surfaces, cx);
+                let outcome = handle(message, &platform, &shell, &surfaces, cx);
                 if let Err(error) = outcome {
                     log::error!("could not handle {described}: {error:#}");
                 }
@@ -432,6 +438,8 @@ struct Surfaces {
     fallback: Rc<Sheet>,
     paths: Paths,
     theme: Rc<RefCell<Theme>>,
+    /// The current configuration, replaced when the file changes.
+    config: Rc<RefCell<Config>>,
 }
 
 impl Surfaces {
@@ -735,7 +743,7 @@ fn subscribe_to_launcher(
     cx: &mut App,
     window: &gpui::WindowHandle<Launcher>,
     platform: Arc<dyn Platform>,
-    config: Config,
+    config: Rc<RefCell<Config>>,
     shell: Rc<RefCell<Shell>>,
     commands: mpsc::UnboundedSender<Message>,
 ) {
@@ -746,7 +754,9 @@ fn subscribe_to_launcher(
     cx.subscribe(&entity, move |_entity: Entity<Launcher>, event, cx| {
         let platform = platform.clone();
         let shell = shell.clone();
-        let config = config.clone();
+        // Read at the moment of the event, so a resize after an edit to
+        // config.json lands where the new configuration says.
+        let config = config.borrow().clone();
         let commands = commands.clone();
         let event = event.clone();
 
@@ -810,21 +820,24 @@ fn off_the_callback(cx: &mut App, work: impl FnOnce() -> Result<()> + 'static) {
     .detach();
 }
 
-/// Re-read the theme when its file changes (AD-05).
+/// Re-read the theme when its file changes, or when the configuration names a
+/// different one (AD-05).
 fn watch_theme(
     cx: &mut App,
     window: &gpui::WindowHandle<Launcher>,
     overlay: &gpui::WindowHandle<Overlay>,
     paths: &Paths,
-    config: &Config,
+    config: Rc<RefCell<Config>>,
 ) {
-    use lumen_core::watcher::ThemeWatcher;
+    use lumen_core::watcher::DirectoryWatcher;
 
-    let watcher = match ThemeWatcher::start(&paths.themes_dir(), &config.theme) {
+    // The folder rather than one file: which file is "the theme" is whatever
+    // config.json says right now, and that can change while this runs.
+    let watcher = match DirectoryWatcher::start(&paths.themes_dir()) {
         Ok(watcher) => watcher,
         Err(error) => {
-            // Live reload is a development convenience. Losing it must not stop
-            // the launcher from running.
+            // Live reload is a convenience. Losing it must not stop the
+            // launcher from running.
             log::warn!("theme live reload is unavailable: {error:#}");
             return;
         }
@@ -832,6 +845,9 @@ fn watch_theme(
 
     let window = *window;
     let overlay = *overlay;
+    let paths = paths.clone();
+    let mut current = config.borrow().theme.clone();
+
     cx.spawn(async move |cx| {
         loop {
             // Polled rather than pushed because `notify` hands back a std
@@ -841,9 +857,23 @@ fn watch_theme(
                 .timer(std::time::Duration::from_millis(250))
                 .await;
 
-            let Some(theme) = watcher.latest() else {
+            let wanted = config.borrow().theme.clone();
+            let renamed = wanted != current;
+            if !watcher.changed() && !renamed {
                 continue;
+            }
+
+            let theme = match Theme::load(&paths.theme_file(&wanted)) {
+                Ok(theme) => theme,
+                // Keep the current theme. A syntax error mid-edit is the
+                // normal case, and dropping to the base theme on every stray
+                // keystroke would make editing unusable.
+                Err(error) => {
+                    log::warn!("theme reload skipped: {error:#}");
+                    continue;
+                }
             };
+            current = wanted;
             log::info!("reloaded theme {:?}", theme.name);
 
             // Both surfaces follow the same theme file. Reloading one and not
@@ -866,14 +896,109 @@ fn watch_theme(
     .detach();
 }
 
-fn handle(
-    message: Message,
+/// Tell the event loop when config.json changes.
+///
+/// Only a message: the reload itself happens in [`reload_config`], on the same
+/// queue as a summons, so a window cannot be re-placed halfway through being
+/// shown.
+fn watch_config(cx: &mut App, paths: &Paths, commands: mpsc::UnboundedSender<Message>) {
+    use lumen_core::watcher::FileWatcher;
+
+    let watcher = match FileWatcher::start(&paths.config_file()) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            log::warn!("configuration changes will need `lumen reload` or a restart: {error:#}");
+            return;
+        }
+    };
+
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+
+            if watcher.changed() && commands.unbounded_send(Message::ReloadConfig).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Re-read config.json and apply what can be applied without a restart.
+///
+/// Position, size, row count, theme and file search take effect at once --
+/// including on a launcher that is open while the file is saved. The hotkey,
+/// the backdrop and clipboard history are wired into things made once at
+/// startup, and are reported as waiting rather than half-applied.
+fn reload_config(
     platform: &Arc<dyn Platform>,
-    config: &Config,
     shell: &Rc<RefCell<Shell>>,
     surfaces: &Surfaces,
     cx: &mut gpui::AsyncApp,
 ) -> Result<()> {
+    let newer = match Config::try_load(&surfaces.paths.config_file()) {
+        Ok(config) => config,
+        // Most often a save caught halfway. The write that completes it
+        // arrives as another change and another reload.
+        Err(error) => {
+            log::warn!("kept the running configuration: {error:#}");
+            return Ok(());
+        }
+    };
+
+    let older = surfaces.config.borrow().clone();
+    let waiting = older.restart_required(&newer);
+    if !waiting.is_empty() {
+        log::warn!(
+            "{} changed in the configuration and will apply after a restart \
+             (`lumen quit`, then `lumen`)",
+            waiting.join(", ")
+        );
+    }
+
+    let applied = older.merge_live(&newer);
+    if applied == older {
+        return Ok(());
+    }
+    *surfaces.config.borrow_mut() = applied.clone();
+    log::info!("reloaded the configuration");
+
+    // The launcher first, so the height used to place the window is the one
+    // for the new row count.
+    let height = surfaces
+        .launcher
+        .update(cx, |launcher, _window, cx| {
+            launcher.apply_config(applied.clone(), cx);
+            launcher.content_height()
+        })
+        .ok();
+
+    // Already open: move it now rather than on the next summons, so the edit
+    // can be seen while it is being made.
+    let shell = shell.borrow();
+    if shell.visible
+        && let (Some(monitor), Some(height)) = (shell.monitor, height)
+    {
+        platform.set_window_bounds(WindowRole::Launcher, placement(&monitor, &applied, height))?;
+    }
+
+    Ok(())
+}
+
+fn handle(
+    message: Message,
+    platform: &Arc<dyn Platform>,
+    shell: &Rc<RefCell<Shell>>,
+    surfaces: &Surfaces,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
+    // Cloned per message rather than borrowed: `show` and `open_settings` call
+    // into GPUI, and a borrow held across that is a borrow a reload could
+    // collide with.
+    let config = &surfaces.config.borrow().clone();
+
     match message {
         Message::Toggle => {
             let visible = shell.borrow().visible;
@@ -888,7 +1013,11 @@ fn handle(
         Message::OverlayPress => show_overlay(platform, shell, surfaces, cx),
         Message::OverlayRelease => hide_overlay(surfaces, cx),
         Message::Settings => open_settings(platform, config, surfaces, cx),
+        Message::ReloadConfig => reload_config(platform, shell, surfaces, cx),
         Message::ReloadSheets => {
+            // The watcher normally has this covered; asked for explicitly,
+            // the answer should not depend on whether it noticed.
+            reload_config(platform, shell, surfaces, cx)?;
             surfaces.reload_sheets();
             // Scripts and snippets live in the launcher's index, so reloading
             // is two halves: the sheet library here, and a reindex there.

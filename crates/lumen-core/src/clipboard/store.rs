@@ -55,7 +55,7 @@ impl Entry {
 }
 
 /// How much history is kept.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Retention {
     /// Most recent entries to keep.

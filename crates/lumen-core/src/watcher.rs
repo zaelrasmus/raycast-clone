@@ -1,76 +1,70 @@
-//! Live theme reload (AD-05).
+//! Live reload (AD-05).
 //!
 //! Aesthetics get iterated hundreds of times, and recompiling on every iteration
 //! kills the design process. Re-reading a token file on change is what turns
 //! F2's tuning work into an activity measured in seconds rather than builds --
 //! and, per R-11, it is also the concrete mitigation for losing motivation to
 //! the long wait before the aesthetic phase begins.
+//!
+//! The same holds for the configuration and the shortcut sheets: editing a
+//! file and having to restart the daemon to see it is exactly the friction
+//! that stops people iterating.
+//!
+//! # Only "something changed"
+//!
+//! The watchers report that a file changed and nothing else. Parsing happens
+//! on the UI thread, at the next poll, which also coalesces an editor's
+//! truncate-write-rename into a single reload. A file caught half written
+//! fails to parse, the caller keeps what it had, and the write that finishes
+//! the save produces another event and another, successful, reload.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use notify::{Event, RecursiveMode, Watcher};
 
-use crate::theme::Theme;
-
-/// Editors do not write a file once.
-///
-/// A save is commonly a truncate, a write and a rename, arriving as three
-/// separate events within a few milliseconds. Reloading on each one means
-/// parsing a half-written file and flashing the base theme on screen.
-const DEBOUNCE: Duration = Duration::from_millis(120);
-
-/// Watches the themes folder and reports the active theme when it changes.
+/// Watches one file.
 ///
 /// The returned handle must be kept alive: dropping it stops the watch.
-pub struct ThemeWatcher {
+pub struct FileWatcher {
     _watcher: notify::RecommendedWatcher,
-    changes: mpsc::Receiver<Theme>,
+    changes: mpsc::Receiver<()>,
 }
 
-impl ThemeWatcher {
-    /// Watch `themes_dir` for changes to the theme named `theme_name`.
+impl FileWatcher {
+    /// Watch `file` for changes.
     ///
-    /// The whole directory is watched rather than the single file, because an
-    /// atomic save replaces the file's identity and a watch on the old inode
-    /// stops firing after the first save -- the classic way live reload appears
-    /// to work once and then quietly stops.
-    pub fn start(themes_dir: &Path, theme_name: &str) -> Result<Self> {
-        let (tx, changes) = mpsc::channel();
-        let watched_file = themes_dir.join(format!("{theme_name}.json"));
+    /// The *directory* is watched rather than the file, because an atomic
+    /// save replaces the file's identity and a watch on the old one stops
+    /// firing after the first save -- the classic way live reload appears to
+    /// work once and then quietly stops.
+    pub fn start(file: &Path) -> Result<Self> {
+        let dir = file
+            .parent()
+            .with_context(|| format!("{} has no parent folder", file.display()))?;
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
-        let mut last_reload = Instant::now() - DEBOUNCE;
-        let target = watched_file.clone();
+        let (tx, changes) = mpsc::channel();
+        let target = file.to_path_buf();
 
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
             let Ok(event) = event else { return };
-            if !event.paths.iter().any(|path| same_file(path, &target)) {
+            // Reading the file, which the reload itself does, must not
+            // trigger another reload.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
                 return;
             }
-            if last_reload.elapsed() < DEBOUNCE {
-                return;
-            }
-            last_reload = Instant::now();
-
-            match Theme::load(&target) {
-                Ok(theme) => {
-                    // A closed channel means the daemon is shutting down. Not
-                    // an error, and nothing to log about it.
-                    let _ = tx.send(theme);
-                }
-                // Keep the current theme on a parse error. A syntax error
-                // mid-edit is the normal case, and dropping to the base theme
-                // on every stray keystroke would make editing unusable.
-                Err(error) => log::warn!("theme reload skipped: {error:#}"),
+            if event.paths.iter().any(|path| same_file(path, &target)) {
+                // A closed channel means the daemon is shutting down.
+                let _ = tx.send(());
             }
         })
         .context("creating a filesystem watcher")?;
 
         watcher
-            .watch(themes_dir, RecursiveMode::NonRecursive)
-            .with_context(|| format!("watching {}", themes_dir.display()))?;
+            .watch(dir, RecursiveMode::NonRecursive)
+            .with_context(|| format!("watching {}", dir.display()))?;
 
         Ok(Self {
             _watcher: watcher,
@@ -78,13 +72,12 @@ impl ThemeWatcher {
         })
     }
 
-    /// The most recent theme, if one arrived since the last call.
+    /// Whether the file changed since the last call.
     ///
-    /// Non-blocking and coalescing: if several reloads queued up between frames,
-    /// only the newest matters. Called from the UI thread, so it must never
-    /// wait.
-    pub fn latest(&self) -> Option<Theme> {
-        self.changes.try_iter().last()
+    /// Non-blocking and coalescing: called from the UI thread, so it must
+    /// never wait, and several events between two polls are one reload.
+    pub fn changed(&self) -> bool {
+        self.changes.try_iter().count() > 0
     }
 }
 
@@ -101,11 +94,9 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Watches a directory and reports whether anything in it has changed.
 ///
-/// Deliberately coarser than [`ThemeWatcher`]: a theme watch knows which file it
-/// cares about and can hand back a parsed value, while a sheets folder holds
-/// many files that are read together. Reporting "something changed, reload the
-/// lot" is both simpler and more correct here -- renaming a sheet, deleting one
-/// and editing one all have to produce the same response anyway.
+/// For a folder of files that are read together, like the shortcut sheets.
+/// Renaming a sheet, deleting one and editing one all have to produce the
+/// same response -- reload the lot -- so which file changed is not reported.
 pub struct DirectoryWatcher {
     _watcher: notify::RecommendedWatcher,
     changes: mpsc::Receiver<()>,

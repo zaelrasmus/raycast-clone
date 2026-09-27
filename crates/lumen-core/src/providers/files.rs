@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use crate::item::{Action, Item, Kind};
 
 /// How far the walk is allowed to go.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct FileLimits {
     /// Stop after this many entries, across all roots.

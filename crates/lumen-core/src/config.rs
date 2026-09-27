@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::clipboard::Retention;
 use crate::providers::files::{self, FileLimits};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Config {
     pub hotkey: Hotkey,
@@ -26,7 +26,7 @@ pub struct Config {
 }
 
 /// File search (F3).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct FileSearchConfig {
     pub enabled: bool,
@@ -63,7 +63,7 @@ impl FileSearchConfig {
 }
 
 /// Clipboard history (F3).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct ClipboardConfig {
     /// Whether anything is recorded at all.
@@ -85,7 +85,7 @@ impl Default for ClipboardConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct WindowConfig {
     /// Logical pixels. 720 is wide enough for a long application name plus its
@@ -153,19 +153,67 @@ impl Config {
     /// that refuses to start because of a stray comma is a process that appears
     /// to be broken with no explanation anywhere the user will see.
     pub fn load(path: &Path) -> Self {
-        let Ok(source) = std::fs::read_to_string(path) else {
+        if !path.exists() {
             return Self::default();
-        };
+        }
 
-        match serde_json::from_str(&source) {
+        match Self::try_load(path) {
             Ok(config) => config,
             Err(error) => {
-                log::error!(
-                    "{} is not valid configuration ({error}); using defaults",
-                    path.display()
-                );
+                log::error!("{error:#}; using defaults");
                 Self::default()
             }
+        }
+    }
+
+    /// Load from disk, reporting a problem instead of papering over it.
+    ///
+    /// What a live reload uses. At startup a broken file means "run with the
+    /// defaults"; while running it means "keep what already works" -- a config
+    /// saved halfway through an edit must not snap the launcher back to the
+    /// default position, size and theme.
+    pub fn try_load(path: &Path) -> Result<Self> {
+        let source =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        serde_json::from_str(&source)
+            .with_context(|| format!("{} is not valid configuration", path.display()))
+    }
+
+    /// The settings that differ between two configs and only take effect when
+    /// the daemon next starts.
+    ///
+    /// Everything else is applied live. These three are the exceptions because
+    /// each is wired into something created once: the hotkey is registered
+    /// with the system, the backdrop is applied to the window when it is made,
+    /// and the clipboard listener is either started or not. Named in the
+    /// config's own spelling, so the log can say exactly which edit is waiting.
+    pub fn restart_required(&self, newer: &Self) -> Vec<&'static str> {
+        let mut pending = Vec::new();
+        if self.hotkey != newer.hotkey {
+            pending.push("hotkey");
+        }
+        if self.backdrop != newer.backdrop {
+            pending.push("backdrop");
+        }
+        if self.clipboard != newer.clipboard {
+            pending.push("clipboard");
+        }
+        pending
+    }
+
+    /// `newer`, keeping this config's values for everything in
+    /// [`Config::restart_required`].
+    ///
+    /// What a running daemon should hold after a reload: the configuration
+    /// actually in effect, not the file. Holding the file's hotkey would make
+    /// the next reload compare equal and stop mentioning that a restart is
+    /// still pending.
+    pub fn merge_live(&self, newer: &Self) -> Self {
+        Self {
+            hotkey: self.hotkey.clone(),
+            backdrop: self.backdrop,
+            clipboard: self.clipboard,
+            ..newer.clone()
         }
     }
 
@@ -298,6 +346,60 @@ mod tests {
             vec![std::path::PathBuf::from("D:/work")]
         );
         assert_eq!(config.files.limits.max_entries, 5_000);
+    }
+
+    /// A half-saved file while the daemon runs must be reported, not quietly
+    /// turned into defaults -- that would move the launcher mid-edit.
+    #[test]
+    fn a_broken_file_is_an_error_to_a_live_reload() {
+        let dir = std::env::temp_dir().join(format!("lumen-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{ "window": { "vertical-bias": 0.0, "#).unwrap();
+
+        assert!(Config::try_load(&path).is_err());
+        // Startup still falls back rather than refusing to run.
+        assert_eq!(Config::load(&path).theme, "nocturne");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn position_size_and_theme_apply_without_a_restart() {
+        let before = Config::default();
+        let mut after = before.clone();
+        after.window.vertical_bias = 0.0;
+        after.window.width = 900.0;
+        after.window.visible_rows = 5;
+        after.theme = "daylight".into();
+        after.files.enabled = false;
+
+        assert!(before.restart_required(&after).is_empty());
+    }
+
+    #[test]
+    fn a_new_hotkey_is_reported_as_waiting_for_a_restart() {
+        let before = Config::default();
+        let mut after = before.clone();
+        after.hotkey.key = "K".into();
+        after.clipboard.enabled = false;
+
+        assert_eq!(before.restart_required(&after), vec!["hotkey", "clipboard"]);
+    }
+
+    /// The running daemon keeps the hotkey it registered, so the next reload
+    /// still reports the restart as pending.
+    #[test]
+    fn a_live_merge_takes_the_position_but_keeps_the_hotkey() {
+        let before = Config::default();
+        let mut after = before.clone();
+        after.hotkey.key = "K".into();
+        after.window.vertical_bias = 0.0;
+
+        let applied = before.merge_live(&after);
+        assert_eq!(applied.hotkey, before.hotkey);
+        assert_eq!(applied.window.vertical_bias, 0.0);
+        assert_eq!(applied.restart_required(&after), vec!["hotkey"]);
     }
 
     #[test]

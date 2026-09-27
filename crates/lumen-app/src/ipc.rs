@@ -41,8 +41,13 @@ pub enum Message {
     OverlayRelease,
     /// Open the settings window.
     Settings,
-    /// Re-read the sheets folder from disk.
+    /// Re-read everything the user edits by hand: the configuration, the
+    /// sheets, scripts and snippets. Named for the first thing it reloaded;
+    /// `lumen reload` is the same message.
     ReloadSheets,
+    /// The configuration file changed on disk. Sent by the daemon's own
+    /// watcher, through the same queue as everything else.
+    ReloadConfig,
     /// Stop the daemon.
     Quit,
     /// Used by the client to detect a running daemon without side effects.

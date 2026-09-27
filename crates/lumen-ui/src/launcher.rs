@@ -437,12 +437,15 @@ impl Launcher {
         let roots = self.config.files.roots();
         let limits = self.config.files.limits;
 
-        if !self.config.files.enabled {
-            return;
-        }
-
-        if roots.is_empty() {
-            log::info!("file search has no folders to look in");
+        if !self.config.files.enabled || roots.is_empty() {
+            if self.config.files.enabled {
+                log::info!("file search has no folders to look in");
+            }
+            // Emptied rather than left alone, so turning file search off in a
+            // running daemon takes the files out of the results too.
+            if !self.asides[Aside::Files.slot()].is_empty() {
+                self.set_aside(Aside::Files, Vec::new(), cx);
+            }
             return;
         }
 
@@ -684,6 +687,23 @@ impl Launcher {
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
         self.theme = theme;
+        cx.notify();
+    }
+
+    /// Take a configuration that was edited while the daemon runs.
+    ///
+    /// Row count and file-search folders are the launcher's to apply; where
+    /// the window sits is the daemon's, which re-places it after this.
+    pub fn apply_config(&mut self, config: Config, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+        let files_changed = config.files != self.config.files;
+
+        self.config = config;
+
+        if files_changed {
+            self.refresh_files(cx);
+        }
+        self.resize_if_needed(previous_height, cx);
         cx.notify();
     }
 
