@@ -292,6 +292,19 @@ impl OpenLink {
     }
 }
 
+/// Whether copied text is a web link worth offering as a new quicklink.
+///
+/// Web links only: a copied `mailto:` or a sentence that happens to contain a
+/// colon is not what somebody opening "Create Quicklink" has just copied.
+pub fn looks_like_link(text: &str) -> bool {
+    let text = text.trim();
+    let lower = text.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://"))
+        && text.len() > "https://".len()
+        && !text.contains(char::is_whitespace)
+        && Template::parse(text).is_ok()
+}
+
 /// The browser the user meant by `wanted`.
 ///
 /// The whole display name first, ignoring case; then a part of one, so `zen`
@@ -733,6 +746,19 @@ mod tests {
     #[test]
     fn a_missing_file_is_not_an_error() {
         assert!(load(Path::new("no/such/quicklinks.json")).is_empty());
+    }
+
+    #[test]
+    fn only_a_web_link_is_offered_from_the_clipboard() {
+        assert!(looks_like_link("https://www.youtube.com/@veritasium"));
+        assert!(looks_like_link("  HTTP://example.com/a?b=c  "));
+
+        assert!(!looks_like_link("https://"));
+        assert!(!looks_like_link("mailto:someone@example.com"));
+        assert!(!looks_like_link("see https://example.com for details"));
+        assert!(!looks_like_link("note: remember this"));
+        // Braces would be read as a placeholder.
+        assert!(!looks_like_link("https://example.com/{id}"));
     }
 
     /// Parsed by this test at build time, so a broken example cannot ship --

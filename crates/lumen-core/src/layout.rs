@@ -95,6 +95,25 @@ pub mod argument {
     pub const PILL_GAP: f32 = 10.0;
 }
 
+/// The quicklink form, in the launcher and in settings (F6).
+pub mod form {
+    /// One labelled field. Taller than the field itself, which is the settings
+    /// window's field (`settings::FIELD_HEIGHT`), so rows have air between them.
+    pub const ROW_HEIGHT: f32 = 40.0;
+    pub const LABEL_WIDTH: f32 = 96.0;
+    pub const PADDING_Y: f32 = 10.0;
+
+    /// The line under the fields: a hint, or why saving was refused. Reserved
+    /// whether or not it has anything to say, so a refusal does not resize
+    /// the window under the user's hands (I-10).
+    pub const MESSAGE_HEIGHT: f32 = 30.0;
+
+    pub const FIELDS: usize = 4;
+
+    /// The whole form, which is also the region it takes over in the launcher.
+    pub const HEIGHT: f32 = PADDING_Y * 2.0 + ROW_HEIGHT * FIELDS as f32 + MESSAGE_HEIGHT;
+}
+
 /// Extension views (F4).
 ///
 /// A view's list is drawn with the same row height and gutter as the root list,
@@ -296,4 +315,5 @@ pub mod settings {
 
 /// A settings field has to fit inside the row that contains it.
 const _: () = assert!(settings::FIELD_HEIGHT < settings::ROW_HEIGHT);
+const _: () = assert!(settings::FIELD_HEIGHT < form::ROW_HEIGHT);
 const _: () = assert!(settings::KEYS_FIELD_WIDTH * 2.0 < settings::WIDTH - settings::SIDEBAR_WIDTH);

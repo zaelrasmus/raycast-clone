@@ -35,6 +35,7 @@ use lumen_core::{
 use lumen_platform::Platform;
 
 use crate::icons::IconCache;
+use crate::quicklink_form::{FormEvent, QuicklinkForm};
 use crate::styling::{color, metrics, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 
@@ -104,6 +105,14 @@ struct PanelEntry {
 enum Mode {
     Root,
     View(Box<ViewState>),
+    /// Saving a new quicklink (F6). Like a view, it takes the list's place.
+    Form(FormState),
+}
+
+/// The quicklink form, and the subscription that hears it finish.
+struct FormState {
+    form: Entity<QuicklinkForm>,
+    _events: Subscription,
 }
 
 /// Where a view's events go.
@@ -565,6 +574,12 @@ impl Launcher {
 
     pub fn apply_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         let colors = theme.colors.clone();
+        if let Mode::Form(state) = &self.mode {
+            let colors = colors.clone();
+            state
+                .form
+                .update(cx, |form, cx| form.set_colors(colors, cx));
+        }
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
         self.theme = theme;
@@ -610,6 +625,11 @@ impl Launcher {
 
         match &self.mode {
             Mode::Root => self.config.window_height(self.visible_rows()),
+            Mode::Form(_) => {
+                lumen_core::layout::SEARCH_HEIGHT
+                    + lumen_core::layout::form::HEIGHT
+                    + lumen_core::layout::FOOTER_HEIGHT
+            }
             Mode::View(state) if state.loading => self.loading_height(),
             Mode::View(state) => {
                 lumen_core::layout::SEARCH_HEIGHT
@@ -673,6 +693,13 @@ impl Launcher {
     }
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
+        // A form has no list to rank. Asides still land while it is open --
+        // the clipboard is recorded whatever the launcher shows -- and the
+        // root list is ranked when the form is left.
+        if matches!(self.mode, Mode::Form(_)) {
+            return;
+        }
+
         let previous_height = self.content_height();
 
         // A view filters its own rows and has no use for the root index.
@@ -1067,6 +1094,7 @@ impl Launcher {
                     shortcut: action.shortcut.clone(),
                 })
                 .collect(),
+            Mode::Form(_) => Vec::new(),
         }
     }
 
@@ -1187,7 +1215,7 @@ impl Launcher {
         cx.notify();
     }
 
-    fn activate(&mut self, _: &Activate, _: &mut Window, cx: &mut Context<Self>) {
+    fn activate(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.mode, Mode::View(_)) {
             self.activate_in_view(cx);
             return;
@@ -1241,6 +1269,12 @@ impl Launcher {
         // so this neither dismisses nor reaches the platform.
         if let Action::OpenView(source) = action {
             self.open_view(&source, cx);
+            return;
+        }
+
+        // So does the quicklink form.
+        if action == Action::CreateQuicklink {
+            self.open_form(window, cx);
             return;
         }
 
@@ -1323,6 +1357,96 @@ impl Launcher {
         cx.notify();
     }
 
+    /// Show the form that saves a new quicklink, in place of the list.
+    fn open_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+
+        let path = self.paths.quicklinks_file();
+        let colors = self.theme.colors.clone();
+        let form = cx.new(|cx| QuicklinkForm::new(path, None, colors, cx));
+        let events = cx.subscribe_in(&form, window, |this, _, event, window, cx| {
+            let saved = match event {
+                FormEvent::Saved(name) => Some(name.clone()),
+                FormEvent::Cancelled => None,
+            };
+            this.leave_form(saved, window, cx);
+        });
+
+        self.action_panel = None;
+        self.argument = None;
+        self.clear_query_text(cx);
+        self.mode = Mode::Form(FormState {
+            form: form.clone(),
+            _events: events,
+        });
+        form.read(cx).focus(window, cx);
+
+        // What the form can offer -- the installed browsers, and a link just
+        // copied -- is a registry walk and a clipboard read, so it arrives a
+        // moment later rather than holding the form back (I-3's discipline,
+        // if not its letter).
+        let platform = self.platform.clone();
+        let form = form.downgrade();
+        cx.spawn(async move |_, cx| {
+            let (browsers, copied) = cx
+                .background_executor()
+                .spawn(async move {
+                    let browsers = platform
+                        .installed_browsers()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|browser| browser.name)
+                        .collect::<Vec<_>>();
+                    let copied = platform
+                        .clipboard_text()
+                        .ok()
+                        .flatten()
+                        .map(|text| text.trim().to_string())
+                        .filter(|text| lumen_core::providers::quicklinks::looks_like_link(text));
+                    (browsers, copied)
+                })
+                .await;
+
+            form.update(cx, |form, cx| {
+                form.set_browsers(browsers, cx);
+                if let Some(link) = copied {
+                    form.suggest_link(link, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// Back to the root list from the form.
+    ///
+    /// After a save the query is the new link's name, so the list shows it as
+    /// soon as the watcher has re-read the file: the confirmation is the link
+    /// itself, not a message about it.
+    fn leave_form(&mut self, saved: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.mode, Mode::Form(_)) {
+            return;
+        }
+        let previous_height = self.content_height();
+
+        self.mode = Mode::Root;
+        match saved {
+            Some(name) => {
+                self.query_field
+                    .update(cx, |field, cx| field.set_text(name.clone(), cx));
+                self.query = name;
+            }
+            None => self.clear_query_text(cx),
+        }
+        self.query_field.read(cx).focus(window);
+        self.rerank(cx);
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
     /// Run the selected action inside a view.
     ///
     /// The launcher does not know what an extension's action means, so it
@@ -1373,7 +1497,14 @@ impl Launcher {
         cx.emit(LauncherEvent::Dismissed);
     }
 
-    fn clear_query(&mut self, _: &ClearQuery, _: &mut Window, cx: &mut Context<Self>) {
+    fn clear_query(&mut self, _: &ClearQuery, window: &mut Window, cx: &mut Context<Self>) {
+        // The form handles Escape itself; this is for when focus has somehow
+        // left its fields, and it must still mean "back", not "dismiss".
+        if matches!(self.mode, Mode::Form(_)) {
+            self.leave_form(None, window, cx);
+            return;
+        }
+
         // Escape unwinds one layer at a time: the panel, then the query, then
         // the launcher. One key, and it always means "back" -- never "back two
         // steps because the first one happened to be empty".
@@ -1514,6 +1645,7 @@ impl Render for Launcher {
         // view, then the root list.
         let body = match (self.render_action_panel(cx), &self.mode) {
             (Some(panel), _) => panel,
+            (None, Mode::Form(state)) => state.form.clone().into_any_element(),
             (None, Mode::View(state)) => self.render_view(state),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
         };
@@ -1546,8 +1678,24 @@ impl Launcher {
         // A view says what its own search does. "Search for apps and
         // commands" over somebody's pull requests is the launcher talking
         // over an extension in its own window.
+        // A form's fields take the input, so the search row only says what
+        // the form is.
+        if matches!(self.mode, Mode::Form(_)) {
+            return div()
+                .flex()
+                .items_center()
+                .h(metrics::search_height())
+                .px(metrics::gutter())
+                .border_b_1()
+                .border_color(color(colors.border_subtle))
+                .text_size(type_scale::query())
+                .text_color(color(colors.text_primary))
+                .child("Create Quicklink");
+        }
+
         let placeholder = match &self.mode {
             Mode::View(state) => state.view.placeholder().unwrap_or(FIND),
+            Mode::Form(_) => ROOT_PLACEHOLDER,
             Mode::Root if self.argument.is_some() => ARGUMENT_PLACEHOLDER,
             Mode::Root => ROOT_PLACEHOLDER,
         };
@@ -1783,11 +1931,18 @@ impl Launcher {
                 .first()
                 .map(|entry| entry.title.clone())
                 .unwrap_or_else(|| "Open".to_string()),
+            Mode::Form(_) => "Save".to_string(),
         };
 
         let count = match &self.mode {
             Mode::Root => self.hits().len(),
             Mode::View(_) => self.view_items().len(),
+            Mode::Form(_) => 0,
+        };
+        let status = match (&self.mode, count) {
+            (Mode::Form(_), _) => "Next field  Tab".to_string(),
+            (_, 1) => "1 result".to_string(),
+            (_, count) => format!("{count} results"),
         };
 
         div()
@@ -1800,10 +1955,7 @@ impl Launcher {
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::footer())
             .text_color(color(colors.text_muted))
-            .child(div().child(match count {
-                1 => "1 result".to_string(),
-                count => format!("{count} results"),
-            }))
+            .child(div().child(status))
             .child(
                 div()
                     .flex()
@@ -1816,7 +1968,7 @@ impl Launcher {
                     .child(match self.mode {
                         Mode::Root if self.argument.is_some() => "Back  Esc",
                         Mode::Root => "Dismiss  Esc",
-                        Mode::View(_) => "Back  Esc",
+                        Mode::View(_) | Mode::Form(_) => "Back  Esc",
                     }),
             )
     }

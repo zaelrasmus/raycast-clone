@@ -9,6 +9,7 @@
     "border.strong": "#1A1A2E24",
     "text.primary": "#1A1A24",
     "text.muted": "#6B6B7B",
+    "text.error": "#B42B2B",
     "text.placeholder": "#9A9AA8",
     "text.on-accent": "#FFFFFF",
     "accent": "#5B4AC4",

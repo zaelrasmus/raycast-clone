@@ -181,6 +181,8 @@ pub struct Colors {
     /// keep their own colour and stay legible.
     pub text_selection: Color,
     pub shadow: Color,
+    /// What went wrong, where it went wrong: a form's refusal to save (F6).
+    pub text_error: Color,
 }
 
 impl Colors {
@@ -205,6 +207,7 @@ impl Colors {
             "match.highlight" => &mut self.match_highlight,
             "text.selection" => &mut self.text_selection,
             "shadow" => &mut self.shadow,
+            "text.error" => &mut self.text_error,
             _ => return false,
         };
         *slot = value;
@@ -241,6 +244,7 @@ impl Theme {
                 match_highlight: Color::rgb(0xA8, 0x9B, 0xEC),
                 text_selection: Color::rgba(0x7C, 0x6B, 0xD6, 0x66),
                 shadow: Color::rgba(0x00, 0x00, 0x00, 0x99),
+                text_error: Color::rgb(0xF0, 0x8C, 0x8C),
             },
         }
     }
@@ -267,6 +271,7 @@ impl Theme {
                 match_highlight: Color::rgb(0x4A, 0x39, 0xB0),
                 text_selection: Color::rgba(0x5B, 0x4A, 0xC4, 0x40),
                 shadow: Color::rgba(0x1A, 0x1A, 0x2E, 0x33),
+                text_error: Color::rgb(0xB4, 0x2B, 0x2B),
             },
         }
     }

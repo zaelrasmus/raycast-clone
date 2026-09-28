@@ -19,6 +19,7 @@ pub mod icons;
 pub mod keymap;
 pub mod launcher;
 pub mod overlay;
+pub mod quicklink_form;
 pub mod settings;
 pub mod styling;
 pub mod text_field;
@@ -47,6 +48,7 @@ mod invariants {
         ("keymap.rs", include_str!("keymap.rs")),
         ("launcher.rs", include_str!("launcher.rs")),
         ("overlay.rs", include_str!("overlay.rs")),
+        ("quicklink_form.rs", include_str!("quicklink_form.rs")),
         ("settings.rs", include_str!("settings.rs")),
         ("styling.rs", include_str!("styling.rs")),
         ("text_field.rs", include_str!("text_field.rs")),

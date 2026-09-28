@@ -37,7 +37,30 @@ impl Provider for CommandsProvider {
     // Filtering here as well would mean two different notions of "matches",
     // and the one in this file would be the worse of them.
     fn catalogue(&self) -> Vec<Item> {
-        COMMANDS.iter().map(item).chain([example_view()]).collect()
+        COMMANDS
+            .iter()
+            .map(item)
+            .chain([create_quicklink(), example_view()])
+            .collect()
+    }
+}
+
+/// The command that saves a new quicklink (F6).
+fn create_quicklink() -> Item {
+    Item {
+        id: "command:create-quicklink".into(),
+        title: "Create Quicklink".into(),
+        subtitle: Some("Save a link, or a search with {query} in it".into()),
+        icon: None,
+        keywords: vec![
+            "link".into(),
+            "bookmark".into(),
+            "url".into(),
+            "quicklink".into(),
+            "new".into(),
+        ],
+        actions: vec![Action::CreateQuicklink],
+        kind: Kind::Command,
     }
 }
 
@@ -83,8 +106,20 @@ mod tests {
     #[test]
     fn offers_its_commands_in_the_catalogue() {
         let items = CommandsProvider.catalogue();
-        assert_eq!(items.len(), COMMANDS.len() + 1);
+        // The table, plus the two that open something in place of the list.
+        assert_eq!(items.len(), COMMANDS.len() + 2);
         assert!(items.iter().all(|item| item.kind == Kind::Command));
+    }
+
+    #[test]
+    fn creating_a_quicklink_is_reachable_from_the_launcher() {
+        let items = CommandsProvider.catalogue();
+        let create = items
+            .iter()
+            .find(|item| item.title == "Create Quicklink")
+            .expect("the form has a row");
+
+        assert_eq!(create.primary(), Action::CreateQuicklink);
     }
 
     #[test]

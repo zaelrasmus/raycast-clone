@@ -126,6 +126,10 @@ pub enum Action {
     /// into the link's argument, with the link's name beside it, and nothing
     /// is opened until the user presses Enter on what they typed.
     AskArgument(crate::providers::quicklinks::ArgumentRequest),
+    /// Show the form that saves a new quicklink (F6).
+    ///
+    /// The launcher's, like `OpenView`: the form takes the list's place.
+    CreateQuicklink,
 }
 
 /// Commands Lumen provides for itself.
@@ -174,6 +178,7 @@ impl Action {
             Action::RunScript(_) => "Run",
             Action::OpenLink(_) => "Open",
             Action::AskArgument(_) => "Search",
+            Action::CreateQuicklink => "Create",
         }
     }
 
@@ -199,7 +204,8 @@ impl Action {
             Action::Builtin(_)
             | Action::ArrangeWindow(_)
             | Action::OpenView(_)
-            | Action::AskArgument(_) => {
+            | Action::AskArgument(_)
+            | Action::CreateQuicklink => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }
         }

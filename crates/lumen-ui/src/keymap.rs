@@ -32,6 +32,7 @@ use crate::launcher::{
     Activate, AskArgument, ClearQuery, Dismiss, SelectFirst, SelectLast, SelectNext,
     SelectPrevious, ToggleActionPanel,
 };
+use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::settings::{CloseSettings, SaveSheet};
 use crate::text_field::{
     Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
@@ -60,6 +61,9 @@ const FIELD_CONTEXT: &str = "TextField";
 /// -- the query is one short line, and the results are what gets navigated --
 /// while in a settings field they move the caret, as in any other field.
 const SEARCH_FIELD_CONTEXT: &str = "SearchField";
+
+/// A quicklink form's key context, wherever it is shown.
+const FORM_CONTEXT: &str = crate::quicklink_form::CONTEXT;
 
 /// One row of the table: what to bind, what it does, and where it belongs on
 /// the sheet.
@@ -238,6 +242,26 @@ const BINDINGS: &[Binding] = &[
         group: "Actions",
         description: Some("Show all actions"),
     },
+    Binding {
+        keys: "tab",
+        group: "Forms",
+        description: Some("Next field"),
+    },
+    Binding {
+        keys: "shift-tab",
+        group: "Forms",
+        description: Some("Previous field"),
+    },
+    Binding {
+        keys: "enter",
+        group: "Forms",
+        description: Some("Save"),
+    },
+    Binding {
+        keys: "escape",
+        group: "Forms",
+        description: Some("Back without saving"),
+    },
 ];
 
 /// Install the default bindings.
@@ -268,6 +292,19 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("ctrl-u", ClearQuery, Some(CONTEXT)),
         // The action panel, on the chord every launcher uses for it.
         KeyBinding::new("ctrl-k", ToggleActionPanel, Some(CONTEXT)),
+    ]);
+
+    // A quicklink form, in the launcher or in settings. Deeper than either
+    // host's context, so these win there: Tab moves between fields instead of
+    // asking for an argument, Enter saves instead of opening the selected row.
+    // Up and Down move between fields too, since there is no list to move in.
+    cx.bind_keys([
+        KeyBinding::new("tab", NextField, Some(FORM_CONTEXT)),
+        KeyBinding::new("down", NextField, Some(FORM_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousField, Some(FORM_CONTEXT)),
+        KeyBinding::new("up", PreviousField, Some(FORM_CONTEXT)),
+        KeyBinding::new("enter", SubmitForm, Some(FORM_CONTEXT)),
+        KeyBinding::new("escape", CancelForm, Some(FORM_CONTEXT)),
     ]);
 
     // Bound without a context so it works even if focus has somehow left the
@@ -423,7 +460,7 @@ mod tests {
             .iter()
             .map(|group| group.title.clone())
             .collect();
-        assert_eq!(titles, vec!["Navigation", "Actions", "Editing"]);
+        assert_eq!(titles, vec!["Navigation", "Actions", "Editing", "Forms"]);
     }
 
     /// Aliases share a description slot so the sheet does not list the same
