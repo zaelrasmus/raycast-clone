@@ -679,6 +679,7 @@ fn create_settings_window(
     let theme = surfaces.theme.borrow().clone();
     let sheets_dir = surfaces.paths.sheets_dir();
     let quicklinks_file = surfaces.paths.quicklinks_file();
+    let favicons = surfaces.paths.favicons_dir();
 
     let window = open_hidden_window(
         cx,
@@ -689,7 +690,9 @@ fn create_settings_window(
             px(lumen_core::layout::settings::WIDTH),
             px(lumen_core::layout::settings::HEIGHT),
         ),
-        move |_window, cx| cx.new(|cx| Settings::new(theme, sheets_dir, quicklinks_file, cx)),
+        move |_window, cx| {
+            cx.new(|cx| Settings::new(theme, sheets_dir, quicklinks_file, favicons, cx))
+        },
     )?;
 
     subscribe_to_settings(cx, &window, platform.clone(), surfaces);
@@ -710,6 +713,7 @@ fn subscribe_to_settings(
 
     let sheets = surfaces.sheets.clone();
     let paths = surfaces.paths.clone();
+    let launcher = surfaces.launcher;
 
     cx.subscribe(&entity, move |_entity: Entity<Settings>, event, cx| {
         match event {
@@ -721,6 +725,11 @@ fn subscribe_to_settings(
                 let mut library = SheetLibrary::load(&paths.sheets_dir());
                 library.add(keymap::sheet());
                 *sheets.borrow_mut() = library;
+            }
+            SettingsEvent::QuicklinkIconsChanged => {
+                launcher
+                    .update(cx, |launcher, _window, cx| launcher.reindex(cx))
+                    .ok();
             }
             SettingsEvent::Closed => {
                 let platform = platform.clone();

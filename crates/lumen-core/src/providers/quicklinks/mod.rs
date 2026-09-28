@@ -438,6 +438,14 @@ pub fn attach_icons(links: &mut [Quicklink], dir: &Path) {
     }
 }
 
+/// The fetched icon an entry would show, straight from the file's entry: for
+/// a list, like settings', that shows the file rather than the launcher's
+/// index. `None` for the glyph, whatever the reason.
+pub fn cached_icon(entry: &Entry, dir: &Path) -> Option<PathBuf> {
+    let site = Quicklink::from_entry(entry.clone()).ok()?.favicon_site()?;
+    favicon::cached(dir, &site)
+}
+
 /// Write the example file if none exists.
 ///
 /// The example is where Google comes from. Shipping it as data rather than
@@ -632,6 +640,30 @@ mod tests {
         assert_eq!(provider.answer("g lofi")[0].icon, expected);
         // Not fetched yet: the glyph.
         assert_eq!(provider.catalogue()[1].icon, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The settings list shows what the launcher shows, from the same cache.
+    #[test]
+    fn an_entry_finds_its_cached_icon_unless_it_asks_for_the_glyph() {
+        let dir = std::env::temp_dir().join(format!("lumen-entry-icons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(favicon::cache_file(&dir, "a.com"), b"png").unwrap();
+
+        let plain = entry("A", "https://a.com/x");
+        assert_eq!(
+            cached_icon(&plain, &dir),
+            Some(favicon::cache_file(&dir, "a.com"))
+        );
+
+        let glyph = Entry {
+            icon: Some(ICON_DEFAULT.into()),
+            ..plain
+        };
+        assert_eq!(cached_icon(&glyph, &dir), None);
+        // Broken entries get the glyph rather than an error.
+        assert_eq!(cached_icon(&entry("", "nope"), &dir), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -31,10 +31,10 @@ use std::path::PathBuf;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, ScrollHandle, SharedString, Subscription,
-    Window, actions, div, px,
+    Window, actions, div, img, px, svg,
 };
 use lumen_core::layout::settings as metrics;
-use lumen_core::providers::quicklinks::{Entry, store};
+use lumen_core::providers::quicklinks::{self as quicklinks, Entry, favicon, store};
 use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
@@ -69,6 +69,15 @@ pub const DIALOG_CONTEXT: &str = "Dialog";
 /// The list of links' key context.
 pub const LIST_CONTEXT: &str = "QuicklinkList";
 
+/// What the page tells the settings window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageEvent {
+    /// The icon cache was refetched; the launcher should pick it up.
+    IconsRefreshed,
+}
+
+impl gpui::EventEmitter<PageEvent> for QuicklinksPage {}
+
 /// Where focus goes at the next frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refocus {
@@ -81,6 +90,12 @@ pub struct QuicklinksPage {
     colors: Colors,
     /// The links as the file last read had them.
     entries: Vec<Entry>,
+    /// Each entry's fetched icon, in the same order; `None` for the glyph.
+    /// Looked up with the file, off the UI thread, not while drawing.
+    icons: Vec<Option<std::path::PathBuf>>,
+    favicons: std::path::PathBuf,
+    /// An icon refresh is running.
+    refreshing: bool,
     /// Why the file could not be read. The list is empty while this is set,
     /// and nothing can be saved until the file is fixed (`store::read`).
     problem: Option<String>,
@@ -113,12 +128,16 @@ struct Open {
 impl QuicklinksPage {
     pub fn new(
         path: PathBuf,
+        favicons: PathBuf,
         colors: Colors,
         host_focus: FocusHandle,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             path,
+            icons: Vec::new(),
+            favicons,
+            refreshing: false,
             colors,
             entries: Vec::new(),
             problem: None,
@@ -140,20 +159,32 @@ impl QuicklinksPage {
     /// up to date with it.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
+        let favicons = self.favicons.clone();
         cx.spawn(async move |this, cx| {
             let read = cx
                 .background_executor()
-                .spawn(async move { store::read(&path) })
+                .spawn(async move {
+                    store::read(&path).map(|file| {
+                        let icons = file
+                            .quicklinks
+                            .iter()
+                            .map(|entry| quicklinks::cached_icon(entry, &favicons))
+                            .collect::<Vec<_>>();
+                        (file, icons)
+                    })
+                })
                 .await;
             this.update(cx, |page, cx| {
                 match read {
-                    Ok(file) => {
+                    Ok((file, icons)) => {
                         page.entries = file.quicklinks;
+                        page.icons = icons;
                         page.problem = None;
                     }
                     Err(error) => {
                         log::warn!("the quicklinks page cannot read the file: {error:#}");
                         page.entries.clear();
+                        page.icons.clear();
                         page.problem = Some(format!("{error:#}"));
                     }
                 }
@@ -447,6 +478,49 @@ impl QuicklinksPage {
         self.focus_form(window, cx);
     }
 
+    /// Forget every fetched icon and ask each site again.
+    ///
+    /// For an icon that changed, or one fetched badly. Done here rather than
+    /// left to the launcher's next pass so the page can show the result; the
+    /// launcher is told afterwards, and finds everything already fetched.
+    fn refresh_icons(&mut self, cx: &mut Context<Self>) {
+        if self.refreshing {
+            return;
+        }
+        self.refreshing = true;
+        self.status = Some("Fetching icons\u{2026}".into());
+        cx.notify();
+
+        let dir = self.favicons.clone();
+        let sites: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|entry| quicklinks::Quicklink::from_entry(entry.clone()).ok())
+            .filter_map(|link| link.favicon_site())
+            .collect();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { favicon::clear(&dir).map(|_| favicon::refresh(&dir, &sites)) })
+                .await;
+            this.update(cx, |page, cx| {
+                page.refreshing = false;
+                page.status = Some(match result {
+                    Ok(fetched) => format!("Fetched {fetched} icons").into(),
+                    Err(error) => {
+                        log::warn!("could not refresh quicklink icons: {error:#}");
+                        format!("Could not refresh icons: {error:#}").into()
+                    }
+                });
+                page.reload(cx);
+                cx.emit(PageEvent::IconsRefreshed);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn new_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.may_leave_form(cx) {
             return;
@@ -553,6 +627,7 @@ impl QuicklinksPage {
             let name = entry.name.trim().to_string();
             let is_selected = selected.as_deref() == Some(name.as_str());
             let alias = entry.alias.clone().unwrap_or_default();
+            let icon = self.icons.get(index).cloned().flatten();
             rows.push(
                 div()
                     .id(SharedString::from(format!("quicklink-{index}")))
@@ -574,7 +649,32 @@ impl QuicklinksPage {
                         let name = name.clone();
                         move |page, _, window, cx| page.select(name.clone(), window, cx)
                     }))
-                    .child(div().overflow_hidden().truncate().child(name))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(metrics::ICON_GAP))
+                            .overflow_hidden()
+                            .child(
+                                // Reserved whether or not there is an icon,
+                                // so names line up down the list (I-10).
+                                div()
+                                    .size(px(metrics::ICON_SIZE))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(match icon {
+                                        Some(file) => img(file).size_full().into_any_element(),
+                                        None => svg()
+                                            .path(crate::icons::glyph(lumen_core::Kind::Quicklink))
+                                            .size_full()
+                                            .text_color(color(colors.icon))
+                                            .into_any_element(),
+                                    }),
+                            )
+                            .child(div().overflow_hidden().truncate().child(name)),
+                    )
                     .child(
                         div()
                             .flex_none()
@@ -641,6 +741,18 @@ impl QuicklinksPage {
                             "Delete this quicklink",
                             colors,
                             cx.listener(|page, _, window, cx| page.ask_delete(window, cx)),
+                        ))
+                    })
+                    .when(!self.entries.is_empty(), |column| {
+                        column.child(text_button(
+                            "refresh-icons",
+                            if self.refreshing {
+                                "Fetching icons\u{2026}"
+                            } else {
+                                "Refresh icons"
+                            },
+                            colors,
+                            cx.listener(|page, _, _, cx| page.refresh_icons(cx)),
                         ))
                     }),
             )

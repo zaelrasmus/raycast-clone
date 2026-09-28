@@ -308,6 +308,10 @@ pub mod settings {
     /// One row in the sheet list.
     pub const SIDEBAR_ROW_HEIGHT: f32 = 34.0;
 
+    /// A quicklink's icon in the list, and the space after it.
+    pub const ICON_SIZE: f32 = 16.0;
+    pub const ICON_GAP: f32 = 8.0;
+
     /// One editable shortcut row.
     pub const ROW_HEIGHT: f32 = 36.0;
 
@@ -348,6 +352,7 @@ pub mod settings {
 
 /// A settings field has to fit inside the row that contains it.
 const _: () = assert!(settings::FIELD_HEIGHT < settings::ROW_HEIGHT);
+const _: () = assert!(settings::ICON_SIZE < settings::SIDEBAR_ROW_HEIGHT);
 const _: () = assert!(settings::FIELD_HEIGHT < form::ROW_HEIGHT);
 const _: () = assert!(form::CHECKBOX_SIZE < settings::FIELD_HEIGHT);
 /// Opened upward from the launcher form's last field, the list must fit in

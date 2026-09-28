@@ -90,6 +90,30 @@ pub fn cached(dir: &Path, site: &str) -> Option<PathBuf> {
     file.is_file().then_some(file)
 }
 
+/// Forget every fetched icon and every failure, so the next pass asks each
+/// site again. Only the cache's own files: anything else in the folder was put
+/// there by somebody else. Returns how many were removed.
+pub fn clear(dir: &Path) -> Result<usize> {
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
+    };
+    let mut removed = 0;
+    for entry in listing.flatten() {
+        let path = entry.path();
+        let ours = matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("png" | "failed")
+        );
+        if ours && path.is_file() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// One icon a page offers, and how well it would suit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -548,6 +572,26 @@ mod tests {
     #[test]
     fn a_page_is_not_an_icon() {
         assert!(decode(b"<html><body>Not found</body></html>").is_err());
+    }
+
+    /// Clearing takes the icons and the failure markers, and nothing else
+    /// that happens to be in the folder.
+    #[test]
+    fn clearing_removes_icons_and_markers_only() {
+        let dir = std::env::temp_dir().join(format!("lumen-favicons-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(cache_file(&dir, "a.example"), b"png").unwrap();
+        std::fs::write(failure_marker(&dir, "b.example"), b"").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"mine").unwrap();
+
+        assert_eq!(clear(&dir).unwrap(), 2);
+        assert!(dir.join("notes.txt").exists());
+        assert!(cached(&dir, "a.example").is_none());
+        assert!(is_due(&dir, "b.example", SystemTime::now()));
+
+        // A cache that was never made is already clear.
+        assert_eq!(clear(&dir.join("missing")).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

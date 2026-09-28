@@ -35,7 +35,7 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
-use crate::quicklinks_page::QuicklinksPage;
+use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 
@@ -86,6 +86,9 @@ pub enum SettingsEvent {
     Deleted { path: PathBuf },
     /// The user closed the window.
     Closed,
+    /// The quicklink icon cache was refetched, so the launcher should reindex
+    /// to show it.
+    QuicklinkIconsChanged,
 }
 
 impl gpui::EventEmitter<SettingsEvent> for Settings {}
@@ -205,14 +208,19 @@ impl Settings {
         theme: Theme,
         sheets_dir: PathBuf,
         quicklinks_file: PathBuf,
+        favicons: PathBuf,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
         let quicklinks = {
             let colors = theme.colors.clone();
             let host = focus_handle.clone();
-            cx.new(|cx| QuicklinksPage::new(quicklinks_file, colors, host, cx))
+            cx.new(|cx| QuicklinksPage::new(quicklinks_file, favicons, colors, host, cx))
         };
+        cx.subscribe(&quicklinks, |_, _, event: &PageEvent, cx| match event {
+            PageEvent::IconsRefreshed => cx.emit(SettingsEvent::QuicklinkIconsChanged),
+        })
+        .detach();
         // The footer and the dialog are drawn here, from the page's state.
         cx.observe(&quicklinks, |_, _, cx| cx.notify()).detach();
 
