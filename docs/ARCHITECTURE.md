@@ -114,6 +114,7 @@ once Lumen was measured well inside them (7.36).
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
+| **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Designed, not started.** See F7 decisions |
 
 ### F4 build order is not optional
 
@@ -250,6 +251,80 @@ Step 3 made the list look like the sites it opens:
 - **Live suggestions are still out.** A suggestion is a request per
   keystroke whose answer root search could never wait for (I-3); it would be a
   view of its own, not rows in the root list.
+
+### F7 decisions
+
+The shape is Raycast's *Translate* command: open it, type, read the
+translation, copy or paste it. Translation is a request to a service, so the
+whole design is about keeping that request where nothing waits on it.
+
+- **A view, not rows in root search.** A translation is a request per
+  keystroke, which is exactly why live suggestions stayed out of the root list
+  (F6). *Translate* is a command in `providers::commands` that opens a view,
+  and root search does not change (I-3). An inline prefix such as `tr hola`
+  was considered and deferred: it is the same request in the one list that
+  must never wait.
+- **A built-in view source, not an extension.** `ViewSource::Translate` speaks
+  the `lumen_core::view` contract in process: it receives `QueryChanged` under
+  `Filtering::Extension` and answers with a `View`. The renderer, the action
+  panel and the fixed row geometry are the ones extensions already use, so no
+  UI code is written for it (I-5, I-10) and no second definition of the tree
+  appears (I-13). An extension would have needed an HTTP capability added to
+  the host RPC first (I-7), for a feature the host can do itself.
+- **The client is the one already linked.** Favicons put the blocking half of
+  `zed-reqwest` in the binary and measured it (F6, step 3). The translator
+  reuses it: no new dependency, no installed size, and no change to
+  `trait Platform` (I-9). The client is built when the view opens and dropped
+  when it closes, so a hidden launcher holds no connection and no thread.
+- **Nothing waits on the network, inside the view either.** A query is sent
+  after a pause in typing, on a worker thread. Each request carries a
+  generation number and an answer older than the latest query is dropped, so
+  a slow reply never overwrites a newer one. While a request is out, the
+  previous translation stays on screen rather than flashing to empty.
+- **A service behind a trait, chosen by the user.** `trait Translator` in
+  `core` takes text, an optional source and a target, and returns the
+  translation and the detected source. Two implementations ship:
+  - **Google**, through the keyless endpoint its web widget uses. It needs no
+    setup, which makes the command work on first use. It is undocumented and
+    can change or rate-limit without notice; a failure says so in the view.
+  - **DeepL**, with the user's own API key. The free plan allows 500,000
+    characters a month and translates better.
+
+  `translate.provider` in `config.json` selects one, and Google is the
+  default. There is **no automatic fallback** from one to the other: text
+  the user sent to DeepL must not silently go to Google because DeepL was
+  down. The service in use is named in the view, because the user is sending
+  it what they type.
+- **The key lives in `config.json`,** as `translate.deepl-key`, and is never
+  logged or shown back in full. The Windows Credential Manager would be
+  better, and would be a `trait Platform` change with a Linux counterpart;
+  it is deferred rather than rejected.
+- **The target is remembered, the source is detected.** Both services detect
+  the source language. The target starts as `translate.target` (`en` by
+  default) and is changed from the action panel, from a fixed table of
+  languages both services accept -- the keyless endpoint publishes no list to
+  ask. The last choice is kept for the next open. *Swap
+  Languages* makes the detected source the target and the translation the
+  query.
+- **The result is one row, with its actions.** The translation is the row's
+  title, the detected language an accessory. `Enter` copies it, and the panel
+  offers *Copy Original* and the language actions. Their keys come from the
+  keymap like every other action (I-14). A translation longer than a row
+  opens as a `Detail`. *Paste to Active App* is left out: nothing in Lumen
+  pastes into another application yet, and the translator is not the place
+  to introduce it.
+- **Offline is a second implementation, not a second design.** Local neural
+  translation exists (OPUS-MT models run through `candle`, or Mozilla's
+  Bergamot, which Firefox uses offline), but a model is 15 to 300 MB per
+  language pair against an installed budget of 40 MB. When it comes, it is a
+  third `Translator`, whose models are downloaded per pair on request,
+  loaded when the view opens and freed when it closes. Nothing above changes
+  for it.
+- **Measured before it is built.** `scripts/measure-idle.ps1` is run on this
+  branch before the first line of the feature and again after, and installed
+  size is checked. The expected result is that none of them move: the client
+  is already in the binary and exists only while the view is open. If they
+  do move, that is the finding, not the feature.
 
 ---
 
