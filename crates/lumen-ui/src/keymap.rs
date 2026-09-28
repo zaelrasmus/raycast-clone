@@ -34,6 +34,7 @@ use crate::launcher::{
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
+use crate::select::{CloseSelect, ConfirmSelect, SelectDown, SelectUp, ToggleSelect};
 use crate::settings::{CloseSettings, SaveSheet};
 use crate::text_field::{
     Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
@@ -71,6 +72,9 @@ const DIALOG_CONTEXT: &str = crate::quicklinks_page::DIALOG_CONTEXT;
 
 /// The settings window's list of quicklinks.
 const LIST_CONTEXT: &str = crate::quicklinks_page::LIST_CONTEXT;
+
+/// A dropdown, inside a form.
+const SELECT_CONTEXT: &str = crate::select::CONTEXT;
 
 /// A checkbox inside a form.
 const TOGGLE_CONTEXT: &str = crate::quicklink_form::TOGGLE_CONTEXT;
@@ -331,6 +335,16 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("down", NextLink, Some(LIST_CONTEXT)),
         KeyBinding::new("enter", EditLink, Some(LIST_CONTEXT)),
         KeyBinding::new("tab", EditLink, Some(LIST_CONTEXT)),
+    ]);
+
+    // A dropdown. Closed, only Space is its own; the rest fall through to the
+    // form (see `select`), so Up, Down, Enter and Escape keep their meaning.
+    cx.bind_keys([
+        KeyBinding::new("space", ToggleSelect, Some(SELECT_CONTEXT)),
+        KeyBinding::new("enter", ConfirmSelect, Some(SELECT_CONTEXT)),
+        KeyBinding::new("escape", CloseSelect, Some(SELECT_CONTEXT)),
+        KeyBinding::new("up", SelectUp, Some(SELECT_CONTEXT)),
+        KeyBinding::new("down", SelectDown, Some(SELECT_CONTEXT)),
     ]);
 
     // A dialog: Enter does what it asks about, Escape backs out. Deeper than

@@ -1363,7 +1363,11 @@ impl Launcher {
 
         let path = self.paths.quicklinks_file();
         let colors = self.theme.colors.clone();
-        let form = cx.new(|cx| QuicklinkForm::new(path, None, colors, cx));
+        let form = cx.new(|cx| {
+            let mut form = QuicklinkForm::new(path, None, colors, cx);
+            form.open_menus_upward(cx);
+            form
+        });
         let events = cx.subscribe_in(&form, window, |this, _, event, window, cx| {
             let saved = match event {
                 FormEvent::Saved(name) => Some(name.clone()),

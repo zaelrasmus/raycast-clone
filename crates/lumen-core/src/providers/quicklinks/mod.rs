@@ -311,6 +311,16 @@ pub fn looks_like_link(text: &str) -> bool {
 /// finds "Zen Browser". A part that fits two browsers finds neither, because
 /// guessing between them would open links somewhere the user did not choose.
 pub fn choose_browser<'b>(wanted: &str, browsers: &'b [Browser]) -> Option<&'b Browser> {
+    matching(wanted, browsers, |browser| &browser.name)
+}
+
+/// [`choose_browser`] over names alone, for a form that lists them: the one
+/// the link would open in is the one it shows as chosen.
+pub fn matching_browser<'n>(wanted: &str, names: &'n [String]) -> Option<&'n str> {
+    matching(wanted, names, |name| name).map(String::as_str)
+}
+
+fn matching<'b, B>(wanted: &str, browsers: &'b [B], name: impl Fn(&B) -> &str) -> Option<&'b B> {
     let wanted = wanted.trim().to_lowercase();
     if wanted.is_empty() {
         return None;
@@ -318,14 +328,14 @@ pub fn choose_browser<'b>(wanted: &str, browsers: &'b [Browser]) -> Option<&'b B
 
     if let Some(exact) = browsers
         .iter()
-        .find(|browser| browser.name.to_lowercase() == wanted)
+        .find(|browser| name(browser).to_lowercase() == wanted)
     {
         return Some(exact);
     }
 
     let mut partial = browsers
         .iter()
-        .filter(|browser| browser.name.to_lowercase().contains(&wanted));
+        .filter(|browser| name(browser).to_lowercase().contains(&wanted));
     match (partial.next(), partial.next()) {
         (Some(only), None) => Some(only),
         _ => None,

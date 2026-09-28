@@ -31,6 +31,7 @@ use lumen_core::layout;
 use lumen_core::providers::quicklinks::{Entry, store};
 use lumen_core::theme::Colors;
 
+use crate::select::{Select, SelectEvent, browser_choices};
 use crate::styling::{color, metrics, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 
@@ -75,9 +76,13 @@ enum Field {
     Browser,
 }
 
+/// The fields typed into; "Open with" is a dropdown.
+const TEXT_FIELDS: usize = 3;
+
 impl Field {
     const ALL: [Field; layout::form::FIELDS] =
         [Field::Name, Field::Link, Field::Alias, Field::Browser];
+    const TEXT: [Field; TEXT_FIELDS] = [Field::Name, Field::Link, Field::Alias];
 
     fn label(self) -> &'static str {
         match self {
@@ -93,7 +98,7 @@ impl Field {
             Field::Name => "YouTube channel",
             Field::Link => "https://www.youtube.com/@veritasium",
             Field::Alias => "Optional: a word to type before a search, like g",
-            Field::Browser => "Optional: the default browser otherwise",
+            Field::Browser => "",
         }
     }
 
@@ -103,9 +108,15 @@ impl Field {
             Field::Name => "What the link is called in the list.",
             Field::Link => "Put {query} where a search goes, or {clipboard} for what you copied.",
             Field::Alias => "Typing the alias and a space searches with the link: g lofi beats.",
-            Field::Browser => "",
+            Field::Browser => "Where the link opens. Space shows the installed browsers.",
         }
     }
+}
+
+/// A row's control, for the Tab order and for drawing.
+enum Control<'a> {
+    Text(&'a Entity<TextField>),
+    Select(&'a Entity<Select>),
 }
 
 pub struct QuicklinkForm {
@@ -115,9 +126,9 @@ pub struct QuicklinkForm {
     /// What the form does not show but must not lose when editing: the
     /// fallback flag, keywords, and fields this build does not know.
     original: Entry,
-    fields: [Entity<TextField>; layout::form::FIELDS],
-    /// The installed browsers' names, for the hint under "Open with".
-    browsers: Vec<String>,
+    fields: [Entity<TextField>; TEXT_FIELDS],
+    /// "Open with": the installed browsers, or the default.
+    browser: Entity<Select>,
     /// The fallback checkbox, when the host offers it.
     fallback: Option<Fallback>,
     /// Whether anything has changed since the form was filled or saved.
@@ -142,12 +153,11 @@ impl QuicklinkForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let original = existing.clone().unwrap_or_default();
-        let fields = Field::ALL.map(|field| {
+        let fields = Field::TEXT.map(|field| {
             let text = match field {
                 Field::Name => original.name.clone(),
                 Field::Link => original.link.clone(),
-                Field::Alias => original.alias.clone().unwrap_or_default(),
-                Field::Browser => original.open_with.clone().unwrap_or_default(),
+                Field::Alias | Field::Browser => original.alias.clone().unwrap_or_default(),
             };
             let entity = cx.new(|cx| TextField::new(text, field.placeholder(), colors.clone(), cx));
             // An edit answers the last refusal, so the refusal goes.
@@ -162,12 +172,23 @@ impl QuicklinkForm {
             entity
         });
 
+        // The browser list arrives later (`set_browsers`); until then the
+        // saved one is offered on its own.
+        let (choices, selected) = browser_choices(original.open_with.as_deref(), &[]);
+        let browser = cx.new(|cx| Select::new(choices, selected, colors.clone(), cx));
+        cx.subscribe(&browser, |form, _, SelectEvent::Changed, cx| {
+            form.edited = true;
+            form.error = None;
+            cx.notify();
+        })
+        .detach();
+
         Self {
             path,
             replacing: existing.map(|entry| entry.name),
             original,
             fields,
-            browsers: Vec::new(),
+            browser,
             fallback: None,
             edited: false,
             error: None,
@@ -214,9 +235,19 @@ impl QuicklinkForm {
         &self.original
     }
 
-    /// Name the browsers the hint can offer.
+    /// Open the "Open with" list above the field: for the launcher, whose
+    /// window ends just below the form.
+    pub fn open_menus_upward(&mut self, cx: &mut Context<Self>) {
+        self.browser
+            .update(cx, |select, _| select.open_upward(true));
+    }
+
+    /// Offer the installed browsers in "Open with", keeping what is chosen.
     pub fn set_browsers(&mut self, browsers: Vec<String>, cx: &mut Context<Self>) {
-        self.browsers = browsers;
+        let current = self.browser.read(cx).value().map(str::to_string);
+        let (choices, selected) = browser_choices(current.as_deref(), &browsers);
+        self.browser
+            .update(cx, |select, cx| select.set_choices(choices, selected, cx));
         cx.notify();
     }
 
@@ -235,6 +266,8 @@ impl QuicklinkForm {
         for field in &self.fields {
             field.update(cx, |field, cx| field.set_colors(colors.clone(), cx));
         }
+        self.browser
+            .update(cx, |select, cx| select.set_colors(colors.clone(), cx));
         self.colors = colors;
         cx.notify();
     }
@@ -244,11 +277,23 @@ impl QuicklinkForm {
         self.fields[0].read(cx).focus(window);
     }
 
+    fn control(&self, field: Field) -> Control<'_> {
+        match field {
+            Field::Name => Control::Text(&self.fields[0]),
+            Field::Link => Control::Text(&self.fields[1]),
+            Field::Alias => Control::Text(&self.fields[2]),
+            Field::Browser => Control::Select(&self.browser),
+        }
+    }
+
     /// What Tab visits, in order: the fields, then the checkbox.
     fn stops(&self, cx: &App) -> Vec<FocusHandle> {
-        self.fields
+        Field::ALL
             .iter()
-            .map(|field| field.focus_handle(cx))
+            .map(|field| match self.control(*field) {
+                Control::Text(entity) => entity.focus_handle(cx),
+                Control::Select(entity) => entity.read(cx).focus_handle().clone(),
+            })
             .chain(self.fallback.iter().map(|fallback| fallback.focus.clone()))
             .collect()
     }
@@ -306,11 +351,9 @@ impl QuicklinkForm {
 
     /// What the fields say, as an entry.
     fn entry(&self, cx: &App) -> Entry {
-        let text = |field: Field| {
-            self.fields[Field::ALL.iter().position(|f| *f == field).unwrap_or(0)]
-                .read(cx)
-                .text()
-                .to_string()
+        let text = |field: Field| match self.control(field) {
+            Control::Text(entity) => entity.read(cx).text().to_string(),
+            Control::Select(entity) => entity.read(cx).value().unwrap_or_default().to_string(),
         };
         Entry {
             name: text(Field::Name),
@@ -395,14 +438,7 @@ impl QuicklinkForm {
             Some(index) => Field::ALL[index],
             None => Field::Name,
         };
-        let hint = match field {
-            Field::Browser if self.browsers.is_empty() => {
-                "A browser's name, or part of it.".to_string()
-            }
-            Field::Browser => format!("Installed: {}.", self.browsers.join(", ")),
-            other => other.hint().to_string(),
-        };
-        (hint, false)
+        (field.hint().to_string(), false)
     }
 }
 
@@ -424,7 +460,11 @@ impl Render for QuicklinkForm {
             .py(px(layout::form::PADDING_Y))
             .flex()
             .flex_col()
-            .children(Field::ALL.iter().zip(&self.fields).map(|(field, entity)| {
+            .children(Field::ALL.iter().map(|field| {
+                let control = match self.control(*field) {
+                    Control::Text(entity) => entity.clone().into_any_element(),
+                    Control::Select(entity) => entity.clone().into_any_element(),
+                };
                 div()
                     .h(px(layout::form::ROW_HEIGHT))
                     .flex()
@@ -437,7 +477,7 @@ impl Render for QuicklinkForm {
                             .text_color(color(colors.text_muted))
                             .child(SharedString::from(field.label())),
                     )
-                    .child(div().flex_1().child(entity.clone()))
+                    .child(div().flex_1().child(control))
             }))
             .when_some(self.render_fallback(window, cx), |form, row| {
                 form.child(row)

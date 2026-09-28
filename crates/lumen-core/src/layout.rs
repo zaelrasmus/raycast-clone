@@ -122,6 +122,24 @@ pub mod form {
     pub const CHECKBOX_GAP: f32 = 8.0;
 }
 
+/// A dropdown's list of options (F6).
+pub mod select {
+    pub const ROW_HEIGHT: f32 = 28.0;
+    pub const ROW_RADIUS: f32 = 5.0;
+    /// Inside the list, around its rows.
+    pub const PADDING: f32 = 4.0;
+    /// Between the field and the list below it.
+    pub const GAP: f32 = 4.0;
+    /// Fixed rather than the field's: the list is laid out apart from it, and
+    /// browser names are short.
+    pub const MENU_WIDTH: f32 = 280.0;
+
+    /// Rows shown before the list scrolls. Five fit above the launcher form's
+    /// last field, which is where the list opens there.
+    pub const VISIBLE_ROWS: usize = 5;
+    pub const MAX_HEIGHT: f32 = ROW_HEIGHT * VISIBLE_ROWS as f32 + PADDING * 2.0;
+}
+
 /// Extension views (F4).
 ///
 /// A view's list is drawn with the same row height and gutter as the root list,
@@ -331,5 +349,11 @@ pub mod settings {
 const _: () = assert!(settings::FIELD_HEIGHT < settings::ROW_HEIGHT);
 const _: () = assert!(settings::FIELD_HEIGHT < form::ROW_HEIGHT);
 const _: () = assert!(form::CHECKBOX_SIZE < settings::FIELD_HEIGHT);
+/// Opened upward from the launcher form's last field, the list must fit in
+/// the rows above it and the search field.
+const _: () = assert!(
+    select::MAX_HEIGHT + select::GAP
+        <= SEARCH_HEIGHT + form::PADDING_Y + form::ROW_HEIGHT * (form::FIELDS - 1) as f32
+);
 const _: () = assert!(settings::DIALOG_WIDTH < settings::WIDTH - settings::PADDING * 2.0);
 const _: () = assert!(settings::KEYS_FIELD_WIDTH * 2.0 < settings::WIDTH - settings::SIDEBAR_WIDTH);
