@@ -23,12 +23,13 @@
 //! clipboard's database exists because of its write pattern (7.14), and this
 //! has none.
 
+pub mod favicon;
 pub mod store;
 mod template;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use lumen_platform::{Browser, Platform};
+use lumen_platform::{Browser, IconSource, Platform};
 use serde::{Deserialize, Serialize};
 
 use crate::item::{Action, Item, Kind};
@@ -55,7 +56,14 @@ pub struct Quicklink {
     pub fallback: bool,
     /// Matched against, never shown.
     pub keywords: Vec<String>,
+    /// Whether the row shows the site's icon rather than the glyph.
+    pub site_icon: bool,
+    /// The site's icon, once fetched ([`attach_icons`]).
+    pub icon_file: Option<PathBuf>,
 }
+
+/// The `icon` value that keeps the quicklink glyph.
+pub const ICON_DEFAULT: &str = "default";
 
 /// One entry as it appears on disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -70,6 +78,11 @@ pub struct Entry {
     pub fallback: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// Absent for the site's icon; [`ICON_DEFAULT`] for the glyph. Any other
+    /// value is kept as written, for a build that knows it, and read as the
+    /// site's icon here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Fields this build does not know, kept so that saving from Lumen does
     /// not strip what a newer one wrote (see [`store`]).
     #[serde(flatten)]
@@ -133,7 +146,20 @@ impl Quicklink {
                 .filter(|browser| !browser.is_empty()),
             fallback: entry.fallback,
             keywords: entry.keywords,
+            site_icon: entry.icon.as_deref().map(str::trim) != Some(ICON_DEFAULT),
+            icon_file: None,
         })
+    }
+
+    /// The site to fetch an icon from, if this link shows one and has one.
+    pub fn favicon_site(&self) -> Option<String> {
+        self.site_icon
+            .then(|| favicon::site(&self.source))
+            .flatten()
+    }
+
+    fn icon(&self) -> Option<IconSource> {
+        self.icon_file.clone().map(IconSource::File)
     }
 
     /// The frecency key. The name rather than a position, so reordering the
@@ -177,7 +203,7 @@ impl Quicklink {
             id: self.id(),
             title: self.name.clone(),
             subtitle: Some(self.source.clone()),
-            icon: None,
+            icon: self.icon(),
             keywords,
             actions,
             kind: Kind::Quicklink,
@@ -198,7 +224,7 @@ impl Quicklink {
             id: self.id(),
             title: format!("Search {} for \u{201c}{}\u{201d}", self.name, query.trim()),
             subtitle: Some(self.link.render(query, "")),
-            icon: None,
+            icon: self.icon(),
             keywords: Vec::new(),
             actions,
             kind: Kind::Quicklink,
@@ -378,6 +404,18 @@ pub fn load(path: &Path) -> Vec<Quicklink> {
         .collect()
 }
 
+/// Point each link at its site's cached icon, where one has been fetched.
+///
+/// Only what is on disk: fetching is [`favicon::refresh`]'s, on a thread
+/// that can wait.
+pub fn attach_icons(links: &mut [Quicklink], dir: &Path) {
+    for link in links {
+        link.icon_file = link
+            .favicon_site()
+            .and_then(|site| favicon::cached(dir, &site));
+    }
+}
+
 /// Write the example file if none exists.
 ///
 /// The example is where Google comes from. Shipping it as data rather than
@@ -469,7 +507,7 @@ impl QuicklinkProvider {
                 id: link.id(),
                 title: format!("Search {}", link.name),
                 subtitle: Some(link.source.clone()),
-                icon: None,
+                icon: link.icon(),
                 keywords: Vec::new(),
                 actions: vec![link.action("")],
                 kind: Kind::Quicklink,
@@ -536,6 +574,57 @@ mod tests {
 
     fn channel() -> Quicklink {
         Quicklink::from_entry(entry("Veritasium", "https://www.youtube.com/@veritasium")).unwrap()
+    }
+
+    /// Without an `icon` field a link wants its site's icon; `default` keeps
+    /// the glyph and is never fetched for.
+    #[test]
+    fn a_link_wants_its_sites_icon_unless_told_otherwise() {
+        assert_eq!(google().favicon_site().as_deref(), Some("www.google.com"));
+
+        let plain = Quicklink::from_entry(Entry {
+            icon: Some("default".into()),
+            ..entry("Plain", "https://example.com")
+        })
+        .unwrap();
+        assert_eq!(plain.favicon_site(), None);
+    }
+
+    #[test]
+    fn a_cached_icon_is_drawn_on_every_row_of_the_link() {
+        let dir = std::env::temp_dir().join(format!("lumen-link-icons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(favicon::cache_file(&dir, "www.google.com"), b"png").unwrap();
+
+        let mut links = vec![google(), channel()];
+        attach_icons(&mut links, &dir);
+        let provider = QuicklinkProvider::new(links);
+
+        let expected = Some(IconSource::File(favicon::cache_file(
+            &dir,
+            "www.google.com",
+        )));
+        assert_eq!(provider.catalogue()[0].icon, expected);
+        assert_eq!(provider.answer("g lofi")[0].icon, expected);
+        // Not fetched yet: the glyph.
+        assert_eq!(provider.catalogue()[1].icon, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A value this build does not know is kept, for the build that does.
+    #[test]
+    fn an_unknown_icon_value_survives_the_file() {
+        let written: Entry = serde_json::from_str(
+            r#"{ "name": "A", "link": "https://a.com", "icon": "emoji:rocket" }"#,
+        )
+        .unwrap();
+        assert_eq!(written.icon.as_deref(), Some("emoji:rocket"));
+        assert!(
+            serde_json::to_string(&written)
+                .unwrap()
+                .contains("emoji:rocket")
+        );
     }
 
     fn opened(item: &Item) -> OpenLink {

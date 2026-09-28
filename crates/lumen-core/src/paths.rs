@@ -10,6 +10,9 @@ use directories::ProjectDirs;
 pub struct Paths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
+    /// Machine-local and disposable: nothing here is the user's, and all of
+    /// it can be fetched or rebuilt again.
+    pub cache_dir: PathBuf,
 }
 
 impl Paths {
@@ -20,6 +23,7 @@ impl Paths {
         Ok(Self {
             config_dir: dirs.config_dir().to_path_buf(),
             data_dir: dirs.data_dir().to_path_buf(),
+            cache_dir: dirs.cache_dir().to_path_buf(),
         })
     }
 
@@ -73,6 +77,11 @@ impl Paths {
     /// The clipboard history database (F3).
     pub fn clipboard_file(&self) -> PathBuf {
         self.data_dir.join("clipboard.sqlite3")
+    }
+
+    /// Quicklink icons fetched from their sites (F6).
+    pub fn favicons_dir(&self) -> PathBuf {
+        self.cache_dir.join("favicons")
     }
 
     pub fn frecency_file(&self) -> PathBuf {

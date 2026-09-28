@@ -148,7 +148,7 @@ fn position(file: &QuicklinkFile, name: &str) -> Result<usize> {
 pub fn normalised(mut entry: Entry) -> Entry {
     entry.name = entry.name.trim().to_string();
     entry.link = entry.link.trim().to_string();
-    for field in [&mut entry.alias, &mut entry.open_with] {
+    for field in [&mut entry.alias, &mut entry.open_with, &mut entry.icon] {
         *field = field
             .take()
             .map(|value| value.trim().to_string())

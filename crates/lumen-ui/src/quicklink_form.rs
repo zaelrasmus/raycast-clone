@@ -14,14 +14,15 @@
 //! Escape leaves the form rather than dismissing the launcher -- all declared
 //! in the keymap (I-14).
 //!
-//! # The fallback flag
+//! # The icon and the fallback flag
 //!
-//! Only settings offers it ([`QuicklinkForm::offer_fallback`]). A new link in
-//! the launcher needs four fields; whether it should also be offered for every
-//! search that finds nothing is a decision made later, where all the links
-//! are side by side. It is a row of the form rather than a control beside it
-//! so that one Enter saves everything: a separate switch writing on its own
-//! would be undone by the next save of fields read before it was flipped.
+//! Only settings offers them ([`QuicklinkForm::offer_settings_rows`]). A new
+//! link in the launcher needs four fields; which icon it shows, and whether it
+//! should also be offered for every search that finds nothing, are decisions
+//! made later, where all the links are side by side. They are rows of the form
+//! rather than controls beside it so that one Enter saves everything: a
+//! separate switch writing on its own would be undone by the next save of
+//! fields read before it was flipped.
 
 use std::path::PathBuf;
 
@@ -31,7 +32,7 @@ use lumen_core::layout;
 use lumen_core::providers::quicklinks::{Entry, store};
 use lumen_core::theme::Colors;
 
-use crate::select::{Select, SelectEvent, browser_choices};
+use crate::select::{Select, SelectEvent, browser_choices, icon_choices};
 use crate::styling::{color, metrics, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 
@@ -131,6 +132,8 @@ pub struct QuicklinkForm {
     browser: Entity<Select>,
     /// The fallback checkbox, when the host offers it.
     fallback: Option<Fallback>,
+    /// The icon choice, when the host offers it.
+    icon: Option<Entity<Select>>,
     /// Whether anything has changed since the form was filled or saved.
     edited: bool,
     /// Why the last save was refused.
@@ -190,6 +193,7 @@ impl QuicklinkForm {
             fields,
             browser,
             fallback: None,
+            icon: None,
             edited: false,
             error: None,
             saving: false,
@@ -206,8 +210,19 @@ impl QuicklinkForm {
         self.replacing.as_deref()
     }
 
-    /// Show the fallback checkbox, after the other fields.
-    pub fn offer_fallback(&mut self, cx: &mut Context<Self>) {
+    /// Show the icon choice and the fallback checkbox, after the fields.
+    pub fn offer_settings_rows(&mut self, cx: &mut Context<Self>) {
+        let (choices, selected) = icon_choices(self.original.icon.as_deref());
+        let colors = self.colors.clone();
+        let icon = cx.new(|cx| Select::new(choices, selected, colors, cx));
+        cx.subscribe(&icon, |form, _, SelectEvent::Changed, cx| {
+            form.edited = true;
+            form.error = None;
+            cx.notify();
+        })
+        .detach();
+        self.icon = Some(icon);
+
         self.fallback = Some(Fallback {
             on: self.original.fallback,
             focus: cx.focus_handle(),
@@ -218,7 +233,7 @@ impl QuicklinkForm {
     /// The form's height, which its host reserves for it.
     pub fn height(&self) -> f32 {
         match self.fallback {
-            Some(_) => layout::form::HEIGHT_WITH_FALLBACK,
+            Some(_) => layout::form::HEIGHT_WITH_SETTINGS_ROWS,
             None => layout::form::HEIGHT,
         }
     }
@@ -268,6 +283,9 @@ impl QuicklinkForm {
         }
         self.browser
             .update(cx, |select, cx| select.set_colors(colors.clone(), cx));
+        if let Some(icon) = &self.icon {
+            icon.update(cx, |select, cx| select.set_colors(colors.clone(), cx));
+        }
         self.colors = colors;
         cx.notify();
     }
@@ -294,6 +312,11 @@ impl QuicklinkForm {
                 Control::Text(entity) => entity.focus_handle(cx),
                 Control::Select(entity) => entity.read(cx).focus_handle().clone(),
             })
+            .chain(
+                self.icon
+                    .iter()
+                    .map(|icon| icon.read(cx).focus_handle().clone()),
+            )
             .chain(self.fallback.iter().map(|fallback| fallback.focus.clone()))
             .collect()
     }
@@ -364,6 +387,10 @@ impl QuicklinkForm {
                 .fallback
                 .as_ref()
                 .map_or(self.original.fallback, |fallback| fallback.on),
+            icon: match &self.icon {
+                Some(icon) => icon.read(cx).value().map(str::to_string),
+                None => self.original.icon.clone(),
+            },
             ..self.original.clone()
         }
     }
@@ -430,7 +457,11 @@ impl QuicklinkForm {
             return (error.clone(), true);
         }
         let field = match self.focused(window, cx) {
-            // Past the fields: the checkbox.
+            // Past the fields: the icon, then the checkbox.
+            Some(index) if index == Field::ALL.len() && self.icon.is_some() => {
+                let hint = "Fetched from the site when first shown; Lumen's icon until then.";
+                return (hint.to_string(), false);
+            }
             Some(index) if index >= Field::ALL.len() => {
                 let hint = "Offered at the foot of the list when a search finds nothing better.";
                 return (hint.to_string(), false);
@@ -479,6 +510,23 @@ impl Render for QuicklinkForm {
                     )
                     .child(div().flex_1().child(control))
             }))
+            .when_some(self.icon.clone(), |form, icon| {
+                form.child(
+                    div()
+                        .h(px(layout::form::ROW_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .w(px(layout::form::LABEL_WIDTH))
+                                .flex_none()
+                                .text_size(type_scale::subtitle())
+                                .text_color(color(colors.text_muted))
+                                .child("Icon"),
+                        )
+                        .child(div().flex_1().child(icon)),
+                )
+            })
             .when_some(self.render_fallback(window, cx), |form, row| {
                 form.child(row)
             })

@@ -113,8 +113,9 @@ pub mod form {
     /// The whole form, which is also the region it takes over in the launcher.
     pub const HEIGHT: f32 = PADDING_Y * 2.0 + ROW_HEIGHT * FIELDS as f32 + MESSAGE_HEIGHT;
 
-    /// The form in settings, which has one more row: the fallback checkbox.
-    pub const HEIGHT_WITH_FALLBACK: f32 = HEIGHT + ROW_HEIGHT;
+    /// The form in settings, which has two more rows: the icon and the
+    /// fallback checkbox.
+    pub const HEIGHT_WITH_SETTINGS_ROWS: f32 = HEIGHT + ROW_HEIGHT * 2.0;
 
     /// The fallback checkbox, and the gap before its caption.
     pub const CHECKBOX_SIZE: f32 = 16.0;

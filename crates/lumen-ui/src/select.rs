@@ -106,6 +106,36 @@ pub fn browser_choices(current: Option<&str>, installed: &[String]) -> (Vec<Choi
     }
 }
 
+/// What a quicklink's "Icon" offers, and which of them `current` is.
+///
+/// The site's icon is the absence of a value, as in the file. A value this
+/// build does not know is offered as itself, so saving the form keeps it.
+pub fn icon_choices(current: Option<&str>) -> (Vec<Choice>, usize) {
+    use lumen_core::providers::quicklinks::ICON_DEFAULT;
+
+    let mut choices = vec![
+        Choice {
+            value: None,
+            label: "The website's icon".into(),
+        },
+        Choice {
+            value: Some(ICON_DEFAULT.into()),
+            label: "Lumen's link icon".into(),
+        },
+    ];
+    match current.map(str::trim).filter(|value| !value.is_empty()) {
+        None => (choices, 0),
+        Some(ICON_DEFAULT) => (choices, 1),
+        Some(other) => {
+            choices.push(Choice {
+                value: Some(other.to_string()),
+                label: other.to_string(),
+            });
+            (choices, 2)
+        }
+    }
+}
+
 pub struct Select {
     focus: FocusHandle,
     choices: Vec<Choice>,
@@ -391,6 +421,15 @@ mod tests {
         assert_eq!(choices.len(), 5);
         assert_eq!(choices[selected].value.as_deref(), Some("Opera"));
         assert_eq!(choices[selected].label, "Opera (not installed)");
+    }
+
+    #[test]
+    fn the_icon_choice_reads_the_file_and_keeps_what_it_does_not_know() {
+        assert_eq!(icon_choices(None).1, 0);
+        assert_eq!(icon_choices(Some("default")).1, 1);
+
+        let (choices, selected) = icon_choices(Some("emoji:rocket"));
+        assert_eq!(choices[selected].value.as_deref(), Some("emoji:rocket"));
     }
 
     /// Before the browser list arrives, a saved one must still be selected.

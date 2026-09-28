@@ -180,7 +180,7 @@ impl QuicklinksPage {
         });
         match follow(&self.entries, showing) {
             Follow::Keep => {}
-            Follow::Show(entry) => self.show(Some(entry), cx),
+            Follow::Show(entry) => self.show(Some(*entry), cx),
             Follow::Clear => self.open = None,
         }
     }
@@ -199,7 +199,7 @@ impl QuicklinksPage {
         let browsers = self.browsers.clone();
         let form = cx.new(|cx| {
             let mut form = QuicklinkForm::new(path, entry, colors, cx);
-            form.offer_fallback(cx);
+            form.offer_settings_rows(cx);
             form.set_browsers(browsers, cx);
             form
         });
@@ -268,7 +268,8 @@ struct Showing {
 #[derive(Debug, Clone, PartialEq)]
 enum Follow {
     Keep,
-    Show(Entry),
+    /// Boxed: an entry is large next to the other two.
+    Show(Box<Entry>),
     Clear,
 }
 
@@ -280,7 +281,12 @@ enum Follow {
 /// instead of being written back over by the next save. Compared tidied,
 /// because that is how the form's own save comes back.
 fn follow(entries: &[Entry], showing: Option<Showing>) -> Follow {
-    let first = || entries.first().cloned().map_or(Follow::Clear, Follow::Show);
+    let first = || {
+        entries
+            .first()
+            .cloned()
+            .map_or(Follow::Clear, |entry| Follow::Show(Box::new(entry)))
+    };
 
     let Some(showing) = showing else {
         return match first() {
@@ -297,7 +303,7 @@ fn follow(entries: &[Entry], showing: Option<Showing>) -> Follow {
         .find(|entry| entry.name.trim() == name.trim())
     {
         Some(entry) if store::normalised(entry.clone()) != store::normalised(showing.original) => {
-            Follow::Show(entry.clone())
+            Follow::Show(Box::new(entry.clone()))
         }
         Some(_) => Follow::Keep,
         None => first(),
@@ -762,7 +768,10 @@ mod tests {
     #[test]
     fn with_nothing_open_the_first_link_is_shown() {
         let entries = [entry("A", "https://a.com"), entry("B", "https://b.com")];
-        assert_eq!(follow(&entries, None), Follow::Show(entries[0].clone()));
+        assert_eq!(
+            follow(&entries, None),
+            Follow::Show(Box::new(entries[0].clone()))
+        );
         assert_eq!(follow(&[], None), Follow::Keep);
     }
 
@@ -781,7 +790,7 @@ mod tests {
         let showing = open(Some("A"), entry("A", "https://a.com"), false);
         assert_eq!(
             follow(&entries, Some(showing)),
-            Follow::Show(entries[0].clone())
+            Follow::Show(Box::new(entries[0].clone()))
         );
     }
 
@@ -808,7 +817,7 @@ mod tests {
         let gone = open(Some("A"), entry("A", "https://a.com"), false);
         assert_eq!(
             follow(&entries, Some(gone.clone())),
-            Follow::Show(entries[0].clone())
+            Follow::Show(Box::new(entries[0].clone()))
         );
         assert_eq!(follow(&[], Some(gone)), Follow::Clear);
     }

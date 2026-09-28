@@ -20,6 +20,13 @@ parking_lot.workspace = true
 percent-encoding.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 regex = "1.13"
+# Favicons for quicklinks (F6). All three are already in the build through
+# gpui, so sharing their versions costs little; the client is the blocking
+# half of the same reqwest, pinned exactly like gpui (I-6).
+reqwest = { package = "zed-reqwest", version = "=0.12.15-zed", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
+url = "2"
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "webp", "gif", "bmp"] }
+resvg = "0.45"
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }

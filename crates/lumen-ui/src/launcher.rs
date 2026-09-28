@@ -184,6 +184,8 @@ pub struct Launcher {
     /// What the root list is ranked from, and how (AD-03: the policy is in
     /// `core`, and this view only draws its hits).
     root: RootSearch,
+    /// A pass fetching quicklink icons is running; one at a time.
+    fetching_icons: bool,
     /// The clipboard history, once the daemon has opened it.
     ///
     /// Shared with the recorder rather than opened twice: one database, one
@@ -273,6 +275,7 @@ impl Launcher {
             theme,
             icons,
             root,
+            fetching_icons: false,
             clipboard: None,
             query: String::new(),
             selected: 0,
@@ -451,15 +454,23 @@ impl Launcher {
             // Built and compared on the background thread: enumeration and
             // preparing the haystacks are the expensive halves, and the answer
             // to a re-index is usually "nothing changed".
-            let (rebuilt, quicklinks) = cx
+            let (rebuilt, quicklinks, sites) = cx
                 .background_executor()
                 .spawn(async move {
                     // Read once, for both halves: the index holds the links
                     // as catalogue entries, and root search needs the links
                     // themselves for answers and fallbacks -- an alias can
                     // change without any catalogue entry changing.
-                    let quicklinks =
+                    let mut quicklinks =
                         lumen_core::providers::quicklinks::load(&paths.quicklinks_file());
+                    lumen_core::providers::quicklinks::attach_icons(
+                        &mut quicklinks,
+                        &paths.favicons_dir(),
+                    );
+                    let sites: Vec<String> = quicklinks
+                        .iter()
+                        .filter_map(|link| link.favicon_site())
+                        .collect();
                     let rebuilt =
                         lumen_core::root::build_index(platform.as_ref(), &paths, &quicklinks).map(
                             |rebuilt| {
@@ -467,7 +478,7 @@ impl Launcher {
                                 (!unchanged).then_some(rebuilt)
                             },
                         );
-                    (rebuilt, QuicklinkProvider::new(quicklinks))
+                    (rebuilt, QuicklinkProvider::new(quicklinks), sites)
                 })
                 .await;
 
@@ -480,6 +491,7 @@ impl Launcher {
             };
 
             this.update(cx, |this, cx| {
+                this.fetch_icons(sites, cx);
                 let links_changed = this.root.replace_quicklinks(quicklinks);
                 // Nothing to show means nothing to re-rank: that would put the
                 // selection back on the first row under somebody who had just
@@ -492,6 +504,38 @@ impl Launcher {
                 }
                 this.rerank(cx);
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Fetch the icons `sites` are missing, then reindex if any arrived.
+    ///
+    /// After the index, never before it: the list is usable with glyphs, and
+    /// an icon is something to improve it with, not wait for (I-3). Most
+    /// passes find every icon cached and touch the network not at all.
+    fn fetch_icons(&mut self, sites: Vec<String>, cx: &mut Context<Self>) {
+        if self.fetching_icons || sites.is_empty() {
+            return;
+        }
+        self.fetching_icons = true;
+        let dir = self.paths.favicons_dir();
+
+        cx.spawn(async move |this, cx| {
+            let written =
+                cx.background_executor()
+                    .spawn(async move {
+                        lumen_core::providers::quicklinks::favicon::refresh(&dir, &sites)
+                    })
+                    .await;
+            this.update(cx, |this, cx| {
+                this.fetching_icons = false;
+                // The next pass finds these cached and fetches nothing, so
+                // this cannot go round more than once.
+                if written > 0 {
+                    this.start_indexing(cx);
+                }
             })
             .ok();
         })
