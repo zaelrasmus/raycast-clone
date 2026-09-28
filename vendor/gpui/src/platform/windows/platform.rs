@@ -248,6 +248,21 @@ impl WindowsPlatform {
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
                 loop {
+                    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.35): no frame clock
+                    // while nothing is on screen. The lock is released before
+                    // parking, so creating a window never waits on this.
+                    let Some(windows) = all_windows.upgrade() else {
+                        break;
+                    };
+                    let any_visible = windows
+                        .read()
+                        .iter()
+                        .any(|hwnd| unsafe { IsWindowVisible(hwnd.as_raw()) }.as_bool());
+                    drop(windows);
+                    if !any_visible && park_until_shown() {
+                        continue;
+                    }
+
                     vsync_provider.wait_for_vsync();
                     if check_device_lost(&directx_device.device) {
                         handle_gpu_device_lost(

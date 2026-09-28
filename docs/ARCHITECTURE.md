@@ -702,6 +702,42 @@ listed, so the first re-index usually still sees the old list. The launcher
 drops a re-index whose result is identical to the current one, so neither
 signal moves the selection unless something actually changed.
 
+### 7.35 gpui is vendored, with one patch that parks its frame clock
+
+With Lumen's own timers gone (the file watchers push since `5506d19`), idle CPU
+was measured at 0.04 %, and nearly all of it was one thread inside gpui. Its
+Windows backend runs a `VSyncProvider` thread that calls `DwmFlush` at the
+refresh rate for the life of the process and invalidates every window, visible
+or not: 60 to 144 round trips into dwm.exe a second, to redraw nothing. No
+gpui release changes this; 0.2.2 is the latest.
+
+`vendor/gpui` is the published 0.2.2 crate, imported unmodified in its own
+commit (minus the examples), with the patch on top as a separate, reviewable
+diff. Every changed line is marked `LUMEN PATCH`. The thread now checks whether
+any window is visible and, if none is, blocks on an event. The window procedure
+sets that event on `WM_WINDOWPOSCHANGED` with `SWP_SHOWWINDOW`, which every way
+of showing a window sends, before the window paints. A one-second recheck is
+the safety net, not the mechanism: if a wake were ever missed, a visible window
+would stall for at most that long instead of for good.
+
+Measured with `scripts/measure-idle.ps1` and `scripts/measure-gesture.ps1` on
+the same machine, before and after:
+
+| | Before | After |
+| --- | --- | --- |
+| Idle CPU, 60 s hidden | 297 ms (0.041 %) | 0 ms (below the 15.6 ms tick) |
+| Gesture → first frame | p50 8 ms, p95 20 ms | p50 8 ms, p95 19 ms |
+
+The first frame of a shown window never depended on this thread, because
+showing a window paints it. The frames after it do, and by then the thread
+is awake.
+
+I-6 still holds. `[workspace.dependencies]` pins `=0.2.2`, and
+`[patch.crates-io]` only applies while the vendored crate is that exact
+version. Upgrading gpui is now two deliberate steps: re-import the new
+release unmodified, then re-apply the marked patch and re-measure. If an
+upstream release parks the thread itself, the vendored copy is deleted.
+
 ---
 
 ## 8. Risk register
@@ -709,7 +745,7 @@ signal moves the selection unless something actually changed.
 | # | Risk | Phase | Status |
 | - | ---- | ----- | ------ |
 | R-1 | Real transparency unworkable; the system backdrop does not show | F0 | **Hit and mitigated.** See 7.3. Three backdrop modes are implemented and configurable. |
-| R-2 | Breaking changes in GPUI between versions | all | `gpui` pinned exactly (I-6). F0 assertions re-apply the window styles rather than assuming GPUI's. |
+| R-2 | Breaking changes in GPUI between versions | all | `gpui` pinned exactly (I-6). F0 assertions re-apply the window styles rather than assuming GPUI's. The vendored patch (7.35) is re-applied and re-measured on every upgrade. |
 | R-3 | Insufficient GPUI documentation | all | Mitigated by reading the crate source directly; it ships its `examples/`. |
 | R-4 | Windows assumptions leaking into the core | F1–F4 | I-1 and I-2, cross-checked in CI from the first commit. |
 | R-5 | GPUI does not implement `wlr-layer-shell` | F5 | Accepted as a planned task with its own estimate. |

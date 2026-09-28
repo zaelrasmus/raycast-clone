@@ -1187,6 +1187,12 @@ unsafe extern "system" fn window_procedure(
         };
     }
 
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.35): the vsync thread parks while
+    // every window is hidden; the frames after a window's first need it back.
+    if is_becoming_visible(msg, wparam, lparam) {
+        wake_vsync_thread();
+    }
+
     let ptr = unsafe { get_window_long(hwnd, GWLP_USERDATA) } as *mut Weak<WindowsWindowInner>;
     if ptr.is_null() {
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
