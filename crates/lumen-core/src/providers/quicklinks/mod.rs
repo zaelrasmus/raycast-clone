@@ -23,6 +23,7 @@
 //! clipboard's database exists because of its write pattern (7.14), and this
 //! has none.
 
+pub mod store;
 mod template;
 
 use std::path::Path;
@@ -57,7 +58,7 @@ pub struct Quicklink {
 }
 
 /// One entry as it appears on disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Entry {
     pub name: String,
     pub link: String,
@@ -69,6 +70,10 @@ pub struct Entry {
     pub fallback: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// Fields this build does not know, kept so that saving from Lumen does
+    /// not strip what a newer one wrote (see [`store`]).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The file as it appears on disk.
@@ -77,6 +82,8 @@ pub struct QuicklinkFile {
     pub schema_version: u32,
     #[serde(default)]
     pub quicklinks: Vec<Entry>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Quicklink {
@@ -472,10 +479,7 @@ mod tests {
         Entry {
             name: name.into(),
             link: link.into(),
-            alias: None,
-            open_with: None,
-            fallback: false,
-            keywords: Vec::new(),
+            ..Entry::default()
         }
     }
 
