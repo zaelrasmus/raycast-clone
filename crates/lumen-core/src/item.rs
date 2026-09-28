@@ -120,6 +120,12 @@ pub enum Action {
     /// The query is already in it; the clipboard and the browser are looked
     /// up when it runs, off the UI thread.
     OpenLink(crate::providers::quicklinks::OpenLink),
+    /// Ask for what a quicklink's `{query}` should be (F6).
+    ///
+    /// The launcher's to carry out, like `OpenView`: it turns the search field
+    /// into the link's argument, with the link's name beside it, and nothing
+    /// is opened until the user presses Enter on what they typed.
+    AskArgument(crate::providers::quicklinks::ArgumentRequest),
 }
 
 /// Commands Lumen provides for itself.
@@ -167,6 +173,7 @@ impl Action {
             Action::OpenView(_) => "Open",
             Action::RunScript(_) => "Run",
             Action::OpenLink(_) => "Open",
+            Action::AskArgument(_) => "Search",
         }
     }
 
@@ -189,7 +196,10 @@ impl Action {
             Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
             Action::RunScript(run) => run.run(platform),
             Action::OpenLink(open) => open.run(platform),
-            Action::Builtin(_) | Action::ArrangeWindow(_) | Action::OpenView(_) => {
+            Action::Builtin(_)
+            | Action::ArrangeWindow(_)
+            | Action::OpenView(_)
+            | Action::AskArgument(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }
         }

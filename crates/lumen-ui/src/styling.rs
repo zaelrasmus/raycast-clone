@@ -66,6 +66,22 @@ pub mod metrics {
     pub fn row_inset() -> Pixels {
         px(layout::ROW_INSET)
     }
+
+    pub fn argument_pill_padding_x() -> Pixels {
+        px(layout::argument::PILL_PADDING_X)
+    }
+
+    pub fn argument_pill_padding_y() -> Pixels {
+        px(layout::argument::PILL_PADDING_Y)
+    }
+
+    pub fn argument_pill_radius() -> Pixels {
+        px(layout::argument::PILL_RADIUS)
+    }
+
+    pub fn argument_pill_gap() -> Pixels {
+        px(layout::argument::PILL_GAP)
+    }
 }
 
 /// Type sizes, pre-converted.

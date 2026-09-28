@@ -29,8 +29,8 @@ use gpui::{App, KeyBinding};
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::launcher::{
-    Activate, ClearQuery, Dismiss, SelectFirst, SelectLast, SelectNext, SelectPrevious,
-    ToggleActionPanel,
+    Activate, AskArgument, ClearQuery, Dismiss, SelectFirst, SelectLast, SelectNext,
+    SelectPrevious, ToggleActionPanel,
 };
 use crate::settings::{CloseSettings, SaveSheet};
 use crate::text_field::{
@@ -122,6 +122,11 @@ const BINDINGS: &[Binding] = &[
         keys: "enter",
         group: "Actions",
         description: Some("Open the selection"),
+    },
+    Binding {
+        keys: "tab",
+        group: "Actions",
+        description: Some("Type a search for the selected link"),
     },
     Binding {
         keys: "escape",
@@ -253,6 +258,10 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("pagedown", SelectLast, Some(CONTEXT)),
         KeyBinding::new("pageup", SelectFirst, Some(CONTEXT)),
         KeyBinding::new("enter", Activate, Some(CONTEXT)),
+        // Tab, as in Raycast: the selected quicklink takes what is typed next
+        // as its argument. Enter on the same row does it too; Tab is for when
+        // the row is not the first thing Enter would run.
+        KeyBinding::new("tab", AskArgument, Some(CONTEXT)),
         // Escape clears a query and dismisses an empty one, so it always means
         // "back" rather than sometimes meaning "quit".
         KeyBinding::new("escape", ClearQuery, Some(CONTEXT)),

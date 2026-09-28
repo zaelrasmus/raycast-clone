@@ -284,6 +284,33 @@ impl RootSearch {
         &self.hits
     }
 
+    /// The quicklink `query` names exactly, for Tab (F6).
+    pub fn named_link(&self, query: &str) -> Option<providers::quicklinks::ArgumentRequest> {
+        self.quicklinks.named(query)
+    }
+
+    /// Show only the row for quicklink `id`, filled with `argument` (F6).
+    ///
+    /// What the list is while the launcher asks for a link's argument: the
+    /// user has already chosen the link, and anything else matching the text
+    /// they type is noise. Empty once the link is gone from the file.
+    pub fn rank_argument(&mut self, id: &str, argument: &str) -> &[Hit] {
+        self.answers = self
+            .quicklinks
+            .argument_item(id, argument)
+            .into_iter()
+            .collect();
+        self.fallbacks.clear();
+        self.hits = (0..self.answers.len())
+            .map(|index| Hit {
+                source: Source::Answer(index),
+                highlights: Vec::new(),
+                score: u32::MAX,
+            })
+            .collect();
+        &self.hits
+    }
+
     pub fn hits(&self) -> &[Hit] {
         &self.hits
     }
@@ -613,6 +640,22 @@ mod tests {
 
         assert!(matches!(root.hits()[0].source, Source::Answer(_)));
         assert!(matches!(root.hits()[1].source, Source::Fallback(_)));
+    }
+
+    #[test]
+    fn asking_for_an_argument_shows_only_that_link() {
+        let mut root = root(apps(&["Lofi Player"]));
+        root.replace_quicklinks(google());
+
+        root.rank_argument("quicklink:Google", "lofi");
+
+        assert_eq!(
+            titles(&root),
+            vec!["Search Google for \u{201c}lofi\u{201d}".to_string()]
+        );
+
+        root.rank_argument("quicklink:Gone", "lofi");
+        assert!(root.hits().is_empty());
     }
 
     #[test]

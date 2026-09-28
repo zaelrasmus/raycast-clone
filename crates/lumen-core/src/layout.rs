@@ -83,6 +83,18 @@ pub mod action_panel {
     pub const ROW_RADIUS: f32 = 5.0;
 }
 
+/// The pill naming a quicklink while the search field holds its argument (F6).
+pub mod argument {
+    /// Padding inside the pill. Wider than tall: it sits on the query's
+    /// baseline and must not make the search row look taller.
+    pub const PILL_PADDING_X: f32 = 8.0;
+    pub const PILL_PADDING_Y: f32 = 3.0;
+    pub const PILL_RADIUS: f32 = 5.0;
+
+    /// Between the pill and the caret.
+    pub const PILL_GAP: f32 = 10.0;
+}
+
 /// Extension views (F4).
 ///
 /// A view's list is drawn with the same row height and gutter as the root list,

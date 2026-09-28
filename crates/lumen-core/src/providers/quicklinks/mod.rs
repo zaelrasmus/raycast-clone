@@ -144,8 +144,19 @@ impl Quicklink {
     }
 
     /// The link itself, as a catalogue entry.
+    ///
+    /// A link that takes a query asks for it first: opening a search with
+    /// nothing in it is almost never what choosing "Google" meant. Opening it
+    /// empty stays one step away, in the action panel.
     fn catalogue_item(&self) -> Item {
-        let mut actions = vec![self.action("")];
+        let mut actions = Vec::new();
+        if self.link.takes_query() {
+            actions.push(Action::AskArgument(ArgumentRequest {
+                id: self.id(),
+                name: self.name.clone(),
+            }));
+        }
+        actions.push(self.action(""));
         // Copying needs the rendered link, which a clipboard placeholder would
         // only have once opened.
         if !self.link.reads_clipboard() && !self.link.takes_query() {
@@ -208,6 +219,17 @@ impl Quicklink {
                 .filter(|rest| !rest.is_empty())
             })
     }
+}
+
+/// Which link the launcher is asking an argument for.
+///
+/// The id rather than the link, so that editing the file while the question
+/// is on screen answers it with the link as it now is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentRequest {
+    pub id: String,
+    /// Shown beside the field, so the user can see what they are filling in.
+    pub name: String,
 }
 
 /// Opening a quicklink.
@@ -363,6 +385,50 @@ impl QuicklinkProvider {
         self.links.is_empty()
     }
 
+    /// The link whose alias or whole name `query` is, when it takes a query.
+    ///
+    /// What Tab falls back to when the selected row takes no argument: typing
+    /// `yt` and pressing Tab means YouTube, whichever row usage happened to put
+    /// first.
+    pub fn named(&self, query: &str) -> Option<ArgumentRequest> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return None;
+        }
+        self.links
+            .iter()
+            .filter(|link| link.link.takes_query())
+            .find(|link| {
+                link.alias.as_deref().map(str::to_lowercase) == Some(query.clone())
+                    || link.name.to_lowercase() == query
+            })
+            .map(|link| ArgumentRequest {
+                id: link.id(),
+                name: link.name.clone(),
+            })
+    }
+
+    /// The one row shown while the launcher asks for `id`'s argument.
+    ///
+    /// Before anything is typed it is the link itself, opened empty, so Enter
+    /// on a blank argument still does something rather than nothing. `None`
+    /// once the link is gone from the file.
+    pub fn argument_item(&self, id: &str, argument: &str) -> Option<Item> {
+        let link = self.links.iter().find(|link| link.id() == id)?;
+        if argument.trim().is_empty() {
+            return Some(Item {
+                id: link.id(),
+                title: format!("Search {}", link.name),
+                subtitle: Some(link.source.clone()),
+                icon: None,
+                keywords: Vec::new(),
+                actions: vec![link.action("")],
+                kind: Kind::Quicklink,
+            });
+        }
+        Some(link.query_item(argument))
+    }
+
     /// The links offered for any query, at the foot of the list.
     ///
     /// Nothing when an alias already answered: `g lofi` is a Google search for
@@ -493,6 +559,54 @@ mod tests {
         assert!(provider.answer("gmail").is_empty());
         assert!(provider.answer("g").is_empty());
         assert!(provider.answer("g   ").is_empty());
+    }
+
+    /// Choosing "Google" asks what to search for; opening it empty is the
+    /// second action, not the first.
+    #[test]
+    fn a_search_link_asks_for_its_argument_first() {
+        let item = QuicklinkProvider::new(vec![google()]).catalogue().remove(0);
+
+        assert_eq!(
+            item.primary(),
+            Action::AskArgument(ArgumentRequest {
+                id: "quicklink:Google".into(),
+                name: "Google".into(),
+            })
+        );
+        assert!(matches!(item.actions[1], Action::OpenLink(_)));
+    }
+
+    #[test]
+    fn the_argument_row_follows_what_is_typed() {
+        let provider = QuicklinkProvider::new(vec![google()]);
+
+        let empty = provider.argument_item("quicklink:Google", "  ").unwrap();
+        assert_eq!(empty.title, "Search Google");
+        assert_eq!(opened(&empty).query, "");
+
+        let typed = provider.argument_item("quicklink:Google", "lofi").unwrap();
+        assert_eq!(typed.title, "Search Google for \u{201c}lofi\u{201d}");
+        assert_eq!(opened(&typed).query, "lofi");
+    }
+
+    #[test]
+    fn an_exact_alias_or_name_names_its_link() {
+        let provider = QuicklinkProvider::new(vec![google(), channel()]);
+
+        assert_eq!(provider.named(" G ").unwrap().name, "Google");
+        assert_eq!(provider.named("google").unwrap().name, "Google");
+        assert!(provider.named("goo").is_none());
+        // A link with nowhere to put a query is never asked for one.
+        assert!(provider.named("veritasium").is_none());
+        assert!(provider.named("").is_none());
+    }
+
+    /// The file can change while the question is on screen.
+    #[test]
+    fn a_link_that_is_gone_has_no_argument_row() {
+        let provider = QuicklinkProvider::new(vec![channel()]);
+        assert!(provider.argument_item("quicklink:Google", "x").is_none());
     }
 
     #[test]

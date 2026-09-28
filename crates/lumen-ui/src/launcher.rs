@@ -57,6 +57,8 @@ actions!(
         ClearQuery,
         /// Show or hide the action panel for the selected row.
         ToggleActionPanel,
+        /// Type the selected quicklink's argument (F6).
+        AskArgument,
     ]
 );
 
@@ -65,6 +67,9 @@ const ROOT_PLACEHOLDER: &str = "Search for apps and commands...";
 
 /// The fallback for a view that did not name its own.
 const FIND: &str = "Search...";
+
+/// What the search field says while it holds a quicklink's argument.
+const ARGUMENT_PLACEHOLDER: &str = "Type what to search for...";
 
 /// A view's item, prepared for the host's matcher.
 ///
@@ -186,6 +191,14 @@ pub struct Launcher {
     /// The root list, or an extension's view (F4).
     mode: Mode,
 
+    /// The quicklink whose argument the search field holds, if it does (F6).
+    ///
+    /// Beside `mode` rather than a variant of it, because it is still the root
+    /// list -- the same rows, the same actions, the same panel -- narrowed to
+    /// one link. A mode of its own would duplicate every branch that already
+    /// says `Mode::Root`.
+    argument: Option<lumen_core::providers::quicklinks::ArgumentRequest>,
+
     /// Which action is highlighted in the action panel, when it is open.
     ///
     /// `None` means the panel is closed. Holding the selection here rather than
@@ -224,11 +237,19 @@ impl Launcher {
 
         let query_field =
             cx.new(|cx| TextField::search(ROOT_PLACEHOLDER, theme.colors.clone(), cx));
-        let query_changes = cx.subscribe(&query_field, |launcher, _, event, cx| {
-            let TextFieldEvent::Changed(text) = event;
-            launcher.query.clone_from(text);
-            launcher.rerank(cx);
-            cx.notify();
+        let query_changes = cx.subscribe(&query_field, |launcher, _, event, cx| match event {
+            TextFieldEvent::Changed(text) => {
+                launcher.query.clone_from(text);
+                launcher.rerank(cx);
+                cx.notify();
+            }
+            // Backspace in an empty argument takes the pill away, as it would
+            // the character to its left.
+            TextFieldEvent::DeletedPastStart => {
+                if launcher.argument.is_some() {
+                    launcher.leave_argument(cx);
+                }
+            }
         });
 
         let mut root = RootSearch::new(Providers::builtin(), frecency);
@@ -248,6 +269,7 @@ impl Launcher {
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             mode: Mode::Root,
+            argument: None,
             focused_once: false,
             _activation: None,
             action_panel: None,
@@ -480,6 +502,7 @@ impl Launcher {
         // somebody else's list a day later, with no memory of opening it, is
         // the kind of state that makes an interface feel haunted.
         self.mode = Mode::Root;
+        self.argument = None;
         self.action_panel = None;
 
         // Point GPUI's focus tree at this view. Without it GPUI has nothing to
@@ -684,7 +707,14 @@ impl Launcher {
 
         // The ordering rules -- answers first, asides discounted and capped --
         // are `RootSearch`'s. Nothing in it waits on anything (I-3).
-        self.root.rank(&self.query);
+        match &self.argument {
+            Some(argument) => {
+                self.root.rank_argument(&argument.id, &self.query);
+            }
+            None => {
+                self.root.rank(&self.query);
+            }
+        }
 
         // The selection always returns to the top on a new query. Trying to keep
         // it on "the same item" across a re-rank is the kind of cleverness that
@@ -745,6 +775,7 @@ impl Launcher {
 
         self.clear_query_text(cx);
         self.action_panel = None;
+        self.argument = None;
         self.mode = Mode::View(Box::new(ViewState {
             sink: None,
             loading: false,
@@ -781,6 +812,7 @@ impl Launcher {
 
         self.clear_query_text(cx);
         self.action_panel = None;
+        self.argument = None;
         self.mode = Mode::View(Box::new(ViewState {
             sink: Some(sink),
             loading: true,
@@ -1176,6 +1208,13 @@ impl Launcher {
         let id = item.id.clone();
         self.action_panel = None;
 
+        // Asking for an argument has used nothing yet, so it is not recorded:
+        // the link is recorded once, when it is actually opened.
+        if let Action::AskArgument(request) = action {
+            self.enter_argument(request, cx);
+            return;
+        }
+
         // Record and persist before launching. A launch that hands the
         // foreground to another application immediately is a launch whose
         // bookkeeping is easy to lose.
@@ -1231,6 +1270,57 @@ impl Launcher {
             }
         })
         .detach();
+    }
+
+    /// Tab: type a quicklink's argument.
+    ///
+    /// The selected row's, when it takes one -- looking through all of its
+    /// actions, so the key means the same whichever one Enter runs. Otherwise
+    /// the link whose alias or name the query is exactly: `yt` then Tab means
+    /// YouTube even when usage has put something else first.
+    fn ask_argument(&mut self, _: &AskArgument, _: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.mode, Mode::Root)
+            || self.action_panel.is_some()
+            || self.argument.is_some()
+        {
+            return;
+        }
+        let request = self
+            .selected_item()
+            .and_then(|item| {
+                item.actions.iter().find_map(|action| match action {
+                    Action::AskArgument(request) => Some(request.clone()),
+                    _ => None,
+                })
+            })
+            .or_else(|| self.root.named_link(&self.query));
+        if let Some(request) = request {
+            self.enter_argument(request, cx);
+        }
+    }
+
+    /// Turn the search field into `request`'s argument.
+    ///
+    /// Starts empty: what was typed to *find* the link is not what the user
+    /// wants to search for with it.
+    fn enter_argument(
+        &mut self,
+        request: lumen_core::providers::quicklinks::ArgumentRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.argument = Some(request);
+        self.action_panel = None;
+        self.clear_query_text(cx);
+        self.rerank(cx);
+        cx.notify();
+    }
+
+    /// Back to the root list from an argument.
+    fn leave_argument(&mut self, cx: &mut Context<Self>) {
+        self.argument = None;
+        self.clear_query_text(cx);
+        self.rerank(cx);
+        cx.notify();
     }
 
     /// Run the selected action inside a view.
@@ -1304,6 +1394,13 @@ impl Launcher {
                 self.rerank(cx);
                 cx.notify();
             }
+            return;
+        }
+
+        // An argument is one more layer: its text, then the pill, then the
+        // launcher.
+        if self.argument.is_some() && self.query.is_empty() {
+            self.leave_argument(cx);
             return;
         }
 
@@ -1398,6 +1495,7 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::clear_query))
             .on_action(cx.listener(Self::toggle_action_panel))
+            .on_action(cx.listener(Self::ask_argument))
             .size_full()
             .flex()
             .flex_col()
@@ -1450,6 +1548,7 @@ impl Launcher {
         // over an extension in its own window.
         let placeholder = match &self.mode {
             Mode::View(state) => state.view.placeholder().unwrap_or(FIND),
+            Mode::Root if self.argument.is_some() => ARGUMENT_PLACEHOLDER,
             Mode::Root => ROOT_PLACEHOLDER,
         };
         self.query_field.update(cx, |field, _| {
@@ -1464,6 +1563,24 @@ impl Launcher {
             .border_b_1()
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::query())
+            // The link the field is filling in, where the text would start:
+            // what you type reads as its continuation.
+            .when_some(self.argument.as_ref(), |row, argument| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .mr(metrics::argument_pill_gap())
+                        .px(metrics::argument_pill_padding_x())
+                        .py(metrics::argument_pill_padding_y())
+                        .rounded(metrics::argument_pill_radius())
+                        .bg(color(colors.selection_background))
+                        .border_1()
+                        .border_color(color(colors.selection_border))
+                        .text_size(type_scale::title())
+                        .text_color(color(colors.text_primary))
+                        .child(argument.name.clone()),
+                )
+            })
             .child(self.query_field.clone())
     }
 
@@ -1683,7 +1800,10 @@ impl Launcher {
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::footer())
             .text_color(color(colors.text_muted))
-            .child(div().child(format!("{count} results")))
+            .child(div().child(match count {
+                1 => "1 result".to_string(),
+                count => format!("{count} results"),
+            }))
             .child(
                 div()
                     .flex()
@@ -1694,6 +1814,7 @@ impl Launcher {
                     // that the hint lies.
                     .when(entries.len() > 1, |footer| footer.child("Actions  Ctrl+K"))
                     .child(match self.mode {
+                        Mode::Root if self.argument.is_some() => "Back  Esc",
                         Mode::Root => "Dismiss  Esc",
                         Mode::View(_) => "Back  Esc",
                     }),

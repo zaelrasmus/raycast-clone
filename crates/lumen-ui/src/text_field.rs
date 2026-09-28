@@ -142,6 +142,13 @@ pub enum TextFieldEvent {
     /// The text changed. Carries the new value so the owner does not have to
     /// reach back into the entity to read it.
     Changed(String),
+    /// Backspace was pressed with nothing left to delete.
+    ///
+    /// Reported rather than ignored because an owner may have something to
+    /// the left of the field to remove -- the launcher's quicklink pill -- and
+    /// reading the key itself would be the hand-written comparison I-14 rules
+    /// out.
+    DeletedPastStart,
 }
 
 impl gpui::EventEmitter<TextFieldEvent> for TextField {}
@@ -294,6 +301,10 @@ impl TextField {
     }
 
     fn delete_backward(&mut self, _: &DeleteBackward, _: &mut Window, cx: &mut Context<Self>) {
+        if self.buffer.is_empty() {
+            cx.emit(TextFieldEvent::DeletedPastStart);
+            return;
+        }
         self.edit(cx, |buffer| {
             buffer.delete_backward();
         });
