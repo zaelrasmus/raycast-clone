@@ -17,6 +17,7 @@ nucleo-matcher.workspace = true
 directories.workspace = true
 notify.workspace = true
 parking_lot.workspace = true
+percent-encoding.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 regex = "1.13"
 

@@ -38,6 +38,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../assets/icons/file.svg"),
     ),
     (
+        "icons/link.svg",
+        include_bytes!("../../../assets/icons/link.svg"),
+    ),
+    (
         "icons/script.svg",
         include_bytes!("../../../assets/icons/script.svg"),
     ),
@@ -88,6 +92,7 @@ mod tests {
             Kind::Clipboard,
             Kind::Window,
             Kind::File,
+            Kind::Quicklink,
         ] {
             let path = crate::icons::glyph(kind);
             assert!(

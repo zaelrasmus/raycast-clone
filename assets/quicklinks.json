@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "quicklinks": [
+    {
+      "name": "Google",
+      "link": "https://www.google.com/search?q={query}",
+      "alias": "g",
+      "fallback": true,
+      "keywords": ["search", "web"]
+    },
+    {
+      "name": "YouTube",
+      "link": "https://www.youtube.com/results?search_query={query}",
+      "alias": "yt",
+      "keywords": ["video", "search"]
+    },
+    {
+      "name": "Example: a YouTube channel",
+      "link": "https://www.youtube.com/@veritasium",
+      "keywords": ["video", "channel"]
+    }
+  ]
+}

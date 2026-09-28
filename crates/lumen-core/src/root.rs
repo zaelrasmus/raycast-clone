@@ -21,7 +21,7 @@ use lumen_platform::Platform;
 use crate::frecency::Frecency;
 use crate::item::Item;
 use crate::paths::Paths;
-use crate::providers::{self, Providers};
+use crate::providers::{self, Provider as _, Providers, QuicklinkProvider};
 use crate::search::{Candidate, Search};
 
 /// How many results are kept behind the visible window.
@@ -99,6 +99,8 @@ pub enum Source {
     Aside(Aside, usize),
     /// An index into this query's provider answers.
     Answer(usize),
+    /// An index into this query's fallbacks, which always close the list.
+    Fallback(usize),
 }
 
 /// One result, held as an index into its list rather than a copy of it.
@@ -132,6 +134,11 @@ pub struct RootSearch {
     asides: [Arc<Vec<Candidate>>; 2],
     /// This query's provider answers.
     answers: Vec<Item>,
+    /// The quicklinks, held here rather than among the providers because they
+    /// are the one provider the user edits while the daemon runs (F6).
+    quicklinks: QuicklinkProvider,
+    /// This query's fallbacks.
+    fallbacks: Vec<Item>,
     hits: Vec<Hit>,
 }
 
@@ -144,6 +151,8 @@ impl RootSearch {
             index: Arc::new(Vec::new()),
             asides: std::array::from_fn(|_| Arc::new(Vec::new())),
             answers: Vec::new(),
+            quicklinks: QuicklinkProvider::default(),
+            fallbacks: Vec::new(),
             hits: Vec::new(),
         }
     }
@@ -162,6 +171,19 @@ impl RootSearch {
         self.asides[aside.slot()] = Arc::new(candidates);
     }
 
+    /// Take the quicklinks as they now are in the file.
+    ///
+    /// Only their answers and fallbacks: as catalogue entries they are part of
+    /// the index, and arrive with it. Returns whether anything changed, for
+    /// the same reason [`same_index`] exists.
+    pub fn replace_quicklinks(&mut self, quicklinks: QuicklinkProvider) -> bool {
+        if self.quicklinks == quicklinks {
+            return false;
+        }
+        self.quicklinks = quicklinks;
+        true
+    }
+
     pub fn aside_is_empty(&self, aside: Aside) -> bool {
         self.asides[aside.slot()].is_empty()
     }
@@ -174,6 +196,11 @@ impl RootSearch {
     pub fn rank(&mut self, query: &str) -> &[Hit] {
         // Providers are contractually instant (see `crate::providers`).
         self.answers = self.providers.answers(query);
+        let trimmed = query.trim();
+        if !trimmed.is_empty() {
+            self.answers.extend(self.quicklinks.answer(trimmed));
+        }
+        self.fallbacks = self.quicklinks.fallbacks(query);
 
         let mut hits: Vec<Hit> = self
             .search
@@ -223,7 +250,16 @@ impl RootSearch {
             score: u32::MAX,
         });
         hits.splice(0..0, answers);
-        hits.truncate(MAX_RESULTS);
+
+        // A fallback is for when nothing above was what the user meant, so it
+        // goes last -- and room is made for it, so a query that matches sixty
+        // things still has one.
+        hits.truncate(MAX_RESULTS.saturating_sub(self.fallbacks.len()));
+        hits.extend((0..self.fallbacks.len()).map(|index| Hit {
+            source: Source::Fallback(index),
+            highlights: Vec::new(),
+            score: 0,
+        }));
 
         self.hits = hits;
         &self.hits
@@ -238,6 +274,7 @@ impl RootSearch {
             Source::Indexed(index) => &self.index[index].item,
             Source::Aside(aside, index) => &self.asides[aside.slot()][index].item,
             Source::Answer(index) => &self.answers[index],
+            Source::Fallback(index) => &self.fallbacks[index],
         }
     }
 
@@ -276,6 +313,7 @@ pub fn build_index(platform: &dyn Platform, paths: &Paths) -> Result<Vec<Candida
     let catalogue = catalogue(
         &paths.scripts_dir(),
         &paths.snippets_file(),
+        &paths.quicklinks_file(),
         &paths.extensions_dir(),
     );
 
@@ -287,7 +325,12 @@ pub fn build_index(platform: &dyn Platform, paths: &Paths) -> Result<Vec<Candida
 }
 
 /// Every provider's catalogue, from the folders the user edits.
-fn catalogue(scripts_dir: &Path, snippets_file: &Path, extensions_dir: &Path) -> Vec<Item> {
+fn catalogue(
+    scripts_dir: &Path,
+    snippets_file: &Path,
+    quicklinks_file: &Path,
+    extensions_dir: &Path,
+) -> Vec<Item> {
     let mut providers = Providers::builtin();
 
     let scripts = providers::scripts::scan(scripts_dir);
@@ -301,6 +344,12 @@ fn catalogue(scripts_dir: &Path, snippets_file: &Path, extensions_dir: &Path) ->
         log::info!("indexed {} snippets", snippets.len());
     }
     providers.register(Box::new(providers::SnippetProvider::new(snippets)));
+
+    let quicklinks = providers::quicklinks::load(quicklinks_file);
+    if !quicklinks.is_empty() {
+        log::info!("indexed {} quicklinks", quicklinks.len());
+    }
+    providers.register(Box::new(QuicklinkProvider::new(quicklinks)));
 
     let extensions = crate::extension::scan(extensions_dir);
     if !extensions.is_empty() {
@@ -469,6 +518,76 @@ mod tests {
 
         assert!(kept.contains(&0) && kept.contains(&2));
         assert!(!kept.contains(&1));
+    }
+
+    fn google() -> QuicklinkProvider {
+        let file: providers::quicklinks::QuicklinkFile = serde_json::from_str(
+            r#"{ "schema_version": 1, "quicklinks": [{
+                "name": "Google", "alias": "g", "fallback": true,
+                "link": "https://www.google.com/search?q={query}"
+            }] }"#,
+        )
+        .unwrap();
+        QuicklinkProvider::new(
+            file.quicklinks
+                .into_iter()
+                .map(|entry| providers::Quicklink::from_entry(entry).unwrap())
+                .collect(),
+        )
+    }
+
+    /// F6: the alias makes an answer, so it leads like the calculator's.
+    #[test]
+    fn a_quicklink_alias_leads_the_list() {
+        let mut root = root(apps(&["Gimp"]));
+        root.replace_quicklinks(google());
+
+        root.rank("g lofi");
+
+        assert_eq!(titles(&root)[0], "Search Google for \u{201c}lofi\u{201d}");
+    }
+
+    #[test]
+    fn a_fallback_closes_the_list() {
+        let mut root = root(apps(&["Firefox", "Files"]));
+        root.replace_quicklinks(google());
+
+        root.rank("fi");
+
+        let hits = root.hits();
+        assert!(matches!(hits.last().unwrap().source, Source::Fallback(_)));
+        assert!(matches!(hits[0].source, Source::Indexed(_)));
+    }
+
+    /// Sixty matches must not push the fallback off the end.
+    #[test]
+    fn a_full_list_still_has_room_for_the_fallback() {
+        let many: Vec<String> = (0..200).map(|n| format!("App {n}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut root = root(apps(&many));
+        root.replace_quicklinks(google());
+
+        root.rank("app");
+
+        assert_eq!(root.hits().len(), MAX_RESULTS);
+        assert!(matches!(
+            root.hits().last().unwrap().source,
+            Source::Fallback(_)
+        ));
+    }
+
+    #[test]
+    fn no_fallback_while_browsing() {
+        let mut root = root(apps(&["Firefox"]));
+        root.replace_quicklinks(google());
+
+        root.rank("");
+
+        assert!(
+            root.hits()
+                .iter()
+                .all(|hit| !matches!(hit.source, Source::Fallback(_)))
+        );
     }
 
     #[test]

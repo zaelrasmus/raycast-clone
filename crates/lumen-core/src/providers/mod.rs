@@ -25,6 +25,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod extensions;
 pub mod files;
+pub mod quicklinks;
 pub mod scripts;
 pub mod snippets;
 
@@ -32,6 +33,7 @@ pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;
 pub use commands::CommandsProvider;
 pub use extensions::ExtensionProvider;
+pub use quicklinks::{Quicklink, QuicklinkProvider};
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
 pub use snippets::{Snippet, SnippetProvider};
 

@@ -52,6 +52,11 @@ impl Paths {
         self.config_dir.join("snippets.json")
     }
 
+    /// Saved links and web searches (F6). One file, like the snippets.
+    pub fn quicklinks_file(&self) -> PathBuf {
+        self.config_dir.join("quicklinks.json")
+    }
+
     pub fn theme_file(&self, name: &str) -> PathBuf {
         self.themes_dir().join(format!("{name}.json"))
     }

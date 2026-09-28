@@ -23,6 +23,12 @@ pub struct Config {
     pub window: WindowConfig,
     pub clipboard: ClipboardConfig,
     pub files: FileSearchConfig,
+    /// The browser quicklinks open in when they do not name one (F6), by the
+    /// name the system knows it by: `"Zen Browser"`, or just `"zen"`.
+    ///
+    /// `null` is the system default. A name, not a path, so the setting
+    /// survives the browser updating itself into a new folder.
+    pub preferred_browser: Option<String>,
 }
 
 /// File search (F3).
@@ -141,6 +147,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             clipboard: ClipboardConfig::default(),
             files: FileSearchConfig::default(),
+            preferred_browser: None,
         }
     }
 }

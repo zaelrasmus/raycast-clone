@@ -48,6 +48,7 @@ pub enum Kind {
     Window,
     File,
     Extension,
+    Quicklink,
 }
 
 impl Kind {
@@ -62,6 +63,7 @@ impl Kind {
             Kind::Window => "Window",
             Kind::File => "File",
             Kind::Extension => "Extension",
+            Kind::Quicklink => "Quicklink",
         }
     }
 }
@@ -113,6 +115,11 @@ pub enum Action {
     /// execution. Drawing the line now means adding a sandbox later changes the
     /// runtime rather than redesigning the system.
     RunScript(crate::providers::ScriptRun),
+    /// Open a quicklink (F6).
+    ///
+    /// The query is already in it; the clipboard and the browser are looked
+    /// up when it runs, off the UI thread.
+    OpenLink(crate::providers::quicklinks::OpenLink),
 }
 
 /// Commands Lumen provides for itself.
@@ -159,6 +166,7 @@ impl Action {
             Action::ArrangeWindow(_) => "Arrange",
             Action::OpenView(_) => "Open",
             Action::RunScript(_) => "Run",
+            Action::OpenLink(_) => "Open",
         }
     }
 
@@ -180,6 +188,7 @@ impl Action {
             Action::LaunchNew(target) => platform.launch(target, LaunchMode::Fresh),
             Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
             Action::RunScript(run) => run.run(platform),
+            Action::OpenLink(open) => open.run(platform),
             Action::Builtin(_) | Action::ArrangeWindow(_) | Action::OpenView(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }
@@ -277,6 +286,7 @@ mod tests {
             Kind::Script,
             Kind::Snippet,
             Kind::Clipboard,
+            Kind::Quicklink,
         ] {
             assert!(!kind.label().is_empty());
         }

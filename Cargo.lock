@@ -3407,6 +3407,7 @@ dependencies = [
  "notify",
  "nucleo-matcher",
  "parking_lot",
+ "percent-encoding",
  "regex",
  "rusqlite",
  "serde",
