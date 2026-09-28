@@ -13,7 +13,7 @@
 //! carries the display name and nothing else.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result};
 use lumen_platform::Browser;
@@ -81,8 +81,13 @@ pub fn installed() -> Result<Vec<Browser>> {
 /// Every browser Lumen has been tried with opens a tab in its running window
 /// rather than a second instance.
 pub fn open(url: &str, browser: &Browser) -> Result<()> {
+    // Null handles, or the browser writes its own diagnostics into Lumen's
+    // log for as long as it runs -- Brave does, on every start.
     Command::new(&browser.executable)
         .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("starting {}", browser.executable.display()))?;
     Ok(())

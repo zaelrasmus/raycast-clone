@@ -139,6 +139,8 @@ pub struct RootSearch {
     quicklinks: QuicklinkProvider,
     /// This query's fallbacks.
     fallbacks: Vec<Item>,
+    /// How many rows the window shows, so the fallbacks can be kept in view.
+    visible_rows: usize,
     hits: Vec<Hit>,
 }
 
@@ -153,8 +155,16 @@ impl RootSearch {
             answers: Vec::new(),
             quicklinks: QuicklinkProvider::default(),
             fallbacks: Vec::new(),
+            // What the configuration defaults to; the launcher sets the real
+            // value before the first query.
+            visible_rows: 8,
             hits: Vec::new(),
         }
+    }
+
+    /// How many rows the window shows without scrolling.
+    pub fn set_visible_rows(&mut self, rows: usize) {
+        self.visible_rows = rows.max(1);
     }
 
     /// The application index, shared so a rebuild can compare against it off
@@ -251,15 +261,24 @@ impl RootSearch {
         });
         hits.splice(0..0, answers);
 
-        // A fallback is for when nothing above was what the user meant, so it
-        // goes last -- and room is made for it, so a query that matches sixty
-        // things still has one.
+        // A fallback is for when nothing above it was what the user meant, so
+        // it comes after the matches -- but no later than the last row of the
+        // first screen. Sixteen loose clipboard matches would otherwise bury
+        // it below the window, which is where nobody looks for it. Never above
+        // an answer, which is what the user asked for by construction.
         hits.truncate(MAX_RESULTS.saturating_sub(self.fallbacks.len()));
-        hits.extend((0..self.fallbacks.len()).map(|index| Hit {
-            source: Source::Fallback(index),
-            highlights: Vec::new(),
-            score: 0,
-        }));
+        let at = hits
+            .len()
+            .min(self.visible_rows.saturating_sub(self.fallbacks.len()))
+            .max(self.answers.len().min(hits.len()));
+        hits.splice(
+            at..at,
+            (0..self.fallbacks.len()).map(|index| Hit {
+                source: Source::Fallback(index),
+                highlights: Vec::new(),
+                score: 0,
+            }),
+        );
 
         self.hits = hits;
         &self.hits
@@ -306,14 +325,22 @@ impl RootSearch {
 /// milliseconds -- so it is called off the UI thread, and root search never
 /// waits for it (I-3). Nothing is executed to build it: scripts are indexed by
 /// their headers and extensions by their manifests (AD-08).
-pub fn build_index(platform: &dyn Platform, paths: &Paths) -> Result<Vec<Candidate>> {
+///
+/// The quicklinks are passed in rather than read here, because the caller
+/// needs them too, for [`RootSearch::replace_quicklinks`]. Reading the file
+/// twice logged every broken entry twice.
+pub fn build_index(
+    platform: &dyn Platform,
+    paths: &Paths,
+    quicklinks: &[providers::Quicklink],
+) -> Result<Vec<Candidate>> {
     let entries = platform.enumerate_applications()?;
     log::info!("indexed {} applications", entries.len());
 
     let catalogue = catalogue(
         &paths.scripts_dir(),
         &paths.snippets_file(),
-        &paths.quicklinks_file(),
+        quicklinks,
         &paths.extensions_dir(),
     );
 
@@ -328,7 +355,7 @@ pub fn build_index(platform: &dyn Platform, paths: &Paths) -> Result<Vec<Candida
 fn catalogue(
     scripts_dir: &Path,
     snippets_file: &Path,
-    quicklinks_file: &Path,
+    quicklinks: &[providers::Quicklink],
     extensions_dir: &Path,
 ) -> Vec<Item> {
     let mut providers = Providers::builtin();
@@ -345,11 +372,10 @@ fn catalogue(
     }
     providers.register(Box::new(providers::SnippetProvider::new(snippets)));
 
-    let quicklinks = providers::quicklinks::load(quicklinks_file);
     if !quicklinks.is_empty() {
         log::info!("indexed {} quicklinks", quicklinks.len());
     }
-    providers.register(Box::new(QuicklinkProvider::new(quicklinks)));
+    providers.register(Box::new(QuicklinkProvider::new(quicklinks.to_vec())));
 
     let extensions = crate::extension::scan(extensions_dir);
     if !extensions.is_empty() {
@@ -559,21 +585,34 @@ mod tests {
         assert!(matches!(hits[0].source, Source::Indexed(_)));
     }
 
-    /// Sixty matches must not push the fallback off the end.
+    /// Found by using it: sixteen loose clipboard matches put the fallback at
+    /// row seventeen, under a window eight rows tall. A fallback nobody can
+    /// see is not a fallback, so it takes the last row of the first screen.
     #[test]
-    fn a_full_list_still_has_room_for_the_fallback() {
+    fn a_long_list_keeps_the_fallback_on_the_first_screen() {
         let many: Vec<String> = (0..200).map(|n| format!("App {n}")).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         let mut root = root(apps(&many));
         root.replace_quicklinks(google());
+        root.set_visible_rows(8);
 
         root.rank("app");
 
         assert_eq!(root.hits().len(), MAX_RESULTS);
-        assert!(matches!(
-            root.hits().last().unwrap().source,
-            Source::Fallback(_)
-        ));
+        assert!(matches!(root.hits()[7].source, Source::Fallback(_)));
+        assert!(matches!(root.hits()[8].source, Source::Indexed(_)));
+    }
+
+    #[test]
+    fn an_answer_still_leads_a_list_with_a_fallback() {
+        let mut root = root(apps(&["Everest Notes"]));
+        root.replace_quicklinks(google());
+        root.set_visible_rows(1);
+
+        root.rank("8848*1");
+
+        assert!(matches!(root.hits()[0].source, Source::Answer(_)));
+        assert!(matches!(root.hits()[1].source, Source::Fallback(_)));
     }
 
     #[test]

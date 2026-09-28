@@ -231,6 +231,9 @@ impl Launcher {
             cx.notify();
         });
 
+        let mut root = RootSearch::new(Providers::builtin(), frecency);
+        root.set_visible_rows(config.window.visible_rows);
+
         let mut launcher = Self {
             query_field,
             _query_changes: query_changes,
@@ -239,7 +242,7 @@ impl Launcher {
             config,
             theme,
             icons,
-            root: RootSearch::new(Providers::builtin(), frecency),
+            root,
             clipboard: None,
             query: String::new(),
             selected: 0,
@@ -420,16 +423,19 @@ impl Launcher {
             let (rebuilt, quicklinks) = cx
                 .background_executor()
                 .spawn(async move {
-                    // Read beside the index rather than inside it: answers and
-                    // fallbacks come from the links themselves, and an alias
-                    // can change without any catalogue entry changing.
+                    // Read once, for both halves: the index holds the links
+                    // as catalogue entries, and root search needs the links
+                    // themselves for answers and fallbacks -- an alias can
+                    // change without any catalogue entry changing.
                     let quicklinks =
                         lumen_core::providers::quicklinks::load(&paths.quicklinks_file());
                     let rebuilt =
-                        lumen_core::root::build_index(platform.as_ref(), &paths).map(|rebuilt| {
-                            let unchanged = lumen_core::root::same_index(&current, &rebuilt);
-                            (!unchanged).then_some(rebuilt)
-                        });
+                        lumen_core::root::build_index(platform.as_ref(), &paths, &quicklinks).map(
+                            |rebuilt| {
+                                let unchanged = lumen_core::root::same_index(&current, &rebuilt);
+                                (!unchanged).then_some(rebuilt)
+                            },
+                        );
                     (rebuilt, QuicklinkProvider::new(quicklinks))
                 })
                 .await;
@@ -550,6 +556,7 @@ impl Launcher {
         let previous_height = self.content_height();
         let files_changed = config.files != self.config.files;
 
+        self.root.set_visible_rows(config.window.visible_rows);
         self.config = config;
 
         if files_changed {
