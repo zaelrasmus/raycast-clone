@@ -223,6 +223,15 @@ Step 3 made the list look like the sites it opens:
   Escape through to the form. In the launcher it opens upward: GPUI moves a
   popup to the other side only if it fits there entirely, and the launcher's
   window ends just below the form.
+- **A private window is asked for, never approximated.** `Ctrl+K` offers
+  *Open in Private Window* and *Open With...* on every link row. The flag is
+  known by the browser's program rather than its name (Helium's program is
+  `chrome.exe`), and a browser whose flag is not known is refused with an
+  error: an ordinary window would record exactly what was asked not to be.
+  With no browser named, the default's program is read from
+  `UserChoiceLatest\ProgId` or `UserChoice`, because the shell, which
+  opens everything else, takes no flags. `trait Platform::open_url` gained
+  the `private` argument, in both implementations at once (I-9).
 - **Live suggestions are still out.** A suggestion is a request per
   keystroke whose answer root search could never wait for (I-3); it would be a
   view of its own, not rows in the root list.

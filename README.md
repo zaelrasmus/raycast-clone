@@ -76,7 +76,8 @@ an aesthetic worth looking at fifty times a day.
   the launcher with *Create Quicklink*, or edit, delete and mark them in
   settings; either way they live in `quicklinks.json` and reload as it
   changes. Each shows its site's icon, fetched once and kept, and the browser
-  it opens in is picked from the ones installed.
+  it opens in is picked from the ones installed. `Ctrl+K` on a link also
+  opens it in a private window, or in any installed browser, just this once.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -406,6 +407,12 @@ afresh.
 Fields Lumen does not know are kept when it saves the file, and so are entries
 it could not read: saving a link from the launcher never loses a hand edit.
 While the file does not parse, Lumen refuses to save over it and says so.
+
+`Ctrl+K` on any quicklink row offers *Open in Private Window* -- incognito in
+Chrome, Brave and Helium, InPrivate in Edge, a private window in Zen, Firefox
+and Opera -- and *Open With...*, which lists the installed browsers. A browser
+Lumen does not know the private flag of is refused rather than opened in an
+ordinary window; the reason is in the log.
 
 In the settings page `↑`/`↓` choose a link and `Enter` or `Tab` goes into its
 form, where `Enter` saves, `Esc` undoes and `Esc` again goes back. Deleting
