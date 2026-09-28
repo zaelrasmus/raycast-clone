@@ -126,6 +126,11 @@ pub enum Action {
     /// into the link's argument, with the link's name beside it, and nothing
     /// is opened until the user presses Enter on what they typed.
     AskArgument(crate::providers::quicklinks::ArgumentRequest),
+    /// Pick a browser, then open the link in it (F6).
+    ///
+    /// The launcher's: the browser list is the platform's, read when the
+    /// action panel asks for it, and the choice is made in the panel.
+    ChooseBrowser(crate::providers::quicklinks::OpenLink),
     /// Show the form that saves a new quicklink (F6).
     ///
     /// The launcher's, like `OpenView`: the form takes the list's place.
@@ -176,7 +181,9 @@ impl Action {
             Action::ArrangeWindow(_) => "Arrange",
             Action::OpenView(_) => "Open",
             Action::RunScript(_) => "Run",
+            Action::OpenLink(open) if open.private => "Open in Private Window",
             Action::OpenLink(_) => "Open",
+            Action::ChooseBrowser(_) => "Open With\u{2026}",
             Action::AskArgument(_) => "Search",
             Action::CreateQuicklink => "Create",
         }
@@ -205,6 +212,7 @@ impl Action {
             | Action::ArrangeWindow(_)
             | Action::OpenView(_)
             | Action::AskArgument(_)
+            | Action::ChooseBrowser(_)
             | Action::CreateQuicklink => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }

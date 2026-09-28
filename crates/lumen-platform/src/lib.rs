@@ -200,6 +200,39 @@ pub struct Browser {
     pub executable: PathBuf,
 }
 
+impl Browser {
+    /// The argument that opens a URL in a private window, if this browser
+    /// has one Lumen knows.
+    ///
+    /// Known by the program's name rather than the browser's, because that is
+    /// what decides the flag: Helium's program is `chrome.exe` and takes
+    /// Chromium's. A browser missing here gets no private option at all --
+    /// guessing a flag would open the link in an ordinary window, which is
+    /// exactly what asking for a private one is meant to prevent.
+    pub fn private_flag(&self) -> Option<&'static str> {
+        // Split by hand on both separators: `Path` only knows the host's, and
+        // a Windows path read on Linux, or the other way round, must still
+        // name its program.
+        let path = self.executable.to_str()?.to_ascii_lowercase();
+        let file = path.rsplit(['\\', '/']).next()?;
+        let program = file.strip_suffix(".exe").unwrap_or(file);
+        match program {
+            "chrome" | "chromium" | "brave" | "vivaldi" | "thorium" | "helium" => {
+                Some("--incognito")
+            }
+            "msedge" => Some("--inprivate"),
+            "firefox" | "zen" | "librewolf" | "waterfox" | "floorp" | "mullvadbrowser" => {
+                Some("--private-window")
+            }
+            "opera" => Some("--private"),
+            // Opera starts through a program called `launcher`, which is too
+            // common a name to trust on its own.
+            "launcher" if self.name.to_ascii_lowercase().contains("opera") => Some("--private"),
+            _ => None,
+        }
+    }
+}
+
 /// How an [`AppEntry`] is started.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LaunchTarget {
@@ -374,9 +407,105 @@ pub trait Platform: Send + Sync {
     /// to invalidate when a browser is installed.
     fn installed_browsers(&self) -> Result<Vec<Browser>>;
 
-    /// Open `url` in `browser`, or in the system's default when `None`.
+    /// Open `url` in `browser`, or in the system's default when `None`; in a
+    /// private window when `private`.
     ///
     /// `url` has already been checked to start with a scheme, so it cannot
-    /// reach a browser's command line as a flag.
-    fn open_url(&self, url: &str, browser: Option<&Browser>) -> Result<()>;
+    /// reach a browser's command line as a flag. A private window the browser
+    /// cannot be asked for ([`Browser::private_flag`]) is an error, never an
+    /// ordinary window.
+    fn open_url(&self, url: &str, browser: Option<&Browser>, private: bool) -> Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn browser(name: &str, executable: &str) -> Browser {
+        Browser {
+            name: name.into(),
+            executable: PathBuf::from(executable),
+        }
+    }
+
+    #[test]
+    fn each_family_gets_its_own_private_flag() {
+        let cases = [
+            (
+                "Google Chrome",
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                "--incognito",
+            ),
+            (
+                "Brave",
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+                "--incognito",
+            ),
+            (
+                "Microsoft Edge",
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                "--inprivate",
+            ),
+            (
+                "Zen Browser",
+                r"C:\Program Files\Zen Browser\zen.exe",
+                "--private-window",
+            ),
+            ("Firefox", "/usr/lib/firefox/firefox", "--private-window"),
+            ("Chromium", "/usr/bin/chromium", "--incognito"),
+            (
+                "Opera GX",
+                r"C:\Users\x\AppData\Local\Programs\Opera GX\opera.exe",
+                "--private",
+            ),
+            (
+                "Opera",
+                r"C:\Users\x\AppData\Local\Programs\Opera\launcher.exe",
+                "--private",
+            ),
+        ];
+        for (name, executable, flag) in cases {
+            assert_eq!(
+                browser(name, executable).private_flag(),
+                Some(flag),
+                "{name}"
+            );
+        }
+    }
+
+    /// Helium's program is `chrome.exe`: the program decides, not the name.
+    #[test]
+    fn the_program_decides_not_the_name() {
+        let helium = browser(
+            "Helium",
+            r"C:\Users\x\AppData\Local\imput\Helium\Application\chrome.exe",
+        );
+        assert_eq!(helium.private_flag(), Some("--incognito"));
+    }
+
+    /// No guessing: an unknown browser is offered no private window at all.
+    #[test]
+    fn a_browser_without_a_known_flag_gets_none() {
+        assert_eq!(
+            browser(
+                "Internet Explorer",
+                r"C:\Program Files\Internet Explorer\iexplore.exe"
+            )
+            .private_flag(),
+            None
+        );
+        assert_eq!(
+            browser(
+                "Razer AppEngine",
+                r"C:\Program Files\Razer\RzAppEngine\rzappengine.exe"
+            )
+            .private_flag(),
+            None
+        );
+        // `launcher.exe` is only Opera when it says so.
+        assert_eq!(
+            browser("Something", r"C:\x\launcher.exe").private_flag(),
+            None
+        );
+    }
 }

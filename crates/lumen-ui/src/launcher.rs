@@ -215,6 +215,13 @@ pub struct Launcher {
     /// `None` means the panel is closed. Holding the selection here rather than
     /// a separate `bool` plus index makes the two impossible to disagree.
     action_panel: Option<usize>,
+    /// The panel is showing browsers for "Open With..." rather than the row's
+    /// actions: the link to open, waiting for one to be chosen. Only
+    /// meaningful while the panel is open.
+    browser_menu: Option<lumen_core::providers::quicklinks::OpenLink>,
+    /// The installed browsers' names, read with the index so that "Open
+    /// With..." shows them without a registry walk while the user waits.
+    browsers: Vec<String>,
 
     /// Whether the window has actually held focus since it was last shown.
     ///
@@ -285,6 +292,8 @@ impl Launcher {
             focused_once: false,
             _activation: None,
             action_panel: None,
+            browser_menu: None,
+            browsers: Vec::new(),
             appearances: 0,
             _theme_reload: None,
         };
@@ -454,7 +463,7 @@ impl Launcher {
             // Built and compared on the background thread: enumeration and
             // preparing the haystacks are the expensive halves, and the answer
             // to a re-index is usually "nothing changed".
-            let (rebuilt, quicklinks, sites) = cx
+            let (rebuilt, quicklinks, sites, browsers) = cx
                 .background_executor()
                 .spawn(async move {
                     // Read once, for both halves: the index holds the links
@@ -471,6 +480,12 @@ impl Launcher {
                         .iter()
                         .filter_map(|link| link.favicon_site())
                         .collect();
+                    let browsers: Vec<String> = platform
+                        .installed_browsers()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|browser| browser.name)
+                        .collect();
                     let rebuilt =
                         lumen_core::root::build_index(platform.as_ref(), &paths, &quicklinks).map(
                             |rebuilt| {
@@ -478,7 +493,7 @@ impl Launcher {
                                 (!unchanged).then_some(rebuilt)
                             },
                         );
-                    (rebuilt, QuicklinkProvider::new(quicklinks), sites)
+                    (rebuilt, QuicklinkProvider::new(quicklinks), sites, browsers)
                 })
                 .await;
 
@@ -491,6 +506,7 @@ impl Launcher {
             };
 
             this.update(cx, |this, cx| {
+                this.browsers = browsers;
                 this.fetch_icons(sites, cx);
                 let links_changed = this.root.replace_quicklinks(quicklinks);
                 // Nothing to show means nothing to re-rank: that would put the
@@ -1120,6 +1136,16 @@ impl Launcher {
     /// are the extension's and name themselves with whatever it chose, plus the
     /// key combination it wants shown beside them.
     fn panel_entries(&self) -> Vec<PanelEntry> {
+        if self.showing_browsers() {
+            return self
+                .browsers
+                .iter()
+                .map(|name| PanelEntry {
+                    title: name.clone(),
+                    shortcut: None,
+                })
+                .collect();
+        }
         match &self.mode {
             Mode::Root => self
                 .available_actions()
@@ -1142,6 +1168,30 @@ impl Launcher {
         }
     }
 
+    /// Whether the open panel lists browsers rather than actions.
+    fn showing_browsers(&self) -> bool {
+        self.action_panel.is_some() && self.browser_menu.is_some()
+    }
+
+    /// Replace the panel's actions with the installed browsers.
+    fn choose_browser(
+        &mut self,
+        open: lumen_core::providers::quicklinks::OpenLink,
+        cx: &mut Context<Self>,
+    ) {
+        if self.browsers.is_empty() {
+            // Not read yet, or none registered: opening the link where it
+            // would have opened is better than a panel with nothing in it.
+            log::warn!("no installed browsers to choose from");
+            return;
+        }
+        let previous_height = self.content_height();
+        self.browser_menu = Some(open);
+        self.action_panel = Some(0);
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
     fn toggle_action_panel(
         &mut self,
         _: &ToggleActionPanel,
@@ -1149,6 +1199,9 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) {
         let previous_height = self.content_height();
+        // Ctrl+K from the browser list closes the panel altogether, like
+        // from the actions: it is one panel, on two pages.
+        self.browser_menu = None;
 
         self.action_panel = match self.action_panel {
             Some(_) => None,
@@ -1265,6 +1318,7 @@ impl Launcher {
             return;
         }
 
+        let menu = self.browser_menu.take();
         let Some(item) = self.selected_item() else {
             return;
         };
@@ -1272,13 +1326,27 @@ impl Launcher {
         // Whichever action the panel is pointing at, or the primary when it is
         // closed. Falling back to the primary rather than doing nothing means a
         // panel left open on a row whose actions have changed still does the
-        // obvious thing.
-        let action = match self.action_panel {
-            Some(index) => item.actions.get(index).cloned().unwrap_or(item.primary()),
-            None => item.primary(),
+        // obvious thing. On the browser page, the link in the chosen browser.
+        let action = match (self.action_panel, menu) {
+            (Some(index), Some(open)) => match self.browsers.get(index) {
+                Some(name) => Action::OpenLink(lumen_core::providers::quicklinks::OpenLink {
+                    browser: Some(name.clone()),
+                    ..open
+                }),
+                None => Action::OpenLink(open),
+            },
+            (Some(index), None) => item.actions.get(index).cloned().unwrap_or(item.primary()),
+            (None, _) => item.primary(),
         };
         let id = item.id.clone();
         self.action_panel = None;
+
+        // Choosing a browser has opened nothing yet, so, like asking for an
+        // argument, it records no use.
+        if let Action::ChooseBrowser(open) = action {
+            self.choose_browser(open, cx);
+            return;
+        }
 
         // Asking for an argument has used nothing yet, so it is not recorded:
         // the link is recorded once, when it is actually opened.
@@ -1556,7 +1624,20 @@ impl Launcher {
         // Escape unwinds one layer at a time: the panel, then the query, then
         // the launcher. One key, and it always means "back" -- never "back two
         // steps because the first one happened to be empty".
+        // The browser page backs up to the actions, on the row it came from.
+        if self.showing_browsers() {
+            let previous_height = self.content_height();
+            self.browser_menu = None;
+            self.action_panel = self
+                .available_actions()
+                .iter()
+                .position(|action| matches!(action, Action::ChooseBrowser(_)));
+            self.resize_if_needed(previous_height, cx);
+            cx.notify();
+            return;
+        }
         if self.action_panel.take().is_some() {
+            self.browser_menu = None;
             cx.notify();
             return;
         }
@@ -2038,6 +2119,7 @@ impl Launcher {
 
         let colors = &self.theme.colors;
         let entity = cx.entity();
+        let browsers = self.showing_browsers();
 
         // The panel takes the list's place rather than floating over it.
         //
@@ -2094,8 +2176,9 @@ impl Launcher {
                         })
                         // The first action is what Enter already does; saying so
                         // is what stops the panel looking like a list of things
-                        // Enter cannot reach.
-                        .when(index == 0, |row| {
+                        // Enter cannot reach. Not on the browser page, where
+                        // Enter takes whichever is highlighted.
+                        .when(index == 0 && !browsers, |row| {
                             row.child(
                                 div()
                                     .text_size(type_scale::footer())

@@ -175,7 +175,7 @@ impl Platform for LinuxPlatform {
         todo!("F5: desktop entries whose MimeType lists x-scheme-handler/https")
     }
 
-    fn open_url(&self, _url: &str, _browser: Option<&Browser>) -> Result<()> {
+    fn open_url(&self, _url: &str, _browser: Option<&Browser>, _private: bool) -> Result<()> {
         todo!("F5: `xdg-open`, or the chosen desktop entry's Exec with %u")
     }
 }

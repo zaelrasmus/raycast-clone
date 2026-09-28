@@ -215,11 +215,13 @@ impl Platform for WindowsPlatform {
         browsers::installed()
     }
 
-    fn open_url(&self, url: &str, browser: Option<&Browser>) -> Result<()> {
-        match browser {
-            Some(browser) => browsers::open(url, browser),
+    fn open_url(&self, url: &str, browser: Option<&Browser>, private: bool) -> Result<()> {
+        match (browser, private) {
+            (Some(browser), _) => browsers::open(url, browser, private),
             // The shell resolves a URL to whatever the user chose in Settings.
-            None => shell_execute(url),
+            (None, false) => shell_execute(url),
+            // But it takes no flags, so a private window needs the program.
+            (None, true) => browsers::open(url, &browsers::default()?, true),
         }
     }
 }

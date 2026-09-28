@@ -15,14 +15,14 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use lumen_platform::Browser;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_SZ, RegCloseKey,
-    RegEnumKeyExW, RegGetValueW, RegOpenKeyExW,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_SZ,
+    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW,
 };
-use windows::core::{PCWSTR, PWSTR};
+use windows::core::PWSTR;
 
 use crate::com;
 
@@ -74,16 +74,69 @@ pub fn installed() -> Result<Vec<Browser>> {
     Ok(browsers)
 }
 
-/// Hand `url` to `browser`.
+/// Where Windows keeps the user's choice of browser for https links, newest
+/// first. Windows 11 24H2 moved it into `UserChoiceLatest\ProgId`; earlier
+/// builds, and machines not yet migrated, have only `UserChoice`.
+const USER_CHOICE: [&str; 2] = [
+    r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoiceLatest\ProgId",
+    r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+];
+
+/// The browser https links open in, when nobody names one.
+///
+/// Read for a private window, which needs a program to hand its flag to:
+/// the shell, which opens everything else, takes no flags. The choice names
+/// a ProgId, and the ProgId's open command names the program. Matched back
+/// to the registered browsers for its display name, which is what decides
+/// Opera's flag.
+pub fn default() -> Result<Browser> {
+    let prog_id = USER_CHOICE
+        .iter()
+        .find_map(|path| OpenKey::open(HKEY_CURRENT_USER, path)?.value("", "ProgId"))
+        .context("no default browser is set for https links")?;
+    let command = OpenKey::open(HKEY_CLASSES_ROOT, &prog_id)
+        .and_then(|key| key.string(r"shell\open\command"))
+        .with_context(|| format!("{prog_id} has no open command"))?;
+    let executable = executable(&command)
+        .with_context(|| format!("{prog_id}'s open command names no program"))?;
+
+    let name = installed()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|browser| same_file(&browser.executable, &executable))
+        .map_or(prog_id, |browser| browser.name);
+    Ok(Browser { name, executable })
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy()
+        .eq_ignore_ascii_case(&b.to_string_lossy())
+}
+
+/// Hand `url` to `browser`, in a private window when `private`.
 ///
 /// Started directly rather than through the shell: the shell would pick the
 /// default browser, which is exactly what naming one is meant to override.
 /// Every browser Lumen has been tried with opens a tab in its running window
 /// rather than a second instance.
-pub fn open(url: &str, browser: &Browser) -> Result<()> {
+///
+/// A private window from a browser whose flag is unknown is refused. Opening
+/// it in an ordinary window instead would record exactly what the user asked
+/// not to be recorded.
+pub fn open(url: &str, browser: &Browser, private: bool) -> Result<()> {
+    let flag = match (private, browser.private_flag()) {
+        (false, _) => None,
+        (true, Some(flag)) => Some(flag),
+        (true, None) => bail!(
+            "Lumen does not know how to open a private window in {}",
+            browser.name
+        ),
+    };
+
     // Null handles, or the browser writes its own diagnostics into Lumen's
     // log for as long as it runs -- Brave does, on every start.
     Command::new(&browser.executable)
+        .args(flag)
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -154,7 +207,14 @@ impl OpenKey {
 
     /// The default value of `subkey`, as a string.
     fn string(&self, subkey: &str) -> Option<String> {
+        self.value(subkey, "")
+    }
+
+    /// The value called `name` in `subkey` -- the default value when `name`
+    /// is empty, and this key itself when `subkey` is -- as a string.
+    fn value(&self, subkey: &str, name: &str) -> Option<String> {
         let subkey = com::wide(subkey);
+        let name = com::wide(name);
         // REG_SZ alone still accepts a REG_EXPAND_SZ value and expands it.
         // Naming the expandable type too is refused unless expansion is off.
         let flags = RRF_RT_REG_SZ;
@@ -164,17 +224,8 @@ impl OpenKey {
         // the browser is skipped, which is the right answer to a registration
         // being rewritten under us.
         let mut bytes = 0u32;
-        let status = unsafe {
-            RegGetValueW(
-                self.0,
-                &subkey,
-                PCWSTR::null(),
-                flags,
-                None,
-                None,
-                Some(&mut bytes),
-            )
-        };
+        let status =
+            unsafe { RegGetValueW(self.0, &subkey, &name, flags, None, None, Some(&mut bytes)) };
         if status != ERROR_SUCCESS || bytes < 2 {
             return None;
         }
@@ -184,7 +235,7 @@ impl OpenKey {
             RegGetValueW(
                 self.0,
                 &subkey,
-                PCWSTR::null(),
+                &name,
                 flags,
                 None,
                 Some(buffer.as_mut_ptr().cast()),

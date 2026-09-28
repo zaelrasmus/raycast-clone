@@ -168,12 +168,29 @@ impl Quicklink {
         format!("quicklink:{}", self.name)
     }
 
-    fn action(&self, query: &str) -> Action {
-        Action::OpenLink(OpenLink {
+    fn open(&self, query: &str) -> OpenLink {
+        OpenLink {
             link: self.link.clone(),
             query: query.to_string(),
             browser: self.open_with.clone(),
-        })
+            private: false,
+        }
+    }
+
+    fn action(&self, query: &str) -> Action {
+        Action::OpenLink(self.open(query))
+    }
+
+    /// What the action panel adds to opening the link: the same link in a
+    /// private window, and in a browser chosen there and then.
+    fn other_ways_to_open(&self, query: &str) -> [Action; 2] {
+        [
+            Action::OpenLink(OpenLink {
+                private: true,
+                ..self.open(query)
+            }),
+            Action::ChooseBrowser(self.open(query)),
+        ]
     }
 
     /// The link itself, as a catalogue entry.
@@ -195,6 +212,7 @@ impl Quicklink {
         if !self.link.reads_clipboard() && !self.link.takes_query() {
             actions.push(Action::CopyToClipboard(self.link.render("", "")));
         }
+        actions.extend(self.other_ways_to_open(""));
 
         let mut keywords = self.keywords.clone();
         keywords.extend(self.alias.clone());
@@ -219,6 +237,7 @@ impl Quicklink {
         if !self.link.reads_clipboard() {
             actions.push(Action::CopyToClipboard(self.link.render(query, "")));
         }
+        actions.extend(self.other_ways_to_open(query));
 
         Item {
             id: self.id(),
@@ -278,6 +297,9 @@ pub struct OpenLink {
     /// The link's own choice. The preferred browser is filled in by whoever
     /// holds the configuration -- see [`OpenLink::or_browser`].
     pub browser: Option<String>,
+    /// In a private window. Refused, not downgraded, by a browser Lumen does
+    /// not know the private flag of.
+    pub private: bool,
 }
 
 impl OpenLink {
@@ -314,7 +336,7 @@ impl OpenLink {
             None => None,
         };
 
-        platform.open_url(&url, browser)
+        platform.open_url(&url, browser, self.private)
     }
 }
 
@@ -509,7 +531,9 @@ impl QuicklinkProvider {
                 subtitle: Some(link.source.clone()),
                 icon: link.icon(),
                 keywords: Vec::new(),
-                actions: vec![link.action("")],
+                actions: std::iter::once(link.action(""))
+                    .chain(link.other_ways_to_open(""))
+                    .collect(),
                 kind: Kind::Quicklink,
             });
         }
@@ -625,6 +649,43 @@ mod tests {
                 .unwrap()
                 .contains("emoji:rocket")
         );
+    }
+
+    /// Ctrl+K on a link: open it, open it privately, or choose a browser.
+    #[test]
+    fn every_link_row_offers_a_private_window_and_a_browser_choice() {
+        let provider = QuicklinkProvider::new(vec![google(), channel()]);
+
+        let rows = [
+            provider.catalogue().remove(1),
+            provider.answer("g lofi").remove(0),
+            provider.argument_item(&google().id(), "").unwrap(),
+        ];
+        for row in rows {
+            let private = row.actions.iter().find_map(|action| match action {
+                Action::OpenLink(open) if open.private => Some(open.clone()),
+                _ => None,
+            });
+            let choose = row.actions.iter().find_map(|action| match action {
+                Action::ChooseBrowser(open) => Some(open.clone()),
+                _ => None,
+            });
+            let private = private.unwrap_or_else(|| panic!("{}: no private window", row.title));
+            let choose = choose.unwrap_or_else(|| panic!("{}: no browser choice", row.title));
+
+            // The same link and query as opening it plainly.
+            assert_eq!(private.query, opened(&row).query, "{}", row.title);
+            assert!(!choose.private);
+            assert_eq!(Action::OpenLink(private).verb(), "Open in Private Window");
+        }
+    }
+
+    /// Enter still does what it did: the plain, non-private open.
+    #[test]
+    fn the_private_window_is_never_the_primary_action() {
+        let provider = QuicklinkProvider::new(vec![google(), channel()]);
+        assert!(!opened(&provider.catalogue()[1]).private);
+        assert!(!opened(&provider.answer("g lofi")[0]).private);
     }
 
     fn opened(item: &Item) -> OpenLink {
@@ -795,6 +856,7 @@ mod tests {
             link: Template::parse("https://x.com").unwrap(),
             query: String::new(),
             browser: Some("Zen".into()),
+            private: false,
         };
         assert_eq!(
             open.clone().or_browser(Some("Brave")).browser.as_deref(),
