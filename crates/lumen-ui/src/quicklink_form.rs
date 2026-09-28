@@ -266,6 +266,14 @@ impl QuicklinkForm {
         cx.notify();
     }
 
+    /// Start a new link with its name and link already filled in: saving a
+    /// URL that was typed into the launcher. Not an edit -- nothing on disk is
+    /// replaced -- and not marked edited, so Escape still just leaves.
+    pub fn prefill(&mut self, name: String, link: String, cx: &mut Context<Self>) {
+        self.fields[0].update(cx, |field, cx| field.set_text(name, cx));
+        self.fields[1].update(cx, |field, cx| field.set_text(link, cx));
+    }
+
     /// Offer `link` in the link field, if the user has not typed one.
     ///
     /// For the clipboard: a URL copied a moment ago is usually the link being

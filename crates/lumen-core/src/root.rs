@@ -212,6 +212,18 @@ impl RootSearch {
         }
         self.fallbacks = self.quicklinks.fallbacks(query);
 
+        // A typed URL: certain ones lead with the answers, probable ones wait
+        // above the web search fallback. See `providers::web`.
+        if let Some(typed) = providers::web::recognise(query)
+            && let Some(item) = providers::web::item(&typed)
+        {
+            if typed.certain {
+                self.answers.insert(0, item);
+            } else {
+                self.fallbacks.insert(0, item);
+            }
+        }
+
         let mut hits: Vec<Hit> = self
             .search
             .rank(query, &self.index, &self.frecency, MAX_RESULTS)
@@ -645,6 +657,32 @@ mod tests {
 
         root.rank("goog");
         assert_eq!(titles(&root)[0], "Google Drive");
+    }
+
+    /// A URL beyond doubt leads, above every match.
+    #[test]
+    fn a_typed_url_leads_the_list() {
+        let mut root = root(apps(&["GitHub Desktop"]));
+        root.rank("github.com");
+        assert_eq!(titles(&root)[0], "Open github.com");
+    }
+
+    /// `readme.md` is a file first: its URL row waits at the foot, above the
+    /// web search fallback.
+    #[test]
+    fn a_file_like_url_waits_below_the_matches() {
+        let mut root = root(files(&["readme.md"]));
+        root.replace_quicklinks(google());
+        root.rank("readme.md");
+
+        let titles = titles(&root);
+        assert_eq!(titles[0], "readme.md");
+        let url = titles.iter().position(|t| t == "Open readme.md").unwrap();
+        let search = titles
+            .iter()
+            .position(|t| t.starts_with("Search Google"))
+            .unwrap();
+        assert_eq!(url + 1, search);
     }
 
     #[test]

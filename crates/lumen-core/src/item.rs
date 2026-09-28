@@ -49,6 +49,8 @@ pub enum Kind {
     File,
     Extension,
     Quicklink,
+    /// A URL typed into the search field (F6).
+    Website,
 }
 
 impl Kind {
@@ -64,6 +66,7 @@ impl Kind {
             Kind::File => "File",
             Kind::Extension => "Extension",
             Kind::Quicklink => "Quicklink",
+            Kind::Website => "Website",
         }
     }
 }
@@ -131,6 +134,12 @@ pub enum Action {
     /// The launcher's: the browser list is the platform's, read when the
     /// action panel asks for it, and the choice is made in the panel.
     ChooseBrowser(crate::providers::quicklinks::OpenLink),
+    /// Show the quicklink form filled in with `name` and `link` (F6), for a
+    /// typed URL worth keeping. The launcher's, like `CreateQuicklink`.
+    SaveAsQuicklink {
+        name: String,
+        link: String,
+    },
     /// Show the form that saves a new quicklink (F6).
     ///
     /// The launcher's, like `OpenView`: the form takes the list's place.
@@ -186,6 +195,7 @@ impl Action {
             Action::ChooseBrowser(_) => "Open With\u{2026}",
             Action::AskArgument(_) => "Search",
             Action::CreateQuicklink => "Create",
+            Action::SaveAsQuicklink { .. } => "Save as Quicklink",
         }
     }
 
@@ -213,6 +223,7 @@ impl Action {
             | Action::OpenView(_)
             | Action::AskArgument(_)
             | Action::ChooseBrowser(_)
+            | Action::SaveAsQuicklink { .. }
             | Action::CreateQuicklink => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }

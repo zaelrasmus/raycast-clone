@@ -28,6 +28,7 @@ pub mod files;
 pub mod quicklinks;
 pub mod scripts;
 pub mod snippets;
+pub mod web;
 
 pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;

@@ -1360,14 +1360,19 @@ impl Launcher {
         // bookkeeping is easy to lose.
         // The write goes to a background thread: it is disk I/O on the path
         // between Enter and the launch, and nothing here needs to wait for it.
-        let history = self.root.record_use(&id);
-        let path = self.paths.frecency_file();
-        cx.background_spawn(async move {
-            if let Err(error) = history.save(&path) {
-                log::warn!("could not persist usage statistics: {error:#}");
-            }
-        })
-        .detach();
+        // Except a private window: remembering what was opened in one, even
+        // only by name, is what private means not to do.
+        let private = matches!(&action, Action::OpenLink(open) if open.private);
+        if !private {
+            let history = self.root.record_use(&id);
+            let path = self.paths.frecency_file();
+            cx.background_spawn(async move {
+                if let Err(error) = history.save(&path) {
+                    log::warn!("could not persist usage statistics: {error:#}");
+                }
+            })
+            .detach();
+        }
 
         // Arranging has to hide *and* keep the handle that hiding would
         // otherwise consume, so it replaces the dismissal rather than
@@ -1386,7 +1391,11 @@ impl Launcher {
 
         // So does the quicklink form.
         if action == Action::CreateQuicklink {
-            self.open_form(window, cx);
+            self.open_form(None, window, cx);
+            return;
+        }
+        if let Action::SaveAsQuicklink { name, link } = action {
+            self.open_form(Some((name, link)), window, cx);
             return;
         }
 
@@ -1476,7 +1485,13 @@ impl Launcher {
     }
 
     /// Show the form that saves a new quicklink, in place of the list.
-    fn open_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// `prefill` is a name and link to start from, for a typed URL.
+    fn open_form(
+        &mut self,
+        prefill: Option<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let previous_height = self.content_height();
 
         let path = self.paths.quicklinks_file();
@@ -1484,6 +1499,9 @@ impl Launcher {
         let form = cx.new(|cx| {
             let mut form = QuicklinkForm::new(path, None, colors, cx);
             form.open_menus_upward(cx);
+            if let Some((name, link)) = prefill {
+                form.prefill(name, link, cx);
+            }
             form
         });
         let events = cx.subscribe_in(&form, window, |this, _, event, window, cx| {
