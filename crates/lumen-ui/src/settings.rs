@@ -35,7 +35,7 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
-use crate::quicklinks_page::{PageEvent, QuicklinksPage};
+use crate::quicklinks_page::QuicklinksPage;
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 
@@ -213,10 +213,6 @@ impl Settings {
             let host = focus_handle.clone();
             cx.new(|cx| QuicklinksPage::new(quicklinks_file, colors, host, cx))
         };
-        cx.subscribe(&quicklinks, |_, _, event: &PageEvent, cx| match event {
-            PageEvent::Close => cx.emit(SettingsEvent::Closed),
-        })
-        .detach();
         // The footer and the dialog are drawn here, from the page's state.
         cx.observe(&quicklinks, |_, _, cx| cx.notify()).detach();
 

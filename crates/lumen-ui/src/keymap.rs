@@ -33,7 +33,7 @@ use crate::launcher::{
     SelectPrevious, ToggleActionPanel,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
-use crate::quicklinks_page::{CancelDialog, ConfirmDialog};
+use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
 use crate::settings::{CloseSettings, SaveSheet};
 use crate::text_field::{
     Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
@@ -68,6 +68,9 @@ const FORM_CONTEXT: &str = crate::quicklink_form::CONTEXT;
 
 /// A dialog asking before something that cannot be undone.
 const DIALOG_CONTEXT: &str = crate::quicklinks_page::DIALOG_CONTEXT;
+
+/// The settings window's list of quicklinks.
+const LIST_CONTEXT: &str = crate::quicklinks_page::LIST_CONTEXT;
 
 /// A checkbox inside a form.
 const TOGGLE_CONTEXT: &str = crate::quicklink_form::TOGGLE_CONTEXT;
@@ -319,6 +322,15 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("escape", CancelForm, Some(FORM_CONTEXT)),
         // Only on a checkbox: in a field, space is a character.
         KeyBinding::new("space", ToggleFallback, Some(TOGGLE_CONTEXT)),
+    ]);
+
+    // The settings list of quicklinks: Up and Down choose a link, Enter or
+    // Tab goes into its form. Escape falls through to the window.
+    cx.bind_keys([
+        KeyBinding::new("up", PreviousLink, Some(LIST_CONTEXT)),
+        KeyBinding::new("down", NextLink, Some(LIST_CONTEXT)),
+        KeyBinding::new("enter", EditLink, Some(LIST_CONTEXT)),
+        KeyBinding::new("tab", EditLink, Some(LIST_CONTEXT)),
     ]);
 
     // A dialog: Enter does what it asks about, Escape backs out. Deeper than
