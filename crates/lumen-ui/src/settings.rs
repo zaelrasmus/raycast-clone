@@ -1,4 +1,7 @@
-//! The settings window: an editor for shortcut sheets.
+//! The settings window: shortcut sheets, and quicklinks (F6).
+//!
+//! Two pages behind tabs in the header. The sheet editor is this file; the
+//! Quicklinks page is its own entity in `quicklinks_page`, hosted here.
 //!
 //! The overlay's whole point is that the shortcuts are *the user's own* (F3).
 //! That was true before this window existed, but only in the sense that a JSON
@@ -32,8 +35,34 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
+use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
+
+/// Which page the window shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Sheets,
+    Quicklinks,
+}
+
+impl Page {
+    const ALL: [Page; 2] = [Page::Sheets, Page::Quicklinks];
+
+    fn label(self) -> &'static str {
+        match self {
+            Page::Sheets => "Shortcut Sheets",
+            Page::Quicklinks => "Quicklinks",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Page::Sheets => "Hold the gesture key to see these while you work",
+            Page::Quicklinks => "Saved links and web searches, in quicklinks.json",
+        }
+    }
+}
 
 actions!(
     lumen_settings,
@@ -167,12 +196,32 @@ pub struct Settings {
     foreground: Option<(String, String)>,
     status: Option<SharedString>,
     list_scroll: UniformListScrollHandle,
+    page: Page,
+    quicklinks: Entity<QuicklinksPage>,
 }
 
 impl Settings {
-    pub fn new(theme: Theme, sheets_dir: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        theme: Theme,
+        sheets_dir: PathBuf,
+        quicklinks_file: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus_handle = cx.focus_handle();
+        let quicklinks = {
+            let colors = theme.colors.clone();
+            let host = focus_handle.clone();
+            cx.new(|cx| QuicklinksPage::new(quicklinks_file, colors, host, cx))
+        };
+        cx.subscribe(&quicklinks, |_, _, event: &PageEvent, cx| match event {
+            PageEvent::Close => cx.emit(SettingsEvent::Closed),
+        })
+        .detach();
+        // The footer and the dialog are drawn here, from the page's state.
+        cx.observe(&quicklinks, |_, _, cx| cx.notify()).detach();
+
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             theme,
             drafts: Vec::new(),
             selected: 0,
@@ -180,7 +229,26 @@ impl Settings {
             foreground: None,
             status: None,
             list_scroll: UniformListScrollHandle::new(),
+            page: Page::Sheets,
+            quicklinks,
         }
+    }
+
+    /// Re-read `quicklinks.json`: on open, and whenever the file changes.
+    pub fn reload_quicklinks(&mut self, cx: &mut Context<Self>) {
+        self.quicklinks.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Name the installed browsers, for the Quicklinks page's form.
+    pub fn set_browsers(&mut self, browsers: Vec<String>, cx: &mut Context<Self>) {
+        self.quicklinks
+            .update(cx, |page, cx| page.set_browsers(browsers, cx));
+    }
+
+    fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = page;
+        self.focus(window, cx);
+        cx.notify();
     }
 
     /// Load the library into the editor, discarding any working copies.
@@ -228,12 +296,17 @@ impl Settings {
         for field in fields {
             field.update(cx, |field, cx| field.set_colors(colors.clone(), cx));
         }
+        self.quicklinks
+            .update(cx, |page, cx| page.set_colors(colors, cx));
 
         cx.notify();
     }
 
-    pub fn focus(&self, window: &mut Window) {
-        window.focus(&self.focus_handle);
+    pub fn focus(&self, window: &mut Window, cx: &App) {
+        match self.page {
+            Page::Sheets => window.focus(&self.focus_handle),
+            Page::Quicklinks => self.quicklinks.read(cx).focus(window, cx),
+        }
     }
 
     fn current(&self) -> Option<&SheetDraft> {
@@ -284,6 +357,12 @@ impl Settings {
     }
 
     fn save(&mut self, _: &SaveSheet, _: &mut Window, cx: &mut Context<Self>) {
+        // One save key for the window: on the Quicklinks page it saves the
+        // link, as Enter does.
+        if self.page == Page::Quicklinks {
+            self.quicklinks.update(cx, |page, cx| page.save(cx));
+            return;
+        }
         let Some(sheet) = self.compose(cx) else {
             return;
         };
@@ -573,21 +652,36 @@ impl Render for Settings {
             root = root.font_family(SharedString::from(family.clone()));
         }
 
-        root.child(self.render_header(&colors))
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(self.render_sidebar(&colors, cx))
-                    .child(self.render_editor(&colors, cx)),
-            )
-            .child(self.render_footer(&colors))
+        let body = match self.page {
+            Page::Sheets => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.render_sidebar(&colors, cx))
+                .child(self.render_editor(&colors, cx))
+                .into_any_element(),
+            Page::Quicklinks => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.quicklinks.clone())
+                .into_any_element(),
+        };
+        let dialog = self
+            .quicklinks
+            .update(cx, |page, cx| page.render_dialog(cx));
+
+        root.relative()
+            .child(self.render_header(&colors, cx))
+            .child(body)
+            .child(self.render_footer(&colors, cx))
+            .children(dialog)
     }
 }
 
 impl Settings {
-    fn render_header(&self, colors: &Colors) -> impl IntoElement {
+    fn render_header(&self, colors: &Colors, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.page;
         div()
             .h(px(metrics::HEADER_HEIGHT))
             .px(px(metrics::PADDING))
@@ -598,14 +692,24 @@ impl Settings {
             .border_color(color(colors.border_subtle))
             .child(
                 div()
-                    .text_size(px(metrics::text::TITLE))
-                    .child("Shortcut Sheets"),
+                    .flex()
+                    .gap(px(metrics::TAB_GAP))
+                    .children(Page::ALL.map(|page| {
+                        choice_button(
+                            page.label(),
+                            page == current,
+                            colors,
+                            cx.listener(move |this, _event, window, cx| {
+                                this.show_page(page, window, cx)
+                            }),
+                        )
+                    })),
             )
             .child(
                 div()
                     .text_size(px(metrics::text::HINT))
                     .text_color(color(colors.text_muted))
-                    .child("Hold the gesture key to see these while you work"),
+                    .child(current.hint()),
             )
     }
 
@@ -899,9 +1003,14 @@ impl Settings {
             .into_any_element()
     }
 
-    fn render_footer(&self, colors: &Colors) -> impl IntoElement {
-        let dirty = self.current().is_some_and(|draft| draft.dirty);
-        let status = self.status.clone();
+    fn render_footer(&self, colors: &Colors, cx: &App) -> impl IntoElement {
+        let (status, dirty) = match self.page {
+            Page::Sheets => (
+                self.status.clone(),
+                self.current().is_some_and(|draft| draft.dirty),
+            ),
+            Page::Quicklinks => (self.quicklinks.read(cx).status(cx), false),
+        };
 
         div()
             .h(px(metrics::FOOTER_HEIGHT))
@@ -949,7 +1058,7 @@ fn section_label(text: &'static str, colors: &Colors) -> impl IntoElement {
 /// So the caller passes something that includes the position. It reads as
 /// noise until the day somebody renders two of these in a loop, which in an
 /// editor for a list of groups of shortcuts is immediately.
-fn text_button(
+pub(crate) fn text_button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     colors: &Colors,
@@ -975,7 +1084,7 @@ fn text_button(
         .child(label)
 }
 
-fn choice_button(
+pub(crate) fn choice_button(
     label: &'static str,
     selected: bool,
     colors: &Colors,

@@ -112,6 +112,14 @@ pub mod form {
 
     /// The whole form, which is also the region it takes over in the launcher.
     pub const HEIGHT: f32 = PADDING_Y * 2.0 + ROW_HEIGHT * FIELDS as f32 + MESSAGE_HEIGHT;
+
+    /// The form in settings, which has one more row: the fallback checkbox.
+    pub const HEIGHT_WITH_FALLBACK: f32 = HEIGHT + ROW_HEIGHT;
+
+    /// The fallback checkbox, and the gap before its caption.
+    pub const CHECKBOX_SIZE: f32 = 16.0;
+    pub const CHECKBOX_RADIUS: f32 = 4.0;
+    pub const CHECKBOX_GAP: f32 = 8.0;
 }
 
 /// Extension views (F4).
@@ -304,6 +312,12 @@ pub mod settings {
     /// A square button, for the add and remove controls.
     pub const BUTTON_SIZE: f32 = 28.0;
 
+    /// The confirmation dialog, centred over the window.
+    pub const DIALOG_WIDTH: f32 = 380.0;
+
+    /// Between the page tabs in the header.
+    pub const TAB_GAP: f32 = 4.0;
+
     pub mod text {
         pub const TITLE: f32 = 15.0;
         pub const SECTION: f32 = 11.0;
@@ -316,4 +330,6 @@ pub mod settings {
 /// A settings field has to fit inside the row that contains it.
 const _: () = assert!(settings::FIELD_HEIGHT < settings::ROW_HEIGHT);
 const _: () = assert!(settings::FIELD_HEIGHT < form::ROW_HEIGHT);
+const _: () = assert!(form::CHECKBOX_SIZE < settings::FIELD_HEIGHT);
+const _: () = assert!(settings::DIALOG_WIDTH < settings::WIDTH - settings::PADDING * 2.0);
 const _: () = assert!(settings::KEYS_FIELD_WIDTH * 2.0 < settings::WIDTH - settings::SIDEBAR_WIDTH);

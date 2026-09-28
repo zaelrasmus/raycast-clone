@@ -32,7 +32,8 @@ use crate::launcher::{
     Activate, AskArgument, ClearQuery, Dismiss, SelectFirst, SelectLast, SelectNext,
     SelectPrevious, ToggleActionPanel,
 };
-use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
+use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
+use crate::quicklinks_page::{CancelDialog, ConfirmDialog};
 use crate::settings::{CloseSettings, SaveSheet};
 use crate::text_field::{
     Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
@@ -64,6 +65,12 @@ const SEARCH_FIELD_CONTEXT: &str = "SearchField";
 
 /// A quicklink form's key context, wherever it is shown.
 const FORM_CONTEXT: &str = crate::quicklink_form::CONTEXT;
+
+/// A dialog asking before something that cannot be undone.
+const DIALOG_CONTEXT: &str = crate::quicklinks_page::DIALOG_CONTEXT;
+
+/// A checkbox inside a form.
+const TOGGLE_CONTEXT: &str = crate::quicklink_form::TOGGLE_CONTEXT;
 
 /// One row of the table: what to bind, what it does, and where it belongs on
 /// the sheet.
@@ -262,6 +269,11 @@ const BINDINGS: &[Binding] = &[
         group: "Forms",
         description: Some("Back without saving"),
     },
+    Binding {
+        keys: "space",
+        group: "Forms",
+        description: Some("Tick or untick a checkbox"),
+    },
 ];
 
 /// Install the default bindings.
@@ -305,6 +317,16 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("up", PreviousField, Some(FORM_CONTEXT)),
         KeyBinding::new("enter", SubmitForm, Some(FORM_CONTEXT)),
         KeyBinding::new("escape", CancelForm, Some(FORM_CONTEXT)),
+        // Only on a checkbox: in a field, space is a character.
+        KeyBinding::new("space", ToggleFallback, Some(TOGGLE_CONTEXT)),
+    ]);
+
+    // A dialog: Enter does what it asks about, Escape backs out. Deeper than
+    // the settings window, so Escape closes the dialog and not the window.
+    // Not on the sheet: the dialog's buttons say it.
+    cx.bind_keys([
+        KeyBinding::new("enter", ConfirmDialog, Some(DIALOG_CONTEXT)),
+        KeyBinding::new("escape", CancelDialog, Some(DIALOG_CONTEXT)),
     ]);
 
     // Bound without a context so it works even if focus has somehow left the

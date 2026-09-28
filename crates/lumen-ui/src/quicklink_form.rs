@@ -13,11 +13,20 @@
 //! "type an argument", Enter saves rather than opening the selected row, and
 //! Escape leaves the form rather than dismissing the launcher -- all declared
 //! in the keymap (I-14).
+//!
+//! # The fallback flag
+//!
+//! Only settings offers it ([`QuicklinkForm::offer_fallback`]). A new link in
+//! the launcher needs four fields; whether it should also be offered for every
+//! search that finds nothing is a decision made later, where all the links
+//! are side by side. It is a row of the form rather than a control beside it
+//! so that one Enter saves everything: a separate switch writing on its own
+//! would be undone by the next save of fields read before it was flipped.
 
 use std::path::PathBuf;
 
 use gpui::prelude::*;
-use gpui::{App, Context, Entity, Focusable, SharedString, Window, actions, div, px};
+use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, Window, actions, div, px};
 use lumen_core::layout;
 use lumen_core::providers::quicklinks::{Entry, store};
 use lumen_core::theme::Colors;
@@ -36,11 +45,16 @@ actions!(
         SubmitForm,
         /// Leave without saving.
         CancelForm,
+        /// Flip the checkbox that has focus.
+        ToggleFallback,
     ]
 );
 
 /// The form's key context.
 pub const CONTEXT: &str = "QuicklinkForm";
+
+/// The fallback checkbox's key context, inside the form's.
+pub const TOGGLE_CONTEXT: &str = "FormToggle";
 
 /// What the form tells its host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,10 +118,19 @@ pub struct QuicklinkForm {
     fields: [Entity<TextField>; layout::form::FIELDS],
     /// The installed browsers' names, for the hint under "Open with".
     browsers: Vec<String>,
+    /// The fallback checkbox, when the host offers it.
+    fallback: Option<Fallback>,
+    /// Whether anything has changed since the form was filled or saved.
+    edited: bool,
     /// Why the last save was refused.
     error: Option<String>,
     saving: bool,
     colors: Colors,
+}
+
+struct Fallback {
+    on: bool,
+    focus: FocusHandle,
 }
 
 impl QuicklinkForm {
@@ -129,7 +152,9 @@ impl QuicklinkForm {
             let entity = cx.new(|cx| TextField::new(text, field.placeholder(), colors.clone(), cx));
             // An edit answers the last refusal, so the refusal goes.
             cx.subscribe(&entity, |form, _, event, cx| {
-                if matches!(event, TextFieldEvent::Changed(_)) && form.error.take().is_some() {
+                if matches!(event, TextFieldEvent::Changed(_)) {
+                    form.edited = true;
+                    form.error = None;
                     cx.notify();
                 }
             })
@@ -143,6 +168,8 @@ impl QuicklinkForm {
             original,
             fields,
             browsers: Vec::new(),
+            fallback: None,
+            edited: false,
             error: None,
             saving: false,
             colors,
@@ -151,6 +178,40 @@ impl QuicklinkForm {
 
     pub fn is_editing(&self) -> bool {
         self.replacing.is_some()
+    }
+
+    /// The name of the link on disk this form edits, if it edits one.
+    pub fn editing_name(&self) -> Option<&str> {
+        self.replacing.as_deref()
+    }
+
+    /// Show the fallback checkbox, after the other fields.
+    pub fn offer_fallback(&mut self, cx: &mut Context<Self>) {
+        self.fallback = Some(Fallback {
+            on: self.original.fallback,
+            focus: cx.focus_handle(),
+        });
+        cx.notify();
+    }
+
+    /// The form's height, which its host reserves for it.
+    pub fn height(&self) -> f32 {
+        match self.fallback {
+            Some(_) => layout::form::HEIGHT_WITH_FALLBACK,
+            None => layout::form::HEIGHT,
+        }
+    }
+
+    /// Whether the user has changed anything since the form was filled in or
+    /// last saved. A host refreshing the form from disk must not throw that
+    /// away.
+    pub fn is_edited(&self) -> bool {
+        self.edited
+    }
+
+    /// The link as it was when the form was filled in.
+    pub fn original(&self) -> &Entry {
+        &self.original
     }
 
     /// Name the browsers the hint can offer.
@@ -183,20 +244,52 @@ impl QuicklinkForm {
         self.fields[0].read(cx).focus(window);
     }
 
-    fn focused(&self, window: &Window, cx: &App) -> Option<usize> {
+    /// What Tab visits, in order: the fields, then the checkbox.
+    fn stops(&self, cx: &App) -> Vec<FocusHandle> {
         self.fields
             .iter()
-            .position(|field| field.focus_handle(cx).is_focused(window))
+            .map(|field| field.focus_handle(cx))
+            .chain(self.fallback.iter().map(|fallback| fallback.focus.clone()))
+            .collect()
+    }
+
+    /// Which stop has focus, if any, by its place in the Tab order.
+    pub fn focused(&self, window: &Window, cx: &App) -> Option<usize> {
+        self.stops(cx)
+            .iter()
+            .position(|stop| stop.is_focused(window))
+    }
+
+    /// Focus a stop by its place in the Tab order, or the last if there are
+    /// fewer.
+    pub fn focus_stop(&self, index: usize, window: &mut Window, cx: &App) {
+        let stops = self.stops(cx);
+        if let Some(stop) = stops.get(index.min(stops.len().saturating_sub(1))) {
+            window.focus(stop);
+        }
     }
 
     fn move_focus(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.fields.len() as isize;
+        let count = self.stops(cx).len() as isize;
         let next = match self.focused(window, cx) {
             Some(index) => (index as isize + delta).rem_euclid(count) as usize,
             None => 0,
         };
-        self.fields[next].read(cx).focus(window);
+        self.focus_stop(next, window, cx);
         cx.notify();
+    }
+
+    fn toggle_fallback(&mut self, _: &ToggleFallback, _: &mut Window, cx: &mut Context<Self>) {
+        self.flip_fallback(cx);
+    }
+
+    fn flip_fallback(&mut self, cx: &mut Context<Self>) {
+        if let Some(fallback) = &mut self.fallback {
+            fallback.on = !fallback.on;
+            self.edited = true;
+            self.error = None;
+            cx.notify();
+        }
     }
 
     fn next_field(&mut self, _: &NextField, window: &mut Window, cx: &mut Context<Self>) {
@@ -224,6 +317,10 @@ impl QuicklinkForm {
             link: text(Field::Link),
             alias: Some(text(Field::Alias)),
             open_with: Some(text(Field::Browser)),
+            fallback: self
+                .fallback
+                .as_ref()
+                .map_or(self.original.fallback, |fallback| fallback.on),
             ..self.original.clone()
         }
     }
@@ -231,6 +328,11 @@ impl QuicklinkForm {
     /// Write the link. Off the UI thread: it is a read and a write of the
     /// file, and the frame budget is not the place for disk I/O.
     fn submit(&mut self, _: &SubmitForm, _: &mut Window, cx: &mut Context<Self>) {
+        self.save(cx);
+    }
+
+    /// Save, as Enter does. For a host with its own save key.
+    pub fn save(&mut self, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
@@ -241,6 +343,7 @@ impl QuicklinkForm {
         let name = entry.name.trim().to_string();
         let path = self.path.clone();
         let replacing = self.replacing.clone();
+        let sent = entry.clone();
 
         cx.spawn(async move |this, cx| {
             let saved = cx
@@ -260,6 +363,10 @@ impl QuicklinkForm {
                         log::info!("saved quicklink {name:?}");
                         // Editing it again from here edits the saved name.
                         form.replacing = Some(name.clone());
+                        // Still edited if the user typed while it was saving:
+                        // what is on screen is not what was written.
+                        form.edited = form.entry(cx) != sent;
+                        form.original = sent;
                         cx.emit(FormEvent::Saved(name));
                     }
                     Err(error) => {
@@ -279,10 +386,15 @@ impl QuicklinkForm {
         if let Some(error) = &self.error {
             return (error.clone(), true);
         }
-        let field = self
-            .focused(window, cx)
-            .map(|index| Field::ALL[index])
-            .unwrap_or(Field::Name);
+        let field = match self.focused(window, cx) {
+            // Past the fields: the checkbox.
+            Some(index) if index >= Field::ALL.len() => {
+                let hint = "Offered at the foot of the list when a search finds nothing better.";
+                return (hint.to_string(), false);
+            }
+            Some(index) => Field::ALL[index],
+            None => Field::Name,
+        };
         let hint = match field {
             Field::Browser if self.browsers.is_empty() => {
                 "A browser's name, or part of it.".to_string()
@@ -305,7 +417,8 @@ impl Render for QuicklinkForm {
             .on_action(cx.listener(Self::previous_field))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::cancel))
-            .h(px(layout::form::HEIGHT))
+            .on_action(cx.listener(Self::toggle_fallback))
+            .h(px(self.height()))
             .w_full()
             .px(metrics::gutter())
             .py(px(layout::form::PADDING_Y))
@@ -326,6 +439,9 @@ impl Render for QuicklinkForm {
                     )
                     .child(div().flex_1().child(entity.clone()))
             }))
+            .when_some(self.render_fallback(window, cx), |form, row| {
+                form.child(row)
+            })
             .child(
                 div()
                     .h(px(layout::form::MESSAGE_HEIGHT))
@@ -342,5 +458,84 @@ impl Render for QuicklinkForm {
                     // whole of it is in the log.
                     .child(div().truncate().child(message)),
             )
+    }
+}
+
+impl QuicklinkForm {
+    /// The fallback row, when the host asked for it.
+    fn render_fallback(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let fallback = self.fallback.as_ref()?;
+        let colors = &self.colors;
+        let focused = fallback.focus.is_focused(window);
+
+        let checkbox = div()
+            .size(px(layout::form::CHECKBOX_SIZE))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(layout::form::CHECKBOX_RADIUS))
+            .border_1()
+            .border_color(color(if focused || fallback.on {
+                colors.accent
+            } else {
+                colors.border_strong
+            }))
+            .when(fallback.on, |checkbox| {
+                checkbox
+                    .bg(color(colors.accent))
+                    .text_color(color(colors.text_on_accent))
+                    .text_size(type_scale::footer())
+                    .child("\u{2713}")
+            });
+
+        let row = div()
+            .h(px(layout::form::ROW_HEIGHT))
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .w(px(layout::form::LABEL_WIDTH))
+                    .flex_none()
+                    .text_size(type_scale::subtitle())
+                    .text_color(color(colors.text_muted))
+                    .child("Fallback"),
+            )
+            .child(
+                div()
+                    .id("fallback")
+                    .key_context(TOGGLE_CONTEXT)
+                    .track_focus(&fallback.focus)
+                    .flex()
+                    .items_center()
+                    .gap(px(layout::form::CHECKBOX_GAP))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|form, event: &gpui::ClickEvent, window, cx| {
+                        // The mouse only. GPUI also turns Enter and Space on
+                        // a focused element into a click when the key comes
+                        // up, which would flip the box back after Space's
+                        // action and flip it again after Enter had saved.
+                        if event.is_keyboard() {
+                            return;
+                        }
+                        if let Some(fallback) = &form.fallback {
+                            window.focus(&fallback.focus);
+                        }
+                        form.flip_fallback(cx);
+                    }))
+                    .child(checkbox)
+                    .child(
+                        div()
+                            .text_size(type_scale::subtitle())
+                            .text_color(color(if focused {
+                                colors.text_primary
+                            } else {
+                                colors.text_muted
+                            }))
+                            .child("Offer it for searches that find nothing better"),
+                    ),
+            );
+
+        Some(row.into_any_element())
     }
 }

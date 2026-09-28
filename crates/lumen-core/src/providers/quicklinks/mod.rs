@@ -58,7 +58,7 @@ pub struct Quicklink {
 }
 
 /// One entry as it appears on disk.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub name: String,
     pub link: String,

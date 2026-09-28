@@ -140,8 +140,9 @@ fn position(file: &QuicklinkFile, name: &str) -> Result<usize> {
 }
 
 /// Trimmed and without empty optional fields, as a person would have written
-/// it.
-fn normalised(mut entry: Entry) -> Entry {
+/// it. Also what two entries are compared by: a form's blank alias and a
+/// file's missing one are the same link.
+pub fn normalised(mut entry: Entry) -> Entry {
     entry.name = entry.name.trim().to_string();
     entry.link = entry.link.trim().to_string();
     for field in [&mut entry.alias, &mut entry.open_with] {

@@ -560,6 +560,7 @@ fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
     };
 
     let launcher = surfaces.launcher;
+    let settings = surfaces.settings.clone();
     cx.spawn(async move |cx| {
         let _watcher = watcher;
         while next_change(&mut changes, cx).await {
@@ -568,6 +569,14 @@ fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
             });
             if reloaded.is_err() {
                 break;
+            }
+            // The settings page too, once it exists: a link saved from the
+            // launcher, or by hand, appears in its list.
+            let window = *settings.borrow();
+            if let Some(window) = window {
+                window
+                    .update(cx, |settings, _window, cx| settings.reload_quicklinks(cx))
+                    .ok();
             }
         }
     })
@@ -616,7 +625,8 @@ fn open_settings(
             if let Some(app) = foreground {
                 settings.set_foreground(app.executable, app.title);
             }
-            settings.focus(window);
+            settings.reload_quicklinks(cx);
+            settings.focus(window, cx);
         })
         .ok();
 
@@ -634,6 +644,29 @@ fn open_settings(
     );
     platform.show_window(WindowRole::Settings, bounds)?;
 
+    // The browsers, for the quicklink form's hint: a registry walk, so off the
+    // UI thread and after the window is already up.
+    let browsers = cx.background_executor().spawn({
+        let platform = platform.clone();
+        async move {
+            platform
+                .installed_browsers()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|browser| browser.name)
+                .collect::<Vec<_>>()
+        }
+    });
+    cx.spawn(async move |cx| {
+        let browsers = browsers.await;
+        window
+            .update(cx, |settings, _window, cx| {
+                settings.set_browsers(browsers, cx)
+            })
+            .ok();
+    })
+    .detach();
+
     Ok(())
 }
 
@@ -645,6 +678,7 @@ fn create_settings_window(
 ) -> Result<gpui::WindowHandle<Settings>> {
     let theme = surfaces.theme.borrow().clone();
     let sheets_dir = surfaces.paths.sheets_dir();
+    let quicklinks_file = surfaces.paths.quicklinks_file();
 
     let window = open_hidden_window(
         cx,
@@ -655,7 +689,7 @@ fn create_settings_window(
             px(lumen_core::layout::settings::WIDTH),
             px(lumen_core::layout::settings::HEIGHT),
         ),
-        move |_window, cx| cx.new(|cx| Settings::new(theme, sheets_dir, cx)),
+        move |_window, cx| cx.new(|cx| Settings::new(theme, sheets_dir, quicklinks_file, cx)),
     )?;
 
     subscribe_to_settings(cx, &window, platform.clone(), surfaces);
