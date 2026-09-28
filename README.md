@@ -68,6 +68,14 @@ an aesthetic worth looking at fifty times a day.
   JSON over stdio: sections, icons, accessories, coloured status tags and an
   action panel with the extension's own verbs. Anything it wants from the
   system, like the clipboard, it asks the host for.
+- **Quicklinks and web search** (F6). A quicklink is a saved link: a channel,
+  a dashboard, a search page. Put `{query}` in it and it searches: `g lofi
+  beats` opens Google, and `yt` then `Tab` asks for a YouTube search in a pill
+  beside the query. A link marked *fallback* is offered as "Search Google for
+  ..." at the foot of any search that finds nothing better. Create one from
+  the launcher with *Create Quicklink*, or edit, delete and mark them in
+  settings; either way they live in `quicklinks.json` and reload as it
+  changes.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -241,6 +249,7 @@ Then run the binary once to start the daemon:
 | `Ctrl+U` | Clear the query |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy, cut, paste |
 | `Ctrl+K` | Show every action for the selected row |
+| `Tab` | Type a search for the selected quicklink, or the one whose name or alias is the query |
 
 The query is a real text field: the mouse places the caret and drags a
 selection, double-click selects a word, and dead keys, AltGr and input-method
@@ -351,6 +360,46 @@ makes it vanish and primary makes it shout over the title beside it.
 A theme may set **colour and type family only**. Geometry — spacing, radii, row
 heights, icon sizes — is not themeable, deliberately: it is the calibration the
 whole project exists to protect.
+
+### Quicklinks
+
+`%APPDATA%\Lumen\config\quicklinks.json`, written with Google and YouTube on
+first run. Save it and the list follows; a broken entry is skipped and logged,
+and the rest still load. The settings window's *Quicklinks* page edits the
+same file.
+
+```json
+{
+  "schema_version": 1,
+  "quicklinks": [
+    {
+      "name": "Google",
+      "link": "https://www.google.com/search?q={query}",
+      "alias": "g",
+      "fallback": true,
+      "open_with": "Brave",
+      "keywords": ["search", "web"]
+    }
+  ]
+}
+```
+
+| field | meaning |
+| ----- | ------- |
+| `name` | required, and unique. What the list shows and what usage is remembered by. |
+| `link` | required. `http://` or `https://`, with `{query}` where a search goes and `{clipboard}` for what was last copied. Both are URL-encoded. Any other `{...}` is a mistake and the link is refused. |
+| `alias` | optional, one word, unique. Typed before a search: `g lofi beats`. Typed alone, it puts the link first. |
+| `fallback` | optional. Offer the link for any search, at the foot of the first screen. Needs a `{query}`. |
+| `open_with` | optional. A browser's name, or part of one (`zen`). Otherwise `preferred-browser` in `config.json`, otherwise the system default. |
+| `keywords` | optional. Matched, never shown. |
+
+Fields Lumen does not know are kept when it saves the file, and so are entries
+it could not read: saving a link from the launcher never loses a hand edit.
+While the file does not parse, Lumen refuses to save over it and says so.
+
+In the settings page `↑`/`↓` choose a link and `Enter` or `Tab` goes into its
+form, where `Enter` saves, `Esc` undoes and `Esc` again goes back. Deleting
+asks first.
 
 ### Script commands
 

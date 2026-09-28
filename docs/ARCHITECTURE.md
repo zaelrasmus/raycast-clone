@@ -113,7 +113,7 @@ once Lumen was measured well inside them (7.36).
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
-| **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **In progress.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an in-launcher form to create one, and a Tab-into-argument field |
+| **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings |
 
 ### F4 build order is not optional
 
@@ -153,6 +153,45 @@ One mechanism, not two.
 - **No network.** Favicons and live suggestions both need an HTTP client, which
   is installed size and, for suggestions, a query that root search must never
   wait on (I-3). Neither is in step 1.
+
+Step 2 made quicklinks something you can make and change without the file:
+
+- **An argument is a pill, not a mode.** `Tab` on a link that takes a
+  `{query}` -- or on the link whose alias or whole name the query is, whatever
+  usage ranked first -- puts the link's name in a pill where the query starts,
+  and the list becomes the one row that link makes of what is typed. Escape
+  unwinds the text, then the pill, then the launcher. Backspace in an empty
+  argument removes the pill: the field reports it (`DeletedPastStart`) rather
+  than the launcher reading keys (I-14).
+- **The file stays the source of truth.** `quicklinks::store` edits it the way
+  a person would, and the watcher reloads it as after a hand edit, so there is
+  one path from the file to the list. A write refuses a file that does not
+  parse, keeps entries and fields this build skips, finds a link by name
+  rather than position, and replaces the file by renaming a sibling over it.
+  A name and an alias are unique: one is the link's identity, the other a word
+  the query starts with.
+- **One form, two hosts.** The launcher's *Create Quicklink* and the settings
+  page show the same entity, with its own key context so `Tab`, `Enter` and
+  `Esc` mean field, save and back inside it. Settings adds the fallback
+  checkbox; the launcher's form is four fields, because deciding a link
+  should answer every failed search is a decision made later, beside the
+  others. A refusal gets a reserved line under the fields, so it never resizes
+  the window (I-10), in a new `text.error` token that older themes inherit
+  (I-12).
+- **A delete asks first,** in a dialog over the settings window with `Enter`
+  and `Esc` bound like any other keys. Every other change can be edited back;
+  a deleted link is gone unless its URL is remembered.
+- **A link typed exactly leads.** The whole name or the alias puts the link
+  first among the matches, below answers; before, usage let `google` open a
+  much-used Google Drive. A partial name still competes on score.
+- **The launcher's top edge stays put.** Its height follows the results, and
+  placing it by its own height moved the search field on every keystroke that
+  changed the count. It is now placed by the height of a full list, and only
+  its bottom edge moves.
+- **GPUI clicks on Enter and Space.** A focused element with a click handler
+  also gets a synthetic click when either key comes up. Every control here
+  takes its keys from the keymap alone and ignores keyboard clicks: the
+  fallback checkbox saved the opposite of what it showed until it did.
 
 ---
 
