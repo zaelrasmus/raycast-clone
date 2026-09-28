@@ -220,6 +220,17 @@ impl Action {
     }
 }
 
+/// What to tell the user when `action` failed after the launcher had closed:
+/// a title naming what was attempted, and the whole chain of causes.
+///
+/// The launcher is gone by then -- an action that launches something hands
+/// the foreground away -- so this goes to a system notification rather than
+/// a line in a window nobody is looking at.
+pub fn failure_notice(action: &Action, error: &anyhow::Error) -> (String, String) {
+    let verb = action.verb().trim_end_matches('\u{2026}').to_lowercase();
+    (format!("Couldn't {verb}"), format!("{error:#}"))
+}
+
 impl Item {
     pub fn from_app(entry: AppEntry) -> Self {
         Self {
@@ -263,6 +274,31 @@ impl Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the user reads when an action fails after the launcher closed:
+    /// what was attempted, then why, with the whole chain of causes.
+    #[test]
+    fn a_failed_action_is_described_in_the_users_terms() {
+        let action = Action::CopyToClipboard("x".into());
+        let error = anyhow::anyhow!("the clipboard is locked").context("writing the clipboard");
+
+        let (title, body) = failure_notice(&action, &error);
+
+        assert_eq!(title, "Couldn't copy");
+        assert_eq!(body, "writing the clipboard: the clipboard is locked");
+    }
+
+    #[test]
+    fn a_multi_word_verb_reads_as_a_sentence() {
+        let open = crate::providers::quicklinks::OpenLink {
+            link: crate::providers::quicklinks::Template::parse("https://x.com").unwrap(),
+            query: String::new(),
+            browser: None,
+            private: true,
+        };
+        let (title, _) = failure_notice(&Action::OpenLink(open), &anyhow::anyhow!("no"));
+        assert_eq!(title, "Couldn't open in private window");
+    }
 
     #[test]
     fn an_app_entry_becomes_a_launchable_item() {

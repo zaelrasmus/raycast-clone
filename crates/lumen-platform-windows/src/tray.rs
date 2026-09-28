@@ -19,19 +19,27 @@
 //! no way to dismiss it. The documented fix is as odd as it sounds: take the
 //! foreground before, and post a null message after.
 //!
+//! **A notification is asked of the icon, from any thread.** Lumen's errors
+//! arrive on whichever thread ran the action, while the tray's state lives on
+//! its own. Explorer draws the balloon, so `NIM_MODIFY` with `NIF_INFO` only
+//! needs the window and the icon id -- kept in an atomic, not the
+//! thread-local, for exactly that reason.
+//!
 //! **The icon must be the small one.** Asking for the default size gives a
 //! 32 px icon that Windows squeezes into a 16 px slot, and the result is
 //! noticeably softer than every icon beside it. `ExtractIconExW` hands back a
 //! properly rendered small icon from the same file.
 
 use std::os::windows::ffi::OsStrExt;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use lumen_platform::{TrayCommand, TrayInfo, TraySink};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -65,6 +73,10 @@ struct TrayState {
     /// Explorer's "I have just restarted" broadcast, registered once.
     taskbar_created: u32,
 }
+
+/// The tray window, for [`notify`] on other threads. Zero until the icon is
+/// added.
+static WINDOW: AtomicIsize = AtomicIsize::new(0);
 
 thread_local! {
     static STATE: std::cell::RefCell<Option<TrayState>> = const { std::cell::RefCell::new(None) };
@@ -136,6 +148,7 @@ fn run(info: TrayInfo, sink: TraySink) -> Result<impl FnOnce()> {
         });
 
         add_icon(hwnd)?;
+        WINDOW.store(hwnd.0 as isize, Ordering::Release);
 
         Ok(move || pump_messages(hwnd))
     }
@@ -190,6 +203,50 @@ fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
     });
 
     data
+}
+
+/// Show a warning balloon from the icon. Text beyond what the fields hold is
+/// cut short: the whole error is in the log.
+pub fn notify(title: &str, body: &str) -> Result<()> {
+    let window = WINDOW.load(Ordering::Acquire);
+    if window == 0 {
+        bail!("there is no tray icon to notify from");
+    }
+
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: HWND(window as *mut _),
+        uID: ICON_ID,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_WARNING,
+        ..Default::default()
+    };
+    fill(&mut data.szInfoTitle, title);
+    fill(&mut data.szInfo, body);
+
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }
+        .ok()
+        .context("showing a notification")
+}
+
+/// Copy `text` into a fixed, terminated UTF-16 field, ending with an ellipsis
+/// when it does not fit.
+fn fill(field: &mut [u16], text: &str) {
+    let room = field.len() - 1;
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    if wide.len() > room {
+        wide.truncate(room - 1);
+        // Not half a surrogate pair.
+        if wide
+            .last()
+            .is_some_and(|unit| (0xD800..0xDC00).contains(unit))
+        {
+            wide.pop();
+        }
+        wide.push('\u{2026}' as u16);
+    }
+    field[..wide.len()].copy_from_slice(&wide);
+    field[wide.len()] = 0;
 }
 
 fn add_icon(hwnd: HWND) -> Result<()> {
@@ -300,5 +357,37 @@ fn show_menu(hwnd: HWND) {
             // Zero: dismissed without choosing anything.
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(field: &[u16]) -> String {
+        let end = field.iter().position(|&unit| unit == 0).unwrap();
+        String::from_utf16(&field[..end]).unwrap()
+    }
+
+    #[test]
+    fn short_text_is_copied_and_terminated() {
+        let mut field = [0xFFFFu16; 8];
+        fill(&mut field, "hi");
+        assert_eq!(read(&field), "hi");
+    }
+
+    #[test]
+    fn long_text_ends_with_an_ellipsis_inside_the_field() {
+        let mut field = [0u16; 8];
+        fill(&mut field, "abcdefghijk");
+        assert_eq!(read(&field), "abcdef\u{2026}");
+    }
+
+    /// An emoji is two UTF-16 units; cutting between them is invalid text.
+    #[test]
+    fn a_surrogate_pair_is_never_split() {
+        let mut field = [0u16; 8];
+        fill(&mut field, "abcde\u{1F600}xyz");
+        assert_eq!(read(&field), "abcde\u{2026}");
     }
 }

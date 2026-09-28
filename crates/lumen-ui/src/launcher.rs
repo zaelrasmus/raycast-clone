@@ -1413,6 +1413,12 @@ impl Launcher {
         cx.background_spawn(async move {
             if let Err(error) = action.perform(platform.as_ref()) {
                 log::error!("could not run {action:?}: {error:#}");
+                // The launcher is already gone; this is the only place left
+                // to say so.
+                let (title, body) = lumen_core::item::failure_notice(&action, &error);
+                if let Err(error) = platform.notify(&title, &body) {
+                    log::warn!("could not show the failure either: {error:#}");
+                }
             }
         })
         .detach();

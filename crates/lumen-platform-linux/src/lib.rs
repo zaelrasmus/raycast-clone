@@ -163,6 +163,10 @@ impl Platform for LinuxPlatform {
         todo!("F5: StatusNotifierItem over D-Bus")
     }
 
+    fn notify(&self, _title: &str, _body: &str) -> Result<()> {
+        todo!("F5: org.freedesktop.Notifications over D-Bus")
+    }
+
     fn clipboard_text(&self) -> Result<Option<String>> {
         todo!("F5: wl_data_device")
     }

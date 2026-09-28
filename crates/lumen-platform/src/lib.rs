@@ -394,6 +394,13 @@ pub trait Platform: Send + Sync {
     /// as well.
     fn install_tray(&self, info: TrayInfo, sink: TraySink) -> Result<()>;
 
+    /// Tell the user something went wrong, in a system notification.
+    ///
+    /// For failures that happen after the launcher has closed -- a launch, a
+    /// private window refused -- when there is no window of Lumen's left to
+    /// say it in. Raised from the tray icon, so it fails if there is none.
+    fn notify(&self, title: &str, body: &str) -> Result<()>;
+
     /// Read the system clipboard as text, if it currently holds text.
     fn clipboard_text(&self) -> Result<Option<String>>;
 

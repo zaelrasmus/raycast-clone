@@ -203,6 +203,10 @@ impl Platform for WindowsPlatform {
         tray::start(info, sink)
     }
 
+    fn notify(&self, title: &str, body: &str) -> Result<()> {
+        tray::notify(title, body)
+    }
+
     fn clipboard_text(&self) -> Result<Option<String>> {
         clipboard::text()
     }
