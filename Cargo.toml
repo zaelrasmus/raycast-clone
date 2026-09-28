@@ -8,6 +8,8 @@ members = [
     "crates/lumen-ui",
     "crates/lumen-app",
 ]
+# A patched dependency, not a member: it keeps its own manifest and lints.
+exclude = ["vendor/gpui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -40,6 +42,12 @@ directories = "6.0"
 # Aligned with gpui 0.2.2 so the compiled crate is shared, not duplicated.
 windows = "0.61"
 windows-core = "0.61"
+
+# gpui 0.2.2 with Lumen's patches on top, as a reviewable diff against the
+# published crate (docs/ARCHITECTURE.md, 7.35). The pin above still names the
+# version, and the vendored crate must be that exact version or this is ignored.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
 
 [profile.release]
 lto = "thin"
