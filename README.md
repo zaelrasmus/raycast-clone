@@ -75,7 +75,8 @@ an aesthetic worth looking at fifty times a day.
   ..." at the foot of any search that finds nothing better. Create one from
   the launcher with *Create Quicklink*, or edit, delete and mark them in
   settings; either way they live in `quicklinks.json` and reload as it
-  changes.
+  changes. Each shows its site's icon, fetched once and kept, and the browser
+  it opens in is picked from the ones installed.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -171,7 +172,7 @@ window hidden. Both are how the numbers below were taken.
 | Idle resident memory | < 100 MB | **64–72 MB** working set, window hidden | ✅ |
 | Idle CPU | < 0.02 % | **0.000 %** over 60 s, below one 15.6 ms tick | ✅ |
 | Cold start to usable | < 400 ms | **340–357 ms** from `main` to summonable | ✅ |
-| Installed size | < 40 MB | **11.1 MB**, the whole install | ✅ |
+| Installed size | < 40 MB | **15.5 MB**, the whole install | ✅ |
 
 The budgets were tightened once these numbers were in (ARCHITECTURE 7.36). Idle
 CPU is near zero because nothing in the daemon runs on a timer: file changes
@@ -390,8 +391,17 @@ same file.
 | `link` | required. `http://` or `https://`, with `{query}` where a search goes and `{clipboard}` for what was last copied. Both are URL-encoded. Any other `{...}` is a mistake and the link is refused. |
 | `alias` | optional, one word, unique. Typed before a search: `g lofi beats`. Typed alone, it puts the link first. |
 | `fallback` | optional. Offer the link for any search, at the foot of the first screen. Needs a `{query}`. |
-| `open_with` | optional. A browser's name, or part of one (`zen`). Otherwise `preferred-browser` in `config.json`, otherwise the system default. |
+| `open_with` | optional. A browser's name, or part of one (`zen`). Otherwise `preferred-browser` in `config.json`, otherwise the system default. The forms offer the installed browsers in a dropdown. |
 | `keywords` | optional. Matched, never shown. |
+| `icon` | optional. Absent, the row shows the site's icon; `"default"` keeps Lumen's link icon. |
+
+**Icons.** The first time a link is listed, Lumen asks its site for an icon --
+the page's own `<link rel="icon">`, then `/favicon.ico`, never a third-party
+favicon service -- in the background, after the list is already usable. It is
+kept in `%LOCALAPPDATA%\Lumen\cache\favicons\` and asked for again after
+thirty days. Offline, or for a site with none, the row keeps Lumen's icon and
+the site is not asked again for a day. Deleting the folder fetches them all
+afresh.
 
 Fields Lumen does not know are kept when it saves the file, and so are entries
 it could not read: saving a link from the launcher never loses a hand edit.

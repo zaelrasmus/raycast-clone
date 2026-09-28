@@ -113,7 +113,7 @@ once Lumen was measured well inside them (7.36).
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
-| **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings |
+| **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 
 ### F4 build order is not optional
 
@@ -150,9 +150,10 @@ One mechanism, not two.
   matched against the display names the platform reports, because the registry
   key is not a name: Zen registers as `Firefox-<hash>` and Helium's executable
   is `chrome.exe`.
-- **No network.** Favicons and live suggestions both need an HTTP client, which
-  is installed size and, for suggestions, a query that root search must never
-  wait on (I-3). Neither is in step 1.
+- **No network, in step 1.** Favicons and live suggestions both need an HTTP
+  client, which is installed size and, for suggestions, a query that root
+  search must never wait on (I-3). Step 3 took the first and not the second:
+  see below.
 
 Step 2 made quicklinks something you can make and change without the file:
 
@@ -192,6 +193,39 @@ Step 2 made quicklinks something you can make and change without the file:
   also gets a synthetic click when either key comes up. Every control here
   takes its keys from the keymap alone and ignores keyboard clicks: the
   fallback checkbox saved the opposite of what it showed until it did.
+
+Step 3 made the list look like the sites it opens:
+
+- **Icons come from the site, not a service.** A favicon service is one
+  request and a clean PNG, and it learns the domain of every link saved. The
+  page's `<link rel="icon">` tags are read instead -- scalable first, then the
+  nearest size at or above `ICON_RESOLUTION` -- with `/favicon.ico` after
+  them. PNG, ICO, JPEG, WebP, GIF and SVG are fitted to one square PNG per
+  site.
+- **Nothing waits on the network.** The launcher draws what the cache holds;
+  after each index, one background pass fetches what is missing, and a
+  reindex picks the files up as `IconSource::File`. The renderer and
+  `trait Platform` did not change. A failure leaves a marker retried after a
+  day, so an offline machine does not ask on every reindex; an icon is
+  refetched after thirty days, keeping the old one if that fails.
+- **The client costs 3.5 MB, and that was measured.** The blocking half of the
+  `reqwest` gpui already depends on, pinned exactly (I-6), made for a pass and
+  dropped after it. Being in the dependency tree was not being in the binary:
+  the linker had been removing it. Installed size went from 12.0 to 15.5 MB
+  against a budget of 40; idle CPU, working set and thread count did not
+  move. WinHTTP behind `trait Platform` would have saved most of it, at the
+  price of a trait change and a second fetcher for Linux, and was declined.
+- **The browser is chosen, not typed.** "Open with" is a dropdown of what the
+  platform reports installed, plus the default. A saved name selects the
+  browser it would open in, by the same matcher; one that matches nothing is
+  shown as not installed and kept, so saving an unrelated field never moves a
+  link to another browser. Closed, the dropdown passes Up, Down, Enter and
+  Escape through to the form. In the launcher it opens upward: GPUI moves a
+  popup to the other side only if it fits there entirely, and the launcher's
+  window ends just below the form.
+- **Live suggestions are still out.** A suggestion is a request per
+  keystroke whose answer root search could never wait for (I-3); it would be a
+  view of its own, not rows in the root list.
 
 ---
 
