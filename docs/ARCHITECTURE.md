@@ -114,7 +114,7 @@ once Lumen was measured well inside them (7.36).
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
-| **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Designed, not started.** See F7 decisions |
+| **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Step 1 done.** Google and DeepL behind `trait Translator`, presets from `config.json` as root rows, switched in the view with `Tab` through a new `Scope` in the view vocabulary. Step 2: *Save as Preset* and a settings page. Offline later. See F7 decisions |
 
 ### F4 build order is not optional
 
@@ -255,94 +255,122 @@ Step 3 made the list look like the sites it opens:
 ### F7 decisions
 
 The shape is Raycast's *Translate* command: open it, type, read the
-translation, copy or paste it. Translation is a request to a service, so the
-whole design is about keeping that request where nothing waits on it.
+translation, copy it. Translation is a request to a service, so the whole
+design is about keeping that request where nothing waits on it. Step 1 is
+built; what changed on the way from the plan is said where it happened.
 
 - **A view, not rows in root search.** A translation is a request per
   keystroke, which is exactly why live suggestions stayed out of the root list
-  (F6). *Translate* is a command in `providers::commands` that opens a view,
-  and root search does not change (I-3). An inline prefix such as `tr hola`
-  was considered and deferred: it is the same request in the one list that
-  must never wait.
+  (F6). *Translate* opens a view, and root search does not change (I-3). An
+  inline prefix such as `tr hola` was considered and deferred: it is the same
+  request in the one list that must never wait.
 - **A built-in view source, not an extension.** `ViewSource::Translate` speaks
   the `lumen_core::view` contract in process: it receives `QueryChanged` under
   `Filtering::Extension` and answers with a `View`. The renderer, the action
-  panel and the fixed row geometry are the ones extensions already use, so no
-  UI code is written for it (I-5, I-10) and no second definition of the tree
-  appears (I-13). An extension would have needed an HTTP capability added to
-  the host RPC first (I-7), for a feature the host can do itself.
-- **The client is the one already linked.** Favicons put the blocking half of
-  `zed-reqwest` in the binary and measured it (F6, step 3). The translator
-  reuses it: no new dependency, no installed size, and no change to
-  `trait Platform` (I-9). The client is built when the view opens and dropped
-  when it closes, so a hidden launcher holds no connection and no thread.
+  panel and the fixed row geometry are the ones extensions already use (I-5,
+  I-10), and no second definition of the tree appears (I-13). An extension
+  would have needed an HTTP capability added to the host RPC first (I-7), for
+  a feature the host can do itself.
+- **The decisions are a value; the daemon carries them out.**
+  `translate::session::Session` turns events, typing pauses and answers into
+  effects -- render, wait, send, copy, remember -- and never blocks, so every
+  rule below is a unit test. `lumen-app/src/translate.rs` owns the threads,
+  timers and client, as `extensions.rs` owns a process, and reaches the
+  launcher through `begin_view` and `show_view` exactly as an extension does.
 - **Nothing waits on the network, inside the view either.** A query is sent
-  after a pause in typing, on a worker thread. Each request carries a
-  generation number and an answer older than the latest query is dropped, so
-  a slow reply never overwrites a newer one. While a request is out, the
-  previous translation stays on screen rather than flashing to empty.
-- **A service behind a trait, chosen by the user.** `trait Translator` in
-  `core` takes text, an optional source and a target, and returns the
-  translation and the detected source. Two implementations ship:
-  - **Google**, through the keyless endpoint its web widget uses. It needs no
-    setup, which makes the command work on first use. It is undocumented and
-    can change or rate-limit without notice; a failure says so in the view.
-  - **DeepL**, with the user's own API key. The free plan allows 500,000
-    characters a month and translates better.
+  300 ms after typing pauses, one thread per target. Each request carries a
+  generation and an answer from an older one is dropped, so a slow reply to
+  "hol" never overwrites "hola". While a request is out, the previous
+  translation stays in its row, with no actions, so `Enter` cannot copy text
+  that is about to change.
+- **The client is the one already linked, kept briefly.** The blocking
+  `zed-reqwest` that favicons put in the binary (F6, step 3); no new
+  dependency and no change to `trait Platform` (I-9). It is built by the first
+  request -- that reads the certificate store -- shared by the others, and
+  dropped thirty seconds after the last one, so a translation in the morning
+  does not leave a connection pool in a daemon that then idles all day.
+- **A service behind a trait, chosen by the user.** `trait Translator` takes
+  text, an optional source and a target, and returns the translation and the
+  detected source. `translate.service` in `config.json` picks one:
+  - **Google** (the default), keyless, so the command works on first use.
+    Undocumented, so it can change or throttle without notice; a failure is a
+    row saying so, with *Try Again*. **The endpoint changed during the
+    build.** `translate.googleapis.com/translate_a/single`, which most
+    libraries use, answered the blocking client with its "unusual traffic"
+    page (429) on the very first request, whatever the headers, while curl
+    on the same machine got 200: it judges the TLS client, not the request.
+    `clients5.google.com/translate_a/t`, the endpoint Chrome's dictionary
+    extension uses, answered the same client normally, and keeps line
+    breaks. An ignored test runs against it, for whoever touches the file.
+  - **DeepL**, with the user's own key. The host is picked from the key --
+    free keys end in `:fx` -- and a refused key, a spent quota and throttling
+    each get their own message.
 
-  `translate.provider` in `config.json` selects one, and Google is the
-  default. There is **no automatic fallback** from one to the other: text
-  the user sent to DeepL must not silently go to Google because DeepL was
-  down. The service in use is named in the view, because the user is sending
-  it what they type.
-- **The key lives in `config.json`,** as `translate.deepl-key`, and is never
-  logged or shown back in full. The Windows Credential Manager would be
-  better, and would be a `trait Platform` change with a Linux counterpart;
-  it is deferred rather than rejected.
+  There is **no automatic fallback** between them: text the user sent to
+  DeepL must not go to Google because DeepL was down. The view names the
+  service in its empty state, before anything is typed, and in the section
+  title while translating.
+- **The key lives in `config.json`,** as `translate.deepl-key`.
+  `TranslateConfig` implements `Debug` by hand so the key never reaches a log
+  line, and requests to Google are logged without their URL, which carries
+  the text. The Windows Credential Manager would be better, and would be a
+  `trait Platform` change with a Linux counterpart; deferred, not rejected.
 - **Languages are chosen once, as presets.** Picking a source and a target
   every time is the slow part of translating, and most people translate
   between the same few languages. A **preset** is a saved direction: a name,
-  an optional alias, a source (a language, or `auto` to detect it) and one or
-  more targets -- *Spanish → English*, or *Spanish → English, French*.
-  "Preset" rather than "profile", which suggests an account, or "pair",
-  which stops being true at the second target.
-- **Every preset is a command.** The provider adds one catalogue row per
-  preset, *Translate Spanish → English*, matched by name and alias like any
-  other row, so `es en` or its alias finds it and usage ranks the ones used
-  most. Selecting one opens the view with its languages already set: the
-  user types and reads, and chooses nothing. The plain *Translate* command
-  opens the preset used last, or the first one.
-- **A preset is visible, and switchable, inside the view.** The search
-  field's placeholder names it ("Spanish → English, French"), so the user
-  sees what will happen before typing. *Next Preset* and *Previous Preset*
-  are keymap actions (I-14) that switch without leaving the view or losing
-  the text, and the action panel lists every preset by name. None of this
-  needs anything the view vocabulary lacks: `List::placeholder` and titled
-  sections are already there.
-- **Presets live in `config.json`,** under `translate.presets`, and reload
-  live like the rest of it. Languages are codes from a fixed table of those
-  both services accept -- the keyless endpoint publishes no list to ask.
-  Presets missing a name or naming a language outside it are skipped with a
-  log line rather than failing the file. With no presets
-  defined, one is implied, `auto → en`, so the command works on first use.
-  Creating a preset from the view (*Save as Preset*) and a settings page for
-  them are step 2; step 1 is the file, which is how quicklinks started.
-- **One row per target.** The translation is the row's title and the target
-  language an accessory; the detected source is shown once, as the section's
-  title. A preset with three targets makes three rows, reserved as soon as the
-  view opens, so the list never changes height while answers arrive (I-10).
-  Each target is its own request on its own thread, and each row fills in
-  when its answer does. Targets are capped at four per preset: every target
-  multiplies the requests the keyless endpoint may throttle, and the
-  characters counted against a DeepL quota.
-- **The actions follow the row.** `Enter` copies the selected translation;
-  the panel offers *Copy Original*, *Copy All* (every target, one per line)
-  and *Swap Languages*, which makes the row's target the source and its
-  translation the query, for a one-off reply without editing a preset. Their
-  keys come from the keymap like every other action (I-14). A translation
-  longer than a row opens as a `Detail`. *Paste to Active App* is left out:
-  nothing in Lumen pastes into another application yet, and the translator is
-  not the place to introduce it.
+  an optional alias, a source (or `auto`) and one to four targets --
+  *Spanish → English*, or *Spanish → English, French*. "Preset" rather than
+  "profile", which suggests an account, or "pair", which stops being true at
+  the second target.
+- **Every preset is a command.** `providers::translate` adds a catalogue row
+  per preset, found by its name, its alias, and the codes and names of its
+  languages, so `es en` finds it, and ranked by use like anything else.
+  Choosing one opens the view on it: the user types, and chooses nothing.
+  The plain *Translate* opens the preset used last -- remembered for the
+  daemon's lifetime, not written to disk.
+- **The preset is a scope, which the vocabulary gained.** The plan had the
+  placeholder name the preset and two keymap actions switch it. Building it
+  showed the keys had nowhere to go: a view's events were all about rows or
+  the query, and an empty list has no row to carry an action. So `List`
+  gained an optional `Scope` -- Raycast's search-bar dropdown: options and
+  the one selected -- and `Event` gained `ScopeChanged`. The launcher draws
+  the selected option as a pill at the end of the search field, styled like
+  the quicklink argument pill, and `Tab` / `Shift+Tab` step through the
+  options. Those keys are bound in a `Scoped` key context that the search row
+  has only while the view declares a scope; GPUI ranks bindings by context
+  depth first, so `Tab` still types a quicklink's argument in the root list
+  (I-14). The pill changes on the key, and the view's render confirms it. A
+  view that declares no scope is never sent the event, so World Clock and
+  Characters did not change.
+- **Presets live in `config.json`,** under `translate.presets`, read
+  leniently: `to` takes one language or a list, a language is a code or a
+  name, and a preset with no name, a repeated name, no target or a language
+  outside the table is skipped with a log line while the others load.
+  Targets past four are dropped. The table is the thirty languages DeepL
+  translates, all of which Google does too, so changing `service` never
+  turns a working preset into a skipped one. With none usable, one is
+  implied, *Any Language → English*. A changed preset re-indexes the root
+  list. *Save as Preset* and a settings page are step 2; step 1 is the file,
+  which is how quicklinks started.
+- **One row per target.** The translation is the row's title, drawn on one
+  line, and the target language a tag. The section title is always present
+  -- "From Spanish", "Detecting language…", "Detected Spanish" -- so no
+  header appears or vanishes as answers arrive, and a preset with three
+  targets has three rows from the first keystroke (I-10). The launcher gained
+  one general fix for this: a re-render keeps the selection on the row it was
+  on, by the view's own id. Before, every render put it back on the first
+  row, and rows filling in one by one would have pulled it away from the
+  user each time.
+- **The actions follow the row.** `Enter` copies the translation, line breaks
+  kept, and closes the launcher; the panel adds *Copy Original*, *Copy All
+  Translations* (one per line) and *Switch to …* for each other preset. A
+  failed row offers *Try Again*. Two planned actions were dropped: *Swap
+  Languages*, because a view cannot set the text of the search field and
+  swapping without the text is half a swap; and opening a long translation
+  as a `Detail`, because `Esc` in a view clears the query rather than
+  stepping back from a detail, so it would have thrown the text away. Long
+  translations are truncated on screen and copied whole. *Paste to Active
+  App* is left out: nothing in Lumen pastes into another application yet.
 - **Offline is a second implementation, not a second design.** Local neural
   translation exists (OPUS-MT models run through `candle`, or Mozilla's
   Bergamot, which Firefox uses offline), but a model is 15 to 300 MB per
@@ -350,11 +378,16 @@ whole design is about keeping that request where nothing waits on it.
   third `Translator`, whose models are downloaded per pair on request,
   loaded when the view opens and freed when it closes. Nothing above changes
   for it.
-- **Measured before it is built.** `scripts/measure-idle.ps1` is run on this
-  branch before the first line of the feature and again after, and installed
-  size is checked. The expected result is that none of them move: the client
-  is already in the binary and exists only while the view is open. If they
-  do move, that is the finding, not the feature.
+- **Measured before it was built, and one number moved.** The baseline was
+  built before the first line of the feature. Idle, window hidden, never
+  opened: CPU 0.004 % before and 0.000 % after, working set 72.4 MB and
+  71.8 MB, private 86.1 MB and 85.0 MB, 31 threads both times -- unchanged.
+  The binary did not stay the same size, as the plan expected: 15,537,664
+  bytes to 15,874,048, **+336 KB**. The client was already linked, but only
+  its GET path was; POST, request headers and JSON bodies, plus the feature's
+  own code, were not. That is 0.8 % of the 40 MB budget, and accepted. Not
+  measured: idle *after* using the translator, which needs the view driven
+  by hand, and is what the thirty-second release of the client exists for.
 
 ---
 

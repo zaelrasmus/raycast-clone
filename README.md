@@ -82,6 +82,12 @@ an aesthetic worth looking at fifty times a day.
   *Open github.com* first; `Ctrl+K` opens it privately, in another browser,
   or saves it as a quicklink. Typed URLs are never written to Lumen's usage
   history, and nothing opened in a private window is.
+- **Translate** (F7). *Translate* opens a view where what you type is
+  translated as you pause, by Google (no setup) or DeepL (your own key).
+  Save the directions you use as **presets** -- *Spanish → English*, or one
+  source into up to four languages at once -- and each is its own row in the
+  root list, so choosing one means you only type. `Tab` switches preset
+  without losing the text; `Enter` copies the translation and closes.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -177,7 +183,7 @@ window hidden. Both are how the numbers below were taken.
 | Idle resident memory | < 100 MB | **64–72 MB** working set, window hidden | ✅ |
 | Idle CPU | < 0.02 % | **0.000 %** over 60 s, below one 15.6 ms tick | ✅ |
 | Cold start to usable | < 400 ms | **340–357 ms** from `main` to summonable | ✅ |
-| Installed size | < 40 MB | **15.5 MB**, the whole install | ✅ |
+| Installed size | < 40 MB | **15.9 MB**, the whole install | ✅ |
 
 The budgets were tightened once these numbers were in (ARCHITECTURE 7.36). Idle
 CPU is near zero because nothing in the daemon runs on a timer: file changes
@@ -256,6 +262,7 @@ Then run the binary once to start the daemon:
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy, cut, paste |
 | `Ctrl+K` | Show every action for the selected row |
 | `Tab` | Type a search for the selected quicklink, or the one whose name or alias is the query |
+| `Tab` / `Shift+Tab` in *Translate* | Next / previous preset |
 
 The query is a real text field: the mouse places the caret and drags a
 selection, double-click selects a word, and dead keys, AltGr and input-method
@@ -585,6 +592,44 @@ beginning with a dot are skipped.
 The index is built once when the daemon starts. A file created afterwards is
 found on the next restart, or by running `lumen reload`, which also
 rebuilds it.
+
+### Translation
+
+In `config.json`. With nothing set, *Translate* uses Google and translates
+any language into English.
+
+```json
+"translate": {
+  "service": "google",
+  "presets": [
+    { "name": "Spanish → English", "alias": "esen", "from": "es", "to": "en" },
+    { "name": "Spanish → Many", "from": "es", "to": ["en", "fr", "pt"] },
+    { "name": "To German", "to": "de" }
+  ]
+}
+```
+
+| field | meaning |
+| ----- | ------- |
+| `service` | `"google"` (default, no key) or `"deepl"`. Never both: text meant for one is not sent to the other when it fails. |
+| `deepl-key` | Your DeepL API key. The free plan's keys end in `:fx` and allow 500,000 characters a month. Never logged. |
+| `presets[].name` | required, and unique. The row's title in the root list and the pill in the view. |
+| `presets[].alias` | optional. Another word the root list finds it by. |
+| `presets[].from` | optional. A code (`es`) or a name (`Spanish`); absent or `"auto"` detects it. |
+| `presets[].to` | required. One language, or a list of up to four; each gets its own row. |
+
+The languages are the thirty both services translate: Arabic, Bulgarian,
+Chinese (`zh`, simplified), Czech, Danish, Dutch, English, Estonian, Finnish,
+French, German, Greek, Hungarian, Indonesian, Italian, Japanese, Korean,
+Latvian, Lithuanian, Norwegian (`nb`), Polish, Portuguese, Romanian, Russian,
+Slovak, Slovenian, Spanish, Swedish, Turkish and Ukrainian. A preset naming
+anything else is skipped and logged, and the others still load.
+
+*Translate* on its own opens the preset you used last. The view names the
+service that receives your text, before you type any. Nothing is sent until
+you pause, and nothing longer than 5,000 characters. The Google service is an
+undocumented endpoint and may stop working without notice; if it does, the
+row says why, and DeepL is the documented alternative.
 
 ---
 
