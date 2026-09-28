@@ -299,20 +299,50 @@ whole design is about keeping that request where nothing waits on it.
   logged or shown back in full. The Windows Credential Manager would be
   better, and would be a `trait Platform` change with a Linux counterpart;
   it is deferred rather than rejected.
-- **The target is remembered, the source is detected.** Both services detect
-  the source language. The target starts as `translate.target` (`en` by
-  default) and is changed from the action panel, from a fixed table of
-  languages both services accept -- the keyless endpoint publishes no list to
-  ask. The last choice is kept for the next open. *Swap
-  Languages* makes the detected source the target and the translation the
-  query.
-- **The result is one row, with its actions.** The translation is the row's
-  title, the detected language an accessory. `Enter` copies it, and the panel
-  offers *Copy Original* and the language actions. Their keys come from the
-  keymap like every other action (I-14). A translation longer than a row
-  opens as a `Detail`. *Paste to Active App* is left out: nothing in Lumen
-  pastes into another application yet, and the translator is not the place
-  to introduce it.
+- **Languages are chosen once, as presets.** Picking a source and a target
+  every time is the slow part of translating, and most people translate
+  between the same few languages. A **preset** is a saved direction: a name,
+  an optional alias, a source (a language, or `auto` to detect it) and one or
+  more targets -- *Spanish → English*, or *Spanish → English, French*.
+  "Preset" rather than "profile", which suggests an account, or "pair",
+  which stops being true at the second target.
+- **Every preset is a command.** The provider adds one catalogue row per
+  preset, *Translate Spanish → English*, matched by name and alias like any
+  other row, so `es en` or its alias finds it and usage ranks the ones used
+  most. Selecting one opens the view with its languages already set: the
+  user types and reads, and chooses nothing. The plain *Translate* command
+  opens the preset used last, or the first one.
+- **A preset is visible, and switchable, inside the view.** The search
+  field's placeholder names it ("Spanish → English, French"), so the user
+  sees what will happen before typing. *Next Preset* and *Previous Preset*
+  are keymap actions (I-14) that switch without leaving the view or losing
+  the text, and the action panel lists every preset by name. None of this
+  needs anything the view vocabulary lacks: `List::placeholder` and titled
+  sections are already there.
+- **Presets live in `config.json`,** under `translate.presets`, and reload
+  live like the rest of it. Languages are codes from a fixed table of those
+  both services accept -- the keyless endpoint publishes no list to ask.
+  Presets missing a name or naming a language outside it are skipped with a
+  log line rather than failing the file. With no presets
+  defined, one is implied, `auto → en`, so the command works on first use.
+  Creating a preset from the view (*Save as Preset*) and a settings page for
+  them are step 2; step 1 is the file, which is how quicklinks started.
+- **One row per target.** The translation is the row's title and the target
+  language an accessory; the detected source is shown once, as the section's
+  title. A preset with three targets makes three rows, reserved as soon as the
+  view opens, so the list never changes height while answers arrive (I-10).
+  Each target is its own request on its own thread, and each row fills in
+  when its answer does. Targets are capped at four per preset: every target
+  multiplies the requests the keyless endpoint may throttle, and the
+  characters counted against a DeepL quota.
+- **The actions follow the row.** `Enter` copies the selected translation;
+  the panel offers *Copy Original*, *Copy All* (every target, one per line)
+  and *Swap Languages*, which makes the row's target the source and its
+  translation the query, for a one-off reply without editing a preset. Their
+  keys come from the keymap like every other action (I-14). A translation
+  longer than a row opens as a `Detail`. *Paste to Active App* is left out:
+  nothing in Lumen pastes into another application yet, and the translator is
+  not the place to introduce it.
 - **Offline is a second implementation, not a second design.** Local neural
   translation exists (OPUS-MT models run through `candle`, or Mozilla's
   Bergamot, which Firefox uses offline), but a model is 15 to 300 MB per
