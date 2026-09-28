@@ -89,7 +89,7 @@ fn print_help() {
          overlay-press      Report that the hold gesture began\n    \
          overlay-release    Report that the hold gesture ended\n    \
          settings           Open the settings window\n    \
-         reload             Re-read the configuration, sheets, scripts and snippets\n    \
+         reload             Re-read the configuration, sheets, scripts, snippets and quicklinks\n    \
          quit               Stop the running daemon\n\n\
          With no running daemon, `toggle`, `show` and `settings` start one."
     );
@@ -142,6 +142,7 @@ fn run_daemon() -> Result<()> {
     lumen_core::install_example_script(&paths.scripts_dir())?;
     lumen_core::install_example_extensions(&paths.extensions_dir())?;
     lumen_core::providers::snippets::install_example(&paths.snippets_file())?;
+    lumen_core::providers::quicklinks::install_example(&paths.quicklinks_file())?;
     Config::write_default(&paths.config_file())?;
 
     let config = Config::load(&paths.config_file());
@@ -354,6 +355,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     };
 
     watch_sheets(cx, &surfaces);
+    watch_quicklinks(cx, &surfaces);
 
     cx.spawn({
         let platform = platform.clone();
@@ -535,6 +537,38 @@ fn watch_sheets(cx: &mut App, surfaces: &Surfaces) {
             library.add(keymap::sheet());
             log::info!("reloaded {} shortcut sheets", library.len());
             *sheets.borrow_mut() = library;
+        }
+    })
+    .detach();
+}
+
+/// Re-read the quicklinks when `quicklinks.json` is saved (F6).
+///
+/// Live, unlike snippets: a quicklink is most often added the moment you want
+/// it, and making that wait on `lumen reload` is the friction live reload
+/// exists to remove.
+fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
+    use lumen_core::watcher::FileWatcher;
+
+    let (sink, mut changes) = change_channel();
+    let watcher = match FileWatcher::start(&surfaces.paths.quicklinks_file(), sink) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            log::warn!("quicklinks will need `lumen reload` to change: {error:#}");
+            return;
+        }
+    };
+
+    let launcher = surfaces.launcher;
+    cx.spawn(async move |cx| {
+        let _watcher = watcher;
+        while next_change(&mut changes, cx).await {
+            let reloaded = launcher.update(cx, |launcher, _window, cx| {
+                launcher.reload_quicklinks(cx);
+            });
+            if reloaded.is_err() {
+                break;
+            }
         }
     })
     .detach();

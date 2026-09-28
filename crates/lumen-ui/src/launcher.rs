@@ -26,6 +26,7 @@ use gpui::{
     SharedString, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div,
     ease_out_quint, img, svg, uniform_list,
 };
+use lumen_core::providers::QuicklinkProvider;
 use lumen_core::root::{Aside, CLIPBOARD_ENTRIES, Hit};
 use lumen_core::theme::Appearance;
 use lumen_core::{
@@ -393,6 +394,16 @@ impl Launcher {
         self.start_indexing(cx);
     }
 
+    /// Re-read `quicklinks.json` after it was saved (F6).
+    ///
+    /// The whole index rather than the links alone: as catalogue entries they
+    /// live in it, and one index built one way is simpler than a second list
+    /// with its own ranking rules. It is off the UI thread and the old index
+    /// stays up until the new one lands (I-3).
+    pub fn reload_quicklinks(&mut self, cx: &mut Context<Self>) {
+        self.start_indexing(cx);
+    }
+
     /// Build the application index off the UI thread.
     ///
     /// I-3: root search never waits on this. Until it lands the list is simply
@@ -406,26 +417,42 @@ impl Launcher {
             // Built and compared on the background thread: enumeration and
             // preparing the haystacks are the expensive halves, and the answer
             // to a re-index is usually "nothing changed".
-            let rebuilt = cx
+            let (rebuilt, quicklinks) = cx
                 .background_executor()
                 .spawn(async move {
-                    let rebuilt = lumen_core::root::build_index(platform.as_ref(), &paths)?;
-                    let unchanged = lumen_core::root::same_index(&current, &rebuilt);
-                    anyhow::Ok((!unchanged).then_some(rebuilt))
+                    // Read beside the index rather than inside it: answers and
+                    // fallbacks come from the links themselves, and an alias
+                    // can change without any catalogue entry changing.
+                    let quicklinks =
+                        lumen_core::providers::quicklinks::load(&paths.quicklinks_file());
+                    let rebuilt =
+                        lumen_core::root::build_index(platform.as_ref(), &paths).map(|rebuilt| {
+                            let unchanged = lumen_core::root::same_index(&current, &rebuilt);
+                            (!unchanged).then_some(rebuilt)
+                        });
+                    (rebuilt, QuicklinkProvider::new(quicklinks))
                 })
                 .await;
 
             let index = match rebuilt {
-                Ok(Some(index)) => index,
-                Ok(None) => return,
+                Ok(index) => index,
                 Err(error) => {
                     log::error!("could not index applications: {error:#}");
-                    return;
+                    None
                 }
             };
 
             this.update(cx, |this, cx| {
-                this.root.replace_index(index);
+                let links_changed = this.root.replace_quicklinks(quicklinks);
+                // Nothing to show means nothing to re-rank: that would put the
+                // selection back on the first row under somebody who had just
+                // moved it (see `same_index`).
+                if index.is_none() && !links_changed {
+                    return;
+                }
+                if let Some(index) = index {
+                    this.root.replace_index(index);
+                }
                 this.rerank(cx);
                 cx.notify();
             })
@@ -1180,6 +1207,15 @@ impl Launcher {
             cx.emit(LauncherEvent::Builtin(command));
             return;
         }
+
+        // A quicklink that names no browser opens in the preferred one, which
+        // only the configuration knows.
+        let action = match action {
+            Action::OpenLink(open) => {
+                Action::OpenLink(open.or_browser(self.config.preferred_browser.as_deref()))
+            }
+            action => action,
+        };
 
         let platform = self.platform.clone();
         cx.background_spawn(async move {

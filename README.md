@@ -277,7 +277,8 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
     "enabled": true,
     "roots": [],
     "limits": { "max-entries": 5000, "max-depth": 6 }
-  }
+  },
+  "preferred-browser": null
 }
 ```
 

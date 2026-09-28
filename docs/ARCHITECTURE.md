@@ -113,6 +113,7 @@ once Lumen was measured well inside them (7.36).
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
+| **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **In progress.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an in-launcher form to create one, and a Tab-into-argument field |
 
 ### F4 build order is not optional
 
@@ -123,6 +124,35 @@ once Lumen was measured well inside them (7.36).
 4. Write the **second** extension before stabilising anything in the protocol.
    The first extension lies: it fits perfectly because the protocol was designed
    while looking at it.
+
+### F6 decisions
+
+The shape is Raycast's, where web search is not a feature of its own: "Search
+Google" is a quicklink whose link is `https://www.google.com/search?q={query}`.
+One mechanism, not two.
+
+- **A data file, not a database.** `quicklinks.json` beside `snippets.json`,
+  reloaded live. SQLite earned its place for the clipboard because of the write
+  pattern -- a row per copy, forever (7.14). Quicklinks are a few dozen rows,
+  edited by hand or rarely from the UI, which is the snippets case. `sqlx` was
+  considered and rejected: it would be a second link to `libsqlite3-sys` beside
+  `rusqlite`, and an async runtime in a daemon whose idle budget is 0.02 % CPU.
+- **Two placeholders.** `{query}` is what follows the alias (`g lofi beats`) and
+  `{clipboard}` is read when the link is opened, never per keystroke. Both are
+  percent-encoded. An unknown placeholder rejects the link at load rather than
+  opening a URL with braces in it.
+- **A fallback is a property of the link.** A quicklink marked `fallback` is
+  offered at the bottom of the list for any query, as "Search Google for ...".
+  Google ships as the default entry of the example file, so removing it is an
+  edit, not a setting.
+- **The browser is named, not assumed.** A link's `open_with`, else
+  `preferred-browser` in `config.json`, else the system default. Names are
+  matched against the display names the platform reports, because the registry
+  key is not a name: Zen registers as `Firefox-<hash>` and Helium's executable
+  is `chrome.exe`.
+- **No network.** Favicons and live suggestions both need an HTTP client, which
+  is installed size and, for suggestions, a query that root search must never
+  wait on (I-3). Neither is in step 1.
 
 ---
 
