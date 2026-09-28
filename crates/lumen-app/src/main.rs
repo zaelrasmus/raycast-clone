@@ -1368,9 +1368,14 @@ fn resize(
 }
 
 /// Where the window goes, in physical pixels.
+///
+/// The top edge is where a full root list would put it, so the search field
+/// stays still while the result count changes the height.
 fn placement(monitor: &MonitorInfo, config: &Config, height: f32) -> Rect {
-    monitor.place(
+    let anchor = config.window_height(config.window.visible_rows);
+    monitor.place_anchored(
         Rect::size(config.window.width as i32, height as i32),
+        anchor as i32,
         config.window.horizontal_bias,
         config.window.vertical_bias,
     )

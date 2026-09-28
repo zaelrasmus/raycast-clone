@@ -91,6 +91,34 @@ impl MonitorInfo {
 
         Rect::new(x, y, width, height)
     }
+
+    /// Like [`place`](Self::place), but with the top edge worked out for a
+    /// window `anchor_height` logical pixels tall, whatever `size` says.
+    ///
+    /// For the launcher, whose height follows its results: placed by its own
+    /// height, every keystroke that changed the row count moved the search
+    /// field the user was typing into. Placed by a fixed anchor, only the
+    /// bottom edge moves. A window taller than its anchor is lifted just
+    /// enough to stay on screen.
+    pub fn place_anchored(
+        &self,
+        size: Rect,
+        anchor_height: i32,
+        horizontal_bias: f32,
+        vertical_bias: f32,
+    ) -> Rect {
+        let anchor = self.place(
+            Rect::size(size.width, anchor_height),
+            horizontal_bias,
+            vertical_bias,
+        );
+        let placed = self.place(size, horizontal_bias, vertical_bias);
+
+        let bottom = self.work_area.y + self.work_area.height;
+        let y = anchor.y.min(bottom - placed.height).max(self.work_area.y);
+
+        Rect::new(placed.x, y, placed.width, placed.height)
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +174,40 @@ mod tests {
         assert!(placed.x >= monitor.work_area.x);
         assert!(placed.y >= monitor.work_area.y);
         assert!(placed.y + placed.height <= monitor.work_area.y + monitor.work_area.height);
+    }
+
+    /// The launcher's top edge -- where the search field is -- must not move
+    /// as the result count changes the window's height. Only the bottom does.
+    #[test]
+    fn an_anchored_window_keeps_its_top_edge_whatever_its_height() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.5,
+        };
+
+        let tall = monitor.place_anchored(Rect::size(760, 470), 470, 0.5, 0.22);
+        let short = monitor.place_anchored(Rect::size(760, 150), 470, 0.5, 0.22);
+
+        assert_eq!(tall.y, short.y);
+        assert_eq!(tall.y, monitor.place(Rect::size(760, 470), 0.5, 0.22).y);
+        assert_eq!(short.height, 225);
+    }
+
+    /// Something taller than the anchor, near the bottom of the screen, is
+    /// moved up rather than hung off the edge.
+    #[test]
+    fn an_anchored_window_taller_than_its_anchor_stays_on_screen() {
+        let monitor = MonitorInfo {
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.0,
+        };
+
+        let placed = monitor.place_anchored(Rect::size(760, 900), 300, 0.5, 1.0);
+
+        assert!(placed.y + placed.height <= 1040);
+        assert!(placed.y >= 0);
     }
 
     #[test]
