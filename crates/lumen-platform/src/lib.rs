@@ -184,6 +184,22 @@ pub enum LaunchMode {
     Fresh,
 }
 
+/// A web browser the system knows about (F6).
+///
+/// Found through the system's own registration rather than a list of known
+/// browsers, so one Lumen has never heard of is offered like any other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Browser {
+    /// What the system calls it -- "Zen Browser", "Brave" -- and what the user
+    /// writes to choose it.
+    ///
+    /// The display name rather than the registration's own key, because the key
+    /// is not a name anybody knows: Zen registers as `Firefox-<hash>`.
+    pub name: String,
+    /// The program a URL is handed to.
+    pub executable: PathBuf,
+}
+
 /// How an [`AppEntry`] is started.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LaunchTarget {
@@ -350,4 +366,17 @@ pub trait Platform: Send + Sync {
 
     /// Replace the system clipboard contents with `text`.
     fn set_clipboard_text(&self, text: &str) -> Result<()>;
+
+    /// The browsers installed for this user, in no particular order (F6).
+    ///
+    /// Read from the system each time rather than cached: it is asked when a
+    /// link is opened, off the UI thread, and a cache would be one more thing
+    /// to invalidate when a browser is installed.
+    fn installed_browsers(&self) -> Result<Vec<Browser>>;
+
+    /// Open `url` in `browser`, or in the system's default when `None`.
+    ///
+    /// `url` has already been checked to start with a scheme, so it cannot
+    /// reach a browser's command line as a flag.
+    fn open_url(&self, url: &str, browser: Option<&Browser>) -> Result<()>;
 }

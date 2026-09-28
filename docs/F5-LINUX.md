@@ -91,6 +91,8 @@ keystroke would show in the budgets.
 | `spawn_extension` | Same as `run_script`, resolved against the extension's folder, not `PATH` | Easy |
 | `arrange_window` | **H** `dispatch focuswindow`, then `dispatch movewindowpixel` / `resizewindowpixel` or `setfloating`. `lumen_platform::tiling` already does the arithmetic. On a tiling compositor, decide whether "left half" means *float it there* or *tile it there*; that's a design call, not a port | Medium |
 | `install_tray` | `StatusNotifierItem` over D-Bus (`ksni` crate). Waybar and the other Hyprland bars display it | Easy |
+| `installed_browsers` | Desktop entries whose `MimeType=` lists `x-scheme-handler/https`, named by their `Name=`. The same scan as `enumerate_applications`, filtered | Easy |
+| `open_url` | `None`: `xdg-open`. `Some`: the browser's `Exec` with `%u` replaced by the URL, detached like `launch`. Keep `Browser::name` the desktop entry's `Name=` so `preferred-browser` is the same string on both systems | Easy |
 
 ---
 

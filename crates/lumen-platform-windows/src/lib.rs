@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ApplicationsSink, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey,
-    IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
+    AppEntry, ApplicationsSink, Browser, ClipboardSink, FocusOwner, ForegroundApp, GestureSink,
+    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
     TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
@@ -23,6 +23,7 @@ mod activate;
 mod app_watch;
 mod apps;
 mod arrange;
+mod browsers;
 mod clipboard;
 mod clipboard_watch;
 mod com;
@@ -208,6 +209,18 @@ impl Platform for WindowsPlatform {
 
     fn set_clipboard_text(&self, text: &str) -> Result<()> {
         clipboard::set_text(text)
+    }
+
+    fn installed_browsers(&self) -> Result<Vec<Browser>> {
+        browsers::installed()
+    }
+
+    fn open_url(&self, url: &str, browser: Option<&Browser>) -> Result<()> {
+        match browser {
+            Some(browser) => browsers::open(url, browser),
+            // The shell resolves a URL to whatever the user chose in Settings.
+            None => shell_execute(url),
+        }
     }
 }
 

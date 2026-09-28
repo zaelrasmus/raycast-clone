@@ -29,8 +29,8 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ApplicationsSink, ClipboardSink, FocusOwner, ForegroundApp, GestureSink, Hotkey,
-    IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
+    AppEntry, ApplicationsSink, Browser, ClipboardSink, FocusOwner, ForegroundApp, GestureSink,
+    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
     TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
@@ -169,5 +169,13 @@ impl Platform for LinuxPlatform {
 
     fn set_clipboard_text(&self, _text: &str) -> Result<()> {
         todo!("F5: wl_data_device")
+    }
+
+    fn installed_browsers(&self) -> Result<Vec<Browser>> {
+        todo!("F5: desktop entries whose MimeType lists x-scheme-handler/https")
+    }
+
+    fn open_url(&self, _url: &str, _browser: Option<&Browser>) -> Result<()> {
+        todo!("F5: `xdg-open`, or the chosen desktop entry's Exec with %u")
     }
 }
