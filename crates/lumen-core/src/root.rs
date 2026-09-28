@@ -251,6 +251,16 @@ impl RootSearch {
                 .then_with(|| self.item(a).title.cmp(&self.item(b).title))
         });
 
+        // A quicklink typed exactly -- its whole name, or its alias -- is what
+        // the user meant, and leads the matches. Scoring alone lets usage
+        // put a longer name first: `google` opened Google Drive (F6).
+        if let Some(id) = self.quicklinks.exact(query)
+            && let Some(at) = hits.iter().position(|hit| self.item(hit).id == id)
+        {
+            let hit = hits.remove(at);
+            hits.insert(0, hit);
+        }
+
         // An answer *is* what the user asked for -- it was computed from their
         // exact query -- so it goes above every fuzzy guess rather than
         // competing with them on a score it has no meaningful way to earn.
@@ -598,6 +608,43 @@ mod tests {
         root.rank("g lofi");
 
         assert_eq!(titles(&root)[0], "Search Google for \u{201c}lofi\u{201d}");
+    }
+
+    /// Typing a link's whole name, or its alias, means that link -- even
+    /// against an application with a longer name the user opens every day.
+    #[test]
+    fn a_quicklink_named_exactly_leads_the_matches() {
+        let links = google();
+        let mut index = apps(&["Google Drive"]);
+        index.extend(links.catalogue().into_iter().map(Candidate::new));
+        let mut root = root(index);
+        root.replace_quicklinks(links);
+        for _ in 0..20 {
+            root.record_use("Google Drive");
+        }
+
+        root.rank("google");
+        assert_eq!(titles(&root)[0], "Google");
+
+        // The alias alone, with no space and so no answer yet.
+        root.rank("G");
+        assert_eq!(titles(&root)[0], "Google");
+    }
+
+    /// Only an exact name: a prefix is still a fuzzy match like any other.
+    #[test]
+    fn a_partial_quicklink_name_competes_on_score() {
+        let links = google();
+        let mut index = apps(&["Google Drive"]);
+        index.extend(links.catalogue().into_iter().map(Candidate::new));
+        let mut root = root(index);
+        root.replace_quicklinks(links);
+        for _ in 0..20 {
+            root.record_use("Google Drive");
+        }
+
+        root.rank("goog");
+        assert_eq!(titles(&root)[0], "Google Drive");
     }
 
     #[test]

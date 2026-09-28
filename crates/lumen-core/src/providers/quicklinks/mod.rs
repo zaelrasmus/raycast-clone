@@ -428,6 +428,25 @@ impl QuicklinkProvider {
             })
     }
 
+    /// The id of the link whose alias or whole name `query` is, whatever its
+    /// link. For ranking: typed exactly, a link is what was meant.
+    pub fn exact(&self, query: &str) -> Option<String> {
+        let query = query.trim();
+        if query.is_empty() {
+            return None;
+        }
+        self.links
+            .iter()
+            .find(|link| {
+                link.name.eq_ignore_ascii_case(query)
+                    || link
+                        .alias
+                        .as_deref()
+                        .is_some_and(|alias| alias.eq_ignore_ascii_case(query))
+            })
+            .map(Quicklink::id)
+    }
+
     /// The one row shown while the launcher asks for `id`'s argument.
     ///
     /// Before anything is typed it is the link itself, opened empty, so Enter
