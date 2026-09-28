@@ -595,8 +595,12 @@ rebuilds it.
 
 ### Translation
 
-In `config.json`. With nothing set, *Translate* uses Google and translates
-any language into English.
+The **Translation** tab of the settings window (`lumen settings`) chooses the
+service, keeps the DeepL key, and adds, edits and deletes presets, with the
+languages in dropdowns. It writes the `translate` section of `config.json`
+and leaves the rest of the file as it was; the launcher follows at once. The
+same section can be edited by hand. With nothing set, *Translate* uses Google
+and translates any language into English.
 
 ```json
 "translate": {

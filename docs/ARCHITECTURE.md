@@ -114,7 +114,7 @@ once Lumen was measured well inside them (7.36).
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
-| **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Step 1 done.** Google and DeepL behind `trait Translator`, presets from `config.json` as root rows, switched in the view with `Tab` through a new `Scope` in the view vocabulary. Step 2: *Save as Preset* and a settings page. Offline later. See F7 decisions |
+| **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Step 1 done**, and the settings page of step 2. Google and DeepL behind `trait Translator`, presets from `config.json` as root rows, switched in the view with `Tab` through a new `Scope` in the view vocabulary, edited on a *Translation* settings page. Still to do: *Save as Preset* from the view. Offline later. See F7 decisions |
 
 ### F4 build order is not optional
 
@@ -350,8 +350,19 @@ built; what changed on the way from the plan is said where it happened.
   translates, all of which Google does too, so changing `service` never
   turns a working preset into a skipped one. With none usable, one is
   implied, *Any Language → English*. A changed preset re-indexes the root
-  list. *Save as Preset* and a settings page are step 2; step 1 is the file,
-  which is how quicklinks started.
+  list. *Save as Preset* from the view is still to come.
+- **A settings page, written through a store.** The *Translation* tab has the
+  Quicklinks page's shape: the service and the presets in a list, the
+  selected one's form beside it, a dialog before a delete. Languages are
+  dropdowns of the table, so the page cannot write a preset the loader would
+  skip. `translate::store` edits `config.json` as a document -- only the
+  `translate` section changes, a file that does not parse is refused, and
+  the write is a rename -- and the existing watcher does the rest. That made
+  `serde_json`'s `preserve_order` a requirement rather than an accident:
+  without it every save re-sorted the whole file alphabetically. The full
+  build already had it through gpui; `lumen-core` now asks for it. The DeepL
+  key is never shown back: the field starts empty, names the last four
+  characters of the saved one, and leaving it empty keeps it.
 - **One row per target.** The translation is the row's title, drawn on one
   line, and the target language a tag. The section title is always present
   -- "From Spanish", "Detecting language…", "Detected Spanish" -- so no
