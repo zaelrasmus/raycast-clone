@@ -11,7 +11,10 @@ repository.workspace = true
 lumen-platform.workspace = true
 anyhow.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# preserve_order: the translate store edits config.json as a document, and a
+# save must not re-sort a file people edit by hand. Already on in the full
+# build through gpui, so it costs nothing there.
+serde_json = { workspace = true, features = ["preserve_order"] }
 log.workspace = true
 nucleo-matcher.workspace = true
 directories.workspace = true

@@ -41,6 +41,7 @@ use crate::text_field::{
     MoveRight, MoveToEnd, MoveToStart, MoveWordLeft, MoveWordRight, Paste, SelectAll, SelectLeft,
     SelectRight, SelectToEnd, SelectToStart, SelectWordLeft, SelectWordRight,
 };
+use crate::translate_page::{EditPreset, NextPreset, PreviousPreset};
 
 /// The key context these bindings apply in, matching `Launcher`'s.
 const CONTEXT: &str = "Launcher";
@@ -72,6 +73,10 @@ const DIALOG_CONTEXT: &str = crate::quicklinks_page::DIALOG_CONTEXT;
 
 /// The settings window's list of quicklinks.
 const LIST_CONTEXT: &str = crate::quicklinks_page::LIST_CONTEXT;
+
+/// The translation page's form and list (F7).
+const TRANSLATE_FORM_CONTEXT: &str = crate::translate_page::FORM_CONTEXT;
+const PRESET_LIST_CONTEXT: &str = crate::translate_page::LIST_CONTEXT;
 
 /// A dropdown, inside a form.
 const SELECT_CONTEXT: &str = crate::select::CONTEXT;
@@ -337,6 +342,13 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("up", PreviousField, Some(FORM_CONTEXT)),
         KeyBinding::new("enter", SubmitForm, Some(FORM_CONTEXT)),
         KeyBinding::new("escape", CancelForm, Some(FORM_CONTEXT)),
+        // The translation page's form moves and saves the same way (F7).
+        KeyBinding::new("tab", NextField, Some(TRANSLATE_FORM_CONTEXT)),
+        KeyBinding::new("down", NextField, Some(TRANSLATE_FORM_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousField, Some(TRANSLATE_FORM_CONTEXT)),
+        KeyBinding::new("up", PreviousField, Some(TRANSLATE_FORM_CONTEXT)),
+        KeyBinding::new("enter", SubmitForm, Some(TRANSLATE_FORM_CONTEXT)),
+        KeyBinding::new("escape", CancelForm, Some(TRANSLATE_FORM_CONTEXT)),
         // Only on a checkbox: in a field, space is a character.
         KeyBinding::new("space", ToggleFallback, Some(TOGGLE_CONTEXT)),
     ]);
@@ -348,6 +360,10 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("down", NextLink, Some(LIST_CONTEXT)),
         KeyBinding::new("enter", EditLink, Some(LIST_CONTEXT)),
         KeyBinding::new("tab", EditLink, Some(LIST_CONTEXT)),
+        KeyBinding::new("up", PreviousPreset, Some(PRESET_LIST_CONTEXT)),
+        KeyBinding::new("down", NextPreset, Some(PRESET_LIST_CONTEXT)),
+        KeyBinding::new("enter", EditPreset, Some(PRESET_LIST_CONTEXT)),
+        KeyBinding::new("tab", EditPreset, Some(PRESET_LIST_CONTEXT)),
     ]);
 
     // A dropdown. Closed, only Space is its own; the rest fall through to the

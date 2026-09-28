@@ -19,6 +19,7 @@ pub mod deepl;
 pub mod google;
 pub mod languages;
 pub mod session;
+pub mod store;
 
 use std::time::Duration;
 
@@ -181,66 +182,26 @@ impl TranslateConfig {
         let mut presets: Vec<Preset> = Vec::new();
 
         for written in &self.presets {
-            let name = written.name.trim();
-            if name.is_empty() {
-                log::warn!("skipping a translate preset with no name");
-                continue;
-            }
-            if presets.iter().any(|preset| preset.name == name) {
-                log::warn!("skipping a second translate preset named {name:?}");
-                continue;
-            }
-
-            let from = match written.from.as_deref().map(str::trim) {
-                None | Some("") => None,
-                Some(code) if code.eq_ignore_ascii_case("auto") => None,
-                Some(code) => match languages::find(code) {
-                    Some(language) => Some(language),
-                    None => {
-                        log::warn!(
-                            "skipping the translate preset {name:?}: unknown language {code:?}"
-                        );
-                        continue;
-                    }
-                },
-            };
-
-            let mut to = Vec::new();
-            let mut unknown = None;
-            for code in written.to.codes() {
-                match languages::find(code) {
-                    Some(language) if !to.contains(&language) => to.push(language),
-                    Some(_) => {}
-                    None => unknown = Some(code),
+            let mut preset = match resolve(written) {
+                Ok(preset) => preset,
+                Err(problem) => {
+                    log::warn!("skipping a translate preset: {problem}");
+                    continue;
                 }
-            }
-            if let Some(code) = unknown {
-                log::warn!("skipping the translate preset {name:?}: unknown language {code:?}");
+            };
+            if presets.iter().any(|other| other.name == preset.name) {
+                log::warn!("skipping a second translate preset named {:?}", preset.name);
                 continue;
             }
-            if to.is_empty() {
-                log::warn!("skipping the translate preset {name:?}: it has no target");
-                continue;
-            }
-            if to.len() > MAX_TARGETS {
+            if preset.to.len() > MAX_TARGETS {
                 log::warn!(
-                    "the translate preset {name:?} has {} targets; using the first {MAX_TARGETS}",
-                    to.len()
+                    "the translate preset {:?} has {} targets; using the first {MAX_TARGETS}",
+                    preset.name,
+                    preset.to.len()
                 );
-                to.truncate(MAX_TARGETS);
+                preset.to.truncate(MAX_TARGETS);
             }
-
-            presets.push(Preset {
-                name: name.to_string(),
-                alias: written
-                    .alias
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|alias| !alias.is_empty())
-                    .map(str::to_string),
-                from,
-                to,
-            });
+            presets.push(preset);
         }
 
         if presets.is_empty() {
@@ -248,6 +209,52 @@ impl TranslateConfig {
         }
         presets
     }
+}
+
+/// One preset as written, checked on its own: a name, known languages, at
+/// least one target. What the loader skips and the settings page refuses are
+/// the same thing, so they are decided here once.
+///
+/// Not checked here, because they need the other presets or a policy: a name
+/// repeated elsewhere, and more than [`MAX_TARGETS`] targets.
+pub fn resolve(written: &PresetConfig) -> std::result::Result<Preset, String> {
+    let name = written.name.trim();
+    if name.is_empty() {
+        return Err("a preset needs a name".into());
+    }
+
+    let from = match written.from.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(code) if code.eq_ignore_ascii_case("auto") => None,
+        Some(code) => Some(
+            languages::find(code)
+                .ok_or_else(|| format!("{name:?} names an unknown language, {code:?}"))?,
+        ),
+    };
+
+    let mut to = Vec::new();
+    for code in written.to.codes() {
+        let language = languages::find(code)
+            .ok_or_else(|| format!("{name:?} names an unknown language, {code:?}"))?;
+        if !to.contains(&language) {
+            to.push(language);
+        }
+    }
+    if to.is_empty() {
+        return Err(format!("{name:?} has no language to translate into"));
+    }
+
+    Ok(Preset {
+        name: name.to_string(),
+        alias: written
+            .alias
+            .as_deref()
+            .map(str::trim)
+            .filter(|alias| !alias.is_empty())
+            .map(str::to_string),
+        from,
+        to,
+    })
 }
 
 /// What a service answered.

@@ -627,6 +627,7 @@ fn open_settings(
                 settings.set_foreground(app.executable, app.title);
             }
             settings.reload_quicklinks(cx);
+            settings.reload_translation(cx);
             settings.focus(window, cx);
         })
         .ok();
@@ -681,6 +682,7 @@ fn create_settings_window(
     let sheets_dir = surfaces.paths.sheets_dir();
     let quicklinks_file = surfaces.paths.quicklinks_file();
     let favicons = surfaces.paths.favicons_dir();
+    let config_file = surfaces.paths.config_file();
 
     let window = open_hidden_window(
         cx,
@@ -692,7 +694,16 @@ fn create_settings_window(
             px(lumen_core::layout::settings::HEIGHT),
         ),
         move |_window, cx| {
-            cx.new(|cx| Settings::new(theme, sheets_dir, quicklinks_file, favicons, cx))
+            cx.new(|cx| {
+                Settings::new(
+                    theme,
+                    sheets_dir,
+                    quicklinks_file,
+                    favicons,
+                    config_file,
+                    cx,
+                )
+            })
         },
     )?;
 
@@ -1072,6 +1083,16 @@ fn reload_config(
              (`lumen quit`, then `lumen`)",
             waiting.join(", ")
         );
+    }
+
+    // The translation page follows the file whoever changed it, the page
+    // itself included. Before the check below: a change the running config
+    // already holds is still one the page may not have read.
+    let settings = *surfaces.settings.borrow();
+    if let Some(settings) = settings {
+        settings
+            .update(cx, |settings, _window, cx| settings.reload_translation(cx))
+            .ok();
     }
 
     let applied = older.merge_live(&newer);
