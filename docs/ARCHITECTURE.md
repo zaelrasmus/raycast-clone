@@ -232,6 +232,12 @@ Step 3 made the list look like the sites it opens:
   `UserChoiceLatest\ProgId` or `UserChoice`, because the shell, which
   opens everything else, takes no flags. `trait Platform::open_url` gained
   the `private` argument, in both implementations at once (I-9).
+- **A failure is said where the user is.** Actions run after the launcher
+  has hidden -- a launch hands the foreground away -- so an error had nowhere
+  to go but the log, and from the user's side nothing happened.
+  `trait Platform::notify` raises a system notification instead; on Windows
+  from the tray icon (`NIF_INFO`), which needs no app registration. The tray
+  window is kept in an atomic so any thread can ask.
 - **Live suggestions are still out.** A suggestion is a request per
   keystroke whose answer root search could never wait for (I-3); it would be a
   view of its own, not rows in the root list.

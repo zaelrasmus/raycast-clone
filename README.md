@@ -99,8 +99,8 @@ an aesthetic worth looking at fifty times a day.
 
 Listed because a README that implies more than exists is worse than no README.
 
-- **The settings window has no icons.** The launcher's rows do; the sheet
-  editor is still text and buttons.
+- **The shortcut sheet editor has no icons.** The launcher's rows and the
+  settings Quicklinks list do; the sheet editor is still text and buttons.
 - **File search is not a search of the whole disk.** It walks the folders
   listed above, to a bounded depth and a bounded count, and matches from
   memory. It finds the file you were working on, not every file on the machine.
@@ -401,8 +401,13 @@ the page's own `<link rel="icon">`, then `/favicon.ico`, never a third-party
 favicon service -- in the background, after the list is already usable. It is
 kept in `%LOCALAPPDATA%\Lumen\cache\favicons\` and asked for again after
 thirty days. Offline, or for a site with none, the row keeps Lumen's icon and
-the site is not asked again for a day. Deleting the folder fetches them all
-afresh.
+the site is not asked again for a day. *Refresh icons* on the settings
+Quicklinks page forgets them all and asks every site again.
+
+**When something fails.** An action runs after the launcher has closed, so a
+failure -- a private window a browser cannot open, a program that will not
+start -- is reported in a Windows notification from Lumen's tray icon, with the
+reason. The full detail is in the log.
 
 Fields Lumen does not know are kept when it saves the file, and so are entries
 it could not read: saving a link from the launcher never loses a hand edit.
