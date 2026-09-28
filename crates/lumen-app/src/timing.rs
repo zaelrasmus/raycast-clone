@@ -62,7 +62,7 @@ pub fn report_ready() {
 pub fn report_first_frame(window: &Window, since: Instant) {
     window.on_next_frame(move |_window, _cx| {
         log::info!(
-            "gesture to first frame: {:.0} ms (budget: p50 40 ms, p95 80 ms)",
+            "gesture to first frame: {:.0} ms (budget: p50 20 ms, p95 40 ms)",
             since.elapsed().as_secs_f64() * 1000.0
         );
     });

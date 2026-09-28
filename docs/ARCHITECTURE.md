@@ -37,10 +37,10 @@ is the price of the WebView. That, not open speed, is what justifies going nativ
 
 | Metric (July 2026 reference, M4 Max) | Asyar (Tauri) | Raycast | Target here |
 | ------------------------------------ | ------------- | ------- | ----------- |
-| Hotkey → window visible (p50)        | 12.0 ms       | 21.7 ms | < 40 ms     |
+| Hotkey → window visible (p50)        | 12.0 ms       | 21.7 ms | < 20 ms     |
 | Cold start to usable                 | 572 ms        | 888 ms  | < 400 ms    |
-| Idle RAM                             | 435.6 MB      | 272.6 MB| < 150 MB    |
-| Idle CPU (30 s)                      | 3.20 %        | 0.04 %  | < 0.2 %     |
+| Idle RAM                             | 435.6 MB      | 272.6 MB| < 100 MB    |
+| Idle CPU (30 s)                      | 3.20 %        | 0.04 %  | < 0.02 %    |
 | On-disk size                         | 64 MB         | 209 MB  | < 40 MB     |
 
 ---
@@ -98,7 +98,8 @@ gets read during development.
 ## 5. Performance budgets
 
 Reproduced in [`../CLAUDE.md`](../CLAUDE.md). Current measurement status is in
-the README.
+the README. The targets were first set against the table above and tightened
+once Lumen was measured well inside them (7.36).
 
 ---
 
@@ -737,6 +738,38 @@ I-6 still holds. `[workspace.dependencies]` pins `=0.2.2`, and
 version. Upgrading gpui is now two deliberate steps: re-import the new
 release unmodified, then re-apply the marked patch and re-measure. If an
 upstream release parks the thread itself, the vendored copy is deleted.
+
+### 7.36 The budgets are tightened to guard what was measured
+
+The first budgets were set against Raycast and a Tauri launcher before any of
+Lumen existed, and it now sits far inside them: 8 ms to the first frame against
+40, 71 MB against 150, and after 7.35 no measurable idle CPU against 0.2 %. A
+budget that loose cannot fail, so it guards nothing. The regression that 7.35
+removed measured 0.04 % and would have passed even a 0.05 % budget.
+
+| Budget | Was | Now | Measured |
+| --- | --- | --- | --- |
+| Gesture → first frame | p50 < 40, p95 < 80 ms | p50 < 20, p95 < 40 ms | p50 8, p95 19–20 ms |
+| Idle resident memory | < 150 MB | < 100 MB | 64–72 MB working set |
+| Idle CPU | < 0.2 % | < 0.02 % | 0–0.009 % |
+
+The new numbers keep roughly twice the measured value as headroom. The idle CPU
+budget is stated as a share of the whole machine over 60 s, the way
+`scripts/measure-idle.ps1` measures it. Windows accounts CPU time in 15.6 ms
+ticks, so on twelve cores 0.02 % is nine ticks a minute: coarse enough to be
+stable, and fine enough to catch a frame clock left running.
+
+Cold start stays at < 400 ms against 340–357 ms measured. About 280 ms of it is
+gpui creating the platform before any Lumen code runs: D3D11 and
+DirectComposition devices (~130 ms), the DirectWrite system font collection
+(~105 ms), `OleInitialize` (~36 ms) and a drag-and-drop helper Lumen never
+uses (~17 ms). Cutting into that is deep surgery in the vendored crate, for a
+cost paid once per login that is already 2.5 times faster than Raycast's, so
+the budget is left where it is rather than tightened to a number only gpui
+could meet.
+
+Installed size stays at < 40 MB. It is enforced in CI, where a byte count
+cannot be noisy, and there is no pressure on it yet.
 
 ---
 

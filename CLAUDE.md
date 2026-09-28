@@ -32,10 +32,10 @@ Numbers, not adjectives. Measured, not asserted.
 
 | Budget | Threshold | How it is measured |
 | ------ | --------- | ------------------ |
-| Global gesture → first frame | p50 < 40 ms, p95 < 80 ms | Synthetic keypress until visible. Median of 15 on an idle machine. |
+| Global gesture → first frame | p50 < 20 ms, p95 < 40 ms | Synthetic summons until the first frame. 15 on an idle machine: `scripts/measure-gesture.ps1`. |
 | Per-frame cost while typing | p95 < 8 ms | Internal instrumentation of the render loop with the full list loaded. |
-| Idle resident memory | < 150 MB | Process group, window hidden, no extensions active. |
-| Idle CPU | < 0.2 % | Average over 30 s with the window hidden. |
+| Idle resident memory | < 100 MB | Working set, window hidden, no extensions active: `scripts/measure-idle.ps1`. |
+| Idle CPU | < 0.02 % | Share of the machine over 60 s with the window hidden: `scripts/measure-idle.ps1`. |
 | Cold start to usable | < 400 ms | Daemon launch until the first search responds. |
 | Installed size | < 40 MB | Binary plus bundled assets. |
 

@@ -151,17 +151,27 @@ supported with the cost stated above.
 ### Every budget in section 5, and where each number comes from
 
 Release build, Ryzen 7 7735HS laptop, Radeon 660M, 1920 × 1080 at 125 %,
-Windows 11. The daemon reports the four it can see itself at `info`, so these
-are reproducible by running it and reading the log.
+Windows 11. The daemon times the first frame and cold start itself and logs
+them at `info`; `scripts/measure-gesture.ps1` summons it 15 times and reads
+them back, and `scripts/measure-idle.ps1` samples memory and CPU with the
+window hidden. Both are how the numbers below were taken.
 
 | Budget | Threshold | Measured | |
 | ------ | --------- | -------- | --- |
 | Per-frame ranking | p95 < 8 ms | 1.06 ms at 5 000 entries | ✅ |
-| Gesture → first frame | p50 < 40 ms | **8 ms** (p95 26 ms, 15 summonses) | ✅ |
-| Idle resident memory | < 150 MB | **84 MB** working set, window hidden | ✅ |
-| Idle CPU | < 0.2 % | **0.08 %** over 30 s, window hidden | ✅ |
-| Cold start to usable | < 400 ms | **354 ms** from `main` to summonable | ✅ |
-| Installed size | < 40 MB | **10.6 MB**, the whole install | ✅ |
+| Gesture → first frame | p50 < 20 ms, p95 < 40 ms | **8 ms** (p95 19 ms, 15 summonses) | ✅ |
+| Idle resident memory | < 100 MB | **64–72 MB** working set, window hidden | ✅ |
+| Idle CPU | < 0.02 % | **0.000 %** over 60 s, below one 15.6 ms tick | ✅ |
+| Cold start to usable | < 400 ms | **340–357 ms** from `main` to summonable | ✅ |
+| Installed size | < 40 MB | **11.1 MB**, the whole install | ✅ |
+
+The budgets were tightened once these numbers were in (ARCHITECTURE 7.36). Idle
+CPU is near zero because nothing in the daemon runs on a timer: file changes
+are pushed, and gpui's frame clock is patched to stop while every window is
+hidden (7.35). About 280 ms of cold start is gpui creating its GPU devices and
+font collection before any Lumen code runs. The first run at a new install
+path also carries the GPU driver's shader compiler, about 40 MB, until the
+next login; the scripts warm it first so it does not read as a regression.
 
 What each measurement excludes is stated in
 [`timing.rs`](crates/lumen-app/src/timing.rs) rather than left to be assumed.
@@ -171,7 +181,7 @@ frame is drawn; cold start ends when the daemon can answer a summons, which by
 I-3 is before the application index has landed, because root search never waits
 on it either.
 
-**The first summons used to cost 101 ms**, past the 80 ms p95, because the
+**The first summons used to cost 101 ms**, past the p95 of the time (80 ms), because the
 first frame a GPUI process paints builds pipelines, compiles shaders and fills
 the glyph atlas. The daemon now draws one frame nobody sees — the overlay,
 mapped far outside the virtual screen and hidden again — once it is already

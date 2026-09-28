@@ -383,7 +383,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
 /// The first frame a GPUI process paints costs far more than every frame after
 /// it: pipelines are created, shaders compiled, and the glyph atlas filled with
 /// the first run of text. Measured on this machine the first summons took
-/// 101 ms and the second 24 ms, against a p95 budget of 80 ms; from the third
+/// 101 ms and the second 24 ms, against what was then an 80 ms p95; from the third
 /// onwards it is 8.
 ///
 /// So the overlay -- which never activates and never takes focus, which is what
