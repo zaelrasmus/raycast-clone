@@ -78,6 +78,10 @@ an aesthetic worth looking at fifty times a day.
   changes. Each shows its site's icon, fetched once and kept, and the browser
   it opens in is picked from the ones installed. `Ctrl+K` on a link also
   opens it in a private window, or in any installed browser, just this once.
+- **Type a URL, open it.** `github.com` or `https://example.com/page` puts
+  *Open github.com* first; `Ctrl+K` opens it privately, in another browser,
+  or saves it as a quicklink. Typed URLs are never written to Lumen's usage
+  history, and nothing opened in a private window is.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.

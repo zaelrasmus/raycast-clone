@@ -238,6 +238,15 @@ Step 3 made the list look like the sites it opens:
   `trait Platform::notify` raises a system notification instead; on Windows
   from the tray icon (`NIF_INFO`), which needs no app registration. The tray
   window is kept in an atomic so any thread can ask.
+- **A typed URL is an answer, not a mode.** `providers::web` recognises one
+  as it is typed, like the calculator, so nothing is looked up or waited on.
+  How sure it must be to lead is the whole design: a scheme, `www.`,
+  `localhost` or an IP address leads; a bare domain leads only with a common
+  ending, because `readme.md`, `main.rs` and `setup.py` are file names whose
+  endings are also countries' domains. Those get their row at the foot of the
+  first screen, above the web search fallback. Every typed URL shares one id,
+  `web:typed`, so the usage history on disk never holds an address, and a
+  private open records no usage at all.
 - **Live suggestions are still out.** A suggestion is a request per
   keystroke whose answer root search could never wait for (I-3); it would be a
   view of its own, not rows in the root list.
