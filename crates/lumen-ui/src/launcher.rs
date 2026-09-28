@@ -1192,11 +1192,11 @@ impl Launcher {
 
     /// Run the selected action inside a view.
     ///
-    /// This is where step 3 begins: the event below is exactly what will be
-    /// sent to the extension once there is a channel to send it down. Until
-    /// then it is built, logged and dropped -- which is the honest state of a
-    /// renderer that has been proved against a static file and has nothing to
-    /// talk to.
+    /// The launcher does not know what an extension's action means, so it
+    /// does not carry one out: it tells the extension which action was
+    /// invoked on which item, and the extension answers with a new view or a
+    /// request of the host. The bundled example view has no process behind it,
+    /// so there the event is only logged.
     fn activate_in_view(&mut self, cx: &mut Context<Self>) {
         let Mode::View(state) = &self.mode else {
             return;

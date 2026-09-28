@@ -111,7 +111,7 @@ once Lumen was measured well inside them (7.36).
 | **F1** | The minimum usable launcher: daemon + client, application index, icons, fuzzy matching with frecency, benchmark harness | **Mostly done** — see README for what is outstanding |
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Done.** Themes, live reload, the fade, the bundled typeface, the icon set and the action panel are all in; the appearance animation omits the scale, deliberately (7.5) |
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
-| **F4** | View extensions, tiers T2 and T3 | **Steps 1 and 2 of four done.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws a list with virtualisation, sections, accessories and an empty state; a hand-written example is rendered in the launcher. No protocol and no process yet, which is step 3 |
+| **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 
 ### F4 build order is not optional
@@ -771,6 +771,35 @@ could meet.
 Installed size stays at < 40 MB. It is enforced in CI, where a byte count
 cannot be noisy, and there is no pressure on it yet.
 
+### 7.37 Step 3 runs over stdio, not WebAssembly, and F4 stops there
+
+This supersedes 7.31. The event that was built and dropped there is now sent:
+`crates/lumen-app/src/extensions.rs` starts an extension's process when one of
+its commands is chosen, and `lumen_core::protocol` is the envelope that
+carries views one way and events and capability requests the other, as
+newline-delimited JSON over stdio. Nothing starts a process to build the index
+(AD-08), so root search still never waits on one (I-3).
+
+The plan's T2 is WebAssembly. Step 3 used an ordinary subprocess instead,
+because AD-06 makes the transport the reversible part: the durable contract is
+`lumen_core::view`, and `protocol.rs` is written to be replaced wholesale. What
+would *not* be cheap to change later is the capability boundary, so that was
+built now: every capability an extension uses goes back through the host and
+`trait Platform` even though a subprocess could reach it directly (I-7, AD-09).
+There is no sandbox, and the code says so.
+
+Two extensions were written against it before anything was called stable, as
+step 4 asks, and they corrected the protocol three times. F4 is frozen at that
+point in favour of daily use; the WebAssembly runtime and T3 are not started.
+
+One consequence was reviewed and kept. `Platform::spawn_extension` returns a
+`std::process::Child`, a concrete type rather than a platform-neutral handle.
+That reads like a leak through the boundary AD-04 keeps small, but it goes no
+further than `lumen-app`: the launcher only ever sees the `ViewSink` it is
+handed. A WebAssembly runtime would run in-process under wasmtime and never go
+through `spawn_extension` at all. Abstracting the child would add an interface
+with one implementation to serve a runtime that does not use it.
+
 ---
 
 ## 8. Risk register
@@ -785,7 +814,7 @@ cannot be noisy, and there is no pressure on it yet.
 | R-6 | The extension protocol becomes coupled to its first runtime | F4 | AD-06, AD-09. |
 | R-7 | Uncontrolled growth of the UI primitive vocabulary | F4 | Every new primitive requires explicit justification. |
 | R-8 | Licence contamination from inadvertent reuse of GPL code | F0 | Decided (section 2). Study architecture, do not copy implementations. |
-| R-9 | Silent performance degradation over months | F1+ | Partially mitigated: ranking is benchmarked in CI, but thresholds do not yet fail the build. |
+| R-9 | Silent performance degradation over months | F1+ | Partially mitigated: ranking cost and installed size fail the build in CI (7.24). The other four budgets are measured by hand with `scripts/measure-*.ps1` against thresholds tight enough to catch a regression (7.36). |
 | R-10 | Loss of motivation from deferring the aesthetic work | F2 | Live token reload landed early, in F1 rather than F2. |
 | R-11 | Community themes break as the interface evolves | F2+ | Semantic tokens, default resolution from the base theme, versioned schema. Validated with two in-house themes. |
 | R-12 | WebAssembly compilation friction | F4 | Consciously accepted. |

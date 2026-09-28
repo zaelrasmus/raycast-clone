@@ -61,12 +61,13 @@ an aesthetic worth looking at fifty times a day.
   `Enter` opens with the default application, `Ctrl+K` copies the path.
   Dependency and build trees are never walked into, so the index is about your
   files rather than about `node_modules`.
-- **The extension view vocabulary and its renderer** (F4, steps 1 and 2 of the
-  four the plan sets out). Run **Example Extension View** to see it: sections,
-  icons, accessories, coloured status tags, an action panel carrying the
-  extension's own verbs and key hints, and the host filtering as you type. The
-  tree is a hand-written JSON file; there is no protocol and no process yet,
-  deliberately — that is step 3.
+- **Extensions with views of their own** (F4, up to step 3). Two ship as
+  examples: **World Clock** and **Characters**. An extension is a folder with a
+  manifest and a program; its commands are in the root list without anything
+  being started, and choosing one starts its process, which sends views as
+  JSON over stdio: sections, icons, accessories, coloured status tags and an
+  action panel with the extension's own verbs. Anything it wants from the
+  system, like the clipboard, it asks the host for.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -110,12 +111,11 @@ Listed because a README that implies more than exists is worse than no README.
   size break the build on a regression. The other four are measured by the
   daemon on a real desktop and recorded below, because a hosted runner has no
   GPU, no display and no idle session to measure them on.
-- **Extensions cannot be written yet.** F4's renderer exists and is driven from
-  a static file; nothing loads WebAssembly, nothing runs in a sandbox, and the
-  event the launcher builds when you run a view's action is logged and dropped
-  because there is nowhere to send it. The plan's build order says the tree
-  goes across a channel only after the renderer is proved, and that the second
-  extension is written before anything in the protocol is stabilised.
+- **Extensions are not sandboxed, and the protocol is not stable.** An
+  extension is an ordinary process running with your privileges, exactly like a
+  script command: installing one is trusting it. The capability boundary is
+  drawn so a sandbox can be added later, but nothing loads WebAssembly yet, and
+  F4 is frozen there in favour of daily use (ARCHITECTURE 7.37).
 - **Linux is stubs.** `lumen-platform-linux` compiles on every commit and every
   method is `todo!()`. That is deliberate — see I-2. The plan for the port,
   method by method, is in [`docs/F5-LINUX.md`](docs/F5-LINUX.md).
@@ -516,7 +516,7 @@ rebuilds it.
 
 ```
 crates/
-  lumen-core/              index, matching, ranking, theming    no OS, no GPUI
+  lumen-core/              index, ranking, actions, theming     no OS, no GPUI
   lumen-platform/          trait Platform and its value types   the OS boundary
   lumen-platform-windows/  the Windows 11 implementation
   lumen-platform-linux/    the Wayland implementation (stubs, always compiles)
@@ -529,6 +529,12 @@ The dependency rule is the point. `lumen-core` has no `#[cfg(windows)]`, no
 goes through `trait Platform`, and everything that draws lives in `lumen-ui`.
 CI cross-checks the Linux crates on every commit so that a Windows assumption
 leaking into the core is caught the same day rather than in a year.
+
+The views decide nothing either. What the root list shows and in what order is
+`lumen_core::root`, and what choosing a row does is `Action::perform`, so both
+are tested without a window and would survive a different UI layer (AD-03).
+`lumen-ui` draws, and dispatches the few actions that belong to the launcher
+itself, like opening settings.
 
 Full rationale, decisions and risks: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 The invariants and performance budgets that constrain day-to-day work:
