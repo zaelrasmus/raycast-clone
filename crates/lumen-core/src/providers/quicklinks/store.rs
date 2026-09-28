@@ -85,7 +85,10 @@ pub fn check(entries: &[Entry], entry: &Entry, replacing: Option<&str>) -> Resul
 
     for other in others {
         if other.name.trim().eq_ignore_ascii_case(&link.name) {
-            bail!("there is already a quicklink called {:?}", link.name);
+            bail!(
+                "there is already a quicklink called {:?}",
+                other.name.trim()
+            );
         }
         if let (Some(alias), Some(theirs)) = (&link.alias, &other.alias)
             && alias.eq_ignore_ascii_case(theirs.trim())
@@ -248,7 +251,9 @@ mod tests {
         }];
 
         let same_name = entry("google", "https://x.com");
-        assert!(check(&existing, &same_name, None).is_err());
+        let error = check(&existing, &same_name, None).unwrap_err().to_string();
+        // Named as the file has it, which is the link the user can go and find.
+        assert!(error.contains("\"Google\""), "{error}");
 
         let same_alias = Entry {
             alias: Some("G".into()),

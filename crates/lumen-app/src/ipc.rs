@@ -42,7 +42,8 @@ pub enum Message {
     /// Open the settings window.
     Settings,
     /// Re-read everything the user edits by hand: the configuration, the
-    /// sheets, scripts and snippets. Named for the first thing it reloaded;
+    /// sheets, scripts, snippets and quicklinks. Named for the first thing it
+    /// reloaded;
     /// `lumen reload` is the same message.
     ReloadSheets,
     /// The configuration file changed on disk. Sent by the daemon's own

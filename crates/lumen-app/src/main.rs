@@ -1133,13 +1133,21 @@ fn handle(
             // the answer should not depend on whether it noticed.
             reload_config(platform, shell, surfaces, cx)?;
             surfaces.reload_sheets();
-            // Scripts and snippets live in the launcher's index, so reloading
-            // is two halves: the sheet library here, and a reindex there.
-            // One command reloads everything the user can edit by hand.
+            // Scripts, snippets and quicklinks live in the launcher's index,
+            // so reloading is two halves: the sheet library here, and a
+            // reindex there. The settings page keeps its own copy of the
+            // quicklinks, so it re-reads too. One command reloads everything
+            // the user can edit by hand.
             surfaces
                 .launcher
                 .update(cx, |launcher, _window, cx| launcher.reindex(cx))
                 .ok();
+            let settings = *surfaces.settings.borrow();
+            if let Some(settings) = settings {
+                settings
+                    .update(cx, |settings, _window, cx| settings.reload_quicklinks(cx))
+                    .ok();
+            }
             Ok(())
         }
         Message::RunExtension { extension, command } => {
