@@ -28,6 +28,7 @@ pub mod files;
 pub mod quicklinks;
 pub mod scripts;
 pub mod snippets;
+pub mod translate;
 pub mod web;
 
 pub use arrange::ArrangeProvider;
@@ -37,6 +38,7 @@ pub use extensions::ExtensionProvider;
 pub use quicklinks::{Quicklink, QuicklinkProvider};
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
 pub use snippets::{Snippet, SnippetProvider};
+pub use translate::TranslateProvider;
 
 /// A source of results.
 ///

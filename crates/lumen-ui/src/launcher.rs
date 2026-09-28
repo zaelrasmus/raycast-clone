@@ -60,8 +60,19 @@ actions!(
         ToggleActionPanel,
         /// Type the selected quicklink's argument (F6).
         AskArgument,
+        /// Move a view's scope to its next option (F7).
+        NextScope,
+        /// Move a view's scope to its previous option.
+        PreviousScope,
     ]
 );
+
+/// The key context of the search row while the open view has a scope.
+///
+/// Deeper than `Launcher`, so its `Tab` wins there and only there: in the root
+/// list `Tab` still types a quicklink's argument. GPUI ranks a binding by how
+/// deep its context matched before anything else.
+pub const SCOPE_CONTEXT: &str = "Scoped";
 
 /// What the search field says when it is empty and nothing else applies.
 const ROOT_PLACEHOLDER: &str = "Search for apps and commands...";
@@ -458,6 +469,7 @@ impl Launcher {
         let platform = self.platform.clone();
         let paths = self.paths.clone();
         let current = self.root.index();
+        let presets = self.config.translate.presets();
 
         cx.spawn(async move |this, cx| {
             // Built and compared on the background thread: enumeration and
@@ -486,13 +498,16 @@ impl Launcher {
                         .into_iter()
                         .map(|browser| browser.name)
                         .collect();
-                    let rebuilt =
-                        lumen_core::root::build_index(platform.as_ref(), &paths, &quicklinks).map(
-                            |rebuilt| {
-                                let unchanged = lumen_core::root::same_index(&current, &rebuilt);
-                                (!unchanged).then_some(rebuilt)
-                            },
-                        );
+                    let rebuilt = lumen_core::root::build_index(
+                        platform.as_ref(),
+                        &paths,
+                        &quicklinks,
+                        presets,
+                    )
+                    .map(|rebuilt| {
+                        let unchanged = lumen_core::root::same_index(&current, &rebuilt);
+                        (!unchanged).then_some(rebuilt)
+                    });
                     (rebuilt, QuicklinkProvider::new(quicklinks), sites, browsers)
                 })
                 .await;
@@ -653,12 +668,17 @@ impl Launcher {
     pub fn apply_config(&mut self, config: Config, cx: &mut Context<Self>) {
         let previous_height = self.content_height();
         let files_changed = config.files != self.config.files;
+        // Presets are rows in the index, so a changed preset is a re-index.
+        let presets_changed = config.translate.presets != self.config.translate.presets;
 
         self.root.set_visible_rows(config.window.visible_rows);
         self.config = config;
 
         if files_changed {
             self.refresh_files(cx);
+        }
+        if presets_changed {
+            self.start_indexing(cx);
         }
         self.resize_if_needed(previous_height, cx);
         cx.notify();
@@ -846,6 +866,14 @@ impl Launcher {
                 });
                 return;
             }
+            // The same: translating is network work, and that is the daemon's
+            // too. It calls `begin_view` straight back.
+            lumen_core::ViewSource::Translate { preset } => {
+                cx.emit(LauncherEvent::RunTranslate {
+                    preset: preset.clone(),
+                });
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -929,6 +957,18 @@ impl Launcher {
             return;
         };
 
+        // The row the user is on, by the view's own id, so that a re-render
+        // does not move them. Filtering puts the selection on the first row,
+        // which is right for a new query and wrong for an answer arriving:
+        // the translator fills its rows in one at a time, and the selection
+        // jumping to the top as each lands is the list moving under the user.
+        let selected_id = match &state.view {
+            lumen_core::view::View::List(list) => {
+                list.item(state.selected).map(|item| item.id.clone())
+            }
+            lumen_core::view::View::Detail(_) => None,
+        };
+
         state.candidates = Arc::new(match &view {
             lumen_core::view::View::List(list) => list.items().map(candidate_for).collect(),
             lumen_core::view::View::Detail(_) => Vec::new(),
@@ -940,8 +980,83 @@ impl Launcher {
         // arriving while the user is typing does not silently widen the list
         // back out underneath them.
         self.refilter_view();
+        self.keep_selection(selected_id);
         self.resize_if_needed(previous_height, cx);
         cx.notify();
+    }
+
+    /// Put the selection back on the item with this id, if it is still shown.
+    fn keep_selection(&mut self, id: Option<String>) {
+        let Some(id) = id else {
+            return;
+        };
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &state.view else {
+            return;
+        };
+        let Some(index) = list.items().position(|item| item.id == id) else {
+            return;
+        };
+        if let Some(row) = state
+            .rows
+            .iter()
+            .position(|row| matches!(row, crate::view::Row::Item(item) if *item == index))
+        {
+            state.selected = index;
+            state.list.scroll_to_reveal_item(row);
+        }
+    }
+
+    /// Close the launcher on the view's behalf: something it did is finished,
+    /// such as copying a translation.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        cx.emit(LauncherEvent::Dismissed);
+    }
+
+    /// Tab and Shift+Tab: the open view's next or previous scope option.
+    ///
+    /// Drawn at once rather than when the view answers, so the pill never
+    /// lags the key; the view's next render confirms it.
+    fn step_scope(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.action_panel.is_some() {
+            return;
+        }
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &mut state.view else {
+            return;
+        };
+        let Some(scope) = &mut list.scope else {
+            return;
+        };
+        let Some(next) = scope.step(delta).map(|option| option.id.clone()) else {
+            return;
+        };
+        scope.selected.clone_from(&next);
+        self.tell_extension(lumen_core::view::Event::ScopeChanged { scope: next });
+        cx.notify();
+    }
+
+    fn next_scope(&mut self, _: &NextScope, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_scope(1, cx);
+    }
+
+    fn previous_scope(&mut self, _: &PreviousScope, _: &mut Window, cx: &mut Context<Self>) {
+        self.step_scope(-1, cx);
+    }
+
+    /// The open view's scope, when it has one.
+    fn scope(&self) -> Option<&lumen_core::view::Scope> {
+        match &self.mode {
+            Mode::View(state) => match &state.view {
+                lumen_core::view::View::List(list) => list.scope.as_ref(),
+                lumen_core::view::View::Detail(_) => None,
+            },
+            _ => None,
+        }
     }
 
     /// The extension has gone. Return to the root list.
@@ -1728,6 +1843,10 @@ pub enum LauncherEvent {
         extension: std::path::PathBuf,
         command: String,
     },
+    /// The translate view was chosen (F7), on a preset by name or on the last.
+    RunTranslate {
+        preset: Option<String>,
+    },
     /// A layout was chosen for the window that held the foreground.
     ///
     /// Carries no window handle: the daemon is the only thing that has one,
@@ -1780,6 +1899,8 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::clear_query))
             .on_action(cx.listener(Self::toggle_action_panel))
             .on_action(cx.listener(Self::ask_argument))
+            .on_action(cx.listener(Self::next_scope))
+            .on_action(cx.listener(Self::previous_scope))
             .size_full()
             .flex()
             .flex_col()
@@ -1856,6 +1977,11 @@ impl Launcher {
             field.set_placeholder(placeholder.to_string())
         });
 
+        let scope = self
+            .scope()
+            .and_then(|scope| scope.current())
+            .map(|option| option.title.clone());
+
         div()
             .flex()
             .items_center()
@@ -1864,6 +1990,7 @@ impl Launcher {
             .border_b_1()
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::query())
+            .when(scope.is_some(), |row| row.key_context(SCOPE_CONTEXT))
             // The link the field is filling in, where the text would start:
             // what you type reads as its continuation.
             .when_some(self.argument.as_ref(), |row, argument| {
@@ -1883,6 +2010,26 @@ impl Launcher {
                 )
             })
             .child(self.query_field.clone())
+            // A scope applies to the whole list, so it sits at the end of the
+            // field rather than where the text starts: it is a setting of the
+            // search, not the beginning of it. Drawn as the argument pill is,
+            // because it is the same kind of thing -- what the query is for.
+            .when_some(scope, |row, title| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .ml(metrics::argument_pill_gap())
+                        .px(metrics::argument_pill_padding_x())
+                        .py(metrics::argument_pill_padding_y())
+                        .rounded(metrics::argument_pill_radius())
+                        .bg(color(colors.selection_background))
+                        .border_1()
+                        .border_color(color(colors.selection_border))
+                        .text_size(type_scale::title())
+                        .text_color(color(colors.text_primary))
+                        .child(title),
+                )
+            })
     }
 
     /// The height of the region the list occupies.
@@ -2092,8 +2239,11 @@ impl Launcher {
             Mode::View(_) => self.view_items().len(),
             Mode::Form(_) => 0,
         };
+        let switchable = self.scope().is_some_and(|scope| scope.options.len() > 1);
         let status = match (&self.mode, count) {
             (Mode::Form(_), _) => "Next field  Tab".to_string(),
+            // What Tab does is not visible from the pill alone.
+            (Mode::View(_), _) if switchable => "Switch  Tab".to_string(),
             (_, 1) => "1 result".to_string(),
             (_, count) => format!("{count} results"),
         };

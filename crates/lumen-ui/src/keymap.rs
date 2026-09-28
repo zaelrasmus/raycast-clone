@@ -29,8 +29,8 @@ use gpui::{App, KeyBinding};
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::launcher::{
-    Activate, AskArgument, ClearQuery, Dismiss, SelectFirst, SelectLast, SelectNext,
-    SelectPrevious, ToggleActionPanel,
+    Activate, AskArgument, ClearQuery, Dismiss, NextScope, PreviousScope, SCOPE_CONTEXT,
+    SelectFirst, SelectLast, SelectNext, SelectPrevious, ToggleActionPanel,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
@@ -144,7 +144,12 @@ const BINDINGS: &[Binding] = &[
     Binding {
         keys: "tab",
         group: "Actions",
-        description: Some("Type a search for the selected link"),
+        description: Some("Type a search for the selected link, or next preset"),
+    },
+    Binding {
+        keys: "shift-tab",
+        group: "Actions",
+        description: Some("Previous preset"),
     },
     Binding {
         keys: "escape",
@@ -311,6 +316,14 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("ctrl-u", ClearQuery, Some(CONTEXT)),
         // The action panel, on the chord every launcher uses for it.
         KeyBinding::new("ctrl-k", ToggleActionPanel, Some(CONTEXT)),
+    ]);
+
+    // A view's scope -- the translator's presets (F7). Only in the search row
+    // of a view that has one, which is deeper than `Launcher`, so these win
+    // there and `Tab` keeps its meaning everywhere else.
+    cx.bind_keys([
+        KeyBinding::new("tab", NextScope, Some(SCOPE_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousScope, Some(SCOPE_CONTEXT)),
     ]);
 
     // A quicklink form, in the launcher or in settings. Deeper than either

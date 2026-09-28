@@ -175,6 +175,8 @@ pub enum ViewSource {
         extension: std::path::PathBuf,
         command: String,
     },
+    /// The translate view (F7), on a preset by name, or on the one used last.
+    Translate { preset: Option<String> },
 }
 
 impl Action {

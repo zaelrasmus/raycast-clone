@@ -97,9 +97,63 @@ pub struct List {
     /// a search that hits a network, or a result set too large to send -- and
     /// it is the caller's problem that it is slower.
     pub filtering: Filtering,
+    /// A choice that applies to the whole list, shown beside the search field.
+    pub scope: Option<Scope>,
     /// Shown instead of the list when it is empty.
     pub empty: Option<EmptyState>,
     pub sections: Vec<Section>,
+}
+
+/// One of a few ways to read the query, chosen beside the search field.
+///
+/// Raycast's search-bar dropdown, and here for the interaction nothing else
+/// can express: changing what the *whole* list means -- which account, which
+/// language -- without leaving it and without losing what was typed. An action
+/// cannot do it, because actions belong to a row and an empty list has none.
+///
+/// The host draws the selected option and moves through them on its own keys
+/// (I-14); the view is told with [`Event::ScopeChanged`] and answers with a
+/// new render. A view that declares no scope is never sent that event, so
+/// adding this changed nothing for the extensions written before it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Scope {
+    pub options: Vec<ScopeOption>,
+    /// The `id` of the option in force.
+    pub selected: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ScopeOption {
+    /// Sent back when this option is chosen. Opaque to the host.
+    pub id: String,
+    pub title: String,
+}
+
+impl Scope {
+    /// The option in force, if `selected` names one.
+    pub fn current(&self) -> Option<&ScopeOption> {
+        self.options
+            .iter()
+            .find(|option| option.id == self.selected)
+    }
+
+    /// The option `delta` places from the current one, wrapping round.
+    ///
+    /// `None` when there is nothing to move to: fewer than two options.
+    pub fn step(&self, delta: isize) -> Option<&ScopeOption> {
+        if self.options.len() < 2 {
+            return None;
+        }
+        let current = self
+            .options
+            .iter()
+            .position(|option| option.id == self.selected)
+            .unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(self.options.len() as isize) as usize;
+        self.options.get(next)
+    }
 }
 
 impl List {
@@ -288,6 +342,8 @@ pub enum Event {
     QueryChanged { query: String },
     /// The selection moved. Sent so a detail pane can follow it.
     SelectionChanged { item: String },
+    /// Another [`Scope`] option was chosen. Only sent to a list that has one.
+    ScopeChanged { scope: String },
     /// An action ran.
     ActionInvoked {
         item: Option<String>,
@@ -377,6 +433,7 @@ mod tests {
         let view = View::List(List {
             placeholder: Some("Search issues".into()),
             filtering: Filtering::Extension,
+            scope: Some(scope(&["mine", "all"], "mine")),
             empty: Some(EmptyState {
                 title: "Nothing open".into(),
                 description: Some("Every issue is closed.".into()),
@@ -428,6 +485,50 @@ mod tests {
     fn an_unreadable_view_is_an_error_rather_than_an_empty_one() {
         assert!(from_json("{ nonsense").is_err());
         assert!(from_json(r#"{ "type": "carousel" }"#).is_err());
+    }
+
+    fn scope(ids: &[&str], selected: &str) -> Scope {
+        Scope {
+            options: ids
+                .iter()
+                .map(|id| ScopeOption {
+                    id: (*id).into(),
+                    title: id.to_uppercase(),
+                })
+                .collect(),
+            selected: selected.into(),
+        }
+    }
+
+    #[test]
+    fn a_scope_steps_both_ways_and_wraps() {
+        let scope = scope(&["a", "b", "c"], "a");
+        assert_eq!(scope.step(1).unwrap().id, "b");
+        assert_eq!(scope.step(-1).unwrap().id, "c");
+        assert_eq!(scope.current().unwrap().title, "A");
+    }
+
+    #[test]
+    fn a_scope_of_one_has_nowhere_to_go() {
+        assert!(scope(&["a"], "a").step(1).is_none());
+    }
+
+    /// Lists written before scopes existed must still load, with none.
+    #[test]
+    fn a_list_without_a_scope_has_none() {
+        let View::List(list) = from_json(r#"{ "type": "list" }"#).unwrap() else {
+            panic!("expected a list")
+        };
+        assert!(list.scope.is_none());
+    }
+
+    #[test]
+    fn a_scope_change_names_the_option() {
+        let json = serde_json::to_string(&Event::ScopeChanged {
+            scope: "es-en".into(),
+        })
+        .unwrap();
+        assert_eq!(json, r#"{"type":"scope-changed","scope":"es-en"}"#);
     }
 
     #[test]

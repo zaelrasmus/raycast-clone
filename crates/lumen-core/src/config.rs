@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clipboard::Retention;
 use crate::providers::files::{self, FileLimits};
+use crate::translate::TranslateConfig;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -29,6 +30,8 @@ pub struct Config {
     /// `null` is the system default. A name, not a path, so the setting
     /// survives the browser updating itself into a new folder.
     pub preferred_browser: Option<String>,
+    /// Translation (F7): which service, and the saved presets.
+    pub translate: TranslateConfig,
 }
 
 /// File search (F3).
@@ -148,6 +151,7 @@ impl Default for Config {
             clipboard: ClipboardConfig::default(),
             files: FileSearchConfig::default(),
             preferred_browser: None,
+            translate: TranslateConfig::default(),
         }
     }
 }
@@ -407,6 +411,26 @@ mod tests {
         assert_eq!(applied.hotkey, before.hotkey);
         assert_eq!(applied.window.vertical_bias, 0.0);
         assert_eq!(applied.restart_required(&after), vec!["hotkey"]);
+    }
+
+    /// A config written before translation existed gets the keyless service
+    /// and the implied preset, so the command works without an edit.
+    #[test]
+    fn translation_works_for_a_config_that_predates_it() {
+        let config: Config = serde_json::from_str(r#"{ "theme": "daylight" }"#).unwrap();
+        assert_eq!(config.translate.service, crate::translate::Service::Google);
+        assert_eq!(config.translate.presets().len(), 1);
+    }
+
+    /// One bad preset must not take the hotkey and the theme down with it.
+    #[test]
+    fn an_unknown_language_in_a_preset_does_not_fail_the_file() {
+        let config: Config = serde_json::from_str(
+            r#"{ "theme": "daylight",
+                 "translate": { "presets": [ { "name": "X", "from": "xx", "to": "yy" } ] } }"#,
+        )
+        .unwrap();
+        assert_eq!(config.theme, "daylight");
     }
 
     #[test]

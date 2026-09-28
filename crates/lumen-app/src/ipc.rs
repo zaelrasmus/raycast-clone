@@ -66,6 +66,10 @@ pub enum Message {
         extension: std::path::PathBuf,
         command: String,
     },
+    /// Open the translate view (F7), for the same reason as `RunExtension`.
+    RunTranslate {
+        preset: Option<String>,
+    },
 }
 
 /// Send `message` to a running daemon.

@@ -38,6 +38,7 @@ use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, Setting
 mod extensions;
 mod ipc;
 mod timing;
+mod translate;
 
 use ipc::Message;
 
@@ -858,6 +859,12 @@ fn subscribe_to_launcher(
             });
             return;
         }
+        if let LauncherEvent::RunTranslate { preset } = &event {
+            let _ = commands.unbounded_send(Message::RunTranslate {
+                preset: preset.clone(),
+            });
+            return;
+        }
 
         off_the_callback(cx, move || {
             let outcome = match event {
@@ -865,7 +872,7 @@ fn subscribe_to_launcher(
                 LauncherEvent::Resized(height) => resize(&platform, &config, &shell, height),
                 LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
                 // Handled above, before this task was spawned.
-                LauncherEvent::RunExtension { .. } => Ok(()),
+                LauncherEvent::RunExtension { .. } | LauncherEvent::RunTranslate { .. } => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,
                 // and it means `lumen settings` from a terminal and "Configure
@@ -1161,6 +1168,13 @@ fn handle(
         }
         Message::RunExtension { extension, command } => {
             run_extension(platform, surfaces, extension, command, cx)
+        }
+        Message::RunTranslate { preset } => {
+            let platform = platform.clone();
+            let config = config.translate.clone();
+            let window = surfaces.launcher;
+            cx.update(move |cx| translate::run(platform, config, preset, window, cx))
+                .context("reaching the app to open the translator")
         }
         Message::Quit => {
             log::info!("stopping the daemon");

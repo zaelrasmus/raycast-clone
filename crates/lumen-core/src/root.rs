@@ -377,11 +377,13 @@ impl RootSearch {
 ///
 /// The quicklinks are passed in rather than read here, because the caller
 /// needs them too, for [`RootSearch::replace_quicklinks`]. Reading the file
-/// twice logged every broken entry twice.
+/// twice logged every broken entry twice. The translate presets are passed in
+/// because they come from `config.json`, which the caller already holds.
 pub fn build_index(
     platform: &dyn Platform,
     paths: &Paths,
     quicklinks: &[providers::Quicklink],
+    presets: Vec<crate::translate::Preset>,
 ) -> Result<Vec<Candidate>> {
     let entries = platform.enumerate_applications()?;
     log::info!("indexed {} applications", entries.len());
@@ -391,6 +393,7 @@ pub fn build_index(
         &paths.snippets_file(),
         quicklinks,
         &paths.extensions_dir(),
+        presets,
     );
 
     Ok(entries
@@ -406,8 +409,10 @@ fn catalogue(
     snippets_file: &Path,
     quicklinks: &[providers::Quicklink],
     extensions_dir: &Path,
+    presets: Vec<crate::translate::Preset>,
 ) -> Vec<Item> {
     let mut providers = Providers::builtin();
+    providers.register(Box::new(providers::TranslateProvider::new(presets)));
 
     let scripts = providers::scripts::scan(scripts_dir);
     if !scripts.is_empty() {
