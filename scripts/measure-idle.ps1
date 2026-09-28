@@ -9,6 +9,14 @@
 # it. Any Lumen daemon already running is stopped first, because a second
 # `lumen` toggles the running one instead of starting its own.
 #
+# The build is run once and quit before it is measured. The first time a GPU
+# driver sees an executable path it compiles the renderer's shaders for it,
+# and that compiler stays loaded in the process: on the AMD driver this was
+# measured at +40 MB private and +200 ms CPU, for as long as that process
+# lives. It happens once per install location, not once per build, so it is
+# not what a user lives with -- but unwarmed, every fresh copy of a build looks
+# like a 40 MB regression.
+#
 #   powershell -File scripts/measure-idle.ps1 -Exe target/release/lumen.exe
 
 param(
@@ -21,11 +29,31 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-Get-Process lumen -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
+$exe = (Resolve-Path $Exe).Path
 
-$process = Start-Process -FilePath (Resolve-Path $Exe) -PassThru
+# By name, not just `lumen`: a build copied as lumen-head.exe runs as a
+# process called lumen-head, and a daemon left running would answer the next
+# launch over IPC, which then toggles it and exits instead of being measured.
+$name = [IO.Path]::GetFileNameWithoutExtension($exe)
+
+function Stop-Lumen {
+    Get-Process lumen, $name -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 2
+}
+
+Stop-Lumen
+
+# Warm the driver's shader cache for this path (see above).
+Start-Process -FilePath $exe -WindowStyle Hidden
+Start-Sleep -Seconds 5
+Stop-Lumen
+
+$process = Start-Process -FilePath $exe -PassThru
 Start-Sleep -Seconds $SettleSeconds
+
+if ($process.HasExited) {
+    throw "$exe exited before it could be measured; run it from a terminal to see why"
+}
 
 $process.Refresh()
 $cores = [Environment]::ProcessorCount

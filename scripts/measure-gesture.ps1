@@ -20,7 +20,9 @@ $ErrorActionPreference = 'Stop'
 $exe = (Resolve-Path $Exe).Path
 $log = Join-Path ([IO.Path]::GetTempPath()) "lumen-gesture-$PID.log"
 
-Get-Process lumen -ErrorAction SilentlyContinue | Stop-Process -Force
+# By name as well: a copied build (lumen-head.exe) runs as lumen-head.
+$name = [IO.Path]::GetFileNameWithoutExtension($exe)
+Get-Process lumen, $name -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
 $daemon = Start-Process -FilePath $exe -PassThru -RedirectStandardError $log -WindowStyle Hidden
