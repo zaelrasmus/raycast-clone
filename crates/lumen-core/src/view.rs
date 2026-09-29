@@ -97,8 +97,9 @@ pub struct List {
     /// a search that hits a network, or a result set too large to send -- and
     /// it is the caller's problem that it is slower.
     pub filtering: Filtering,
-    /// A choice that applies to the whole list, shown beside the search field.
-    pub scope: Option<Scope>,
+    /// Choices that apply to the whole list, shown beside the search field,
+    /// in order.
+    pub scopes: Vec<Scope>,
     /// Shown instead of the list when it is empty.
     pub empty: Option<EmptyState>,
     pub sections: Vec<Section>,
@@ -111,13 +112,18 @@ pub struct List {
 /// language -- without leaving it and without losing what was typed. An action
 /// cannot do it, because actions belong to a row and an empty list has none.
 ///
-/// The host draws the selected option and moves through them on its own keys
-/// (I-14); the view is told with [`Event::ScopeChanged`] and answers with a
-/// new render. A view that declares no scope is never sent that event, so
-/// adding this changed nothing for the extensions written before it.
+/// The host draws each scope as a pill naming its selected option, and opens
+/// a picker of the options on its own keys (I-14) or a click. The view is told
+/// with [`Event::ScopeChanged`] and answers with a new render. A view that
+/// declares no scope is never sent that event, so adding this changed nothing
+/// for the extensions written before it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Scope {
+    /// Sent back with the option chosen. Opaque to the host.
+    pub id: String,
+    /// What the choice is about, shown before the selected option: "From".
+    pub title: String,
     pub options: Vec<ScopeOption>,
     /// The `id` of the option in force.
     pub selected: String,
@@ -139,20 +145,12 @@ impl Scope {
             .find(|option| option.id == self.selected)
     }
 
-    /// The option `delta` places from the current one, wrapping round.
-    ///
-    /// `None` when there is nothing to move to: fewer than two options.
-    pub fn step(&self, delta: isize) -> Option<&ScopeOption> {
-        if self.options.len() < 2 {
-            return None;
-        }
-        let current = self
-            .options
+    /// Where the option in force is, or the first when `selected` names none.
+    pub fn position(&self) -> usize {
+        self.options
             .iter()
             .position(|option| option.id == self.selected)
-            .unwrap_or(0) as isize;
-        let next = (current + delta).rem_euclid(self.options.len() as isize) as usize;
-        self.options.get(next)
+            .unwrap_or(0)
     }
 }
 
@@ -342,8 +340,9 @@ pub enum Event {
     QueryChanged { query: String },
     /// The selection moved. Sent so a detail pane can follow it.
     SelectionChanged { item: String },
-    /// Another [`Scope`] option was chosen. Only sent to a list that has one.
-    ScopeChanged { scope: String },
+    /// An option of a [`Scope`] was chosen, both by id. Only sent to a list
+    /// that has scopes.
+    ScopeChanged { scope: String, option: String },
     /// An action ran.
     ActionInvoked {
         item: Option<String>,
@@ -433,7 +432,7 @@ mod tests {
         let view = View::List(List {
             placeholder: Some("Search issues".into()),
             filtering: Filtering::Extension,
-            scope: Some(scope(&["mine", "all"], "mine")),
+            scopes: vec![scope(&["mine", "all"], "mine")],
             empty: Some(EmptyState {
                 title: "Nothing open".into(),
                 description: Some("Every issue is closed.".into()),
@@ -489,6 +488,8 @@ mod tests {
 
     fn scope(ids: &[&str], selected: &str) -> Scope {
         Scope {
+            id: "filter".into(),
+            title: "Show".into(),
             options: ids
                 .iter()
                 .map(|id| ScopeOption {
@@ -501,34 +502,39 @@ mod tests {
     }
 
     #[test]
-    fn a_scope_steps_both_ways_and_wraps() {
-        let scope = scope(&["a", "b", "c"], "a");
-        assert_eq!(scope.step(1).unwrap().id, "b");
-        assert_eq!(scope.step(-1).unwrap().id, "c");
-        assert_eq!(scope.current().unwrap().title, "A");
+    fn a_scope_knows_its_current_option() {
+        let scope = scope(&["a", "b", "c"], "b");
+        assert_eq!(scope.current().unwrap().title, "B");
+        assert_eq!(scope.position(), 1);
     }
 
     #[test]
-    fn a_scope_of_one_has_nowhere_to_go() {
-        assert!(scope(&["a"], "a").step(1).is_none());
+    fn a_scope_naming_no_option_starts_at_the_first() {
+        let scope = scope(&["a", "b"], "gone");
+        assert!(scope.current().is_none());
+        assert_eq!(scope.position(), 0);
     }
 
     /// Lists written before scopes existed must still load, with none.
     #[test]
-    fn a_list_without_a_scope_has_none() {
+    fn a_list_without_scopes_has_none() {
         let View::List(list) = from_json(r#"{ "type": "list" }"#).unwrap() else {
             panic!("expected a list")
         };
-        assert!(list.scope.is_none());
+        assert!(list.scopes.is_empty());
     }
 
     #[test]
-    fn a_scope_change_names_the_option() {
+    fn a_scope_change_names_the_scope_and_the_option() {
         let json = serde_json::to_string(&Event::ScopeChanged {
-            scope: "es-en".into(),
+            scope: "to".into(),
+            option: "lang-fr".into(),
         })
         .unwrap();
-        assert_eq!(json, r#"{"type":"scope-changed","scope":"es-en"}"#);
+        assert_eq!(
+            json,
+            r#"{"type":"scope-changed","scope":"to","option":"lang-fr"}"#
+        );
     }
 
     #[test]

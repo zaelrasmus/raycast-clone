@@ -174,6 +174,10 @@ pub mod view {
     /// rows is enough for all three with air around them, and small enough
     /// that a search matching nothing does not open a tall empty box.
     pub const EMPTY_HEIGHT: f32 = super::ROW_HEIGHT * 3.0;
+
+    /// Options a scope's picker shows before it scrolls (F7). Drawn with the
+    /// action panel's rows, so this many of those, plus its padding.
+    pub const PICKER_ROWS: usize = 10;
 }
 
 /// Type sizes. Not themeable (I-11); a theme may change the family only.

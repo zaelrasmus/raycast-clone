@@ -60,9 +60,10 @@ actions!(
         ToggleActionPanel,
         /// Type the selected quicklink's argument (F6).
         AskArgument,
-        /// Move a view's scope to its next option (F7).
+        /// Open the picker on a view's first scope, or move it to the next
+        /// (F7).
         NextScope,
-        /// Move a view's scope to its previous option.
+        /// Open the picker on a view's last scope, or move it to the previous.
         PreviousScope,
     ]
 );
@@ -118,6 +119,23 @@ enum Mode {
     View(Box<ViewState>),
     /// Saving a new quicklink (F6). Like a view, it takes the list's place.
     Form(FormState),
+}
+
+/// A scope's options, shown in place of the list (F7).
+///
+/// Not the action panel: that sizes itself to every row it has, and a scope
+/// can have thirty. This is capped at `layout::view::PICKER_ROWS` and scrolls.
+struct Picker {
+    /// Which of the view's scopes.
+    scope: usize,
+    highlighted: usize,
+    scroll: UniformListScrollHandle,
+}
+
+enum PickerMove {
+    By(isize),
+    First,
+    Last,
 }
 
 /// The quicklink form, and the subscription that hears it finish.
@@ -233,6 +251,9 @@ pub struct Launcher {
     /// The installed browsers' names, read with the index so that "Open
     /// With..." shows them without a registry walk while the user waits.
     browsers: Vec<String>,
+    /// A view's scope picker, when it is open. Never at the same time as the
+    /// action panel.
+    picker: Option<Picker>,
 
     /// Whether the window has actually held focus since it was last shown.
     ///
@@ -305,6 +326,7 @@ impl Launcher {
             action_panel: None,
             browser_menu: None,
             browsers: Vec::new(),
+            picker: None,
             appearances: 0,
             _theme_reload: None,
         };
@@ -585,6 +607,7 @@ impl Launcher {
         // A view does not survive the launcher being dismissed. Coming back to
         // somebody else's list a day later, with no memory of opening it, is
         // the kind of state that makes an interface feel haunted.
+        self.picker = None;
         self.mode = Mode::Root;
         self.argument = None;
         self.action_panel = None;
@@ -699,6 +722,13 @@ impl Launcher {
     /// list (7.11) and an action row is shorter than a result row; a view's
     /// rows are result-height but its section headers are not.
     pub fn content_height(&self) -> f32 {
+        if self.picker.is_some() {
+            let rows = self
+                .picker_options()
+                .len()
+                .min(lumen_core::layout::view::PICKER_ROWS);
+            return self.config.panel_height(rows);
+        }
         if self.action_panel.is_some() {
             return self.config.panel_height(self.panel_entries().len());
         }
@@ -891,6 +921,7 @@ impl Launcher {
         self.clear_query_text(cx);
         self.action_panel = None;
         self.argument = None;
+        self.picker = None;
         self.mode = Mode::View(Box::new(ViewState {
             sink: None,
             loading: false,
@@ -928,6 +959,7 @@ impl Launcher {
         self.clear_query_text(cx);
         self.action_panel = None;
         self.argument = None;
+        self.picker = None;
         self.mode = Mode::View(Box::new(ViewState {
             sink: Some(sink),
             loading: true,
@@ -981,6 +1013,20 @@ impl Launcher {
         // back out underneath them.
         self.refilter_view();
         self.keep_selection(selected_id);
+
+        // An open picker survives a render, which may have changed its
+        // options; it closes if its scope is gone.
+        let count = self
+            .picker
+            .as_ref()
+            .and_then(|picker| self.scopes().get(picker.scope))
+            .map(|scope| scope.options.len());
+        match (count, &mut self.picker) {
+            (Some(count), Some(picker)) if count > 0 => {
+                picker.highlighted = picker.highlighted.min(count - 1);
+            }
+            (_, picker) => *picker = None,
+        }
         self.resize_if_needed(previous_height, cx);
         cx.notify();
     }
@@ -1015,29 +1061,19 @@ impl Launcher {
         cx.emit(LauncherEvent::Dismissed);
     }
 
-    /// Tab and Shift+Tab: the open view's next or previous scope option.
-    ///
-    /// Drawn at once rather than when the view answers, so the pill never
-    /// lags the key; the view's next render confirms it.
+    /// Tab and Shift+Tab: open the picker on the first or last scope, or,
+    /// with it open, move it to the next or previous scope.
     fn step_scope(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.action_panel.is_some() {
+        let count = self.scopes().len();
+        if count == 0 {
             return;
         }
-        let Mode::View(state) = &mut self.mode else {
-            return;
+        let scope = match &self.picker {
+            Some(picker) => (picker.scope as isize + delta).rem_euclid(count as isize) as usize,
+            None if delta < 0 => count - 1,
+            None => 0,
         };
-        let lumen_core::view::View::List(list) = &mut state.view else {
-            return;
-        };
-        let Some(scope) = &mut list.scope else {
-            return;
-        };
-        let Some(next) = scope.step(delta).map(|option| option.id.clone()) else {
-            return;
-        };
-        scope.selected.clone_from(&next);
-        self.tell_extension(lumen_core::view::Event::ScopeChanged { scope: next });
-        cx.notify();
+        self.open_picker(scope, cx);
     }
 
     fn next_scope(&mut self, _: &NextScope, _: &mut Window, cx: &mut Context<Self>) {
@@ -1048,15 +1084,106 @@ impl Launcher {
         self.step_scope(-1, cx);
     }
 
-    /// The open view's scope, when it has one.
-    fn scope(&self) -> Option<&lumen_core::view::Scope> {
+    /// Show `scope`'s options in place of the list, on the one in force.
+    fn open_picker(&mut self, scope: usize, cx: &mut Context<Self>) {
+        let Some(highlighted) = self.scopes().get(scope).map(|scope| scope.position()) else {
+            return;
+        };
+        let previous_height = self.content_height();
+        self.action_panel = None;
+        self.browser_menu = None;
+        let scroll = UniformListScrollHandle::new();
+        scroll.scroll_to_item(highlighted, ScrollStrategy::Center);
+        self.picker = Some(Picker {
+            scope,
+            highlighted,
+            scroll,
+        });
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    fn close_picker(&mut self, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+        if self.picker.take().is_some() {
+            self.resize_if_needed(previous_height, cx);
+            cx.notify();
+        }
+    }
+
+    /// Move the picker's highlight by `delta`, wrapping; or to an end.
+    fn move_picker(&mut self, to: PickerMove, cx: &mut Context<Self>) {
+        let count = self.picker_options().len();
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        if count == 0 {
+            return;
+        }
+        picker.highlighted = match to {
+            PickerMove::By(delta) => {
+                (picker.highlighted as isize + delta).rem_euclid(count as isize) as usize
+            }
+            PickerMove::First => 0,
+            PickerMove::Last => count - 1,
+        };
+        picker
+            .scroll
+            .scroll_to_item(picker.highlighted, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    /// Take the highlighted option: drawn at once rather than when the view
+    /// answers, so the pill never lags the key, and told to the view, whose
+    /// next render confirms it.
+    fn choose_in_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        let (scope_index, highlighted) = (picker.scope, picker.highlighted);
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &mut state.view else {
+            return;
+        };
+        let Some(scope) = list.scopes.get_mut(scope_index) else {
+            return;
+        };
+        let Some(option) = scope
+            .options
+            .get(highlighted)
+            .map(|option| option.id.clone())
+        else {
+            return;
+        };
+        let changed = scope.selected != option;
+        scope.selected.clone_from(&option);
+        let id = scope.id.clone();
+
+        self.close_picker(cx);
+        if changed {
+            self.tell_extension(lumen_core::view::Event::ScopeChanged { scope: id, option });
+        }
+    }
+
+    /// The open view's scopes; none outside a list view.
+    fn scopes(&self) -> &[lumen_core::view::Scope] {
         match &self.mode {
             Mode::View(state) => match &state.view {
-                lumen_core::view::View::List(list) => list.scope.as_ref(),
-                lumen_core::view::View::Detail(_) => None,
+                lumen_core::view::View::List(list) => &list.scopes,
+                lumen_core::view::View::Detail(_) => &[],
             },
-            _ => None,
+            _ => &[],
         }
+    }
+
+    /// The options the open picker shows.
+    fn picker_options(&self) -> &[lumen_core::view::ScopeOption] {
+        self.picker
+            .as_ref()
+            .and_then(|picker| self.scopes().get(picker.scope))
+            .map_or(&[], |scope| scope.options.as_slice())
     }
 
     /// The extension has gone. Return to the root list.
@@ -1081,6 +1208,7 @@ impl Launcher {
         self.tell_extension(lumen_core::view::Event::Dismissed);
 
         let previous_height = self.content_height();
+        self.picker = None;
         self.mode = Mode::Root;
         self.clear_query_text(cx);
         self.action_panel = None;
@@ -1313,6 +1441,8 @@ impl Launcher {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The panel and the picker share the list's place; the panel wins.
+        self.close_picker(cx);
         let previous_height = self.content_height();
         // Ctrl+K from the browser list closes the panel altogether, like
         // from the actions: it is one panel, on two pages.
@@ -1333,6 +1463,10 @@ impl Launcher {
     }
 
     fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            self.move_picker(PickerMove::By(1), cx);
+            return;
+        }
         // While the panel is open the arrow keys move within it. Two lists on
         // screen and one set of arrow keys: whichever is in front wins.
         if let Some(selected) = self.action_panel {
@@ -1360,6 +1494,10 @@ impl Launcher {
     }
 
     fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            self.move_picker(PickerMove::By(-1), cx);
+            return;
+        }
         if let Some(selected) = self.action_panel {
             let count = self.panel_entries().len();
             if count > 0 {
@@ -1385,6 +1523,10 @@ impl Launcher {
     }
 
     fn select_first(&mut self, _: &SelectFirst, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            self.move_picker(PickerMove::First, cx);
+            return;
+        }
         if matches!(self.mode, Mode::View(_)) {
             let first = self.view_items().first().copied();
             if let (Some(first), Mode::View(state)) = (first, &mut self.mode) {
@@ -1400,6 +1542,10 @@ impl Launcher {
     }
 
     fn select_last(&mut self, _: &SelectLast, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            self.move_picker(PickerMove::Last, cx);
+            return;
+        }
         if matches!(self.mode, Mode::View(_)) {
             let last = self.view_items().last().copied();
             if let (Some(last), Mode::View(state)) = (last, &mut self.mode) {
@@ -1428,6 +1574,10 @@ impl Launcher {
     }
 
     fn activate(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some() {
+            self.choose_in_picker(cx);
+            return;
+        }
         if matches!(self.mode, Mode::View(_)) {
             self.activate_in_view(cx);
             return;
@@ -1630,6 +1780,7 @@ impl Launcher {
         self.action_panel = None;
         self.argument = None;
         self.clear_query_text(cx);
+        self.picker = None;
         self.mode = Mode::Form(FormState {
             form: form.clone(),
             _events: events,
@@ -1687,6 +1838,7 @@ impl Launcher {
         }
         let previous_height = self.content_height();
 
+        self.picker = None;
         self.mode = Mode::Root;
         match saved {
             Some(name) => {
@@ -1757,6 +1909,12 @@ impl Launcher {
         // left its fields, and it must still mean "back", not "dismiss".
         if matches!(self.mode, Mode::Form(_)) {
             self.leave_form(None, window, cx);
+            return;
+        }
+
+        // The picker is the top layer: Escape closes it and nothing else.
+        if self.picker.is_some() {
+            self.close_picker(cx);
             return;
         }
 
@@ -1917,8 +2075,11 @@ impl Render for Launcher {
         // One region, three possible occupants, in order of precedence: the
         // action panel over whatever it was opened from, then an extension's
         // view, then the root list.
-        let body = match (self.render_action_panel(cx), &self.mode) {
-            (Some(panel), _) => panel,
+        let over = self
+            .render_action_panel(cx)
+            .or_else(|| self.render_picker(cx));
+        let body = match (over, &self.mode) {
+            (Some(over), _) => over,
             (None, Mode::Form(state)) => state.form.clone().into_any_element(),
             (None, Mode::View(state)) => self.render_view(state),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
@@ -1977,10 +2138,58 @@ impl Launcher {
             field.set_placeholder(placeholder.to_string())
         });
 
-        let scope = self
-            .scope()
-            .and_then(|scope| scope.current())
-            .map(|option| option.title.clone());
+        // Each scope's name and its option in force: "From Spanish".
+        let open = self.picker.as_ref().map(|picker| picker.scope);
+        let pills: Vec<_> = self
+            .scopes()
+            .iter()
+            .enumerate()
+            .map(|(index, scope)| {
+                let option = scope
+                    .current()
+                    .map(|option| option.title.clone())
+                    .unwrap_or_default();
+                div()
+                    .id(("scope", index))
+                    .flex_none()
+                    .flex()
+                    .gap(metrics::argument_pill_padding_x())
+                    .ml(metrics::argument_pill_gap())
+                    .px(metrics::argument_pill_padding_x())
+                    .py(metrics::argument_pill_padding_y())
+                    .rounded(metrics::argument_pill_radius())
+                    .bg(color(colors.selection_background))
+                    .border_1()
+                    // The one whose options are showing is marked, so the
+                    // list below reads as belonging to it.
+                    .border_color(color(if open == Some(index) {
+                        colors.accent
+                    } else {
+                        colors.selection_border
+                    }))
+                    .text_size(type_scale::title())
+                    .cursor_pointer()
+                    .on_click(
+                        cx.listener(move |launcher, event: &gpui::ClickEvent, _, cx| {
+                            // The mouse only; the keys are the keymap's (I-14).
+                            if event.is_keyboard() {
+                                return;
+                            }
+                            if launcher.picker.as_ref().map(|picker| picker.scope) == Some(index) {
+                                launcher.close_picker(cx);
+                            } else {
+                                launcher.open_picker(index, cx);
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_color(color(colors.text_muted))
+                            .child(scope.title.clone()),
+                    )
+                    .child(div().text_color(color(colors.text_primary)).child(option))
+            })
+            .collect();
 
         div()
             .flex()
@@ -1990,7 +2199,7 @@ impl Launcher {
             .border_b_1()
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::query())
-            .when(scope.is_some(), |row| row.key_context(SCOPE_CONTEXT))
+            .when(!pills.is_empty(), |row| row.key_context(SCOPE_CONTEXT))
             // The link the field is filling in, where the text would start:
             // what you type reads as its continuation.
             .when_some(self.argument.as_ref(), |row, argument| {
@@ -2014,22 +2223,100 @@ impl Launcher {
             // field rather than where the text starts: it is a setting of the
             // search, not the beginning of it. Drawn as the argument pill is,
             // because it is the same kind of thing -- what the query is for.
-            .when_some(scope, |row, title| {
+            .children(pills)
+    }
+
+    /// The open scope's options, in place of the list.
+    ///
+    /// Drawn with the action panel's rows, so it reads as the same kind of
+    /// thing, but in a virtualised list capped at `PICKER_ROWS`: a scope may
+    /// have thirty options and the panel sizes itself to every one.
+    fn render_picker(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use lumen_core::layout::action_panel as panel;
+
+        let picker = self.picker.as_ref()?;
+        let count = self.picker_options().len();
+        if count == 0 {
+            return None;
+        }
+        let rows = count.min(lumen_core::layout::view::PICKER_ROWS);
+
+        Some(
+            div()
+                .p(gpui::px(panel::PADDING))
+                .h(gpui::px(
+                    panel::PADDING * 2.0 + panel::ROW_HEIGHT * rows as f32,
+                ))
+                .bg(color(self.theme.colors.surface_elevated))
+                .child(
+                    uniform_list(
+                        "scope-options",
+                        count,
+                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                            range
+                                .map(|index| this.render_picker_row(index, cx))
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(picker.scroll.clone())
+                    .h_full(),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_picker_row(&self, index: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use lumen_core::layout::action_panel as panel;
+
+        let colors = &self.theme.colors;
+        let highlighted = self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.highlighted == index);
+        let scope = self
+            .picker
+            .as_ref()
+            .and_then(|picker| self.scopes().get(picker.scope));
+        let option = scope.and_then(|scope| scope.options.get(index));
+        let in_force = scope
+            .zip(option)
+            .is_some_and(|(scope, option)| scope.selected == option.id);
+        let title = option
+            .map(|option| option.title.clone())
+            .unwrap_or_default();
+
+        div()
+            .id(("scope-option", index))
+            .h(gpui::px(panel::ROW_HEIGHT))
+            .px(metrics::gutter())
+            .flex()
+            .items_center()
+            .justify_between()
+            .rounded(gpui::px(panel::ROW_RADIUS))
+            .text_size(type_scale::title())
+            .when(highlighted, |row| {
+                row.bg(color(colors.selection_background))
+                    .text_color(color(colors.text_primary))
+            })
+            .when(!highlighted, |row| row.text_color(color(colors.text_muted)))
+            .cursor_pointer()
+            .on_click(cx.listener(move |launcher, _, _, cx| {
+                if let Some(picker) = &mut launcher.picker {
+                    picker.highlighted = index;
+                }
+                launcher.choose_in_picker(cx);
+            }))
+            .child(title)
+            // The option in force, so opening the picker shows where it is.
+            .when(in_force, |row| {
                 row.child(
                     div()
-                        .flex_none()
-                        .ml(metrics::argument_pill_gap())
-                        .px(metrics::argument_pill_padding_x())
-                        .py(metrics::argument_pill_padding_y())
-                        .rounded(metrics::argument_pill_radius())
-                        .bg(color(colors.selection_background))
-                        .border_1()
-                        .border_color(color(colors.selection_border))
-                        .text_size(type_scale::title())
-                        .text_color(color(colors.text_primary))
-                        .child(title),
+                        .text_size(type_scale::footer())
+                        .text_color(color(colors.text_muted))
+                        .child("\u{2713}"),
                 )
             })
+            .into_any_element()
     }
 
     /// The height of the region the list occupies.
@@ -2239,13 +2526,32 @@ impl Launcher {
             Mode::View(_) => self.view_items().len(),
             Mode::Form(_) => 0,
         };
-        let switchable = self.scope().is_some_and(|scope| scope.options.len() > 1);
+        let scopes = self.scopes();
+        let picking = self
+            .picker
+            .as_ref()
+            .and_then(|picker| scopes.get(picker.scope).map(|scope| (picker.scope, scope)));
         let status = match (&self.mode, count) {
             (Mode::Form(_), _) => "Next field  Tab".to_string(),
-            // What Tab does is not visible from the pill alone.
-            (Mode::View(_), _) if switchable => "Switch  Tab".to_string(),
+            // Where Tab goes next, when there is somewhere.
+            (Mode::View(_), _) if picking.is_some() && scopes.len() > 1 => {
+                let (index, _) = picking.expect("checked");
+                let next = &scopes[(index + 1) % scopes.len()];
+                format!("{}  Tab", next.title)
+            }
+            (Mode::View(_), _) if picking.is_some() => String::new(),
+            // What Tab does is not visible from the pills alone.
+            (Mode::View(_), _) if !scopes.is_empty() => {
+                let titles: Vec<&str> = scopes.iter().map(|scope| scope.title.as_str()).collect();
+                format!("{}  Tab", titles.join(" / "))
+            }
             (_, 1) => "1 result".to_string(),
             (_, count) => format!("{count} results"),
+        };
+        let verb = if picking.is_some() {
+            "Choose".to_string()
+        } else {
+            verb
         };
 
         div()
@@ -2267,7 +2573,9 @@ impl Launcher {
                     // Advertised only when there is a second action to reach.
                     // A hint for a panel that would open empty teaches the user
                     // that the hint lies.
-                    .when(entries.len() > 1, |footer| footer.child("Actions  Ctrl+K"))
+                    .when(entries.len() > 1 && picking.is_none(), |footer| {
+                        footer.child("Actions  Ctrl+K")
+                    })
                     .child(match self.mode {
                         Mode::Root if self.argument.is_some() => "Back  Esc",
                         Mode::Root => "Dismiss  Esc",

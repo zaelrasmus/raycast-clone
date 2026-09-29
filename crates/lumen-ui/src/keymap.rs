@@ -149,12 +149,12 @@ const BINDINGS: &[Binding] = &[
     Binding {
         keys: "tab",
         group: "Actions",
-        description: Some("Type a search for the selected link, or next preset"),
+        description: Some("Type a search for the selected link, or choose languages"),
     },
     Binding {
         keys: "shift-tab",
         group: "Actions",
-        description: Some("Previous preset"),
+        description: Some("Choose languages, from the last"),
     },
     Binding {
         keys: "escape",

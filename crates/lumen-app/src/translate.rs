@@ -29,7 +29,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::App;
-use lumen_core::translate::session::{Effect, Request, Session};
+use lumen_core::translate::session::{Effect, Languages, Request, Session};
 use lumen_core::translate::{self, TranslateConfig, Translation, Translator};
 use lumen_core::view::Event;
 use lumen_platform::Platform;
@@ -45,11 +45,12 @@ const PAUSE: Duration = Duration::from_millis(300);
 /// How long the client is kept after the last request.
 const KEEP_CLIENT: Duration = Duration::from_secs(30);
 
-/// The preset used last, for the plain *Translate* command.
+/// The languages used last, for the plain *Translate* command: whatever was
+/// last chosen in the view, or the preset last opened.
 ///
 /// In memory: it lasts as long as the daemon, which is as long as anybody
 /// remembers having chosen it.
-static LAST: Mutex<Option<String>> = Mutex::new(None);
+static LAST: Mutex<Option<Languages>> = Mutex::new(None);
 
 /// Everything the session is told, on one channel so it has one order.
 enum Input {
@@ -69,7 +70,7 @@ enum Input {
 /// The client, shared by the request threads and dropped when quiet.
 type Client = Arc<Mutex<Option<Arc<dyn Translator>>>>;
 
-/// Open the translate view on `preset`, or on the one used last.
+/// Open the translate view on `preset`, or on the languages used last.
 pub fn run(
     platform: Arc<dyn Platform>,
     config: TranslateConfig,
@@ -77,14 +78,22 @@ pub fn run(
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
 ) {
-    // Choosing a preset's own row counts as using it.
-    if preset.is_some() {
-        LAST.lock().clone_from(&preset);
-    }
-    let name = preset.or_else(|| LAST.lock().clone());
-
     let presets = config.presets();
-    let start = Session::position(&presets, name.as_deref());
+    let chosen = preset
+        .as_deref()
+        .and_then(|name| presets.iter().find(|preset| preset.name == name))
+        .map(Languages::of);
+    let start = match chosen {
+        // Choosing a preset's own row counts as using it.
+        Some(languages) => {
+            *LAST.lock() = Some(languages.clone());
+            languages
+        }
+        None => LAST
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Languages::of(&presets[0])),
+    };
     let mut session = Session::new(presets, start, config.service);
 
     // The view's events on a channel of their own, which ends when the
@@ -168,7 +177,7 @@ pub fn run(
                             .update(cx, |launcher, _window, cx| launcher.close(cx))
                             .ok();
                     }
-                    Effect::Remember(name) => *LAST.lock() = Some(name),
+                    Effect::Remember(languages) => *LAST.lock() = Some(languages),
                 }
             }
         }

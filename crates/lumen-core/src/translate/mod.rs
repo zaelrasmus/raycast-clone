@@ -145,18 +145,12 @@ pub struct Preset {
 impl Preset {
     /// What the preset does, in words: "Spanish to English and French".
     pub fn describe(&self) -> String {
-        let from = self.from.map_or("any language", |language| language.name);
-        format!("{from} to {}", self.targets())
+        describe(self.from, &self.to)
     }
 
     /// The targets, as a sentence fragment: "English and French".
     pub fn targets(&self) -> String {
-        let names: Vec<&str> = self.to.iter().map(|language| language.name).collect();
-        match names.as_slice() {
-            [] => String::new(),
-            [one] => (*one).to_string(),
-            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-        }
+        names(&self.to)
     }
 
     /// The preset used when none are configured.
@@ -208,6 +202,22 @@ impl TranslateConfig {
             presets.push(Preset::implied());
         }
         presets
+    }
+}
+
+/// A direction in words: "Spanish to English and French".
+pub fn describe(from: Option<&Language>, to: &[&Language]) -> String {
+    let from = from.map_or("any language", |language| language.name);
+    format!("{from} to {}", names(to))
+}
+
+/// Languages as a sentence fragment: "English, French and German".
+pub fn names(languages: &[&Language]) -> String {
+    let names: Vec<&str> = languages.iter().map(|language| language.name).collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 

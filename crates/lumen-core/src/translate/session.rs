@@ -7,22 +7,29 @@
 //! so every rule the view follows is a unit test rather than a thing to try by
 //! hand.
 //!
+//! # Languages are chosen, presets only start them
+//!
+//! The view has two scopes, *From* and *To*, and either can be changed at any
+//! time without leaving the view or losing the text. A preset is where they
+//! start: opening a preset's row sets both, and so does *Switch to* in the
+//! action panel. After that the user is free.
+//!
 //! # Stale answers
 //!
-//! Every change to what should be translated -- the text, the preset, a retry
+//! Every change to what should be translated -- the text, a language, a retry
 //! -- starts a new *generation*. Requests carry theirs and an answer from an
 //! older one is dropped, so a slow reply to "hol" can never overwrite the
 //! answer to "hola".
 //!
 //! # The list does not change shape
 //!
-//! One row per target, created when the preset is chosen and kept while
+//! One row per target, created when the targets are chosen and kept while
 //! answers arrive, under one section whose title is always present. Only the
 //! text in them changes, so the window never resizes while the user reads
 //! (I-10). The previous translation stays in its row while the next is
 //! requested rather than flashing to empty.
 
-use super::{Language, Preset, Service, Translation};
+use super::{LANGUAGES, Language, MAX_TARGETS, Preset, Service, Translation, languages};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Item, List, Scope, ScopeOption, Section, Tone,
     View,
@@ -40,8 +47,26 @@ pub enum Effect {
     Send(Request),
     /// Put this on the clipboard and close the launcher.
     Copy(String),
-    /// This preset was chosen; open with it next time.
-    Remember(String),
+    /// These languages were chosen; open with them next time.
+    Remember(Languages),
+}
+
+/// A direction: a source, or detection, and the targets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Languages {
+    /// `None` detects the source.
+    pub from: Option<&'static Language>,
+    /// Never empty, never more than [`MAX_TARGETS`].
+    pub to: Vec<&'static Language>,
+}
+
+impl Languages {
+    pub fn of(preset: &Preset) -> Self {
+        Self {
+            from: preset.from,
+            to: preset.to.clone(),
+        }
+    }
 }
 
 /// One translation to ask for.
@@ -69,8 +94,9 @@ enum Row {
 }
 
 pub struct Session {
+    /// Offered in the action panel, and their target sets in *To*.
     presets: Vec<Preset>,
-    current: usize,
+    languages: Languages,
     service: Service,
     query: String,
     generation: u64,
@@ -79,43 +105,40 @@ pub struct Session {
     detected: Option<&'static Language>,
 }
 
-// Action ids. Opaque to the host; only this file reads them back.
+// Ids. Opaque to the host; only this file reads them back.
 const COPY: &str = "copy";
 const COPY_ORIGINAL: &str = "copy-original";
 const COPY_ALL: &str = "copy-all";
 const RETRY: &str = "retry";
 const PRESET: &str = "preset-";
 const TARGET: &str = "target-";
+/// The scopes, and the prefixes of their options.
+const FROM: &str = "from";
+const TO: &str = "to";
+const DETECT: &str = "detect";
+const LANGUAGE: &str = "lang-";
 
 impl Session {
-    /// A session showing `presets[start]`.
+    /// A session translating `languages`, offering `presets` to switch to.
     ///
     /// # Panics
     ///
-    /// If `presets` is empty. [`super::TranslateConfig::presets`] never is.
-    pub fn new(presets: Vec<Preset>, start: usize, service: Service) -> Self {
-        assert!(!presets.is_empty(), "a translate session needs a preset");
-        let current = start.min(presets.len() - 1);
-        let rows = vec![Row::Idle; presets[current].to.len()];
+    /// If `languages` has no target.
+    pub fn new(presets: Vec<Preset>, languages: Languages, service: Service) -> Self {
+        assert!(
+            !languages.to.is_empty(),
+            "a translate session needs a target"
+        );
+        let rows = vec![Row::Idle; languages.to.len()];
         Self {
             presets,
-            current,
+            languages,
             service,
             query: String::new(),
             generation: 0,
             rows,
             detected: None,
         }
-    }
-
-    /// Where to start: the preset called `name`, or the first.
-    pub fn position(presets: &[Preset], name: Option<&str>) -> usize {
-        name.and_then(|name| presets.iter().position(|preset| preset.name == name))
-            .unwrap_or(0)
-    }
-
-    fn preset(&self) -> &Preset {
-        &self.presets[self.current]
     }
 
     fn text(&self) -> &str {
@@ -132,10 +155,7 @@ impl Session {
                 self.query = query;
                 self.restart(false)
             }
-            Event::ScopeChanged { scope } => match index(&scope, PRESET) {
-                Some(preset) => self.switch(preset),
-                None => Vec::new(),
-            },
+            Event::ScopeChanged { scope, option } => self.choose(&scope, &option),
             Event::ActionInvoked { item, action } => self.act(item.as_deref(), &action),
             Event::SelectionChanged { .. } | Event::Dismissed => Vec::new(),
         }
@@ -204,8 +224,7 @@ impl Session {
     }
 
     fn requests(&self) -> Vec<Effect> {
-        let preset = self.preset();
-        preset
+        self.languages
             .to
             .iter()
             .enumerate()
@@ -214,29 +233,66 @@ impl Session {
                     generation: self.generation,
                     target,
                     text: self.text().to_string(),
-                    from: preset.from,
+                    from: self.languages.from,
                     to,
                 })
             })
             .collect()
     }
 
-    fn switch(&mut self, preset: usize) -> Vec<Effect> {
-        if preset >= self.presets.len() || preset == self.current {
+    /// Translate `languages` from now on, asking again at once.
+    fn set(&mut self, languages: Languages) -> Vec<Effect> {
+        if languages == self.languages || languages.to.is_empty() {
             return Vec::new();
         }
-        self.current = preset;
-        self.rows = vec![Row::Idle; self.preset().to.len()];
-        self.detected = None;
+        // Rows keep their text only when their target did not move: a French
+        // translation left in what is now the German row would be a lie.
+        let rows = languages
+            .to
+            .iter()
+            .map(|to| {
+                self.languages
+                    .to
+                    .iter()
+                    .position(|old| old == to)
+                    .map_or(Row::Idle, |old| self.rows[old].clone())
+            })
+            .collect();
+        if languages.from != self.languages.from {
+            self.detected = None;
+        }
+        self.rows = rows;
+        self.languages = languages;
 
-        let mut effects = vec![Effect::Remember(self.preset().name.clone())];
+        let mut effects = vec![Effect::Remember(self.languages.clone())];
         effects.extend(self.restart(true));
         effects
     }
 
+    /// An option was chosen in one of the scopes.
+    fn choose(&mut self, scope: &str, option: &str) -> Vec<Effect> {
+        let mut languages = self.languages.clone();
+        match scope {
+            FROM if option == DETECT => languages.from = None,
+            FROM => match option.strip_prefix(LANGUAGE).and_then(languages::find) {
+                Some(language) => languages.from = Some(language),
+                None => return Vec::new(),
+            },
+            TO => match targets(option) {
+                Some(to) => languages.to = to,
+                None => return Vec::new(),
+            },
+            _ => return Vec::new(),
+        }
+        self.set(languages)
+    }
+
     fn act(&mut self, item: Option<&str>, action: &str) -> Vec<Effect> {
         if let Some(preset) = index(action, PRESET) {
-            return self.switch(preset);
+            return match self.presets.get(preset) {
+                Some(preset) => self.set(Languages::of(preset)),
+                None => Vec::new(),
+            };
         }
         match action {
             COPY => {
@@ -265,30 +321,10 @@ impl Session {
 
     /// What the view should show now.
     pub fn view(&self) -> View {
-        let preset = self.preset();
-
-        let scope = Scope {
-            options: self
-                .presets
-                .iter()
-                .enumerate()
-                .map(|(index, preset)| ScopeOption {
-                    id: format!("{PRESET}{index}"),
-                    title: preset.name.clone(),
-                })
-                .collect(),
-            selected: format!("{PRESET}{}", self.current),
-        };
-
-        let hint = if self.presets.len() > 1 {
-            " Tab switches presets."
-        } else {
-            ""
-        };
         let empty = EmptyState {
             title: "Type something to translate".into(),
             description: Some(format!(
-                "Sent to {} as you type.{hint}",
+                "Sent to {} as you type. Tab chooses the languages.",
                 self.service.label()
             )),
             icon: None,
@@ -306,7 +342,7 @@ impl Session {
                 items: self
                     .rows
                     .iter()
-                    .zip(&preset.to)
+                    .zip(&self.languages.to)
                     .enumerate()
                     .map(|(index, (row, to))| self.item(index, row, to))
                     .collect(),
@@ -314,16 +350,75 @@ impl Session {
         };
 
         View::List(List {
-            placeholder: Some(format!("Translate {}", preset.describe())),
+            placeholder: Some(format!(
+                "Translate {}",
+                super::describe(self.languages.from, &self.languages.to)
+            )),
             filtering: Filtering::Extension,
-            scope: Some(scope),
+            scopes: vec![self.source_scope(), self.target_scope()],
             empty: Some(empty),
             sections,
         })
     }
 
+    /// *From*: detection, then every language.
+    fn source_scope(&self) -> Scope {
+        let options = std::iter::once(ScopeOption {
+            id: DETECT.into(),
+            title: "Detect language".into(),
+        })
+        .chain(LANGUAGES.iter().map(|language| ScopeOption {
+            id: format!("{LANGUAGE}{}", language.code),
+            title: language.name.into(),
+        }))
+        .collect();
+        Scope {
+            id: FROM.into(),
+            title: "From".into(),
+            options,
+            selected: match self.languages.from {
+                Some(language) => format!("{LANGUAGE}{}", language.code),
+                None => DETECT.into(),
+            },
+        }
+    }
+
+    /// *To*: the presets' sets of several targets, and the one in force if it
+    /// is one, then every language on its own.
+    fn target_scope(&self) -> Scope {
+        let mut sets: Vec<&[&'static Language]> = Vec::new();
+        for to in self
+            .presets
+            .iter()
+            .map(|preset| preset.to.as_slice())
+            .chain(std::iter::once(self.languages.to.as_slice()))
+        {
+            if to.len() > 1 && !sets.contains(&to) {
+                sets.push(to);
+            }
+        }
+
+        let options = sets
+            .into_iter()
+            .map(|to| ScopeOption {
+                id: target_id(to),
+                title: super::names(to),
+            })
+            .chain(LANGUAGES.iter().map(|language| ScopeOption {
+                id: target_id(&[language]),
+                title: language.name.into(),
+            }))
+            .collect();
+        Scope {
+            id: TO.into(),
+            title: "To".into(),
+            options,
+            selected: target_id(&self.languages.to),
+        }
+    }
+
     fn source_title(&self) -> String {
-        if let Some(from) = self.preset().from {
+        if let Some(from) = self.languages.from {
             return format!("From {}", from.name);
         }
         match self.detected {
@@ -384,7 +479,7 @@ impl Session {
                 self.presets
                     .iter()
                     .enumerate()
-                    .filter(|(index, _)| *index != self.current)
+                    .filter(|(_, preset)| Languages::of(preset) != self.languages)
                     .map(|(index, preset)| Action {
                         id: format!("{PRESET}{index}"),
                         title: format!("Switch to {}", preset.name),
@@ -406,6 +501,22 @@ impl Session {
             actions,
         }
     }
+}
+
+/// The *To* option for these targets: `"lang-en"`, or `"lang-en,fr"`.
+fn target_id(to: &[&Language]) -> String {
+    let codes: Vec<&str> = to.iter().map(|language| language.code).collect();
+    format!("{LANGUAGE}{}", codes.join(","))
+}
+
+/// The targets a *To* option names, if every one is known.
+fn targets(option: &str) -> Option<Vec<&'static Language>> {
+    let to = option
+        .strip_prefix(LANGUAGE)?
+        .split(',')
+        .map(languages::find)
+        .collect::<Option<Vec<_>>>()?;
+    (!to.is_empty() && to.len() <= MAX_TARGETS).then_some(to)
 }
 
 /// `"preset-2"` with prefix `"preset-"` is 2.
@@ -433,19 +544,29 @@ mod tests {
         }
     }
 
+    fn presets() -> Vec<Preset> {
+        vec![
+            preset("Spanish → English", Some("es"), &["en"]),
+            preset("Any → Many", None, &["en", "fr", "de"]),
+        ]
+    }
+
+    /// Opened on the first preset, as a preset's row would.
     fn session() -> Session {
-        Session::new(
-            vec![
-                preset("Spanish → English", Some("es"), &["en"]),
-                preset("Any → Many", None, &["en", "fr", "de"]),
-            ],
-            0,
-            Service::Google,
-        )
+        let presets = presets();
+        let start = Languages::of(&presets[0]);
+        Session::new(presets, start, Service::Google)
     }
 
     fn typed(session: &mut Session, text: &str) -> Vec<Effect> {
         session.event(Event::QueryChanged { query: text.into() })
+    }
+
+    fn chose(session: &mut Session, scope: &str, option: &str) -> Vec<Effect> {
+        session.event(Event::ScopeChanged {
+            scope: scope.into(),
+            option: option.into(),
+        })
     }
 
     fn list(effects: &[Effect]) -> List {
@@ -474,6 +595,10 @@ mod tests {
             text: text.into(),
             detected: None,
         })
+    }
+
+    fn scope<'a>(list: &'a List, id: &str) -> &'a Scope {
+        list.scopes.iter().find(|scope| scope.id == id).unwrap()
     }
 
     #[test]
@@ -531,13 +656,57 @@ mod tests {
         assert!(list.sections[0].items[0].actions.is_empty());
     }
 
+    /// The whole point of the scopes: any source, any target, at any time.
+    #[test]
+    fn both_languages_can_be_chosen_freely() {
+        let mut session = session();
+        typed(&mut session, "bonjour");
+
+        let effects = chose(&mut session, "from", "lang-fr");
+        let requests = sends(&effects);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].from.unwrap().code, "fr");
+        assert_eq!(requests[0].to.code, "en");
+
+        let effects = chose(&mut session, "to", "lang-ja");
+        assert_eq!(sends(&effects)[0].to.code, "ja");
+        assert!(effects.contains(&Effect::Remember(Languages {
+            from: find("fr"),
+            to: vec![find("ja").unwrap()],
+        })));
+
+        let effects = chose(&mut session, "from", "detect");
+        assert_eq!(sends(&effects)[0].from, None);
+
+        let list = list(&effects);
+        assert_eq!(
+            scope(&list, "from").current().unwrap().title,
+            "Detect language"
+        );
+        assert_eq!(scope(&list, "to").current().unwrap().title, "Japanese");
+        assert_eq!(
+            list.placeholder.as_deref(),
+            Some("Translate any language to Japanese")
+        );
+    }
+
+    #[test]
+    fn every_language_is_offered_on_both_sides() {
+        let list = list(&[Effect::Render(session().view())]);
+        // Detection, then the table.
+        assert_eq!(scope(&list, "from").options.len(), LANGUAGES.len() + 1);
+        // The preset's set of three, then the table.
+        let to = scope(&list, "to");
+        assert_eq!(to.options.len(), LANGUAGES.len() + 1);
+        assert_eq!(to.options[0].title, "English, French and German");
+        assert_eq!(to.options[0].id, "lang-en,fr,de");
+    }
+
     /// I-10: the list keeps its shape while answers arrive.
     #[test]
     fn one_row_per_target_from_the_first_keystroke() {
         let mut session = session();
-        session.event(Event::ScopeChanged {
-            scope: "preset-1".into(),
-        });
+        chose(&mut session, "to", "lang-en,fr,de");
         let list = list(&typed(&mut session, "hola"));
 
         assert_eq!(list.len(), 3);
@@ -562,6 +731,31 @@ mod tests {
         list(&effects)
     }
 
+    /// A target kept across a change keeps its row's text while it is asked
+    /// again; a new one starts empty rather than showing another language.
+    #[test]
+    fn a_changed_target_does_not_inherit_another_languages_text() {
+        let mut session = session();
+        typed(&mut session, "hola");
+        let generation = session.generation;
+        session.answer(generation, 0, done("Hello"));
+
+        let list = list(&chose(&mut session, "to", "lang-en,fr,de"));
+        assert_eq!(list.item(0).unwrap().title, "Hello");
+        assert_eq!(list.item(1).unwrap().title, "Translating\u{2026}");
+    }
+
+    #[test]
+    fn an_unknown_option_changes_nothing() {
+        let mut session = session();
+        assert!(chose(&mut session, "to", "lang-xx").is_empty());
+        assert!(chose(&mut session, "from", "lang-").is_empty());
+        assert!(chose(&mut session, "elsewhere", "detect").is_empty());
+        assert!(chose(&mut session, "to", "lang-en,fr,de,it,pt").is_empty());
+        // Choosing what is already in force asks for nothing again.
+        assert!(chose(&mut session, "to", "lang-en").is_empty());
+    }
+
     #[test]
     fn nothing_typed_shows_the_empty_state_and_asks_nothing() {
         let mut session = session();
@@ -577,24 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_preset_asks_at_once_and_is_remembered() {
-        let mut session = session();
-        typed(&mut session, "hola");
-
-        let effects = session.event(Event::ScopeChanged {
-            scope: "preset-1".into(),
-        });
-        assert!(effects.contains(&Effect::Remember("Any → Many".into())));
-        let requests = sends(&effects);
-        assert_eq!(requests.len(), 3);
-        assert!(requests.iter().all(|request| request.from.is_none()));
-
-        let scope = list(&effects).scope.unwrap();
-        assert_eq!(scope.current().unwrap().title, "Any → Many");
-    }
-
-    #[test]
-    fn switching_from_the_action_panel_is_the_same_as_the_scope() {
+    fn switching_to_a_preset_sets_both_languages() {
         let mut session = session();
         typed(&mut session, "hola");
         let generation = session.generation;
@@ -606,15 +783,15 @@ mod tests {
             item: Some("target-0".into()),
             action: switch.id,
         });
-        assert_eq!(sends(&effects).len(), 3);
+        let requests = sends(&effects);
+        assert_eq!(requests.len(), 3);
+        assert!(requests.iter().all(|request| request.from.is_none()));
     }
 
     #[test]
     fn a_detected_source_titles_the_section() {
         let mut session = session();
-        session.event(Event::ScopeChanged {
-            scope: "preset-1".into(),
-        });
+        chose(&mut session, "from", "detect");
         let list = list(&typed(&mut session, "hola"));
         assert!(
             list.sections[0]
@@ -657,9 +834,7 @@ mod tests {
     #[test]
     fn copy_all_puts_every_translation_on_its_own_line() {
         let mut session = session();
-        session.event(Event::ScopeChanged {
-            scope: "preset-1".into(),
-        });
+        chose(&mut session, "to", "lang-en,fr,de");
         typed(&mut session, "hola");
         let generation = session.generation;
         session.answer(generation, 0, done("Hello"));
@@ -694,25 +869,19 @@ mod tests {
 
     #[test]
     fn the_view_says_who_receives_the_text() {
-        let session = Session::new(vec![preset("P", None, &["en"])], 0, Service::Deepl);
+        let start = Languages {
+            from: None,
+            to: vec![find("en").unwrap()],
+        };
+        let session = Session::new(Vec::new(), start, Service::Deepl);
         let View::List(list) = session.view() else {
             panic!("expected a list")
         };
         let description = list.empty.unwrap().description.unwrap();
         assert!(description.contains("DeepL"));
-        // One preset: nothing to switch to, so no hint about switching.
-        assert!(!description.contains("Tab"));
         assert_eq!(
             list.placeholder.as_deref(),
             Some("Translate any language to English")
         );
-    }
-
-    #[test]
-    fn the_session_starts_on_the_named_preset() {
-        let presets = vec![preset("A", None, &["en"]), preset("B", None, &["fr"])];
-        assert_eq!(Session::position(&presets, Some("B")), 1);
-        assert_eq!(Session::position(&presets, Some("gone")), 0);
-        assert_eq!(Session::position(&presets, None), 0);
     }
 }
