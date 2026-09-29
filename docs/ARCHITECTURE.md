@@ -117,6 +117,7 @@ once Lumen was measured well inside them (7.36).
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
 | **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
+| **F10** | Dictionary: a *Define* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Planned.** Two commands, not one; a list with a detail pane in the vocabulary first; definitions in English for now, in the app's language later. See F10 decisions |
 
 ### F4 build order is not optional
 
@@ -903,6 +904,159 @@ and how old it is allowed to be.
   so there is nothing to cost. The table is read with the index, off the UI
   thread, and a root conversion asks for a fetch at most once per showing
   of the window, so a failing one is not retried on every key.
+
+### F10 decisions
+
+Three Raycast extensions were read before planning: *Web Dictionaries*
+(MIT, by DrChai), *Easy Dictionary* (MIT, by isfeng) and *Simple
+Dictionary* (MIT, by CT-7567). Each answers the same wish -- "what does
+this word mean" -- in a different shape, and each taught one thing:
+
+- *Web Dictionaries* gets the translation, the alternatives by part of
+  speech and the definitions **from one Google request**, by asking
+  `translate_a/single` for more fields (`dt=bd`, `dt=md`, `dt=ex`). The
+  translation row comes first, the dictionary under it, and a selected
+  sense opens beside the list.
+- *Easy Dictionary* is one box where **the input decides**: a word gets a
+  dictionary card, a sentence gets translations. It fits its users, who
+  learn English from Chinese, and a bilingual dictionary is the dictionary
+  they want.
+- *Simple Dictionary* reads `freedictionaryapi.com`, a keyless service
+  built on English Wiktionary: senses grouped by part of speech, examples,
+  IPA and inflected forms, for 279 languages. Its history and favourites
+  are taken, in one view rather than its three commands.
+
+What was checked on this machine, with curl, before writing this:
+
+- `clients5.google.com/translate_a/single?client=dict-chrome-ex`, the host
+  F7 already talks to, returns `dict` (alternatives by part of speech),
+  `definitions` and `examples` for `display`. The `/t` path Translate uses
+  returns the translation alone. **Not yet checked with the blocking
+  client**, and F7 found that Google judges the TLS client, not the request.
+- Google's definitions are **English words only**: `display` has them,
+  `mostrar` has none.
+- English Wiktionary explains **every language in English**: `significado`
+  is *significant; significance*, `bonjour` is *greetings; hello*, each
+  with IPA. Coverage is uneven -- 1.4 M English words, 760 K Spanish, far
+  fewer for small languages -- and senses come in Wiktionary's order, which
+  puts `significado` the adjective before `significado` the noun.
+
+The decisions:
+
+- **Two commands, not one.** *Translate* answers "how do I say this";
+  *Define* answers "what does this mean". They differ in shape: Translate
+  has two languages and up to four targets per preset, Define has one
+  language; Translate may be DeepL, which has no dictionary; and senses
+  under three target rows would be noise. Merging them was Easy
+  Dictionary's answer, and it is the right one for a bilingual learner's
+  tool, which Lumen is not. Each command offers the other in its action
+  panel -- *Define "display"*, *Translate "display"* -- so the second
+  question is one key away from the first.
+- **Translate gains a word's alternatives, at no extra request.** When the
+  text is a single word and the service is Google, the rows below the
+  translation are its alternatives by part of speech -- *verb: mostrar,
+  exhibir, desplegar...* -- from the same response, by moving from `/t` to
+  `/single` on the same host. With DeepL, nothing is added. This waits on
+  the blocking client getting the answer curl got; if it does not, it is
+  dropped, not worked around.
+- **Define reads English Wiktionary, keyless.** `freedictionaryapi.com`
+  first, behind `trait Dictionary`, so another source is one more
+  implementation. Google's definitions were rejected as the source because
+  they cover English words alone. The data is Wiktionary's, under CC BY-SA,
+  so the view attributes it the way F9 attributes its rates. The service's
+  own terms and limits are to be read before slice 2.
+- **A word has two languages, and they are kept apart.** The *word
+  language* is the one the word belongs to -- `mostrar` is Spanish -- chosen
+  in a *From* scope, as in Translate. The *explanation language* is the one
+  the definition is written in, and it is the app's: English today, since
+  Lumen has one language. Wiktionary is organised the same way -- each
+  edition explains every language in its own -- so when Lumen has a Spanish
+  interface, a Spanish explanation is another edition behind the same
+  trait, not a redesign. To keep that true, the explanation language is
+  an argument of the trait from the first commit, read from one function
+  that returns English; it is part of every cache key; and nothing in the
+  parser assumes English. Which source serves other editions is not
+  settled: Wiktextract, the extractor behind this data, parses several,
+  and that is to be checked when the time comes.
+- **A list with a detail pane, which the vocabulary gains first.** A
+  definition is a sentence and an example another; a row is one line
+  (I-10). All three extensions show the selected sense beside the list,
+  and Lumen cannot: `View` is a list *or* a detail, and
+  `Event::SelectionChanged` exists "so a detail pane can follow it" with no
+  pane to follow. Pushing a `Detail` is not the answer, for the reason F7
+  gave: `Esc` in a view clears the query. So an item may carry a detail --
+  the existing `Detail`'s Markdown and metadata -- and a list may ask for
+  the pane, in the one definition (I-13). The pane's width is a layout
+  token (I-5), the rows keep their height, and moving the selection
+  changes the pane's content, never the window's size (I-10). A view that
+  asks for no pane is unchanged, so World Clock, Characters, Translate and
+  Currency did not change -- though Translate's long translations are the
+  pane's next use. Restricted Markdown has no tables, so pronunciations
+  are a list or metadata rows, not Simple Dictionary's table.
+- **Define's view.** A section per part of speech (*Noun*, *Verb*), a row
+  per sense: the definition as the title, its first example dimmed as the
+  subtitle. The pane shows the headword, the sense in full, every example,
+  the pronunciations and the forms. `Enter` copies the selected
+  definition. A word the source does not have is said as such, with the
+  word language named, since uneven coverage makes it common for small
+  languages; offline is F7's `Failure::Offline`.
+- **Nothing waits on the network,** as in F7: the lookup is sent after
+  typing pauses, answers carry a generation and stale ones are dropped,
+  and the client is the blocking one already linked, built on first use
+  and dropped after. Root search does not change (I-3); `define hola` as
+  an inline prefix is deferred for F7's reason.
+- **Favourites and history, in Define's empty state.** Before anything is
+  typed, the view shows *Favourites*, then *Recent*; choosing a word opens
+  its definition. Simple Dictionary makes them three commands; here they
+  are what an empty search shows. Both live in `dictionary.json` in the
+  data folder, like `currency.json`: a file, not a database, because they
+  are a few hundred rows written once per lookup, not per keystroke.
+  - A **favourite** is F9's pin under another name: *Add to Favourites* in
+    the action panel. It keeps the **whole entry** -- senses, examples,
+    pronunciations, forms, the word language and the explanation language
+    -- so it opens offline and survives the source changing or dropping
+    the word.
+  - **History** keeps the word and its word language only, the last
+    hundred, newest first, and looks it up again when opened. A list of
+    every word looked up is a record to guard, as F6 found for typed URLs:
+    the panel offers *Remove from History* and *Clear History*, and
+    `dictionary.history` in `config.json` turns it off.
+- **Urban Dictionary is a quicklink, not a source.** Web Dictionaries
+  offers it as a second engine: slang written and voted on by its users.
+  Its API (`api.urbandictionary.com/v0/define`) answers but is
+  undocumented, its content is unmoderated in ways Lumen cannot filter,
+  and it is English alone -- while English Wiktionary already carries
+  common slang (`rizz` is there, marked *slang*). Whoever wants it adds
+  `https://www.urbandictionary.com/define.php?term={query}` as a quicklink
+  (F6): one mechanism, not two, and the choice stays the user's. It is not
+  in the example file.
+- **Left out.** Text to speech (Lumen plays no audio but alert sounds),
+  looking up the selected text in another application (reading it is a
+  `trait Platform` change with a Linux counterpart, I-9) and exam tags.
+- **Open: what *Detect* means for a word.** `freedictionaryapi.com` needs
+  the word language in the URL. Asking Google which language a word is
+  would send it to a service the user did not choose for Define, which
+  F7's no-fallback rule forbids. Wikimedia's own endpoint
+  (`en.wiktionary.org/api/rest_v1/page/definition/{word}`) answers every
+  language for a word in one request, but without pronunciations or
+  forms. Until this is decided, *From* starts on English and has no
+  *Detect*.
+- **The slices,** one acceptance criterion each:
+  1. The vocabulary gains the detail pane, and the renderer draws it;
+     every existing view looks and behaves as before.
+  2. *Define* opens a view; typing an English word shows its senses by
+     part of speech, the pane follows the selection, `Enter` copies.
+     Not found, and offline.
+  3. The *From* scope: a word from any language the source has, explained
+     in English.
+  4. *Translate* shows a single word's alternatives with Google, after the
+     blocking client is checked against `/single`.
+  5. *Define* and *Translate* offer each other in the action panel.
+  6. Favourites and history in Define's empty state, kept in
+     `dictionary.json`; history can be cleared and turned off.
+
+  The idle baseline and the binary size are measured before slice 1, and
+  again after 6.
 
 ---
 
