@@ -1175,14 +1175,40 @@ impl Launcher {
         let Some(index) = list.items().position(|item| item.id == id) else {
             return;
         };
-        if let Some(row) = state
+        if state
             .rows
             .iter()
-            .position(|row| matches!(row, crate::view::Row::Item(item) if *item == index))
+            .any(|row| matches!(row, crate::view::Row::Item(item) if *item == index))
         {
             state.selected = index;
-            state.list.scroll_to_reveal_item(row);
+            self.reveal_view_selection();
         }
+    }
+
+    /// Scroll the open view so its selected item is fully visible.
+    ///
+    /// By the row, not the item: a header occupies a row too, and scrolling
+    /// to the item's index would stop short by one per section.
+    fn reveal_view_selection(&self) {
+        let Mode::View(state) = &self.mode else {
+            return;
+        };
+        let Some(row) = state.rows.iter().position(
+            |row| matches!(row, crate::view::Row::Item(index) if *index == state.selected),
+        ) else {
+            return;
+        };
+        let top = state.list.logical_scroll_top();
+        let (item_ix, offset) = crate::view::reveal(
+            &state.rows,
+            (top.item_ix, f32::from(top.offset_in_item)),
+            row,
+            self.view_rows_height(state),
+        );
+        state.list.scroll_to(gpui::ListOffset {
+            item_ix,
+            offset_in_item: gpui::px(offset),
+        });
     }
 
     /// Close the launcher on the view's behalf: something it did is finished,
@@ -1615,14 +1641,7 @@ impl Launcher {
             .unwrap_or(0) as isize;
         let next = (current + delta).rem_euclid(items.len() as isize) as usize;
         state.selected = items[next];
-
-        // Told about the row, not the item: a header occupies a row too, and
-        // scrolling to the item's index would stop short by one per section.
-        if let Some(row) = state.rows.iter().position(
-            |row| matches!(row, crate::view::Row::Item(index) if *index == state.selected),
-        ) {
-            state.list.scroll_to_reveal_item(row);
-        }
+        self.reveal_view_selection();
 
         // Told about the move, so an extension that wants to follow the
         // selection -- a detail pane, a preview -- can.
@@ -1827,7 +1846,7 @@ impl Launcher {
             let first = self.view_items().first().copied();
             if let (Some(first), Mode::View(state)) = (first, &mut self.mode) {
                 state.selected = first;
-                state.list.scroll_to_reveal_item(0);
+                self.reveal_view_selection();
                 cx.notify();
             }
             return;
@@ -1846,8 +1865,7 @@ impl Launcher {
             let last = self.view_items().last().copied();
             if let (Some(last), Mode::View(state)) = (last, &mut self.mode) {
                 state.selected = last;
-                let rows = state.rows.len().saturating_sub(1);
-                state.list.scroll_to_reveal_item(rows);
+                self.reveal_view_selection();
                 cx.notify();
             }
             return;

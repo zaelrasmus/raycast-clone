@@ -94,6 +94,50 @@ pub fn row_height(row: &Row) -> f32 {
     }
 }
 
+/// Where a list's scroll should start so that `row` is fully visible in a
+/// viewport `viewport` tall, given where it starts now, as (row, offset in it).
+///
+/// Worked out from the rows' heights, which are known exactly (I-10), rather
+/// than left to GPUI's `scroll_to_reveal_item`: that one adds up the heights
+/// it has *measured*, and a row below the fold has never been drawn, so it
+/// counts as nothing and the list never scrolls down to it (F10).
+///
+/// Moving up to a section's first item reveals the section's header too:
+/// an item scrolled to the top edge with its heading just out of sight
+/// reads as belonging to the section above.
+pub fn reveal(rows: &[Row], top: (usize, f32), row: usize, viewport: f32) -> (usize, f32) {
+    let offset = |index: usize| -> f32 { rows.iter().take(index).map(row_height).sum() };
+    let Some(target) = rows.get(row) else {
+        return top;
+    };
+
+    let current = offset(top.0.min(rows.len())) + top.1;
+    let row_top = offset(row);
+    let row_bottom = row_top + row_height(target);
+
+    let new_top = if row_top < current {
+        match row.checked_sub(1).and_then(|above| rows.get(above)) {
+            Some(Row::Section(..)) => row_top - layout::view::SECTION_HEIGHT,
+            _ => row_top,
+        }
+    } else if row_bottom > current + viewport {
+        row_bottom - viewport
+    } else {
+        return top;
+    };
+
+    // Back from pixels to a row and an offset into it.
+    let mut start = 0.0;
+    for (index, each) in rows.iter().enumerate() {
+        let height = row_height(each);
+        if new_top < start + height {
+            return (index, (new_top - start).max(0.0));
+        }
+        start += height;
+    }
+    (rows.len(), 0.0)
+}
+
 /// Draw a list, virtualised.
 ///
 /// `selected` is an index into the flat item order, not into `rows`: the
@@ -609,6 +653,48 @@ mod tests {
             })
             .collect();
         assert_eq!(items, [0, 1, 2]);
+    }
+
+    /// Down past the bottom edge scrolls by exactly what is needed, whether
+    /// or not the row was ever drawn -- the F10 bug was that it did not move.
+    #[test]
+    fn revealing_a_row_below_the_fold_scrolls_just_enough() {
+        // Header, five items, header, six items: the Define view for `display`.
+        let mut rows = vec![Row::Section("Noun".into(), None)];
+        rows.extend((0..5).map(Row::Item));
+        rows.push(Row::Section("Verb".into(), None));
+        rows.extend((5..11).map(Row::Item));
+        let header = layout::view::SECTION_HEIGHT;
+        let item = layout::ROW_HEIGHT;
+        // What the launcher gives it: two headers and six items.
+        let viewport = header * 2.0 + item * 6.0;
+
+        // Visible already: nothing moves.
+        assert_eq!(reveal(&rows, (0, 0.0), 7, viewport), (0, 0.0));
+
+        // The second verb, one row below the edge: scroll by one item.
+        let (index, offset) = reveal(&rows, (0, 0.0), 8, viewport);
+        let top: f32 = rows[..index].iter().map(row_height).sum::<f32>() + offset;
+        assert_eq!(top, item);
+
+        // The last row, from the top.
+        let (index, offset) = reveal(&rows, (0, 0.0), 12, viewport);
+        let top: f32 = rows[..index].iter().map(row_height).sum::<f32>() + offset;
+        let total: f32 = rows.iter().map(row_height).sum();
+        assert_eq!(top, total - viewport);
+    }
+
+    #[test]
+    fn moving_up_to_a_sections_first_item_shows_its_header() {
+        let mut rows = vec![Row::Section("Noun".into(), None)];
+        rows.extend((0..5).map(Row::Item));
+        rows.push(Row::Section("Verb".into(), None));
+        rows.extend((5..11).map(Row::Item));
+
+        // Scrolled so the first verb (row 7) is above the top edge.
+        assert_eq!(reveal(&rows, (9, 0.0), 7, 200.0), (6, 0.0));
+        // And back to the very first item: its header too.
+        assert_eq!(reveal(&rows, (9, 0.0), 1, 200.0), (0, 0.0));
     }
 
     #[test]
