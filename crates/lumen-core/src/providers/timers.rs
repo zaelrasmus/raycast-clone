@@ -56,28 +56,38 @@ fn preset(preset: &Preset) -> Item {
 
 /// `start`, and for a cycle the other way of ending -- one set or repeating --
 /// second, where `Ctrl+K` reaches it.
+/// A plain preset's second is the other side of focus.
 fn starts(preset: &Preset) -> Vec<Action> {
     let mut actions = vec![start(preset)];
-    if let Some(plan) = preset.cycle {
-        actions.push(Action::Timer(Command::StartCycle {
-            name: Some(preset.name.clone()),
+    let name = Some(preset.name.clone());
+    actions.push(Action::Timer(match preset.cycle {
+        Some(plan) => Command::StartCycle {
+            name,
             plan: Plan {
                 repeat: !plan.repeat,
                 ..plan
             },
-        }));
-    }
+            focus: preset.focus,
+        },
+        None => Command::Start {
+            seconds: preset.duration.as_secs(),
+            name,
+            focus: !preset.focus,
+        },
+    }));
     actions
 }
 
 /// What starting `preset` asks the daemon for.
 pub fn start(preset: &Preset) -> Action {
     let name = Some(preset.name.clone());
+    let focus = preset.focus;
     Action::Timer(match preset.cycle {
-        Some(plan) => Command::StartCycle { name, plan },
+        Some(plan) => Command::StartCycle { name, plan, focus },
         None => Command::Start {
             seconds: preset.duration.as_secs(),
             name,
+            focus,
         },
     })
 }
@@ -90,14 +100,16 @@ const STOPWATCH: &str = "timer:stopwatch-named";
 
 /// The name in `stopwatch <name>`, when the query is that.
 fn stopwatch_name(query: &str) -> Option<&str> {
-    const WORD: &str = "stopwatch";
-    let head = query.get(..WORD.len())?;
-    let rest = &query[WORD.len()..];
-    if !head.eq_ignore_ascii_case(WORD) || !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let name = rest.trim();
+    let name = strip_word(query, "stopwatch")?.trim();
     (!name.is_empty()).then_some(name)
+}
+
+/// `query` after a leading `word` and the space after it.
+fn strip_word<'a>(query: &'a str, word: &str) -> Option<&'a str> {
+    let head = query.get(..word.len())?;
+    let rest = &query[word.len()..];
+    (head.eq_ignore_ascii_case(word) && rest.starts_with(char::is_whitespace))
+        .then(|| rest.trim_start())
 }
 
 impl Provider for TimersProvider {
@@ -135,12 +147,35 @@ impl Provider for TimersProvider {
                     Action::Timer(Command::StartCycle {
                         name: Some("Pomodoro".into()),
                         plan: Plan::POMODORO,
+                        focus: false,
                     }),
                     Action::Timer(Command::StartCycle {
                         name: Some("Pomodoro".into()),
                         plan: Plan::POMODORO.repeating(),
+                        focus: false,
+                    }),
+                    Action::Timer(Command::StartCycle {
+                        name: Some("Pomodoro".into()),
+                        plan: Plan::POMODORO,
+                        focus: true,
                     }),
                 ],
+                kind: Kind::Timer,
+            },
+            Item {
+                id: "timer:focus".into(),
+                title: "Start Focus Session".into(),
+                subtitle: Some(
+                    "25 min, your distractions blocked in Lumen \u{2014} or type focus 45m and your goal"
+                        .into(),
+                ),
+                icon: None,
+                keywords: keywords(&["focus", "session", "block", "distraction", "deep", "work"]),
+                actions: vec![Action::Timer(Command::Start {
+                    seconds: 25 * 60,
+                    name: Some("Focus".into()),
+                    focus: true,
+                })],
                 kind: Kind::Timer,
             },
             Item {
@@ -186,7 +221,9 @@ impl Provider for TimersProvider {
         // Rejected on the first character, as the contract asks: a duration
         // starts with a digit or the word "timer", a named stopwatch with
         // the word "stopwatch".
-        if !query.starts_with(|c: char| c.is_ascii_digit() || matches!(c, 't' | 'T' | 's' | 'S')) {
+        if !query.starts_with(|c: char| {
+            c.is_ascii_digit() || matches!(c, 't' | 'T' | 's' | 'S' | 'f' | 'F')
+        }) {
             return Vec::new();
         }
         if let Some(name) = stopwatch_name(query) {
@@ -202,32 +239,50 @@ impl Provider for TimersProvider {
                 kind: Kind::Timer,
             }];
         }
-        let Some(typed) = duration::parse(query) else {
+        // `focus 45m write chapter 3`: the same grammar, with focus on.
+        let (focus, rest) = match strip_word(query, "focus") {
+            Some(rest) => (true, rest),
+            None => (false, query),
+        };
+        let Some(typed) = duration::parse(rest) else {
             return Vec::new();
         };
 
         let length = duration::describe(typed.duration);
-        let (title, subtitle) = match &typed.name {
-            Some(name) => (
+        let (title, subtitle) = match (&typed.name, focus) {
+            (Some(name), true) => (
+                format!("Focus on \u{201c}{name}\u{201d} for {length}"),
+                "Blocks your distractions in Lumen until it ends".to_string(),
+            ),
+            (None, true) => (
+                format!("Focus for {length}"),
+                "Blocks your distractions in Lumen until it ends".to_string(),
+            ),
+            (Some(name), false) => (
                 format!("Start \u{201c}{name}\u{201d}"),
                 format!("A {length} timer"),
             ),
-            None => (
+            (None, false) => (
                 format!("Start {length} timer"),
                 "Notifies you when it ends".to_string(),
             ),
         };
 
+        // The other side of focus second, where Ctrl+K reaches it.
+        let start = |focus: bool| {
+            Action::Timer(Command::Start {
+                seconds: typed.duration.as_secs(),
+                name: typed.name.clone(),
+                focus,
+            })
+        };
         vec![Item {
             id: START.into(),
             title,
             subtitle: Some(subtitle),
             icon: None,
             keywords: Vec::new(),
-            actions: vec![Action::Timer(Command::Start {
-                seconds: typed.duration.as_secs(),
-                name: typed.name,
-            })],
+            actions: vec![start(focus), start(!focus)],
             kind: Kind::Timer,
         }]
     }
@@ -246,9 +301,11 @@ mod tests {
             answers[0].primary(),
             Action::Timer(Command::Start {
                 seconds: 1500,
-                name: None
+                name: None,
+                focus: false,
             })
         );
+        assert_eq!(answers[0].actions[1].verb(), "Start with Focus");
     }
 
     #[test]
@@ -279,6 +336,7 @@ mod tests {
             alias: Some("dw".into()),
             duration: std::time::Duration::from_secs(90 * 60),
             cycle: None,
+            focus: false,
         }])
         .catalogue();
 
@@ -293,9 +351,11 @@ mod tests {
             items[0].primary(),
             Action::Timer(Command::Start {
                 seconds: 90 * 60,
-                name: Some("Deep work".into())
+                name: Some("Deep work".into()),
+                focus: false,
             })
         );
+        assert_eq!(items[0].actions[1].verb(), "Start with Focus");
     }
 
     #[test]
@@ -305,6 +365,7 @@ mod tests {
             alias: None,
             duration: std::time::Duration::from_secs(50 * 60),
             cycle: Some(Plan::POMODORO),
+            focus: false,
         }])
         .catalogue();
         assert!(matches!(
@@ -327,9 +388,35 @@ mod tests {
             pomodoro.primary(),
             Action::Timer(Command::StartCycle {
                 name: Some("Pomodoro".into()),
-                plan: Plan::POMODORO
+                plan: Plan::POMODORO,
+                focus: false,
             })
         );
+        assert_eq!(pomodoro.actions[2].verb(), "Start with Focus");
+    }
+
+    #[test]
+    fn focus_and_a_duration_start_a_focus_timer() {
+        let answers = TimersProvider.answer("focus 45m write chapter 3");
+        assert_eq!(
+            answers[0].title,
+            "Focus on \u{201c}write chapter 3\u{201d} for 45 min"
+        );
+        assert_eq!(
+            answers[0].primary(),
+            Action::Timer(Command::Start {
+                seconds: 45 * 60,
+                name: Some("write chapter 3".into()),
+                focus: true,
+            })
+        );
+        assert_eq!(
+            TimersProvider.answer("focus 25m")[0].title,
+            "Focus for 25 min"
+        );
+        assert!(TimersProvider.answer("focus").is_empty());
+        assert!(TimersProvider.answer("focus mode").is_empty());
+        assert!(TimersProvider.answer("firefox").is_empty());
     }
 
     #[test]

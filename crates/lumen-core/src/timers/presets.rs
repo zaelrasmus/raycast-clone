@@ -25,6 +25,10 @@ pub struct TimersConfig {
     pub presets: Vec<PresetConfig>,
     /// Durations as typed in the launcher: `"5m"`, `"1h30"`.
     pub quick_start: Vec<String>,
+    /// What a focus timer keeps Lumen from opening (slice 6): application
+    /// names as the root list shows them, and domains.
+    pub blocked_apps: Vec<String>,
+    pub blocked_sites: Vec<String>,
     /// The system sound played when a timer ends, by name (slice 3). `null`
     /// is silence: the notification alone.
     pub alert_sound: Option<String>,
@@ -35,6 +39,8 @@ impl Default for TimersConfig {
     fn default() -> Self {
         Self {
             presets: Vec::new(),
+            blocked_apps: Vec::new(),
+            blocked_sites: Vec::new(),
             quick_start: ["2m", "5m", "10m", "30m"].map(String::from).to_vec(),
             // The first alarm every Windows install has. A name the platform
             // does not know plays nothing and says so in the log.
@@ -81,6 +87,8 @@ pub struct PresetConfig {
     pub rounds: Option<u32>,
     /// Start the set again after it ends, until stopped.
     pub repeat: bool,
+    /// Start with focus on (slice 6).
+    pub focus: bool,
 }
 
 /// A preset that makes sense.
@@ -91,6 +99,7 @@ pub struct Preset {
     pub duration: Duration,
     /// Work and breaks, when the preset is a cycle.
     pub cycle: Option<Plan>,
+    pub focus: bool,
 }
 
 impl Preset {
@@ -104,6 +113,11 @@ impl Preset {
 }
 
 impl TimersConfig {
+    /// What focus blocks, ready to match.
+    pub fn guard(&self) -> super::focus::Guard {
+        super::focus::Guard::new(&self.blocked_apps, &self.blocked_sites)
+    }
+
     /// The presets that make sense, in the order they were written; a second
     /// preset with a name already taken is skipped.
     pub fn presets(&self) -> Vec<Preset> {
@@ -175,6 +189,7 @@ pub fn resolve(written: &PresetConfig) -> Result<Preset, String> {
         alias: alias.map(str::to_string),
         duration,
         cycle: plan(name, written, duration)?,
+        focus: written.focus,
     })
 }
 
@@ -238,6 +253,7 @@ mod tests {
                 alias: Some("dw".into()),
                 duration: Duration::from_secs(90 * 60),
                 cycle: None,
+                focus: false,
             }]
         );
     }

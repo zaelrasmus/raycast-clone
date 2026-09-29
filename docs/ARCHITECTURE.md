@@ -115,7 +115,7 @@ once Lumen was measured well inside them (7.36).
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
-| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view), 2 (presets, settings page), 3 (alert sounds, ringing), 4 (stopwatches) and 5 (cycles, Pomodoro) of six built. See F8 decisions |
+| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
 
 ### F4 build order is not optional
 
@@ -656,6 +656,41 @@ Slice 5 is built:
 - **Laps stay out.** Asked about and declined: they are the one piece that
   would need new interface, for a use -- timing splits -- that none of the
   intended ones have.
+
+Slice 6 is built, and with it F8:
+
+- **One list, a switch per timer** -- chosen over lists per preset. The
+  *Blocked apps* and *Blocked sites* are one pair of lists in `config.json`
+  (`blocked-apps`, `blocked-sites`), on the settings page's General row. A
+  timer has focus on or off: `focus 45m write chapter 3` in the root list,
+  *Start Focus Session* (25 min), *Start with Focus* in `Ctrl+K` on a typed
+  duration or a preset, *Focus* on a preset in settings, or *Turn Focus
+  On/Off* on the running timer. In a cycle it holds during work and lifts
+  for breaks; paused, it still holds -- pausing is not a way out.
+- **Checked in the launcher, known in advance.** Whether `Enter` would open
+  something blocked must not wait on anything (I-3), so the daemon pushes a
+  `focus::Guard` into the launcher whenever the timers or the lists change,
+  `None` when no focus timer holds, and the check is a lookup. An app is
+  matched by the name the root list shows, its editions included (`Discord`
+  blocks *Discord PTB*, not *Discordia Notes*); a site by the host of the
+  link as it would open, subdomains included, which covers quicklinks, web
+  searches and typed URLs alike. A search *for* a blocked site on another
+  engine is not blocked: it opens the engine.
+- **A refusal is a view, not a dead key.** The launcher stays up and says
+  what is blocked, by which timer, and how long is left. `Enter` is *Back to
+  Focus*; *Open Anyway* runs what was asked -- the link in the browser it
+  would have used -- and is counted on the timer, shown as "opened anyway 2
+  times" on its row. Nothing is recorded in the usage history for either.
+- **Not a wall, by design.** The same app opened from the Start menu opens.
+  No system hook, no admin rights, no browser extension; `trait Platform`
+  did not change.
+- **Verified with a real daemon:** a focus timer carried over in
+  `timers.json` with `Discord` listed armed the launcher's guard at start
+  and disarmed it when it ended. The refusal itself is behind `Enter` and
+  was not driven from here.
+- **Found on the way:** the *After the set* dropdown added with repeat was
+  not a Tab stop, did not mark the form edited and did not follow the theme.
+  Every dropdown on the page now goes through one list that does all three.
 
 ---
 

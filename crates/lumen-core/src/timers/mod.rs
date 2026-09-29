@@ -23,6 +23,7 @@
 
 pub mod cycle;
 pub mod duration;
+pub mod focus;
 pub mod presets;
 pub mod sounds;
 pub mod stopwatch;
@@ -72,8 +73,14 @@ pub fn millis(time: SystemTime) -> Millis {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Command {
-    /// Count down from `seconds`, under `name` if there is one.
-    Start { seconds: u64, name: Option<String> },
+    /// Count down from `seconds`, under `name` if there is one; with focus
+    /// on, if asked (slice 6).
+    Start {
+        seconds: u64,
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focus: bool,
+    },
     /// Stop the running timer closest to ending.
     StopNearest,
     /// Silence every timer ringing until dismissed (slice 3).
@@ -81,7 +88,12 @@ pub enum Command {
     /// Count up from zero, under `name` if there is one (slice 4).
     StartStopwatch { name: Option<String> },
     /// Work and breaks by `plan`, under `name` (slice 5).
-    StartCycle { name: Option<String>, plan: Plan },
+    StartCycle {
+        name: Option<String>,
+        plan: Plan,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focus: bool,
+    },
 }
 
 /// Every timer and stopwatch.
@@ -107,6 +119,17 @@ pub struct Timer {
     /// phase's length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cycle: Option<Cycle>,
+    /// While it runs, Lumen will not open the blocked apps and sites
+    /// (slice 6).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub focus: bool,
+    /// How many times something blocked was opened anyway.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub overrides: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +217,8 @@ impl Clock {
                 ends_at: now + duration_ms,
             },
             cycle: None,
+            focus: false,
+            overrides: 0,
         });
         id
     }
@@ -202,8 +227,13 @@ impl Clock {
     /// one, so the caller can say which.
     pub fn apply(&mut self, command: &Command, now: Millis) -> Option<Timer> {
         match command {
-            Command::Start { seconds, name } => {
-                self.start(Duration::from_secs(*seconds), name.clone(), now);
+            Command::Start {
+                seconds,
+                name,
+                focus,
+            } => {
+                let id = self.start(Duration::from_secs(*seconds), name.clone(), now);
+                self.set_focus(id, *focus);
                 None
             }
             Command::StopNearest => self.stop_nearest(now),
@@ -212,8 +242,9 @@ impl Clock {
                 self.start_stopwatch(name.clone(), now);
                 None
             }
-            Command::StartCycle { name, plan } => {
-                self.start_cycle(*plan, name.clone(), now);
+            Command::StartCycle { name, plan, focus } => {
+                let id = self.start_cycle(*plan, name.clone(), now);
+                self.set_focus(id, *focus);
                 None
             }
         }
@@ -540,6 +571,7 @@ mod tests {
             &Command::Start {
                 seconds: 60,
                 name: Some("tea".into()),
+                focus: false,
             },
             0,
         );
@@ -595,6 +627,7 @@ mod tests {
         let json = serde_json::to_string(&Command::Start {
             seconds: 1500,
             name: None,
+            focus: false,
         })
         .unwrap();
         assert_eq!(json, r#"{"type":"start","seconds":1500,"name":null}"#);

@@ -90,7 +90,7 @@ an aesthetic worth looking at fifty times a day.
   and *To* pills choose any language at any time, without losing the text:
   click one, or `Tab` to open its list. `Enter` copies the translation and
   closes.
-- **Timers** (F8, slices 1 to 5). Type a duration -- `25m`, `1h30`, `90s`, `1:30`
+- **Timers, Pomodoro and focus** (F8). Type a duration -- `25m`, `1h30`, `90s`, `1:30`
   -- and *Start 25 min timer* leads the list; words after it name the timer,
   `25m write chapter 3`. A notification says when it ends. *Timers* shows
   what is running with the time left, and pauses, resumes, restarts or stops
@@ -111,6 +111,12 @@ an aesthetic worth looking at fifty times a day.
   settings and it cycles the same way, with your own lengths and rounds.
   A set ends after its long break, or repeats until you stop it: choose
   per preset, with `Ctrl+K` when starting, or on the running timer.
+  **Focus**: list the apps and sites that distract you in settings, then
+  `focus 45m write chapter 3` -- or *Start with Focus* from `Ctrl+K` on any
+  timer -- and Lumen won't open them until it ends, showing your goal and
+  the time left instead, with *Open Anyway* if you mean it. In a Pomodoro
+  it holds during work and lifts for breaks. Only what opens through Lumen
+  is checked: a nudge, not a lock.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.

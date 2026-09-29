@@ -30,6 +30,8 @@ const RESET: &str = "reset";
 const SKIP: &str = "skip";
 const REPEAT: &str = "repeat";
 const ONE_SET: &str = "one-set";
+const FOCUS_ON: &str = "focus-on";
+const FOCUS_OFF: &str = "focus-off";
 const PRESET: &str = "preset-";
 const QUICK: &str = "quick-";
 
@@ -108,6 +110,12 @@ fn item(timer: &Timer, now: Millis) -> Item {
         }),
         State::Running { .. } => {}
     }
+    if timer.focus {
+        accessories.push(Accessory::Tag {
+            text: "Focus".into(),
+            tone: Tone::Positive,
+        });
+    }
     accessories.push(Accessory::Text {
         text: clock_face(timer.remaining(now)),
     });
@@ -128,20 +136,40 @@ fn item(timer: &Timer, now: Millis) -> Item {
             action(REPEAT, "Repeat the Set")
         });
     }
+    if !timer.is_ringing() {
+        actions.push(if timer.focus {
+            action(FOCUS_OFF, "Turn Focus Off")
+        } else {
+            action(FOCUS_ON, "Turn Focus On")
+        });
+    }
     actions.extend([action(RESTART, "Restart"), action(STOP, "Stop")]);
+
+    // Every time something blocked was opened anyway, said where it counts.
+    let overrides = match timer.overrides {
+        0 => None,
+        1 => Some("opened anyway once".to_string()),
+        count => Some(format!("opened anyway {count} times")),
+    };
 
     Item {
         id: format!("{TIMER}{}", timer.id),
         title: timer.title(),
         // Where a cycle is; what a named timer counts; nothing for an
         // unnamed one, whose title already says it.
-        subtitle: match (&timer.cycle, &timer.name) {
-            (Some(cycle), _) if timer.is_ringing() => {
-                Some(format!("{} done", cycle.plan.describe()))
-            }
-            (Some(cycle), _) => Some(cycle.label()),
-            (None, Some(_)) => Some(format!("{} timer", describe(timer.duration()))),
-            (None, None) => None,
+        subtitle: match (
+            match (&timer.cycle, &timer.name) {
+                (Some(cycle), _) if timer.is_ringing() => {
+                    Some(format!("{} done", cycle.plan.describe()))
+                }
+                (Some(cycle), _) => Some(cycle.label()),
+                (None, Some(_)) => Some(format!("{} timer", describe(timer.duration()))),
+                (None, None) => None,
+            },
+            overrides,
+        ) {
+            (Some(what), Some(overrides)) => Some(format!("{what} \u{00b7} {overrides}")),
+            (what, overrides) => what.or(overrides),
         },
         icon: Some(Icon::Glyph { name: GLYPH.into() }),
         accessories,
@@ -276,6 +304,8 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
         SKIP => clock.skip(id, now),
         REPEAT => clock.set_repeat(id, true),
         ONE_SET => clock.set_repeat(id, false),
+        FOCUS_ON => clock.set_focus(id, true),
+        FOCUS_OFF => clock.set_focus(id, false),
         _ => false,
     }
 }
@@ -417,6 +447,7 @@ mod tests {
             alias: Some("dw".into()),
             duration: Duration::from_secs(90 * 60),
             cycle: None,
+            focus: false,
         }
     }
 
@@ -498,6 +529,27 @@ mod tests {
             .clone();
         assert_eq!(row.subtitle.as_deref(), Some("Break"));
         assert_eq!(texts(&row), ["5:00"]);
+    }
+
+    #[test]
+    fn a_focus_timer_says_so_and_counts_what_was_opened_anyway() {
+        let mut clock = Clock::default();
+        let id = clock.start(Duration::from_secs(600), Some("Write".into()), 0);
+        let row_id = format!("timer-{id}");
+
+        let row = list(view(&clock, &[], &[], 0)).item(0).unwrap().clone();
+        assert_eq!(row.actions[1].title, "Turn Focus On");
+        assert!(act(&mut clock, &invoke(&row_id, "focus-on"), &[], 0));
+        clock.count_override(id);
+        clock.count_override(id);
+
+        let row = list(view(&clock, &[], &[], 0)).item(0).unwrap().clone();
+        assert_eq!(texts(&row), ["Focus", "10:00"]);
+        assert_eq!(
+            row.subtitle.as_deref(),
+            Some("10 min timer \u{00b7} opened anyway 2 times")
+        );
+        assert_eq!(row.actions[1].title, "Turn Focus Off");
     }
 
     #[test]

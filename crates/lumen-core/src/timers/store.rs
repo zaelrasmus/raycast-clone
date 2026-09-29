@@ -95,19 +95,36 @@ pub fn set_alert_sound(path: &Path, sound: Option<&str>) -> Result<()> {
 
 /// Save the General row's form: the sound, how long it rings, and the quick
 /// durations, in one write so a refusal changes none of them.
-pub fn set_general(
-    path: &Path,
-    sound: Option<&str>,
-    ring: Ring,
-    durations: &[String],
-) -> Result<()> {
-    let durations = checked(durations)?;
+pub fn set_general(path: &Path, general: &General) -> Result<()> {
+    let durations = checked(&general.durations)?;
+    let list = |values: &[String]| {
+        Value::Array(
+            values
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| Value::String(value.to_string()))
+                .collect(),
+        )
+    };
     section::edit(path, SECTION, |written| {
-        written.insert("alert-sound".into(), sound_value(sound));
-        written.insert("ring".into(), serde_json::to_value(ring)?);
+        written.insert("alert-sound".into(), sound_value(general.sound.as_deref()));
+        written.insert("ring".into(), serde_json::to_value(general.ring)?);
         written.insert("quick-start".into(), durations);
+        written.insert("blocked-apps".into(), list(&general.blocked_apps));
+        written.insert("blocked-sites".into(), list(&general.blocked_sites));
         Ok(())
     })
+}
+
+/// The General row's form, as typed.
+#[derive(Debug, Clone, Default)]
+pub struct General {
+    pub sound: Option<String>,
+    pub ring: Ring,
+    pub durations: Vec<String>,
+    pub blocked_apps: Vec<String>,
+    pub blocked_sites: Vec<String>,
 }
 
 fn sound_value(sound: Option<&str>) -> Value {
@@ -181,6 +198,7 @@ fn fields(preset: &PresetConfig, mut kept: Map<String, Value>) -> Map<String, Va
         ("long-break", text(&preset.long_break)),
         ("rounds", preset.rounds.map(Value::from)),
         ("repeat", preset.repeat.then_some(Value::Bool(true))),
+        ("focus", preset.focus.then_some(Value::Bool(true))),
     ];
     for (key, value) in cycle {
         if let Some(value) = value {
@@ -195,6 +213,7 @@ fn fields(preset: &PresetConfig, mut kept: Map<String, Value>) -> Map<String, Va
         "long-break",
         "rounds",
         "repeat",
+        "focus",
     ] {
         kept.remove(key);
     }
@@ -360,13 +379,26 @@ mod tests {
     fn the_general_row_is_saved_whole_or_not_at_all() {
         let file = Scratch::new("general", Some(CONFIG));
 
-        set_general(&file.0, None, Ring::UntilDismissed, &["5m".into()]).unwrap();
+        let general = General {
+            sound: None,
+            ring: Ring::UntilDismissed,
+            durations: vec!["5m".into()],
+            blocked_apps: vec![" Discord ".into(), String::new()],
+            blocked_sites: vec!["youtube.com".into()],
+        };
+        set_general(&file.0, &general).unwrap();
         let read_back = read(&file.0).unwrap();
         assert_eq!(read_back.alert_sound, None);
         assert_eq!(read_back.ring, Ring::UntilDismissed);
+        assert_eq!(read_back.blocked_apps, ["Discord"]);
+        assert_eq!(read_back.blocked_sites, ["youtube.com"]);
         assert!(file.contents().contains("\"alert-sound\": null"));
 
-        assert!(set_general(&file.0, Some("Ring02"), Ring::Once, &["later".into()]).is_err());
+        let wrong = General {
+            durations: vec!["later".into()],
+            ..general
+        };
+        assert!(set_general(&file.0, &wrong).is_err());
         assert_eq!(read(&file.0).unwrap().ring, Ring::UntilDismissed);
 
         set_alert_sound(&file.0, Some("Ring02")).unwrap();

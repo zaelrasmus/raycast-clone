@@ -211,6 +211,10 @@ impl Action {
             Action::AskArgument(_) => "Search",
             Action::CreateQuicklink => "Create",
             Action::SaveAsQuicklink { .. } => "Save as Quicklink",
+            Action::Timer(crate::timers::Command::Start { focus: true, .. })
+            | Action::Timer(crate::timers::Command::StartCycle { focus: true, .. }) => {
+                "Start with Focus"
+            }
             Action::Timer(crate::timers::Command::Start { .. }) => "Start",
             Action::Timer(crate::timers::Command::StopNearest) => "Stop",
             Action::Timer(crate::timers::Command::DismissRinging) => "Dismiss",

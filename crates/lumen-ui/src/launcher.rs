@@ -272,6 +272,9 @@ pub struct Launcher {
     appearances: usize,
     /// Kept alive so the theme watch keeps firing; never read directly.
     _theme_reload: Option<Task<()>>,
+    /// What focus blocks, while a focus timer runs (F8); `None` otherwise.
+    /// The daemon keeps it current, so the check on `Enter` waits on nothing.
+    focus: Option<lumen_core::timers::focus::Guard>,
 }
 
 impl Launcher {
@@ -329,6 +332,7 @@ impl Launcher {
             picker: None,
             appearances: 0,
             _theme_reload: None,
+            focus: None,
         };
 
         launcher.start_indexing(cx);
@@ -1069,6 +1073,18 @@ impl Launcher {
 
     /// Close the launcher on the view's behalf: something it did is finished,
     /// such as copying a translation.
+    /// Whether focus is on, and what it blocks (F8).
+    pub fn set_focus(
+        &mut self,
+        guard: Option<lumen_core::timers::focus::Guard>,
+        _cx: &mut Context<Self>,
+    ) {
+        if guard.is_some() != self.focus.is_some() {
+            log::debug!("focus is {}", if guard.is_some() { "on" } else { "off" });
+        }
+        self.focus = guard;
+    }
+
     pub fn close(&mut self, cx: &mut Context<Self>) {
         cx.emit(LauncherEvent::Dismissed);
     }
@@ -1616,7 +1632,25 @@ impl Launcher {
             (None, _) => item.primary(),
         };
         let id = item.id.clone();
+        let blocked = self
+            .focus
+            .as_ref()
+            .and_then(|guard| guard.blocks(item, &action));
         self.action_panel = None;
+
+        // Focus is on and this is on its list (F8): the daemon shows why, in
+        // place of the list, with the way through. Nothing is recorded: it
+        // has not been opened. A link keeps the browser it would have used.
+        if let Some(what) = blocked {
+            let action = match action {
+                Action::OpenLink(open) => {
+                    Action::OpenLink(open.or_browser(self.config.preferred_browser.as_deref()))
+                }
+                action => action,
+            };
+            cx.emit(LauncherEvent::Blocked { what, action });
+            return;
+        }
 
         // Choosing a browser has opened nothing yet, so, like asking for an
         // argument, it records no use.
@@ -2028,6 +2062,13 @@ pub enum LauncherEvent {
     RunTimers,
     /// *Preview Alert Sounds* was chosen (F8, slice 3).
     RunAlertSounds,
+    /// Focus refused to open `what` (F8, slice 6). `action` is what would
+    /// have run, for *Open Anyway*. Replaces `Dismissed`: the launcher stays
+    /// up to say why.
+    Blocked {
+        what: String,
+        action: lumen_core::Action,
+    },
     /// A timer is to be started or stopped (F8). Follows `Dismissed`.
     Timer(lumen_core::timers::Command),
     /// A layout was chosen for the window that held the foreground.

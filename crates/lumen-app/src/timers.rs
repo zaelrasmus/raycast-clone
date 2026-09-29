@@ -25,6 +25,13 @@
 //! at a time, so there is one loop however many are ringing, and it stops
 //! when the last of them is dismissed, stopped or restarted.
 //!
+//! # Focus is pushed, not asked for
+//!
+//! The launcher checks what `Enter` would open against what focus blocks,
+//! and it must not wait to know (I-3). So whenever the timers or the lists
+//! change, the daemon hands it the guard -- or `None` when no focus timer
+//! holds -- and the check is a lookup in the launcher's own state.
+//!
 //! # The view redraws only while it is open
 //!
 //! When a second on one of its faces turns over, and not otherwise. With the
@@ -40,8 +47,8 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::AsyncApp;
 use lumen_core::timers::{
-    self, Clock, Command, Ending, Phase, Preset, Ring, Timer, TimersConfig, duration, sounds,
-    store, view,
+    self, Clock, Command, Ending, Phase, Preset, Ring, Timer, TimersConfig, duration, focus,
+    sounds, store, view,
 };
 use lumen_core::view::Event;
 use lumen_platform::Platform;
@@ -83,6 +90,8 @@ pub struct Timers {
     config_file: PathBuf,
     /// Whether the alert is looping for a ringing timer.
     looping: Rc<Cell<bool>>,
+    /// The launcher, told what focus blocks.
+    launcher: gpui::WindowHandle<Launcher>,
 }
 
 #[derive(Default, PartialEq)]
@@ -91,6 +100,7 @@ struct Offer {
     quick: Vec<Duration>,
     sound: Option<String>,
     ring: Ring,
+    guard: focus::Guard,
 }
 
 impl Offer {
@@ -100,6 +110,7 @@ impl Offer {
             quick: config.quick_start(),
             sound: config.alert_sound.clone(),
             ring: config.ring,
+            guard: config.guard(),
         }
     }
 }
@@ -113,6 +124,7 @@ impl Timers {
     /// nothing was running, and plan the next wake-up.
     pub fn start(
         platform: Arc<dyn Platform>,
+        launcher: gpui::WindowHandle<Launcher>,
         path: PathBuf,
         config_file: PathBuf,
         config: &TimersConfig,
@@ -132,20 +144,24 @@ impl Timers {
             offer: Rc::new(RefCell::new(Offer::of(config))),
             config_file,
             looping: Rc::default(),
+            launcher,
         };
         timers.catch_up(cx);
         timers.plan(cx);
+        // A focus timer carried over from the last run holds from the start.
+        timers.push_focus(cx);
         timers
     }
 
     /// Take the presets and quick durations as `config.json` now has them,
     /// and redraw an open view if they changed.
-    pub fn configure(&self, config: &TimersConfig) {
+    pub fn configure(&self, config: &TimersConfig, cx: &AsyncApp) {
         let offer = Offer::of(config);
         if *self.offer.borrow() == offer {
             return;
         }
         *self.offer.borrow_mut() = offer;
+        self.push_focus(cx);
         if let Some((_, viewer)) = self.viewer.borrow().as_ref() {
             let _ = viewer.unbounded_send(Input::Refresh);
         }
@@ -161,10 +177,18 @@ impl Timers {
     pub fn command(&self, command: Command, cx: &AsyncApp) {
         let stopped = self.clock.borrow_mut().apply(&command, now());
         match (&command, stopped) {
-            (Command::Start { seconds, name }, _) => log::info!(
-                "started a {} timer{}",
+            (
+                Command::Start {
+                    seconds,
+                    name,
+                    focus,
+                },
+                _,
+            ) => log::info!(
+                "started a {} timer{}{}",
                 duration::describe(Duration::from_secs(*seconds)),
-                if name.is_some() { ", named" } else { "" }
+                if name.is_some() { ", named" } else { "" },
+                if *focus { ", with focus" } else { "" }
             ),
             (Command::StopNearest, Some(timer)) => {
                 log::info!("stopped the nearest timer");
@@ -306,9 +330,75 @@ impl Timers {
         }
         self.save(cx);
         self.plan(cx);
+        self.push_focus(cx);
         if let Some((_, viewer)) = self.viewer.borrow().as_ref() {
             let _ = viewer.unbounded_send(Input::Refresh);
         }
+    }
+
+    /// Tell the launcher what focus blocks now: the guard while a focus timer
+    /// holds and the lists are not empty, `None` otherwise.
+    fn push_focus(&self, cx: &AsyncApp) {
+        let holding = self.clock.borrow().focus(now()).is_some();
+        let guard = self.offer.borrow().guard.clone();
+        let guard = (holding && !guard.is_empty()).then_some(guard);
+        let window = self.launcher;
+        cx.spawn(async move |cx| {
+            window
+                .update(cx, |launcher, _window, cx| launcher.set_focus(guard, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Say, in the launcher, that focus refused `what`; `Enter` goes back to
+    /// work, *Open Anyway* runs `action` and is counted on the timer.
+    pub fn open_blocked(&self, what: String, action: lumen_core::Action, cx: &mut AsyncApp) {
+        log::debug!("focus refused to open something");
+        let (view_tx, mut events) = mpsc::unbounded::<Event>();
+        let sink = ViewSink::new(move |event| {
+            let _ = view_tx.unbounded_send(event);
+        });
+        let refusal = {
+            let clock = self.clock.borrow();
+            focus::refusal(&what, clock.focus(now()), now())
+        };
+        let window = self.launcher;
+        window
+            .update(cx, |launcher, _window, cx| {
+                launcher.begin_view(sink, cx);
+                launcher.show_view(refusal, cx);
+            })
+            .ok();
+
+        let this = self.clone();
+        cx.spawn(async move |cx| {
+            while let Some(event) = events.next().await {
+                let Some(choice) = focus::refused(&event) else {
+                    continue;
+                };
+                window
+                    .update(cx, |launcher, _window, cx| launcher.close(cx))
+                    .ok();
+                if choice == focus::Refusal::OpenAnyway {
+                    let holder = this.clock.borrow().focus(now()).map(|timer| timer.id);
+                    if let Some(id) = holder {
+                        this.clock.borrow_mut().count_override(id);
+                        this.changed(cx);
+                    }
+                    let platform = this.platform.clone();
+                    std::thread::spawn(move || {
+                        if let Err(error) = action.perform(platform.as_ref()) {
+                            log::error!("could not run {action:?}: {error:#}");
+                            let (title, body) = lumen_core::item::failure_notice(&action, &error);
+                            let _ = platform.notify(&title, &body);
+                        }
+                    });
+                }
+                break;
+            }
+        })
+        .detach();
     }
 
     /// Written on a background thread: the file is small, but it is disk.

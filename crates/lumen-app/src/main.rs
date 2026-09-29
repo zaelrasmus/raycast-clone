@@ -113,6 +113,7 @@ fn start_timer() -> Result<()> {
     let command = lumen_core::timers::Command::Start {
         seconds: typed.duration.as_secs(),
         name: typed.name,
+        focus: false,
     };
     if !ipc::send(Message::Timer(command))? {
         eprintln!("lumen: no daemon is running; start one with `lumen`");
@@ -357,6 +358,18 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     let live = Rc::new(RefCell::new(config.clone()));
     watch_config(cx, &paths, tx.clone());
 
+    // Before the launcher's events are heard: a refusal (F8) is the
+    // timers' to show. A timer that ended while the daemon was not running
+    // is reported now, not when the next one ends.
+    let timers = timers::Timers::start(
+        platform.clone(),
+        window,
+        paths.timers_file(),
+        paths.config_file(),
+        &config.timers,
+        &cx.to_async(),
+    );
+
     subscribe_to_launcher(
         cx,
         &window,
@@ -364,6 +377,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         live.clone(),
         shell.clone(),
         tx.clone(),
+        timers.clone(),
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
     let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone());
@@ -378,15 +392,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         theme: Rc::new(RefCell::new(theme.clone())),
         config: live,
         reload_theme,
-        // A timer that ended while the daemon was not running is reported
-        // now, not when the next one ends.
-        timers: timers::Timers::start(
-            platform.clone(),
-            paths.timers_file(),
-            paths.config_file(),
-            &config.timers,
-            &cx.to_async(),
-        ),
+        timers,
     };
 
     watch_sheets(cx, &surfaces);
@@ -899,12 +905,22 @@ fn subscribe_to_launcher(
     config: Rc<RefCell<Config>>,
     shell: Rc<RefCell<Shell>>,
     commands: mpsc::UnboundedSender<Message>,
+    timers: timers::Timers,
 ) {
     let Ok(entity) = window.entity(cx) else {
         return;
     };
 
     cx.subscribe(&entity, move |_entity: Entity<Launcher>, event, cx| {
+        // Focus refused something (F8): the timers say why, in the launcher.
+        if let LauncherEvent::Blocked { what, action } = event {
+            let timers = timers.clone();
+            let (what, action) = (what.clone(), action.clone());
+            cx.spawn(async move |cx| timers.open_blocked(what, action, cx))
+                .detach();
+            return;
+        }
+
         let platform = platform.clone();
         let shell = shell.clone();
         // Read at the moment of the event, so a resize after an edit to
@@ -957,6 +973,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunTranslate { .. }
                 | LauncherEvent::RunTimers
                 | LauncherEvent::RunAlertSounds
+                | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,
@@ -1176,7 +1193,7 @@ fn reload_config(
     if applied == older {
         return Ok(());
     }
-    surfaces.timers.configure(&applied.timers);
+    surfaces.timers.configure(&applied.timers, cx);
     *surfaces.config.borrow_mut() = applied.clone();
     log::info!("reloaded the configuration");
 

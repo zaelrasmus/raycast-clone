@@ -61,6 +61,9 @@ enum Form {
         sound: Entity<Select>,
         ring: Entity<Select>,
         durations: Entity<TextField>,
+        /// What focus blocks, comma separated (slice 6).
+        apps: Entity<TextField>,
+        sites: Entity<TextField>,
     },
     Preset {
         name: Entity<TextField>,
@@ -72,13 +75,20 @@ enum Form {
         rounds: Entity<TextField>,
         /// After the set: end, or start again.
         repeat: Entity<Select>,
+        /// Start with focus on, or off.
+        focus: Entity<Select>,
     },
 }
 
 impl Form {
     fn fields(&self) -> Vec<&Entity<TextField>> {
         match self {
-            Form::General { durations, .. } => vec![durations],
+            Form::General {
+                durations,
+                apps,
+                sites,
+                ..
+            } => vec![durations, apps, sites],
             Form::Preset {
                 name,
                 alias,
@@ -88,6 +98,14 @@ impl Form {
                 rounds,
                 ..
             } => vec![name, alias, duration, short_break, long_break, rounds],
+        }
+    }
+
+    /// Every dropdown, so each is watched, themed and reached with Tab.
+    fn selects(&self) -> Vec<&Entity<Select>> {
+        match self {
+            Form::General { sound, ring, .. } => vec![sound, ring],
+            Form::Preset { repeat, focus, .. } => vec![repeat, focus],
         }
     }
 }
@@ -236,17 +254,21 @@ impl TimersPage {
             })
             .detach();
         }
-        if let Form::General { sound, ring, .. } = &self.form {
+        let selects: Vec<Entity<Select>> = self.form.selects().into_iter().cloned().collect();
+        for select in selects {
+            cx.subscribe(&select, |page, _, SelectEvent::Changed, cx| {
+                page.touched(cx)
+            })
+            .detach();
+        }
+        if let Form::General { sound, .. } = &self.form {
             // Chosen is heard: the host plays it once.
-            cx.subscribe(sound, |page, select, SelectEvent::Changed, cx| {
+            cx.subscribe(sound, |_, select, SelectEvent::Changed, cx| {
                 if let Some(name) = select.read(cx).value() {
                     cx.emit(TimersPageEvent::Preview(name.to_string()));
                 }
-                page.touched(cx);
             })
             .detach();
-            cx.subscribe(ring, |page, _, SelectEvent::Changed, cx| page.touched(cx))
-                .detach();
         }
     }
 
@@ -343,16 +365,24 @@ impl TimersPage {
                 sound,
                 ring,
                 durations,
+                apps,
+                sites,
             } => vec![
                 sound.read(cx).focus_handle().clone(),
                 ring.read(cx).focus_handle().clone(),
                 durations.focus_handle(cx),
+                apps.focus_handle(cx),
+                sites.focus_handle(cx),
             ],
-            Form::Preset { .. } => self
+            Form::Preset { repeat, focus, .. } => self
                 .form
                 .fields()
                 .into_iter()
                 .map(|field| field.focus_handle(cx))
+                .chain([
+                    repeat.read(cx).focus_handle().clone(),
+                    focus.read(cx).focus_handle().clone(),
+                ])
                 .collect(),
         }
     }
@@ -429,7 +459,18 @@ impl TimersPage {
                 sound,
                 ring,
                 durations,
+                apps,
+                sites,
             } => {
+                let list = |field: &Entity<TextField>| -> Vec<String> {
+                    field
+                        .read(cx)
+                        .text()
+                        .split(',')
+                        .map(|written| written.trim().to_string())
+                        .collect()
+                };
+                let (blocked_apps, blocked_sites) = (list(apps), list(sites));
                 let sound = sound.read(cx).value().map(str::to_string);
                 let ring = match ring.read(cx).value() {
                     Some("until-dismissed") => Ring::UntilDismissed,
@@ -441,8 +482,15 @@ impl TimersPage {
                     .split(',')
                     .map(|written| written.trim().to_string())
                     .collect();
+                let general = store::General {
+                    sound,
+                    ring,
+                    durations,
+                    blocked_apps,
+                    blocked_sites,
+                };
                 self.write(
-                    move || store::set_general(&path, sound.as_deref(), ring, &durations),
+                    move || store::set_general(&path, &general),
                     Selection::General,
                     "Saved the general settings".into(),
                     cx,
@@ -456,8 +504,10 @@ impl TimersPage {
                 long_break,
                 rounds,
                 repeat,
+                focus,
             } => {
                 let repeat = repeat.read(cx).value() == Some("repeat");
+                let focus = focus.read(cx).value() == Some("focus");
                 let written = rounds.read(cx).text().trim().to_string();
                 let rounds = match written.as_str() {
                     "" => None,
@@ -479,6 +529,7 @@ impl TimersPage {
                     long_break: optional(long_break),
                     rounds,
                     repeat,
+                    focus,
                     ..store::preset(
                         name.read(cx).text().trim(),
                         alias.read(cx).text(),
@@ -577,10 +628,9 @@ impl TimersPage {
         for field in fields {
             field.update(cx, |field, cx| field.set_colors(colors.clone(), cx));
         }
-        if let Form::General { sound, ring, .. } = &self.form {
-            for select in [sound, ring] {
-                select.update(cx, |select, cx| select.set_colors(colors.clone(), cx));
-            }
+        let selects: Vec<Entity<Select>> = self.form.selects().into_iter().cloned().collect();
+        for select in selects {
+            select.update(cx, |select, cx| select.set_colors(colors.clone(), cx));
         }
         self.colors = colors;
         cx.notify();
@@ -620,6 +670,14 @@ fn general_form(config: &TimersConfig, names: &[String], colors: &Colors, cx: &m
         sound: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx)),
         ring: cx.new(|cx| Select::new(ring_choices, ring_selected, colors.clone(), cx)),
         durations: cx.new(|cx| TextField::new(written, "2m, 5m, 10m, 30m", colors.clone(), cx)),
+        apps: cx.new(|cx| {
+            let written = config.blocked_apps.join(", ");
+            TextField::new(written, "Discord, Steam", colors.clone(), cx)
+        }),
+        sites: cx.new(|cx| {
+            let written = config.blocked_sites.join(", ");
+            TextField::new(written, "youtube.com, reddit.com", colors.clone(), cx)
+        }),
     }
 }
 
@@ -690,6 +748,19 @@ fn preset_form(preset: &PresetConfig, colors: &Colors, cx: &mut App) -> Form {
                 },
             ];
             Select::new(choices, usize::from(preset.repeat), colors.clone(), cx)
+        }),
+        focus: cx.new(|cx| {
+            let choices = vec![
+                Choice {
+                    value: None,
+                    label: "Off".into(),
+                },
+                Choice {
+                    value: Some("focus".into()),
+                    label: "On: block the General row's apps and sites".into(),
+                },
+            ];
+            Select::new(choices, usize::from(preset.focus), colors.clone(), cx)
         }),
     }
 }
@@ -899,17 +970,23 @@ impl TimersPage {
                 sound,
                 ring,
                 durations,
+                apps,
+                sites,
             } => (
                 vec![
                     field_row("Alert sound", sound.clone().into_any_element()).into_any_element(),
                     field_row("Ring", ring.clone().into_any_element()).into_any_element(),
                     field_row("Quick start", durations.clone().into_any_element())
                         .into_any_element(),
+                    field_row("Blocked apps", apps.clone().into_any_element()).into_any_element(),
+                    field_row("Blocked sites", sites.clone().into_any_element()).into_any_element(),
                 ],
                 vec![
                     "Played when a timer ends. Choosing one plays it.",
                     "Until dismissed: the sound loops until Dismiss Ringing Timer.",
                     "Offered under Quick Start in Timers, shortest first. Comma separated.",
+                    "While focus is on, Lumen won't open these. Names as the launcher shows them.",
+                    "Domains, subdomains included. Only links opened through Lumen are checked.",
                 ],
             ),
             Form::Preset {
@@ -920,6 +997,7 @@ impl TimersPage {
                 long_break,
                 rounds,
                 repeat,
+                focus,
             } => (
                 vec![
                     field_row("Name", name.clone().into_any_element()).into_any_element(),
@@ -931,6 +1009,7 @@ impl TimersPage {
                     field_row("Rounds", rounds.clone().into_any_element()).into_any_element(),
                     field_row("After the set", repeat.clone().into_any_element())
                         .into_any_element(),
+                    field_row("Focus", focus.clone().into_any_element()).into_any_element(),
                 ],
                 vec![
                     "Its row in the launcher, and the timer's name while it runs.",
@@ -940,6 +1019,7 @@ impl TimersPage {
                     "After the last round, then the set ends. Empty: it ends with the work.",
                     "How many work rounds in the set: 1 to 12. Empty is 4.",
                     "Start again repeats the set until you stop it. Ctrl+K on its row starts it the other way.",
+                    "On blocks the General row's apps and sites while it runs; in a cycle, only during work.",
                 ],
             ),
         };
