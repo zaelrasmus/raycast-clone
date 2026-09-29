@@ -477,9 +477,38 @@ pub fn find(code: &str) -> Option<&'static Currency> {
         .map(|index| &CURRENCIES[index])
 }
 
+/// The one currency `text` names exactly, in any case: its code, its name, or
+/// a country that uses it. `None` when it names none, or several -- Zimbabwe
+/// has two -- because a root answer must not guess (F9, slice 5).
+pub fn exactly(text: &str) -> Option<&'static Currency> {
+    let text = text.trim();
+    if let Some(currency) = find(text) {
+        return Some(currency);
+    }
+    let mut named = CURRENCIES.iter().filter(|currency| {
+        currency.name.eq_ignore_ascii_case(text)
+            || currency
+                .countries
+                .iter()
+                .any(|country| country.eq_ignore_ascii_case(text))
+    });
+    let first = named.next()?;
+    named.next().is_none().then_some(first)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_currency_is_named_exactly_by_code_name_or_country() {
+        assert_eq!(exactly("cad").unwrap().code, "CAD");
+        assert_eq!(exactly("canadian dollar").unwrap().code, "CAD");
+        assert_eq!(exactly("Japan").unwrap().code, "JPY");
+        assert_eq!(exactly("spain").unwrap().code, "EUR");
+        assert!(exactly("can").is_none(), "a prefix is not a name");
+        assert!(exactly("zimbabwe").is_none(), "two currencies");
+    }
 
     /// `find` searches by halves, which is only right if the table is sorted.
     #[test]

@@ -147,7 +147,7 @@ impl Rates {
     }
 
     /// Keep only the currencies in the table, and only sensible rates.
-    fn retain_known(&mut self) {
+    pub fn retain_known(&mut self) {
         self.rates.retain(|code, rate| {
             currencies::find(code).is_some() && rate.is_finite() && *rate > 0.0
         });
@@ -230,7 +230,7 @@ impl State {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn rates(pairs: &[(&str, f64)]) -> Rates {

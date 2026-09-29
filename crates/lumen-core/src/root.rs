@@ -140,6 +140,11 @@ pub struct RootSearch {
     /// The timer presets, for their names and aliases (F8): typed exactly,
     /// one leads the matches, as a quicklink does.
     timer_presets: Vec<crate::timers::Preset>,
+    /// The last table of exchange rates the daemon loaded, for `10 usd in
+    /// cad` (F9). Read, never fetched: I-3.
+    rates: Option<crate::currency::Rates>,
+    /// Whether the last query was a conversion, answered or not.
+    conversion: bool,
     /// This query's fallbacks.
     fallbacks: Vec<Item>,
     /// How many rows the window shows, so the fallbacks can be kept in view.
@@ -158,6 +163,8 @@ impl RootSearch {
             answers: Vec::new(),
             quicklinks: QuicklinkProvider::default(),
             timer_presets: Vec::new(),
+            rates: None,
+            conversion: false,
             fallbacks: Vec::new(),
             // What the configuration defaults to; the launcher sets the real
             // value before the first query.
@@ -208,6 +215,23 @@ impl RootSearch {
         true
     }
 
+    /// Take the table of exchange rates the daemon now holds. Returns whether
+    /// anything changed.
+    pub fn replace_rates(&mut self, rates: Option<crate::currency::Rates>) -> bool {
+        if self.rates == rates {
+            return false;
+        }
+        self.rates = rates;
+        true
+    }
+
+    /// Whether the last query asked for a conversion that needs a table this
+    /// has not got, or one due for replacing by `now` (seconds since the
+    /// epoch): the launcher asks the daemon for one, and does not wait.
+    pub fn wants_rates(&self, now: impl FnOnce() -> i64) -> bool {
+        self.conversion && self.rates.as_ref().is_none_or(|rates| rates.is_due(now()))
+    }
+
     pub fn aside_is_empty(&self, aside: Aside) -> bool {
         self.asides[aside.slot()].is_empty()
     }
@@ -223,6 +247,12 @@ impl RootSearch {
         let trimmed = query.trim();
         if !trimmed.is_empty() {
             self.answers.extend(self.quicklinks.answer(trimmed));
+        }
+        let conversion = crate::currency::query::recognise(trimmed);
+        self.conversion = conversion.is_some();
+        if let (Some(conversion), Some(rates)) = (conversion, &self.rates) {
+            self.answers
+                .extend(providers::currency::answer(&conversion, rates));
         }
         self.fallbacks = self.quicklinks.fallbacks(query);
 
@@ -706,6 +736,33 @@ mod tests {
         // The alias alone, with no space and so no answer yet.
         root.rank("G");
         assert_eq!(titles(&root)[0], "Google");
+    }
+
+    /// F9: a conversion is answered first, from the table in hand; without
+    /// one it is only recognised, so the launcher can ask for a table.
+    #[test]
+    fn a_conversion_is_answered_from_the_table_or_asks_for_one() {
+        let mut root = root(apps(&["Calculator"]));
+
+        root.rank("10 usd in cad");
+        assert!(titles(&root).iter().all(|title| !title.ends_with("CAD")));
+        assert!(root.wants_rates(|| 0));
+
+        let rates = crate::currency::tests::rates(&[("USD", 1.0), ("CAD", 1.4)]);
+        let fresh = rates.next - 1;
+        assert!(root.replace_rates(Some(rates.clone())));
+        assert!(
+            !root.replace_rates(Some(rates)),
+            "the same table is no change"
+        );
+
+        root.rank("10 usd in cad");
+        assert_eq!(titles(&root)[0], "14.00 CAD");
+        assert!(!root.wants_rates(|| fresh));
+        assert!(root.wants_rates(|| fresh + 1), "a due table is replaced");
+
+        root.rank("calc");
+        assert!(!root.wants_rates(|| 0), "not a conversion");
     }
 
     /// F8, found by using it: a preset's alias found it seventh, below files

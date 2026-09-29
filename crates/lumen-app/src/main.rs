@@ -965,6 +965,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunCurrency);
                 return;
             }
+            LauncherEvent::RefreshRates => {
+                let _ = commands.unbounded_send(Message::RefreshRates);
+                return;
+            }
             LauncherEvent::Timer(command) => {
                 let _ = commands.unbounded_send(Message::Timer(command.clone()));
                 return;
@@ -983,6 +987,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunTimers
                 | LauncherEvent::RunAlertSounds
                 | LauncherEvent::RunCurrency
+                | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
@@ -1335,6 +1340,13 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| currency::run(platform, config, path, window, cx))
                 .context("reaching the app to open the currency view")
+        }
+        Message::RefreshRates => {
+            let config = config.currency.clone();
+            let path = surfaces.paths.currency_file();
+            let window = surfaces.launcher;
+            cx.update(move |cx| currency::refresh(config, path, window, cx))
+                .context("reaching the app to refresh exchange rates")
         }
         Message::RunAlertSounds => {
             surfaces.timers.open_sounds(surfaces.launcher, cx);

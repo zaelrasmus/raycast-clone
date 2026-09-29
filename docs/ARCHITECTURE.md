@@ -897,6 +897,12 @@ and how old it is allowed to be.
   6. The service and key in `config.json` and a *Currency* settings page.
 
   The idle baseline is measured before slice 1, and again after 5.
+- **Measured.** With `scripts/measure-idle.ps1`, 60 s hidden, on the same
+  machine: before slice 1, 0.002 % CPU, 73.7 MB working set, 87.1 MB
+  private; after slice 5, 0.000 %, 73.5 MB, 87.5 MB. Nothing is scheduled,
+  so there is nothing to cost. The table is read with the index, off the UI
+  thread, and a root conversion asks for a fetch at most once per showing
+  of the window, so a failing one is not retried on every key.
 
 ---
 

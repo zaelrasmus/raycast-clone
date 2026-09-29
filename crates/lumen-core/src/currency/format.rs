@@ -50,6 +50,23 @@ pub fn plain(value: f64, currency: &Currency) -> String {
 
 /// `value` as shown: `$7.06`, `AED 25.92`, `-€1,234.50`.
 pub fn shown(value: f64, currency: &Currency) -> String {
+    let (sign, grouped) = grouped(value, currency);
+    match currency.symbol() {
+        Some(symbol) => format!("{sign}{symbol}{grouped}"),
+        None => format!("{sign}{} {grouped}", currency.code),
+    }
+}
+
+/// `value` followed by its code, whatever its symbol: `14.16 CAD`,
+/// `1,570 JPY`. For a line that names both sides of a conversion, where two
+/// dollar signs would not say which dollars.
+pub fn with_code(value: f64, currency: &Currency) -> String {
+    let (sign, grouped) = grouped(value, currency);
+    format!("{sign}{grouped} {}", currency.code)
+}
+
+/// The sign, and the digits grouped by thousands.
+fn grouped(value: f64, currency: &Currency) -> (&'static str, String) {
     let digits = plain(value, currency);
     let (sign, digits) = match digits.strip_prefix('-') {
         Some(rest) => ("-", rest),
@@ -71,11 +88,7 @@ pub fn shown(value: f64, currency: &Currency) -> String {
         grouped.push('.');
         grouped.push_str(fraction);
     }
-
-    match currency.symbol() {
-        Some(symbol) => format!("{sign}{symbol}{grouped}"),
-        None => format!("{sign}{} {grouped}", currency.code),
-    }
+    (sign, grouped)
 }
 
 #[cfg(test)]
@@ -113,6 +126,12 @@ mod tests {
         assert_eq!(shown(-1234.5, currency("EUR")), "-\u{20ac}1,234.50");
         assert_eq!(plain(-0.001, currency("JPY")), "-0.001");
         assert_eq!(plain(-0.0, currency("USD")), "0.00");
+    }
+
+    #[test]
+    fn both_sides_of_a_conversion_are_written_with_their_code() {
+        assert_eq!(with_code(14.1649, currency("CAD")), "14.16 CAD");
+        assert_eq!(with_code(-1570.4, currency("JPY")), "-1,570 JPY");
     }
 
     #[test]

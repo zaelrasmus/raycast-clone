@@ -53,6 +53,8 @@ pub enum Kind {
     Website,
     /// A timer to start, or one of the commands about them (F8).
     Timer,
+    /// An amount converted into another currency, in the root list (F9).
+    Currency,
 }
 
 impl Kind {
@@ -70,6 +72,7 @@ impl Kind {
             Kind::Quicklink => "Quicklink",
             Kind::Website => "Website",
             Kind::Timer => "Timer",
+            Kind::Currency => "Currency",
         }
     }
 }

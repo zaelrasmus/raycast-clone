@@ -213,14 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_catalogue_is_commands_window_layouts_and_timers() {
+    fn the_builtin_catalogue_is_commands_window_layouts_timers_and_currency() {
         let items = Providers::builtin().catalogue();
         assert!(!items.is_empty());
-        assert!(
-            items
-                .iter()
-                .all(|item| matches!(item.kind, Kind::Command | Kind::Window | Kind::Timer))
-        );
+        assert!(items.iter().all(|item| matches!(
+            item.kind,
+            Kind::Command | Kind::Window | Kind::Timer | Kind::Currency
+        )));
     }
 
     /// F8: a typed duration is an answer, and leads like a calculation.

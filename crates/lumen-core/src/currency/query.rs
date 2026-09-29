@@ -36,6 +36,39 @@ pub fn parse(text: &str) -> Option<Query> {
     })
 }
 
+/// A conversion asked in the root list: `10 usd in cad`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Conversion {
+    pub amount: f64,
+    pub from: &'static Currency,
+    pub to: &'static Currency,
+}
+
+/// Recognise a conversion in root search's query, or decline.
+///
+/// Strict where [`parse`] is lenient, because the root list is for
+/// everything and a guess there is noise: an amount, a code, `in` or `to`,
+/// and a target that names exactly one currency -- `cad`, `canadian
+/// dollar`, `canada`. Declines on the first thing missing, so the common
+/// case -- a query that is not money -- costs a scan for a space.
+pub fn recognise(text: &str) -> Option<Conversion> {
+    let (left, target) = split_filter(text);
+    if target.trim().is_empty() {
+        return None;
+    }
+    let (rest, code) = last_word(left.trim())?;
+    let from = currencies::find(code)?;
+    let to = currencies::exactly(target)?;
+    if to == from {
+        return None;
+    }
+    Some(Conversion {
+        amount: calculator::amount(rest)?,
+        from,
+        to,
+    })
+}
+
 /// Split at the first `in` or `to` that is a word of its own and not the
 /// first: `10 usd in cad` is `10 usd` and `cad`.
 fn split_filter(text: &str) -> (&str, &str) {
@@ -137,6 +170,38 @@ mod tests {
         assert_eq!(parsed("10 usd i"), (10.0, Some("USD"), String::new()));
         assert_eq!(parsed("10 usd in"), (10.0, Some("USD"), String::new()));
         assert_eq!(parsed("10 usd in c"), (10.0, Some("USD"), "c".into()));
+    }
+
+    fn recognised(text: &str) -> Option<(f64, &'static str, &'static str)> {
+        recognise(text)
+            .map(|conversion| (conversion.amount, conversion.from.code, conversion.to.code))
+    }
+
+    #[test]
+    fn the_root_list_recognises_a_whole_conversion() {
+        assert_eq!(recognised("10 usd in cad"), Some((10.0, "USD", "CAD")));
+        assert_eq!(recognised("10usd to japan"), Some((10.0, "USD", "JPY")));
+        assert_eq!(
+            recognised("2*5 EUR in canadian dollar"),
+            Some((10.0, "EUR", "CAD"))
+        );
+    }
+
+    /// Anything less is not money, and the root list stays quiet.
+    #[test]
+    fn the_root_list_declines_anything_less() {
+        for text in [
+            "10 usd",
+            "10 usd in",
+            "10 usd in ca",
+            "10 in cad",
+            "usd in cad",
+            "10 usd in usd",
+            "10 usd in zimbabwe",
+            "log in to github",
+        ] {
+            assert_eq!(recognise(text), None, "{text}");
+        }
     }
 
     #[test]

@@ -259,6 +259,10 @@ pub struct Launcher {
     root: RootSearch,
     /// A pass fetching quicklink icons is running; one at a time.
     fetching_icons: bool,
+    /// The daemon was asked for exchange rates since the window was shown
+    /// (F9): once per showing, so a failing fetch is not asked again on
+    /// every key.
+    rates_asked: bool,
     /// The clipboard history, once the daemon has opened it.
     ///
     /// Shared with the recorder rather than opened twice: one database, one
@@ -370,6 +374,7 @@ impl Launcher {
             icons,
             root,
             fetching_icons: false,
+            rates_asked: false,
             clipboard: None,
             query: String::new(),
             selected: 0,
@@ -558,9 +563,12 @@ impl Launcher {
             // Built and compared on the background thread: enumeration and
             // preparing the haystacks are the expensive halves, and the answer
             // to a re-index is usually "nothing changed".
-            let (rebuilt, quicklinks, sites, browsers) = cx
+            let (rebuilt, quicklinks, sites, browsers, rates) = cx
                 .background_executor()
                 .spawn(async move {
+                    // The table the currency view last kept (F9), so a
+                    // conversion typed at the root is answered at once.
+                    let rates = lumen_core::currency::State::load(&paths.currency_file()).rates;
                     // Read once, for both halves: the index holds the links
                     // as catalogue entries, and root search needs the links
                     // themselves for answers and fallbacks -- an alias can
@@ -592,7 +600,13 @@ impl Launcher {
                         let unchanged = lumen_core::root::same_index(&current, &rebuilt);
                         (!unchanged).then_some(rebuilt)
                     });
-                    (rebuilt, QuicklinkProvider::new(quicklinks), sites, browsers)
+                    (
+                        rebuilt,
+                        QuicklinkProvider::new(quicklinks),
+                        sites,
+                        browsers,
+                        rates,
+                    )
                 })
                 .await;
 
@@ -609,10 +623,11 @@ impl Launcher {
                 this.fetch_icons(sites, cx);
                 let links_changed = this.root.replace_quicklinks(quicklinks);
                 let presets_changed = this.root.replace_timer_presets(timer_presets);
+                let rates_changed = this.root.replace_rates(rates);
                 // Nothing to show means nothing to re-rank: that would put the
                 // selection back on the first row under somebody who had just
                 // moved it (see `same_index`).
-                if index.is_none() && !links_changed && !presets_changed {
+                if index.is_none() && !links_changed && !presets_changed && !rates_changed {
                     return;
                 }
                 if let Some(index) = index {
@@ -666,6 +681,7 @@ impl Launcher {
         self.clear_query_text(cx);
         self.selected = 0;
         self.appearances = self.appearances.wrapping_add(1);
+        self.rates_asked = false;
 
         // A view does not survive the launcher being dismissed. Coming back to
         // somebody else's list a day later, with no memory of opening it, is
@@ -926,6 +942,14 @@ impl Launcher {
             None => {
                 self.root.rank(&self.query);
             }
+        }
+
+        // A conversion with no table, or one that is due: the daemon fetches
+        // one, and the answer appears when it lands. This keystroke is not
+        // held for it (I-3).
+        if !self.rates_asked && self.root.wants_rates(lumen_core::currency::now) {
+            self.rates_asked = true;
+            cx.emit(LauncherEvent::RefreshRates);
         }
 
         // The selection always returns to the top on a new query. Trying to keep
@@ -1202,6 +1226,19 @@ impl Launcher {
 
     pub fn close(&mut self, cx: &mut Context<Self>) {
         cx.emit(LauncherEvent::Dismissed);
+    }
+
+    /// A table of exchange rates the daemon fetched or read (F9), for the
+    /// root list's conversions.
+    pub fn set_rates(
+        &mut self,
+        rates: Option<lumen_core::currency::Rates>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.root.replace_rates(rates) && matches!(self.mode, Mode::Root) {
+            self.rerank(cx);
+            cx.notify();
+        }
     }
 
     /// Tab and Shift+Tab: open the picker on the first or last scope, or,
@@ -2343,6 +2380,10 @@ pub enum LauncherEvent {
     RunAlertSounds,
     /// The currency view was chosen (F9).
     RunCurrency,
+    /// A conversion was typed in the root list with no table of rates, or
+    /// one that is due (F9). The daemon fetches one and hands it back with
+    /// `Launcher::set_rates`.
+    RefreshRates,
     /// Focus refused to open `what` (F8, slice 6). `action` is what would
     /// have run, for *Open Anyway*. Replaces `Dismissed`: the launcher stays
     /// up to say why.
