@@ -122,12 +122,22 @@ an aesthetic worth looking at fifty times a day.
   *Timers* from anywhere. Presets can be made and edited without leaving
   the launcher: *Create Timer Preset*, and *Edit Preset* / *Save as
   Preset* in `Ctrl+K`.
+- **Currency** (F9). *Currency* converts an amount -- `10`, `1+2` -- into
+  all 166 currencies at once, with the date of the rates and who published
+  them. `Tab` picks the currency you have from a list you can search by
+  code, name or country (`can`, `yen`, `japan`), and it is remembered.
+  `10 cad` converts from Canadian dollars whatever the picker says, and
+  `10 in japan` or `10 to eur` narrows the rows. *Pin* in `Ctrl+K` keeps a
+  currency on top. `Enter` copies the plain number. In the root list,
+  `10 usd in cad` answers *14.16 CAD* straight away, from the rates Lumen
+  already has. The rates are fetched once a day at most, only when a
+  conversion asks for them, and the last ones keep working offline.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
 - **Inter bundled into the binary** rather than the system font, so the interface
   is the same typeface on Windows and on Hyprland.
-- **An icon set**, ten glyphs drawn for this project on a 16-and-20 px grid
+- **An icon set**, twelve glyphs drawn for this project on a 16-and-20 px grid
   and compiled into the binary, so every row has something in its icon square
   even when the shell has no icon to give. They take their colour from the
   theme's `icon` token.
@@ -673,6 +683,33 @@ row says why, and DeepL is the documented alternative.
 Without an internet connection each row says **No internet connection**,
 naming the service it could not reach, and the section title says
 *Offline*. `Enter` tries again, and so does typing.
+
+### Currency
+
+With nothing set, *Currency* asks ExchangeRate-API's open endpoint, which
+needs no key and publishes one table of rates a day. The **Currency** tab of
+the settings window chooses another service and keeps its key, in the
+`currency` section of `config.json`:
+
+```json
+"currency": {
+  "service": "exchangerate-api",
+  "api-key": "your key"
+}
+```
+
+| field | meaning |
+| ----- | ------- |
+| `service` | `"open"` (default, no key), `"exchangerate-api"` or `"unirate"`. Never more than one: a failure is shown, not retried with another. |
+| `api-key` | The key for `exchangerate-api` or `unirate`. Never logged, and never shown back in settings. |
+
+The last table, the currency you convert from and your pins are kept in
+`currency.json` in the data folder. A table is fetched when a conversion
+needs one and the one in hand is due -- at most once a day -- never on a
+schedule. Offline, the last table keeps converting and the header says how
+old it is; with no table at all, a row says **No internet connection** and
+`Enter` tries again. Rates are for reference: they are one publisher's daily
+figures, not what a bank or card will charge.
 
 ---
 

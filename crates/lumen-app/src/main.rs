@@ -676,6 +676,7 @@ fn open_settings(
             settings.reload_quicklinks(cx);
             settings.reload_translation(cx);
             settings.reload_timers(cx);
+            settings.reload_currency(cx);
             settings.focus(window, cx);
         })
         .ok();
@@ -1200,6 +1201,7 @@ fn reload_config(
             .update(cx, |settings, _window, cx| {
                 settings.reload_translation(cx);
                 settings.reload_timers(cx);
+                settings.reload_currency(cx);
             })
             .ok();
     }

@@ -37,6 +37,7 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
+use crate::currency_page::CurrencyPage;
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
@@ -50,14 +51,16 @@ enum Page {
     Quicklinks,
     Translation,
     Timers,
+    Currency,
 }
 
 impl Page {
-    const ALL: [Page; 4] = [
+    const ALL: [Page; 5] = [
         Page::Sheets,
         Page::Quicklinks,
         Page::Translation,
         Page::Timers,
+        Page::Currency,
     ];
 
     fn label(self) -> &'static str {
@@ -66,6 +69,7 @@ impl Page {
             Page::Quicklinks => "Quicklinks",
             Page::Translation => "Translation",
             Page::Timers => "Timers",
+            Page::Currency => "Currency",
         }
     }
 
@@ -75,6 +79,7 @@ impl Page {
             Page::Quicklinks => "Saved links and web searches, in quicklinks.json",
             Page::Translation => "The service and your presets, in config.json",
             Page::Timers => "Quick durations and your presets, in config.json",
+            Page::Currency => "Where exchange rates come from, in config.json",
         }
     }
 }
@@ -220,6 +225,7 @@ pub struct Settings {
     quicklinks: Entity<QuicklinksPage>,
     translation: Entity<TranslatePage>,
     timers: Entity<TimersPage>,
+    currency: Entity<CurrencyPage>,
 }
 
 impl Settings {
@@ -251,6 +257,13 @@ impl Settings {
         };
         cx.observe(&translation, |_, _, cx| cx.notify()).detach();
 
+        let currency = {
+            let colors = theme.colors.clone();
+            let config_file = config_file.clone();
+            cx.new(|cx| CurrencyPage::new(config_file, colors, cx))
+        };
+        cx.observe(&currency, |_, _, cx| cx.notify()).detach();
+
         let timers = {
             let colors = theme.colors.clone();
             cx.new(|cx| TimersPage::new(config_file, colors, cx))
@@ -274,6 +287,7 @@ impl Settings {
             quicklinks,
             translation,
             timers,
+            currency,
         }
     }
 
@@ -286,6 +300,11 @@ impl Settings {
     /// Re-read the timers section of `config.json`, for the same reasons.
     pub fn reload_timers(&mut self, cx: &mut Context<Self>) {
         self.timers.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Re-read the currency section of `config.json`, for the same reasons.
+    pub fn reload_currency(&mut self, cx: &mut Context<Self>) {
+        self.currency.update(cx, |page, cx| page.reload(cx));
     }
 
     /// Re-read `quicklinks.json`: on open, and whenever the file changes.
@@ -361,6 +380,8 @@ impl Settings {
         self.translation
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.timers
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.currency
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
         cx.notify();
@@ -372,6 +393,7 @@ impl Settings {
             Page::Quicklinks => self.quicklinks.read(cx).focus(window, cx),
             Page::Translation => self.translation.read(cx).focus(window, cx),
             Page::Timers => self.timers.read(cx).focus(window, cx),
+            Page::Currency => self.currency.read(cx).focus(window, cx),
         }
     }
 
@@ -435,6 +457,10 @@ impl Settings {
         }
         if self.page == Page::Timers {
             self.timers.update(cx, |page, cx| page.save(cx));
+            return;
+        }
+        if self.page == Page::Currency {
+            self.currency.update(cx, |page, cx| page.save(cx));
             return;
         }
         let Some(sheet) = self.compose(cx) else {
@@ -751,6 +777,12 @@ impl Render for Settings {
                 .flex_1()
                 .overflow_hidden()
                 .child(self.timers.clone())
+                .into_any_element(),
+            Page::Currency => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.currency.clone())
                 .into_any_element(),
         };
         let dialog = match self.page {
@@ -1104,6 +1136,7 @@ impl Settings {
             Page::Quicklinks => (self.quicklinks.read(cx).status(cx), false),
             Page::Translation => (self.translation.read(cx).status(), false),
             Page::Timers => (self.timers.read(cx).status(cx), false),
+            Page::Currency => (self.currency.read(cx).status(), false),
         };
 
         div()

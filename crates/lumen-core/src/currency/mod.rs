@@ -19,6 +19,7 @@ pub mod format;
 pub mod query;
 pub mod session;
 pub mod sources;
+pub mod store;
 
 use std::collections::BTreeMap;
 use std::path::Path;
