@@ -315,6 +315,63 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
     }
 }
 
+/// One line for the launcher's footer (F8): the thing most worth knowing,
+/// then how many more there are. Ringing first, then the running timer
+/// ending soonest, then a paused one, then a stopwatch. `None` with nothing
+/// running, so the footer is the launcher's again.
+pub fn summary(clock: &Clock, now: Millis) -> Option<String> {
+    let timer_line = |timer: &Timer| {
+        let title = match timer.cycle {
+            Some(cycle) => format!("{} \u{00b7} {}", timer.title(), cycle.label()),
+            None => timer.title(),
+        };
+        match timer.state {
+            State::Ringing { .. } => format!("Ringing \u{00b7} {title}"),
+            State::Paused { .. } => {
+                format!(
+                    "Paused {} \u{00b7} {title}",
+                    clock_face(timer.remaining(now))
+                )
+            }
+            State::Running { .. } => {
+                format!("{} \u{00b7} {title}", clock_face(timer.remaining(now)))
+            }
+        }
+    };
+    let timers = clock.timers();
+    let first = timers
+        .iter()
+        .find(|timer| timer.is_ringing())
+        .or_else(|| {
+            timers
+                .iter()
+                .filter(|timer| timer.is_running())
+                .min_by_key(|timer| timer.remaining(now))
+        })
+        .or_else(|| timers.first())
+        .map(timer_line)
+        .or_else(|| {
+            let watches = clock.stopwatches();
+            watches
+                .iter()
+                .find(|watch| watch.is_running())
+                .or_else(|| watches.first())
+                .map(|watch| {
+                    let paused = if watch.is_running() { "" } else { "Paused " };
+                    format!(
+                        "{paused}{} \u{00b7} {}",
+                        stopwatch_face(watch.elapsed(now)),
+                        watch.title()
+                    )
+                })
+        })?;
+    let more = timers.len() + clock.stopwatches().len() - 1;
+    Some(match more {
+        0 => first,
+        more => format!("{first}  +{more}"),
+    })
+}
+
 /// The preset to fill the form with, when the view asked to save a timer
 /// as one. The daemon hands it to the launcher's form; the clock is not
 /// changed.
@@ -587,6 +644,40 @@ mod tests {
         assert_eq!(preset.short_break.as_deref(), Some("5m"));
         assert!(preset.focus);
         assert!(saving(&clock, &invoke(&format!("timer-{id}"), "stop")).is_none());
+    }
+
+    #[test]
+    fn the_footer_names_what_ends_soonest_and_counts_the_rest() {
+        let mut clock = Clock::default();
+        assert_eq!(summary(&clock, 0), None);
+
+        clock.start(Duration::from_secs(600), Some("Write".into()), 0);
+        clock.start(Duration::from_secs(120), Some("Tea".into()), 0);
+        clock.start_stopwatch(None, 0);
+        assert_eq!(summary(&clock, 0).as_deref(), Some("2:00 \u{00b7} Tea  +2"));
+
+        clock.expire(120_000, true);
+        assert_eq!(
+            summary(&clock, 120_000).as_deref(),
+            Some("Ringing \u{00b7} Tea  +2")
+        );
+    }
+
+    #[test]
+    fn a_lone_stopwatch_or_cycle_says_what_it_is() {
+        let mut clock = Clock::default();
+        clock.start_stopwatch(Some("Call".into()), 0);
+        assert_eq!(
+            summary(&clock, 65_000).as_deref(),
+            Some("1:05 \u{00b7} Call")
+        );
+
+        let mut clock = Clock::default();
+        clock.start_cycle(super::super::Plan::POMODORO, Some("Pomodoro".into()), 0);
+        assert_eq!(
+            summary(&clock, 0).as_deref(),
+            Some("25:00 \u{00b7} Pomodoro \u{00b7} Work 1 of 4")
+        );
     }
 
     #[test]

@@ -117,6 +117,11 @@ an aesthetic worth looking at fifty times a day.
   the time left instead, with *Open Anyway* if you mean it. In a Pomodoro
   it holds during work and lifts for breaks. Only what opens through Lumen
   is checked: a nudge, not a lock.
+  **Seeing them**: the launcher's footer shows what is ringing or ending
+  soonest, with how many more; `Alt+Shift+Space` (or `lumen timers`) opens
+  *Timers* from anywhere. Presets can be made and edited without leaving
+  the launcher: *Create Timer Preset*, and *Edit Preset* / *Save as
+  Preset* in `Ctrl+K`.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.

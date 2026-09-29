@@ -61,6 +61,7 @@ fn main() -> Result<()> {
         Some("overlay-press") => forward_only(Message::OverlayPress),
         Some("overlay-release") => forward_only(Message::OverlayRelease),
         Some("settings") => dispatch(Message::Settings),
+        Some("timers") => dispatch(Message::ShowTimers),
         Some("reload" | "reload-sheets") => forward_only(Message::ReloadSheets),
         Some("quit") => forward_only(Message::Quit),
         Some("timer") => start_timer(),
@@ -92,6 +93,7 @@ fn print_help() {
          overlay-press      Report that the hold gesture began\n    \
          overlay-release    Report that the hold gesture ended\n    \
          settings           Open the settings window\n    \
+         timers             Show the running timers, or hide them\n    \
          reload             Re-read the configuration, sheets, scripts, snippets and quicklinks\n    \
          timer DURATION [NAME]  Start a timer in the running daemon: `lumen timer 25m tea`\n    \
          quit               Stop the running daemon\n\n\
@@ -267,11 +269,13 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     let gesture_tx = tx.clone();
     let listening = platform.start_gesture_listener(
         config.hotkey.clone(),
+        config.timers.hotkey.clone(),
         GestureSink::new(move |event| {
             let message = match event {
                 GestureEvent::Invoke => Message::Toggle,
                 GestureEvent::Hold(HoldPhase::Began) => Message::OverlayPress,
                 GestureEvent::Hold(HoldPhase::Ended) => Message::OverlayRelease,
+                GestureEvent::Timers => Message::ShowTimers,
             };
             // Unbounded and non-blocking: this runs on the input thread.
             let _ = gesture_tx.unbounded_send(message);
@@ -1237,7 +1241,10 @@ fn handle(
 
     // A sleep may have woken late -- the machine slept through a deadline --
     // so a summons reports what has ended before anything is drawn (F8).
-    if matches!(message, Message::Toggle | Message::Show) {
+    if matches!(
+        message,
+        Message::Toggle | Message::Show | Message::ShowTimers
+    ) {
         surfaces.timers.catch_up(cx);
     }
 
@@ -1299,6 +1306,19 @@ fn handle(
                 .context("reaching the app to open the translator")
         }
         Message::RunTimers => {
+            surfaces.timers.open_view(surfaces.launcher, cx);
+            Ok(())
+        }
+        // A toggle, like the launcher's own key: pressed on the Timers view,
+        // it goes away; anywhere else, it brings the view.
+        Message::ShowTimers => {
+            let visible = shell.borrow().visible;
+            if visible && surfaces.timers.is_viewing() {
+                return hide(platform, shell);
+            }
+            if !visible {
+                show(platform, config, shell, &surfaces.launcher, cx)?;
+            }
             surfaces.timers.open_view(surfaces.launcher, cx);
             Ok(())
         }

@@ -84,7 +84,14 @@ impl Platform for LinuxPlatform {
         todo!("F5: read the active window from Hyprland's event socket")
     }
 
-    fn start_gesture_listener(&self, _hotkey: Hotkey, _sink: GestureSink) -> Result<()> {
+    fn start_gesture_listener(
+        &self,
+        _hotkey: Hotkey,
+        _timers: Option<Hotkey>,
+        _sink: GestureSink,
+    ) -> Result<()> {
+        // The timers key is a compositor bind too: `bind = ALT SHIFT, SPACE,
+        // exec, lumen timers`.
         // No global shortcut API exists on Wayland. The compositor runs the
         // thin client, which toggles this instance over the socket, so this
         // method stays a no-op rather than growing an input-capture path.

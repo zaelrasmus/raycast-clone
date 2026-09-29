@@ -294,11 +294,22 @@ pub trait Platform: Send + Sync {
     /// all, which is briefly true during a desktop switch.
     fn foreground_application(&self) -> Result<Option<ForegroundApp>>;
 
-    /// Begin delivering global gesture events to `sink`.
+    /// Begin delivering global gesture events to `sink`: `hotkey` as
+    /// [`GestureEvent::Invoke`] and its hold, and `timers`, when there is one,
+    /// as [`GestureEvent::Timers`] (F8).
+    ///
+    /// A `timers` key that cannot be bound is logged, not returned: the
+    /// launcher's own hotkey is what the result reports, and one taken key
+    /// must not cost the other.
     ///
     /// The implementation must not do work on the system's input callback:
     /// it pushes to the sink and returns (I-15).
-    fn start_gesture_listener(&self, hotkey: Hotkey, sink: GestureSink) -> Result<()>;
+    fn start_gesture_listener(
+        &self,
+        hotkey: Hotkey,
+        timers: Option<Hotkey>,
+        sink: GestureSink,
+    ) -> Result<()>;
 
     /// Enumerate installed applications. Called off the UI thread.
     fn enumerate_applications(&self) -> Result<Vec<AppEntry>>;

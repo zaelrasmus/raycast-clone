@@ -139,8 +139,13 @@ impl Platform for WindowsPlatform {
         foreground::current()
     }
 
-    fn start_gesture_listener(&self, hotkey: Hotkey, sink: GestureSink) -> Result<()> {
-        input::start(hotkey, sink)
+    fn start_gesture_listener(
+        &self,
+        hotkey: Hotkey,
+        timers: Option<Hotkey>,
+        sink: GestureSink,
+    ) -> Result<()> {
+        input::start(hotkey, timers, sink)
     }
 
     fn enumerate_applications(&self) -> Result<Vec<AppEntry>> {

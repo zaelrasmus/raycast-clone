@@ -76,6 +76,11 @@ actions!(
 /// deep its context matched before anything else.
 pub const SCOPE_CONTEXT: &str = "Scoped";
 
+/// The wall clock as the timers write it.
+fn timers_now() -> lumen_core::timers::Millis {
+    lumen_core::timers::millis(std::time::SystemTime::now())
+}
+
 /// What the search field says when it is empty and nothing else applies.
 const ROOT_PLACEHOLDER: &str = "Search for apps and commands...";
 
@@ -289,6 +294,14 @@ pub struct Launcher {
     /// What focus blocks, while a focus timer runs (F8); `None` otherwise.
     /// The daemon keeps it current, so the check on `Enter` waits on nothing.
     focus: Option<lumen_core::timers::focus::Guard>,
+    /// The timers and stopwatches, for the footer's line (F8); `None` when
+    /// there are none. Pushed by the daemon when they change.
+    timers: Option<lumen_core::timers::Clock>,
+    /// Whether the window is active, so the footer's clock ticks only while
+    /// someone can see it.
+    active: bool,
+    /// Bumped by every tick asked for; a superseded one does nothing.
+    tick: u64,
 }
 
 impl Launcher {
@@ -347,6 +360,9 @@ impl Launcher {
             appearances: 0,
             _theme_reload: None,
             focus: None,
+            timers: None,
+            active: false,
+            tick: 0,
         };
 
         launcher.start_indexing(cx);
@@ -671,8 +687,10 @@ impl Launcher {
     /// is also what every other launcher on every platform does, and therefore
     /// what people expect without being told.
     fn on_activation_changed(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.active = active;
         if active {
             self.focused_once = true;
+            self.schedule_tick(cx);
             return;
         }
 
@@ -1088,6 +1106,49 @@ impl Launcher {
 
     /// Close the launcher on the view's behalf: something it did is finished,
     /// such as copying a translation.
+    /// The timers as they are now, for the footer (F8).
+    pub fn set_timers(&mut self, clock: lumen_core::timers::Clock, cx: &mut Context<Self>) {
+        self.timers = (!clock.is_idle()).then_some(clock);
+        self.schedule_tick(cx);
+        cx.notify();
+    }
+
+    /// Redraw when the footer's clock next turns over -- only while the window
+    /// is active and something is counting. Hidden, nothing wakes (section 5).
+    fn schedule_tick(&mut self, cx: &mut Context<Self>) {
+        self.tick += 1;
+        if !self.active {
+            return;
+        }
+        let Some(wait) = self
+            .timers
+            .as_ref()
+            .and_then(|clock| lumen_core::timers::view::next_tick(clock, timers_now()))
+        else {
+            return;
+        };
+        let asked = self.tick;
+        cx.spawn(async move |this, cx| {
+            // A little after, never before: early would redraw the same second.
+            let wait = wait + std::time::Duration::from_millis(5);
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |launcher, cx| {
+                if launcher.tick == asked {
+                    cx.notify();
+                    launcher.schedule_tick(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The footer's line about the timers, if there is one to say.
+    fn timers_line(&self) -> Option<String> {
+        let clock = self.timers.as_ref()?;
+        lumen_core::timers::view::summary(clock, timers_now())
+    }
+
     /// Whether focus is on, and what it blocks (F8).
     pub fn set_focus(
         &mut self,
@@ -2681,6 +2742,11 @@ impl Launcher {
             .and_then(|picker| scopes.get(picker.scope).map(|scope| (picker.scope, scope)));
         let status = match (&self.mode, count) {
             (Mode::Form(_), _) => "Next field  Tab".to_string(),
+            // What is counting is worth more than how many rows there are,
+            // and the root list is where the launcher opens (F8).
+            (Mode::Root, _) if self.argument.is_none() && self.timers_line().is_some() => {
+                self.timers_line().unwrap_or_default()
+            }
             // Where Tab goes next, when there is somewhere.
             (Mode::View(_), _) if picking.is_some() && scopes.len() > 1 => {
                 let (index, _) = picking.expect("checked");
@@ -2712,7 +2778,9 @@ impl Launcher {
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::footer())
             .text_color(color(colors.text_muted))
-            .child(div().child(status))
+            // Truncated rather than pushing the keys off the edge: a long
+            // timer name must not move them (I-10).
+            .child(div().flex_1().min_w_0().truncate().child(status))
             .child(
                 div()
                     .flex()

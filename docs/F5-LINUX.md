@@ -80,7 +80,7 @@ keystroke would show in the budgets.
 | `set_window_bounds` | Set the layer surface's size and margins; the compositor positions it | Medium |
 | `cursor_monitor` | **H** `j/monitors` → the focused monitor; `wl_output` for scale | Easy |
 | `foreground_application` | **H** `j/activewindow` → `class` and `title`. Simpler than Windows, with no process handle or frame host involved | Easy |
-| `start_gesture_listener` | **No-op, return `Ok(())`**. The compositor owns the shortcut (see binds below). The current `todo!()` should become a no-op, not an implementation | Trivial |
+| `start_gesture_listener` | **No-op, return `Ok(())`**, for the timers key too (`bind = ALT SHIFT, SPACE, exec, lumen timers`). The compositor owns the shortcut (see binds below). The current `todo!()` should become a no-op, not an implementation | Trivial |
 | `enumerate_applications` | Parse `.desktop` files from `$XDG_DATA_HOME/applications` and every `$XDG_DATA_DIRS/*/applications`. Respect `NoDisplay`, `Hidden`, `OnlyShowIn`/`NotShowIn`, `TryExec`; later directories are overridden by earlier ones with the same desktop-file ID | Medium |
 | `watch_applications` | `inotify` (the `notify` crate is already a dependency) on the same folders. Package managers write `.desktop` files there and nowhere else. Keep the coalescing idea from `app_watch.rs` | Easy |
 | `load_icon` | Icon theme spec: current theme → `hicolor` → `/usr/share/pixmaps`, choosing the closest size ≥ requested; SVGs through `resvg` (GPUI already renders SVG) | Medium |

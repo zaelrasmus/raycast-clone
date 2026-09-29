@@ -15,6 +15,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use lumen_platform::{Hotkey, Modifiers};
+
 use super::cycle::{MAX_ROUNDS, Plan};
 use super::duration;
 
@@ -33,6 +35,22 @@ pub struct TimersConfig {
     /// is silence: the notification alone.
     pub alert_sound: Option<String>,
     pub ring: Ring,
+    /// Opens *Timers* from anywhere (F8). `null` binds nothing. Read when the
+    /// daemon starts, like the launcher's own hotkey.
+    pub hotkey: Option<Hotkey>,
+}
+
+/// Alt+Shift+Space: the launcher's key, shifted.
+pub fn default_hotkey() -> Hotkey {
+    Hotkey {
+        modifiers: Modifiers {
+            alt: true,
+            shift: true,
+            ..Modifiers::default()
+        },
+        key: "Space".into(),
+        hold: None,
+    }
 }
 
 impl Default for TimersConfig {
@@ -46,6 +64,7 @@ impl Default for TimersConfig {
             // does not know plays nothing and says so in the log.
             alert_sound: Some("Alarm01".into()),
             ring: Ring::Once,
+            hotkey: Some(default_hotkey()),
         }
     }
 }

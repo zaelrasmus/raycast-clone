@@ -213,6 +213,9 @@ impl Config {
         if self.clipboard != newer.clipboard {
             pending.push("clipboard");
         }
+        if self.timers.hotkey != newer.timers.hotkey {
+            pending.push("timers.hotkey");
+        }
         pending
     }
 
@@ -224,12 +227,14 @@ impl Config {
     /// the next reload compare equal and stop mentioning that a restart is
     /// still pending.
     pub fn merge_live(&self, newer: &Self) -> Self {
-        Self {
+        let mut merged = Self {
             hotkey: self.hotkey.clone(),
             backdrop: self.backdrop,
             clipboard: self.clipboard,
             ..newer.clone()
-        }
+        };
+        merged.timers.hotkey = self.timers.hotkey.clone();
+        merged
     }
 
     /// Write the defaults out so there is something to edit.

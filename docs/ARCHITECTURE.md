@@ -720,6 +720,38 @@ After living with it, three things were changed before F8 merged:
   and follows the timer form's height as *Cycle* adds its rows. A save goes
   back to the root list with the preset's name typed, so the confirmation
   is its row.
+- **What is running is visible without asking.** Rows at the top of the
+  root list were considered and declined: they push applications down,
+  appear and vanish as timers end (I-10), and redraw every second while
+  the user types. A floating always-on-top window was declined too: a third
+  permanent window redrawing every second while shown, against the idle
+  budget, for what Raycast does with the macOS menu bar. Instead:
+  - **The footer.** In the root list, where the result count was, one line:
+    what is ringing, else the running timer ending soonest, else a paused
+    one, else a stopwatch -- `12:03 · Pomodoro · Break  +2` -- truncated
+    rather than moving the keys. The daemon pushes a copy of the clock to
+    the launcher when it changes, and the launcher redraws when a second
+    turns over **only while its window is active**. Hidden, nothing ticks.
+  - **A hotkey for the view.** `Alt+Shift+Space` -- the launcher's key,
+    shifted -- shows the launcher on *Timers*, and hides it if that is what
+    it shows. `timers.hotkey` in `config.json`, `null` for none, read at
+    start like the launcher's own key (a change waits for a restart, and is
+    reported). `trait Platform::start_gesture_listener` takes the second key
+    and reports `GestureEvent::Timers`, in both implementations at once
+    (I-9); on Windows it is a second `RegisterHotKey` in the same listener
+    thread, and a key that is taken is logged without costing the
+    launcher's. `lumen timers` does the same from a terminal, which is what
+    a Hyprland bind will run (F5). It is not in the settings window: the
+    launcher's own hotkey is not either, and a key-capture field is its own
+    piece of work.
+  - **Measured, with a false alarm.** Idle with three timers, the first
+    readings were 0.011 %, 0.002 % and 0.007 % against slice 1's 0.000 %.
+    Bisected against the slice 3 build in one batch: slice 3 read 0.000 %
+    and then 0.013 %, this build 0.000 % with timers and 0.002 % / 0.000 %
+    without. The difference is the odd 15.6 ms scheduler quantum on a
+    machine that is never perfectly idle, not a tick -- a once-a-second
+    wake would be sixty of them a minute. All within 0.02 %. Working set
+    72.8-73.6 MB, 31 threads. Binary 16,630,272 bytes.
 
 ---
 

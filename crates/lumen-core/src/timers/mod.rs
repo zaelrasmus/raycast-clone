@@ -191,6 +191,11 @@ impl Clock {
         self.timers.is_empty()
     }
 
+    /// Whether there is nothing at all: no timer and no stopwatch.
+    pub fn is_idle(&self) -> bool {
+        self.timers.is_empty() && self.stopwatches.is_empty()
+    }
+
     /// Whether any timer is ringing, and so the alert should be playing.
     pub fn is_ringing(&self) -> bool {
         self.timers.iter().any(Timer::is_ringing)

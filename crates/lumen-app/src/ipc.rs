@@ -72,6 +72,9 @@ pub enum Message {
     },
     /// Open the *Timers* view (F8).
     RunTimers,
+    /// The timers hotkey, or `lumen timers`: show the launcher on *Timers*,
+    /// or hide it if that is what it shows (F8).
+    ShowTimers,
     /// Open *Preview Alert Sounds* (F8, slice 3).
     RunAlertSounds,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.

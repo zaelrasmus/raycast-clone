@@ -112,6 +112,8 @@ pub enum GestureEvent {
     Invoke,
     /// The hold gesture crossed its activation threshold, or ended.
     Hold(HoldPhase),
+    /// The timers hotkey fired: show the *Timers* view (F8).
+    Timers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -338,17 +338,30 @@ impl Timers {
 
     /// Tell the launcher what focus blocks now: the guard while a focus timer
     /// holds and the lists are not empty, `None` otherwise.
+    ///
+    /// And the timers themselves, for the footer's line: a clone of a few
+    /// rows, from which the launcher draws the time left for as long as it
+    /// is on screen, and nothing while it is not.
     fn push_focus(&self, cx: &AsyncApp) {
         let holding = self.clock.borrow().focus(now()).is_some();
         let guard = self.offer.borrow().guard.clone();
         let guard = (holding && !guard.is_empty()).then_some(guard);
+        let clock = self.clock.borrow().clone();
         let window = self.launcher;
         cx.spawn(async move |cx| {
             window
-                .update(cx, |launcher, _window, cx| launcher.set_focus(guard, cx))
+                .update(cx, |launcher, _window, cx| {
+                    launcher.set_focus(guard, cx);
+                    launcher.set_timers(clock, cx);
+                })
                 .ok();
         })
         .detach();
+    }
+
+    /// Whether the *Timers* view is what the launcher shows.
+    pub fn is_viewing(&self) -> bool {
+        self.viewer.borrow().is_some()
     }
 
     /// Say, in the launcher, that focus refused `what`; `Enter` goes back to

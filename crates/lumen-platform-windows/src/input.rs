@@ -56,6 +56,8 @@ use windows::core::{PCWSTR, w};
 const HOLD_THRESHOLD: Duration = Duration::from_millis(350);
 
 const HOTKEY_ID: i32 = 1;
+/// The timers hotkey (F8), in the same listener: one thread, one window.
+const TIMERS_HOTKEY_ID: i32 = 2;
 const HOLD_TIMER_ID: usize = 1;
 
 /// Per-thread state for the listener window, reached from the window procedure.
@@ -84,13 +86,13 @@ thread_local! {
 ///
 /// The thread owns a message-only window for its whole life. It is never joined:
 /// it lives exactly as long as the daemon does.
-pub fn start(hotkey: Hotkey, sink: GestureSink) -> Result<()> {
+pub fn start(hotkey: Hotkey, timers: Option<Hotkey>, sink: GestureSink) -> Result<()> {
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
 
     std::thread::Builder::new()
         .name("lumen-gestures".into())
         .spawn(move || {
-            match run(hotkey, sink) {
+            match run(hotkey, timers, sink) {
                 // The listener is up either way. `accelerator` reports only
                 // whether the launcher hotkey could be bound, and the pump runs
                 // regardless so the hold gesture keeps working.
@@ -116,7 +118,11 @@ pub fn start(hotkey: Hotkey, sink: GestureSink) -> Result<()> {
 /// disappearing into a thread that simply never delivers events -- and so that a
 /// hotkey that is already taken is reported without tearing down a listener that
 /// is otherwise working.
-fn run(hotkey: Hotkey, sink: GestureSink) -> Result<(impl FnOnce(), Result<()>)> {
+fn run(
+    hotkey: Hotkey,
+    timers: Option<Hotkey>,
+    sink: GestureSink,
+) -> Result<(impl FnOnce(), Result<()>)> {
     unsafe {
         let instance = GetModuleHandleW(None).context("GetModuleHandleW")?;
         let class_name = w!("LumenGestureListener");
@@ -188,6 +194,18 @@ fn run(hotkey: Hotkey, sink: GestureSink) -> Result<(impl FnOnce(), Result<()>)>
             })
         });
 
+        // The timers key is a convenience: taken or unreadable, it is said in
+        // the log and everything else carries on.
+        if let Some(timers) = timers {
+            let bound = accelerator_for(&timers).and_then(|(modifiers, vk)| {
+                RegisterHotKey(Some(hwnd), TIMERS_HOTKEY_ID, modifiers | MOD_NOREPEAT, vk)
+                    .with_context(|| format!("registering the timers hotkey {timers}"))
+            });
+            if let Err(error) = bound {
+                log::warn!("{error:#}; open Timers from the launcher or with `lumen timers`");
+            }
+        }
+
         Ok((pump_messages, accelerator))
     }
 }
@@ -212,6 +230,10 @@ extern "system" fn window_proc(
     match message {
         WM_HOTKEY if wparam.0 as i32 == HOTKEY_ID => {
             emit(GestureEvent::Invoke);
+            LRESULT(0)
+        }
+        WM_HOTKEY if wparam.0 as i32 == TIMERS_HOTKEY_ID => {
+            emit(GestureEvent::Timers);
             LRESULT(0)
         }
         WM_INPUT => {
