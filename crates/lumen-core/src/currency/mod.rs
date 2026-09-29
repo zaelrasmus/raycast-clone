@@ -16,6 +16,7 @@
 
 pub mod currencies;
 pub mod format;
+pub mod query;
 pub mod session;
 pub mod sources;
 

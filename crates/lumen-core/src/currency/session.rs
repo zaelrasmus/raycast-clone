@@ -13,8 +13,10 @@
 //! and even then the table in hand is drawn at once, with its own date, and
 //! replaced when the new one lands.
 
+use super::query::{self, Query};
 use super::{Currency, Failure, Rates, Service, State, currencies, format};
-use crate::providers::calculator;
+use crate::frecency::Frecency;
+use crate::search::{Candidate, Search};
 use crate::view::{
     Action, EmptyState, Event, Filtering, Icon, Item, List, Scope, ScopeOption, Section, Tone, View,
 };
@@ -51,6 +53,10 @@ pub struct Session {
     /// Why the last fetch failed, until one succeeds.
     failure: Option<Failure>,
     query: String,
+    /// Root search's matcher, for the filter after `in` (F9, slice 3), over
+    /// every currency in table order, prepared once.
+    search: Search,
+    candidates: Vec<Candidate>,
 }
 
 impl Session {
@@ -63,6 +69,8 @@ impl Session {
             fetching: false,
             failure: None,
             query: String::new(),
+            search: Search::new(),
+            candidates: currencies::CURRENCIES.iter().map(candidate).collect(),
         }
     }
 
@@ -151,7 +159,7 @@ impl Session {
         else {
             return Vec::new();
         };
-        let Some(value) = self.convert(to) else {
+        let Some(value) = self.parsed().and_then(|query| self.convert(&query, to)) else {
             return Vec::new();
         };
         match action {
@@ -161,22 +169,56 @@ impl Session {
         }
     }
 
-    fn amount(&self) -> Option<f64> {
-        calculator::amount(&self.query)
+    fn parsed(&self) -> Option<Query> {
+        query::parse(&self.query)
     }
 
-    fn convert(&self, to: &Currency) -> Option<f64> {
+    /// What `query` converts from: the code written, or the one picked.
+    fn source(&self, query: &Query) -> &'static Currency {
+        query.from.unwrap_or(self.from)
+    }
+
+    fn convert(&self, query: &Query, to: &Currency) -> Option<f64> {
         self.rates
             .as_ref()?
-            .convert(self.amount()?, self.from.code, to.code)
+            .convert(query.amount, self.source(query).code, to.code)
+    }
+
+    /// The currencies to show a row for, but for the source: every one in
+    /// table order, or those that match the filter, best first.
+    fn targets(&mut self, query: &Query) -> Vec<&'static Currency> {
+        let source = self.source(query);
+        let order: Vec<usize> = if query.filter.is_empty() {
+            (0..currencies::CURRENCIES.len()).collect()
+        } else {
+            self.search
+                .rank(
+                    &query.filter,
+                    &self.candidates,
+                    &Frecency::new(),
+                    usize::MAX,
+                )
+                .into_iter()
+                .map(|matched| matched.index)
+                .collect()
+        };
+        order
+            .into_iter()
+            .map(|index| &currencies::CURRENCIES[index])
+            .filter(|currency| *currency != source)
+            .collect()
     }
 
     /// What the view should show now.
-    pub fn view(&self) -> View {
+    pub fn view(&mut self) -> View {
         let typed = !self.query.trim().is_empty();
-        let amount = self.amount();
+        let parsed = self.parsed();
+        let targets = parsed
+            .as_ref()
+            .map(|query| self.targets(query))
+            .unwrap_or_default();
 
-        let (empty, sections) = match (&self.rates, amount) {
+        let (empty, sections) = match (&self.rates, parsed) {
             (_, None) if typed => (
                 EmptyState {
                     title: "Not an amount".into(),
@@ -189,14 +231,24 @@ impl Session {
                 EmptyState {
                     title: format!("Type an amount of {}", self.from.name),
                     description: Some(
-                        "10, 1+2 or (3*4)/2, converted into every currency. Tab chooses the currency."
+                        "10, 1+2 or 10 cad in eur. Tab chooses the currency to convert from."
                             .into(),
                     ),
                     icon: None,
                 },
                 Vec::new(),
             ),
-            (Some(rates), Some(amount)) => (self.waiting(), vec![self.section(rates, amount)]),
+            (Some(_), Some(query)) if targets.is_empty() => (
+                EmptyState {
+                    title: format!("No currency matches \u{201c}{}\u{201d}", query.filter),
+                    description: Some("Try a code, a name or a country: cad, yen, japan".into()),
+                    icon: None,
+                },
+                Vec::new(),
+            ),
+            (Some(rates), Some(query)) => {
+                (self.waiting(), vec![self.section(rates, &query, &targets)])
+            }
             (None, Some(_)) if self.fetching => (self.waiting(), Vec::new()),
             // No table, and none coming: a row, so Enter can try again.
             (None, Some(_)) => (self.waiting(), vec![self.failed()]),
@@ -219,7 +271,8 @@ impl Session {
         }
     }
 
-    fn section(&self, rates: &Rates, amount: f64) -> Section {
+    fn section(&self, rates: &Rates, query: &Query, targets: &[&'static Currency]) -> Section {
+        let source = self.source(query);
         let mut subtitle = format!(
             "Rates of {} \u{00b7} {}",
             rates.date(),
@@ -235,14 +288,13 @@ impl Session {
         Section {
             title: Some(format!(
                 "Exchange from {} {}",
-                format::shown(amount, self.from),
-                self.from.name
+                format::shown(query.amount, source),
+                source.name
             )),
             subtitle: Some(subtitle),
-            items: currencies::CURRENCIES
+            items: targets
                 .iter()
-                .filter(|currency| *currency != self.from)
-                .filter_map(|to| Some(row(to, rates.convert(amount, self.from.code, to.code)?)))
+                .filter_map(|to| Some(row(to, rates.convert(query.amount, source.code, to.code)?)))
                 .collect(),
         }
     }
@@ -300,6 +352,24 @@ impl Session {
             selected: format!("{ROW}{}", self.from.code),
         }
     }
+}
+
+/// A currency, prepared for the matcher: its code and name as the title, so
+/// both are matched at full weight, and its countries as keywords.
+fn candidate(currency: &'static Currency) -> Candidate {
+    Candidate::new(crate::item::Item {
+        id: currency.code.into(),
+        title: format!("{} {}", currency.code, currency.name),
+        subtitle: None,
+        icon: None,
+        keywords: currency
+            .countries
+            .iter()
+            .map(|country| (*country).into())
+            .collect(),
+        actions: Vec::new(),
+        kind: crate::item::Kind::Command,
+    })
 }
 
 fn action(id: &str, title: &str) -> Action {
@@ -564,6 +634,58 @@ mod tests {
                 .unwrap()
                 .ends_with("offline")
         );
+    }
+
+    #[test]
+    fn a_code_after_the_amount_converts_from_it_whatever_the_picker_says() {
+        let mut session = session();
+        let list = list_of(typed(&mut session, "14 cad"));
+
+        assert_eq!(
+            list.sections[0].title.as_deref(),
+            Some("Exchange from CA$14.00 Canadian Dollar")
+        );
+        assert_eq!(row(&list, "USD").subtitle.as_deref(), Some("$10.00"));
+        assert!(list.items().all(|item| item.title != "CAD"));
+
+        // Copied from the written source too.
+        let effects = session.event(Event::ActionInvoked {
+            item: Some("cur-EUR".into()),
+            action: "copy".into(),
+        });
+        assert_eq!(effects, vec![Effect::Copy("9.00".into())]);
+    }
+
+    #[test]
+    fn in_narrows_the_rows_by_code_name_or_country() {
+        let mut session = session();
+        for (typed_text, expected) in [
+            ("10 in cad", "CAD"),
+            ("10 to japan", "JPY"),
+            ("10 in euro", "EUR"),
+        ] {
+            let list = list_of(typed(&mut session, typed_text));
+            assert_eq!(
+                list.items().next().map(|item| item.title.as_str()),
+                Some(expected),
+                "{typed_text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unfinished_in_shows_every_currency() {
+        let mut session = session();
+        assert_eq!(list_of(typed(&mut session, "10 in")).len(), 3);
+        assert_eq!(list_of(typed(&mut session, "10 i")).len(), 3);
+    }
+
+    #[test]
+    fn a_filter_that_matches_nothing_says_so() {
+        let mut session = session();
+        let list = list_of(typed(&mut session, "10 in zzzz"));
+        assert!(list.is_empty());
+        assert!(list.empty.unwrap().title.contains("zzzz"));
     }
 
     /// The picker is searched with the root list's matcher, over the code,
