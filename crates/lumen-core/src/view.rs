@@ -135,6 +135,9 @@ pub struct ScopeOption {
     /// Sent back when this option is chosen. Opaque to the host.
     pub id: String,
     pub title: String,
+    /// Also matched when the picker is searched, never shown (F9): the
+    /// countries that use a currency, so `japan` finds the yen.
+    pub keywords: Vec<String>,
 }
 
 impl Scope {
@@ -502,6 +505,7 @@ mod tests {
                 .map(|id| ScopeOption {
                     id: (*id).into(),
                     title: id.to_uppercase(),
+                    keywords: Vec::new(),
                 })
                 .collect(),
             selected: selected.into(),

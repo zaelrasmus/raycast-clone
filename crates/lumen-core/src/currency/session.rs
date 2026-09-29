@@ -290,6 +290,11 @@ impl Session {
                 .map(|currency| ScopeOption {
                     id: format!("{ROW}{}", currency.code),
                     title: format!("{} {}", currency.code, currency.name),
+                    keywords: currency
+                        .countries
+                        .iter()
+                        .map(|country| (*country).into())
+                        .collect(),
                 })
                 .collect(),
             selected: format!("{ROW}{}", self.from.code),
@@ -559,6 +564,43 @@ mod tests {
                 .unwrap()
                 .ends_with("offline")
         );
+    }
+
+    /// The picker is searched with the root list's matcher, over the code,
+    /// the name and every country (F9, slice 2).
+    #[test]
+    fn the_source_picker_finds_a_currency_by_name_code_or_country() {
+        use crate::frecency::Frecency;
+        use crate::search::{Candidate, Search};
+
+        let scope = session().source_scope();
+        let candidates: Vec<Candidate> = scope
+            .options
+            .iter()
+            .map(|option| {
+                Candidate::new(crate::item::Item {
+                    id: option.id.clone(),
+                    title: option.title.clone(),
+                    subtitle: None,
+                    icon: None,
+                    keywords: option.keywords.clone(),
+                    actions: Vec::new(),
+                    kind: crate::item::Kind::Command,
+                })
+            })
+            .collect();
+        let mut search = Search::new();
+        let mut best = |query: &str| {
+            search
+                .rank(query, &candidates, &Frecency::new(), 1)
+                .first()
+                .map(|matched| matched.item.id.clone())
+        };
+
+        assert_eq!(best("cad").as_deref(), Some("cur-CAD"));
+        assert_eq!(best("canadian").as_deref(), Some("cur-CAD"));
+        assert_eq!(best("japan").as_deref(), Some("cur-JPY"));
+        assert_eq!(best("spain").as_deref(), Some("cur-EUR"));
     }
 
     #[test]

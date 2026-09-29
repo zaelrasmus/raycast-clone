@@ -859,6 +859,14 @@ and how old it is allowed to be.
   the search field back its query. Translate's thirty languages get the
   same for free. The chosen source is remembered in `currency.json`, across
   restarts: the currency someone holds does not change daily.
+- **Keywords are scored even when the title matches, root list included.**
+  Searching the picker by country exposed a gap in the shared matcher: a
+  keyword was consulted only when the title did not match at all, so any
+  scattered title match won -- `spain` found the Saint Helena pound, through
+  the S, P, A, I, N of "SHP Saint", before the euro. The better of the two
+  scores now counts, and the keyword discount is 30 rather than 40, because
+  the scattered match scores 101 and the exact keyword 140. An equally good
+  title still wins. The ranking budget in CI was re-run and holds.
 - **Pins.** *Pin* in the action panel keeps a currency in a section of its
   own above the rest, remembered with the source. The filter applies to
   both sections.

@@ -106,6 +106,19 @@ fn candidate_for(item: &lumen_core::view::Item) -> Candidate {
     })
 }
 
+/// A scope's option, prepared for the same matcher (F9).
+fn option_candidate(option: &lumen_core::view::ScopeOption) -> Candidate {
+    Candidate::new(Item {
+        id: option.id.clone(),
+        title: option.title.clone(),
+        subtitle: None,
+        icon: None,
+        keywords: option.keywords.clone(),
+        actions: Vec::new(),
+        kind: lumen_core::Kind::Command,
+    })
+}
+
 /// One row of the action panel, whichever mode produced it.
 struct PanelEntry {
     title: String,
@@ -132,11 +145,23 @@ enum Mode {
 ///
 /// Not the action panel: that sizes itself to every row it has, and a scope
 /// can have thirty. This is capped at `layout::view::PICKER_ROWS` and scrolls.
+///
+/// Searchable (F9): while it is open the search field filters its options,
+/// because arrowing through 166 currencies is not choosing one. The view's
+/// query is set aside while it is open and given back when it closes.
 struct Picker {
     /// Which of the view's scopes.
     scope: usize,
+    /// Indices into the scope's options that match what is typed, best
+    /// first; every option, in order, when nothing is.
+    matches: Vec<usize>,
+    /// An index into `matches`.
     highlighted: usize,
     scroll: UniformListScrollHandle,
+    /// The view's query, to put back in the field when the picker closes.
+    query: String,
+    /// The search `matches` was computed for.
+    filtered: String,
 }
 
 enum PickerMove {
@@ -767,10 +792,10 @@ impl Launcher {
     /// rows are result-height but its section headers are not.
     pub fn content_height(&self) -> f32 {
         if self.picker.is_some() {
+            // At least one row: a search that matches nothing says so.
             let rows = self
-                .picker_options()
-                .len()
-                .min(lumen_core::layout::view::PICKER_ROWS);
+                .picker_count()
+                .clamp(1, lumen_core::layout::view::PICKER_ROWS);
             return self.config.panel_height(rows);
         }
         if self.action_panel.is_some() {
@@ -853,6 +878,14 @@ impl Launcher {
         }
 
         let previous_height = self.content_height();
+
+        // While the picker is open the field searches its options, and the
+        // view is neither filtered nor told (F9).
+        if self.picker.is_some() {
+            self.refilter_picker();
+            self.resize_if_needed(previous_height, cx);
+            return;
+        }
 
         // A view filters its own rows and has no use for the root index.
         if matches!(self.mode, Mode::View(_)) {
@@ -1072,16 +1105,15 @@ impl Launcher {
 
         // An open picker survives a render, which may have changed its
         // options; it closes if its scope is gone.
-        let count = self
+        let scope_left = self
             .picker
             .as_ref()
             .and_then(|picker| self.scopes().get(picker.scope))
-            .map(|scope| scope.options.len());
-        match (count, &mut self.picker) {
-            (Some(count), Some(picker)) if count > 0 => {
-                picker.highlighted = picker.highlighted.min(count - 1);
-            }
-            (_, picker) => *picker = None,
+            .is_some_and(|scope| !scope.options.is_empty());
+        if scope_left {
+            self.refilter_picker();
+        } else {
+            self.take_picker(cx);
         }
         self.resize_if_needed(previous_height, cx);
         cx.notify();
@@ -1195,36 +1227,109 @@ impl Launcher {
         self.step_scope(-1, cx);
     }
 
-    /// Show `scope`'s options in place of the list, on the one in force.
+    /// Show `scope`'s options in place of the list, on the one in force, and
+    /// empty the field to search them.
     fn open_picker(&mut self, scope: usize, cx: &mut Context<Self>) {
-        let Some(highlighted) = self.scopes().get(scope).map(|scope| scope.position()) else {
+        if self.scopes().get(scope).is_none() {
             return;
-        };
+        }
         let previous_height = self.content_height();
         self.action_panel = None;
         self.browser_menu = None;
-        let scroll = UniformListScrollHandle::new();
-        scroll.scroll_to_item(highlighted, ScrollStrategy::Center);
+        // Moving to another scope keeps the query the first one set aside:
+        // what is in the field now is only a search of the options.
+        let query = match self.picker.take() {
+            Some(picker) => picker.query,
+            None => self.query.clone(),
+        };
+        self.clear_query_text(cx);
         self.picker = Some(Picker {
             scope,
-            highlighted,
-            scroll,
+            matches: Vec::new(),
+            highlighted: 0,
+            scroll: UniformListScrollHandle::new(),
+            query,
+            filtered: String::new(),
         });
+        self.refilter_picker();
+        if let Some(picker) = &self.picker {
+            picker
+                .scroll
+                .scroll_to_item(picker.highlighted, ScrollStrategy::Center);
+        }
         self.resize_if_needed(previous_height, cx);
         cx.notify();
     }
 
     fn close_picker(&mut self, cx: &mut Context<Self>) {
         let previous_height = self.content_height();
-        if self.picker.take().is_some() {
+        if self.take_picker(cx) {
             self.resize_if_needed(previous_height, cx);
             cx.notify();
         }
     }
 
+    /// Drop the picker and give the field back the view's query. Not an
+    /// edit: the view was never told the picker's search, so it has nothing
+    /// to be told back.
+    fn take_picker(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(picker) = self.picker.take() else {
+            return false;
+        };
+        self.query.clone_from(&picker.query);
+        self.query_field
+            .update(cx, |field, cx| field.set_text(picker.query, cx));
+        true
+    }
+
+    /// Match the open picker's options against the field, with the root
+    /// list's matcher, so `can` finds the Canadian dollar as it would an app.
+    ///
+    /// The highlight goes to the best match when the search changes, to the
+    /// option in force when there is no search, and otherwise stays on the
+    /// option it was on: a render must not move it.
+    fn refilter_picker(&mut self) {
+        let query = self.query.trim().to_string();
+        let Some(picker) = &self.picker else {
+            return;
+        };
+        let Some(scope) = self.scopes().get(picker.scope) else {
+            return;
+        };
+        let before = picker.matches.get(picker.highlighted).copied();
+        let in_force = scope.position();
+        let candidates: Option<Vec<Candidate>> =
+            (!query.is_empty()).then(|| scope.options.iter().map(option_candidate).collect());
+        let every = scope.options.len();
+
+        let matches: Vec<usize> = match candidates {
+            Some(candidates) => self.root.filter(&query, &candidates),
+            None => (0..every).collect(),
+        };
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        let searched = picker.matches.is_empty() || query != picker.filtered;
+        let target = match before {
+            _ if searched && !query.is_empty() => None,
+            Some(before) if !searched => Some(before),
+            _ => Some(in_force),
+        };
+        picker.highlighted = target
+            .and_then(|target| matches.iter().position(|index| *index == target))
+            .unwrap_or(0);
+        picker.matches = matches;
+        if searched {
+            picker
+                .scroll
+                .scroll_to_item(picker.highlighted, ScrollStrategy::Top);
+        }
+        picker.filtered = query;
+    }
+
     /// Move the picker's highlight by `delta`, wrapping; or to an end.
     fn move_picker(&mut self, to: PickerMove, cx: &mut Context<Self>) {
-        let count = self.picker_options().len();
+        let count = self.picker_count();
         let Some(picker) = &mut self.picker else {
             return;
         };
@@ -1251,7 +1356,10 @@ impl Launcher {
         let Some(picker) = &self.picker else {
             return;
         };
-        let (scope_index, highlighted) = (picker.scope, picker.highlighted);
+        let scope_index = picker.scope;
+        let Some(highlighted) = picker.matches.get(picker.highlighted).copied() else {
+            return;
+        };
         let Mode::View(state) = &mut self.mode else {
             return;
         };
@@ -1289,12 +1397,28 @@ impl Launcher {
         }
     }
 
-    /// The options the open picker shows.
-    fn picker_options(&self) -> &[lumen_core::view::ScopeOption] {
+    /// How many options the open picker shows: those that match.
+    fn picker_count(&self) -> usize {
         self.picker
             .as_ref()
-            .and_then(|picker| self.scopes().get(picker.scope))
-            .map_or(&[], |scope| scope.options.as_slice())
+            .map_or(0, |picker| picker.matches.len())
+    }
+
+    /// The picker's `row`th option as shown, and whether it is in force.
+    fn picker_option(&self, row: usize) -> Option<(&lumen_core::view::ScopeOption, bool)> {
+        let picker = self.picker.as_ref()?;
+        let scope = self.scopes().get(picker.scope)?;
+        let option = scope.options.get(*picker.matches.get(row)?)?;
+        Some((option, scope.selected == option.id))
+    }
+
+    /// The query the open view is filtered by: the field's, or while the
+    /// picker searches its options, the one it set aside.
+    fn view_query(&self) -> &str {
+        match &self.picker {
+            Some(picker) => &picker.query,
+            None => &self.query,
+        }
     }
 
     /// The extension has gone. Return to the root list.
@@ -1341,7 +1465,7 @@ impl Launcher {
     /// and the sections are labelled, so reordering across them would put rows
     /// under headings that do not describe them.
     fn refilter_view(&mut self) {
-        let query = self.query.trim().to_string();
+        let query = self.view_query().trim().to_string();
 
         let Mode::View(state) = &mut self.mode else {
             return;
@@ -2355,6 +2479,8 @@ impl Launcher {
         }
 
         let placeholder = match &self.mode {
+            // The field searches the picker's options while it is open.
+            Mode::View(_) if self.picker.is_some() => FIND,
             Mode::View(state) => state.view.placeholder().unwrap_or(FIND),
             Mode::Form(_) => ROOT_PLACEHOLDER,
             Mode::Root if self.argument.is_some() => ARGUMENT_PLACEHOLDER,
@@ -2461,19 +2587,35 @@ impl Launcher {
         use lumen_core::layout::action_panel as panel;
 
         let picker = self.picker.as_ref()?;
-        let count = self.picker_options().len();
+        let count = self.picker_count();
+        let rows = count.clamp(1, lumen_core::layout::view::PICKER_ROWS);
+        let region = div()
+            .p(gpui::px(panel::PADDING))
+            .h(gpui::px(
+                panel::PADDING * 2.0 + panel::ROW_HEIGHT * rows as f32,
+            ))
+            .bg(color(self.theme.colors.surface_elevated));
+
+        // A search that matches nothing keeps one row's height, and says so.
         if count == 0 {
-            return None;
+            return Some(
+                region
+                    .child(
+                        div()
+                            .h(gpui::px(panel::ROW_HEIGHT))
+                            .px(metrics::gutter())
+                            .flex()
+                            .items_center()
+                            .text_size(type_scale::title())
+                            .text_color(color(self.theme.colors.text_muted))
+                            .child("No matches"),
+                    )
+                    .into_any_element(),
+            );
         }
-        let rows = count.min(lumen_core::layout::view::PICKER_ROWS);
 
         Some(
-            div()
-                .p(gpui::px(panel::PADDING))
-                .h(gpui::px(
-                    panel::PADDING * 2.0 + panel::ROW_HEIGHT * rows as f32,
-                ))
-                .bg(color(self.theme.colors.surface_elevated))
+            region
                 .child(
                     uniform_list(
                         "scope-options",
@@ -2499,16 +2641,10 @@ impl Launcher {
             .picker
             .as_ref()
             .is_some_and(|picker| picker.highlighted == index);
-        let scope = self
-            .picker
-            .as_ref()
-            .and_then(|picker| self.scopes().get(picker.scope));
-        let option = scope.and_then(|scope| scope.options.get(index));
-        let in_force = scope
-            .zip(option)
-            .is_some_and(|(scope, option)| scope.selected == option.id);
+        let option = self.picker_option(index);
+        let in_force = option.is_some_and(|(_, in_force)| in_force);
         let title = option
-            .map(|option| option.title.clone())
+            .map(|(option, _)| option.title.clone())
             .unwrap_or_default();
 
         div()

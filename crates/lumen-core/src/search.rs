@@ -70,8 +70,16 @@ pub struct Match<'a> {
 /// How far an alias match is discounted against a name match.
 ///
 /// A keyword hit should surface an entry the user could not have named, without
-/// letting it jump ahead of an entry whose actual title matched.
-const ALIAS_PENALTY: u32 = 40;
+/// letting it jump ahead of an entry whose actual title matched well.
+///
+/// Only well: a keyword is scored even when the title matched too, and the
+/// better of the two counts (F9). Otherwise any scattered match in a title
+/// beats an exact keyword -- `spain` found the Saint Helena pound, through
+/// the S, P, A, I, N of "SHP Saint", before the euro, which Spain uses.
+/// Thirty rather than the forty it was for the same reason: that match
+/// scores 101 and an exact "Spain" 140, so forty left the keyword a point
+/// short, while thirty still keeps an equally good title ahead.
+const ALIAS_PENALTY: u32 = 30;
 
 pub struct Search {
     matcher: Matcher,
@@ -153,22 +161,24 @@ impl Search {
             &mut self.indices,
         );
 
-        let (base, highlights) = match name_score {
-            Some(score) => {
+        let alias_score = candidate
+            .aliases
+            .iter()
+            .filter_map(|alias| pattern.score(alias.slice(..), &mut self.matcher))
+            .max()
+            .map(|best| best.saturating_sub(ALIAS_PENALTY));
+
+        let (base, highlights) = match (name_score, alias_score) {
+            // The keyword is what matched, so nothing in the title is lit.
+            (name, Some(alias)) if name.is_none_or(|name| alias > name) => (alias, Vec::new()),
+            (Some(name), _) => {
                 // `indices` can contain duplicates across pattern atoms; the UI
                 // uses them for lookup, so they must be sorted and unique.
                 self.indices.sort_unstable();
                 self.indices.dedup();
-                (score, self.indices.clone())
+                (name, self.indices.clone())
             }
-            None => {
-                let best = candidate
-                    .aliases
-                    .iter()
-                    .filter_map(|alias| pattern.score(alias.slice(..), &mut self.matcher))
-                    .max()?;
-                (best.saturating_sub(ALIAS_PENALTY), Vec::new())
-            }
+            _ => return None,
         };
 
         Some(Match {
@@ -242,6 +252,35 @@ mod tests {
         assert_eq!(results.len(), 1);
         // Nothing in the visible title matched, so nothing is highlighted.
         assert!(results[0].highlights.is_empty());
+    }
+
+    /// A title that matches only by scattered letters does not bury an entry
+    /// whose keyword is exactly what was typed (F9).
+    #[test]
+    fn an_exact_keyword_beats_a_scattered_title() {
+        let candidates = vec![
+            candidate("shp", "SHP Saint Helena Pound", &["Saint Helena"]),
+            candidate("eur", "EUR Euro", &["Spain", "France"]),
+        ];
+        let mut search = Search::new();
+
+        let results = search.rank("spain", &candidates, &Frecency::new(), 10);
+
+        assert_eq!(results[0].item.id, "eur");
+        assert!(results[0].highlights.is_empty());
+    }
+
+    #[test]
+    fn an_equally_good_title_still_beats_a_keyword() {
+        let candidates = vec![
+            candidate("alias", "Something Else", &["terminal"]),
+            candidate("title", "Terminal", &[]),
+        ];
+        let mut search = Search::new();
+
+        let results = search.rank("terminal", &candidates, &Frecency::new(), 10);
+
+        assert_eq!(results[0].item.id, "title");
     }
 
     /// The whole point of frecency: a worse string match that the user actually

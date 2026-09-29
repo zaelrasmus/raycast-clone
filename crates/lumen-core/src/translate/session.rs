@@ -367,10 +367,12 @@ impl Session {
         let options = std::iter::once(ScopeOption {
             id: DETECT.into(),
             title: "Detect language".into(),
+            keywords: vec!["auto".into()],
         })
         .chain(LANGUAGES.iter().map(|language| ScopeOption {
             id: format!("{LANGUAGE}{}", language.code),
             title: language.name.into(),
+            keywords: vec![language.code.into()],
         }))
         .collect();
         Scope {
@@ -404,10 +406,12 @@ impl Session {
             .map(|to| ScopeOption {
                 id: target_id(to),
                 title: super::names(to),
+                keywords: to.iter().map(|language| language.code.into()).collect(),
             })
             .chain(LANGUAGES.iter().map(|language| ScopeOption {
                 id: target_id(&[language]),
                 title: language.name.into(),
+                keywords: vec![language.code.into()],
             }))
             .collect();
         Scope {
