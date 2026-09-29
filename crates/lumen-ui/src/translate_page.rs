@@ -51,12 +51,14 @@ actions!(
     ]
 );
 
-/// The list's key context.
+/// The list's key context. Shared with the Timers page (F8), whose list of
+/// presets moves the same way.
 pub const LIST_CONTEXT: &str = "PresetList";
 
 /// The form's key context: Tab and the arrows move between fields, Enter
 /// saves, Escape undoes -- the quicklink form's actions, bound again here.
-pub const FORM_CONTEXT: &str = "TranslateForm";
+/// Shared with the Timers page's form.
+pub const FORM_CONTEXT: &str = "PresetForm";
 
 /// What the list has selected.
 #[derive(Debug, Clone, PartialEq, Eq)]

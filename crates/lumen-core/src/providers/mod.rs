@@ -39,7 +39,7 @@ pub use extensions::ExtensionProvider;
 pub use quicklinks::{Quicklink, QuicklinkProvider};
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
 pub use snippets::{Snippet, SnippetProvider};
-pub use timers::TimersProvider;
+pub use timers::{TimerPresetsProvider, TimersProvider};
 pub use translate::TranslateProvider;
 
 /// A source of results.

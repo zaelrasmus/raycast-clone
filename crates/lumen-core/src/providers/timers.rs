@@ -8,9 +8,54 @@
 
 use crate::item::{Action, Item, Kind, ViewSource};
 use crate::providers::Provider;
-use crate::timers::{Command, duration};
+use crate::timers::{Command, Preset, duration};
 
 pub struct TimersProvider;
+
+/// The user's presets as rows (slice 2): a catalogue, found by name and
+/// alias, ranked by use like anything else. Built with the index, from
+/// `config.json`, like the translate presets.
+pub struct TimerPresetsProvider {
+    presets: Vec<Preset>,
+}
+
+impl TimerPresetsProvider {
+    pub fn new(presets: Vec<Preset>) -> Self {
+        Self { presets }
+    }
+}
+
+impl Provider for TimerPresetsProvider {
+    fn id(&self) -> &'static str {
+        "timer-preset"
+    }
+
+    fn catalogue(&self) -> Vec<Item> {
+        self.presets.iter().map(preset).collect()
+    }
+}
+
+fn preset(preset: &Preset) -> Item {
+    // "timer" too, so typing the word lists every preset beside the view.
+    let mut keywords = vec!["timer".to_string()];
+    keywords.extend(preset.alias.clone());
+    Item {
+        // By name, so usage survives reordering the presets in the file.
+        id: format!("timer:preset:{}", preset.name),
+        title: preset.name.clone(),
+        subtitle: Some(format!(
+            "Start a {} timer",
+            duration::describe(preset.duration)
+        )),
+        icon: None,
+        keywords,
+        actions: vec![Action::Timer(Command::Start {
+            seconds: preset.duration.as_secs(),
+            name: Some(preset.name.clone()),
+        })],
+        kind: Kind::Timer,
+    }
+}
 
 /// Every typed duration shares one id, like every typed URL: the usage
 /// history should learn that timers are started, not which lengths were.
@@ -127,6 +172,31 @@ mod tests {
         let a = TimersProvider.answer("5m");
         let b = TimersProvider.answer("10m tea");
         assert_eq!(a[0].id, b[0].id);
+    }
+
+    #[test]
+    fn a_preset_is_a_row_that_starts_it_under_its_name() {
+        let items = TimerPresetsProvider::new(vec![Preset {
+            name: "Deep work".into(),
+            alias: Some("dw".into()),
+            duration: std::time::Duration::from_secs(90 * 60),
+        }])
+        .catalogue();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Deep work");
+        assert_eq!(
+            items[0].subtitle.as_deref(),
+            Some("Start a 1 h 30 min timer")
+        );
+        assert!(items[0].keywords.contains(&"dw".to_string()));
+        assert_eq!(
+            items[0].primary(),
+            Action::Timer(Command::Start {
+                seconds: 90 * 60,
+                name: Some("Deep work".into())
+            })
+        );
     }
 
     #[test]

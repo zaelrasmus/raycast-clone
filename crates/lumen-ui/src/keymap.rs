@@ -74,8 +74,8 @@ const DIALOG_CONTEXT: &str = crate::quicklinks_page::DIALOG_CONTEXT;
 /// The settings window's list of quicklinks.
 const LIST_CONTEXT: &str = crate::quicklinks_page::LIST_CONTEXT;
 
-/// The translation page's form and list (F7).
-const TRANSLATE_FORM_CONTEXT: &str = crate::translate_page::FORM_CONTEXT;
+/// A preset page's form and list: translation (F7) and timers (F8).
+const PRESET_FORM_CONTEXT: &str = crate::translate_page::FORM_CONTEXT;
 const PRESET_LIST_CONTEXT: &str = crate::translate_page::LIST_CONTEXT;
 
 /// A dropdown, inside a form.
@@ -343,12 +343,12 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("enter", SubmitForm, Some(FORM_CONTEXT)),
         KeyBinding::new("escape", CancelForm, Some(FORM_CONTEXT)),
         // The translation page's form moves and saves the same way (F7).
-        KeyBinding::new("tab", NextField, Some(TRANSLATE_FORM_CONTEXT)),
-        KeyBinding::new("down", NextField, Some(TRANSLATE_FORM_CONTEXT)),
-        KeyBinding::new("shift-tab", PreviousField, Some(TRANSLATE_FORM_CONTEXT)),
-        KeyBinding::new("up", PreviousField, Some(TRANSLATE_FORM_CONTEXT)),
-        KeyBinding::new("enter", SubmitForm, Some(TRANSLATE_FORM_CONTEXT)),
-        KeyBinding::new("escape", CancelForm, Some(TRANSLATE_FORM_CONTEXT)),
+        KeyBinding::new("tab", NextField, Some(PRESET_FORM_CONTEXT)),
+        KeyBinding::new("down", NextField, Some(PRESET_FORM_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousField, Some(PRESET_FORM_CONTEXT)),
+        KeyBinding::new("up", PreviousField, Some(PRESET_FORM_CONTEXT)),
+        KeyBinding::new("enter", SubmitForm, Some(PRESET_FORM_CONTEXT)),
+        KeyBinding::new("escape", CancelForm, Some(PRESET_FORM_CONTEXT)),
         // Only on a checkbox: in a field, space is a character.
         KeyBinding::new("space", ToggleFallback, Some(TOGGLE_CONTEXT)),
     ]);

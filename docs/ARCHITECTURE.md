@@ -115,7 +115,7 @@ once Lumen was measured well inside them (7.36).
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
-| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Designed; built in six slices. See F8 decisions |
+| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view) and 2 (presets, settings page) of six built. See F8 decisions |
 
 ### F4 build order is not optional
 
@@ -536,6 +536,34 @@ Slice 1 is built. What the building settled:
   | Threads | 31 | 31 | 31 |
 
   The binary went from 16,057,856 to 16,164,352 bytes, **+104 KB**.
+
+Slice 2 is built:
+
+- **Two places, on purpose.** A preset -- a name, an optional one-word
+  alias and a duration -- is a root row, found by either and ranked by use,
+  and starts a timer under its name. The quick durations (2, 5, 10 and 30
+  minutes unless changed) are rows only inside *Timers*, under *Quick
+  Start*, below *Presets*: common lengths are one `25m` away in the root list
+  already, and four more rows there would be four rows in every search for
+  "timer". An empty `quick-start` list stays empty; a missing one is the
+  defaults.
+- **Starting from the view keeps it open.** The new timer appears under
+  *Running* at once, which is the confirmation; starting from the root list
+  closes the launcher, as every root action does.
+- **Typed in the launcher's grammar.** A duration in `config.json` or on the
+  page is `25m`, `1h30` or `1:30`, read by the same parser, and must be a
+  duration alone -- `25m tea` is refused rather than half-read.
+- **One file-editing module, not two.** The translate store's document
+  handling moved to `lumen_core::section` before the timers store was
+  written, so both pages follow the same rules by construction. The Timers
+  page shares the Translation page's key contexts (`PresetList`, and
+  `PresetForm`, renamed from `TranslateForm`), so moving through presets is
+  one set of keys.
+- **Presets are resolved once per change,** not per redraw: the open view
+  redraws every second, and resolving logs every preset it skips.
+- **An alias is a keyword,** as for translate presets. Typing it finds the
+  preset through the matcher; it does not lead the list the way a
+  quicklink's alias does. Whether it should is something to learn from use.
 
 ---
 

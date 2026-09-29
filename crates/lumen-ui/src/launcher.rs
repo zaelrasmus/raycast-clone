@@ -492,6 +492,7 @@ impl Launcher {
         let paths = self.paths.clone();
         let current = self.root.index();
         let presets = self.config.translate.presets();
+        let timers = self.config.timers.presets();
 
         cx.spawn(async move |this, cx| {
             // Built and compared on the background thread: enumeration and
@@ -525,6 +526,7 @@ impl Launcher {
                         &paths,
                         &quicklinks,
                         presets,
+                        timers,
                     )
                     .map(|rebuilt| {
                         let unchanged = lumen_core::root::same_index(&current, &rebuilt);
@@ -692,7 +694,8 @@ impl Launcher {
         let previous_height = self.content_height();
         let files_changed = config.files != self.config.files;
         // Presets are rows in the index, so a changed preset is a re-index.
-        let presets_changed = config.translate.presets != self.config.translate.presets;
+        let presets_changed = config.translate.presets != self.config.translate.presets
+            || config.timers.presets != self.config.timers.presets;
 
         self.root.set_visible_rows(config.window.visible_rows);
         self.config = config;

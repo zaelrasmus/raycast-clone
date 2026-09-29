@@ -380,7 +380,12 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         reload_theme,
         // A timer that ended while the daemon was not running is reported
         // now, not when the next one ends.
-        timers: timers::Timers::start(platform.clone(), paths.timers_file(), &cx.to_async()),
+        timers: timers::Timers::start(
+            platform.clone(),
+            paths.timers_file(),
+            &config.timers,
+            &cx.to_async(),
+        ),
     };
 
     watch_sheets(cx, &surfaces);
@@ -658,6 +663,7 @@ fn open_settings(
             }
             settings.reload_quicklinks(cx);
             settings.reload_translation(cx);
+            settings.reload_timers(cx);
             settings.focus(window, cx);
         })
         .ok();
@@ -1131,13 +1137,16 @@ fn reload_config(
         );
     }
 
-    // The translation page follows the file whoever changed it, the page
-    // itself included. Before the check below: a change the running config
+    // The translation and timers pages follow the file whoever changed it,
+    // the page itself included. Before the check below: a change the running config
     // already holds is still one the page may not have read.
     let settings = *surfaces.settings.borrow();
     if let Some(settings) = settings {
         settings
-            .update(cx, |settings, _window, cx| settings.reload_translation(cx))
+            .update(cx, |settings, _window, cx| {
+                settings.reload_translation(cx);
+                settings.reload_timers(cx);
+            })
             .ok();
     }
 
@@ -1145,6 +1154,7 @@ fn reload_config(
     if applied == older {
         return Ok(());
     }
+    surfaces.timers.configure(&applied.timers);
     *surfaces.config.borrow_mut() = applied.clone();
     log::info!("reloaded the configuration");
 

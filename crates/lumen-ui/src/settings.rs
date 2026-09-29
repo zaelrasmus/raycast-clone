@@ -1,8 +1,9 @@
-//! The settings window: shortcut sheets, quicklinks (F6) and translation (F7).
+//! The settings window: shortcut sheets, quicklinks (F6), translation (F7)
+//! and timers (F8).
 //!
-//! Three pages behind tabs in the header. The sheet editor is this file; the
-//! Quicklinks and Translation pages are entities of their own, in
-//! `quicklinks_page` and `translate_page`, hosted here.
+//! Four pages behind tabs in the header. The sheet editor is this file; the
+//! others are entities of their own, in `quicklinks_page`, `translate_page`
+//! and `timers_page`, hosted here.
 //!
 //! The overlay's whole point is that the shortcuts are *the user's own* (F3).
 //! That was true before this window existed, but only in the sense that a JSON
@@ -39,6 +40,7 @@ use lumen_core::theme::{Colors, Theme};
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
+use crate::timers_page::TimersPage;
 use crate::translate_page::TranslatePage;
 
 /// Which page the window shows.
@@ -47,16 +49,23 @@ enum Page {
     Sheets,
     Quicklinks,
     Translation,
+    Timers,
 }
 
 impl Page {
-    const ALL: [Page; 3] = [Page::Sheets, Page::Quicklinks, Page::Translation];
+    const ALL: [Page; 4] = [
+        Page::Sheets,
+        Page::Quicklinks,
+        Page::Translation,
+        Page::Timers,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Page::Sheets => "Shortcut Sheets",
             Page::Quicklinks => "Quicklinks",
             Page::Translation => "Translation",
+            Page::Timers => "Timers",
         }
     }
 
@@ -65,6 +74,7 @@ impl Page {
             Page::Sheets => "Hold the gesture key to see these while you work",
             Page::Quicklinks => "Saved links and web searches, in quicklinks.json",
             Page::Translation => "The service and your presets, in config.json",
+            Page::Timers => "Quick durations and your presets, in config.json",
         }
     }
 }
@@ -207,6 +217,7 @@ pub struct Settings {
     page: Page,
     quicklinks: Entity<QuicklinksPage>,
     translation: Entity<TranslatePage>,
+    timers: Entity<TimersPage>,
 }
 
 impl Settings {
@@ -233,9 +244,16 @@ impl Settings {
 
         let translation = {
             let colors = theme.colors.clone();
+            let config_file = config_file.clone();
             cx.new(|cx| TranslatePage::new(config_file, colors, cx))
         };
         cx.observe(&translation, |_, _, cx| cx.notify()).detach();
+
+        let timers = {
+            let colors = theme.colors.clone();
+            cx.new(|cx| TimersPage::new(config_file, colors, cx))
+        };
+        cx.observe(&timers, |_, _, cx| cx.notify()).detach();
 
         Self {
             focus_handle,
@@ -249,6 +267,7 @@ impl Settings {
             page: Page::Sheets,
             quicklinks,
             translation,
+            timers,
         }
     }
 
@@ -256,6 +275,11 @@ impl Settings {
     /// the file changes.
     pub fn reload_translation(&mut self, cx: &mut Context<Self>) {
         self.translation.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Re-read the timers section of `config.json`, for the same reasons.
+    pub fn reload_timers(&mut self, cx: &mut Context<Self>) {
+        self.timers.update(cx, |page, cx| page.reload(cx));
     }
 
     /// Re-read `quicklinks.json`: on open, and whenever the file changes.
@@ -323,6 +347,8 @@ impl Settings {
         self.quicklinks
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.translation
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.timers
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
         cx.notify();
@@ -333,6 +359,7 @@ impl Settings {
             Page::Sheets => window.focus(&self.focus_handle),
             Page::Quicklinks => self.quicklinks.read(cx).focus(window, cx),
             Page::Translation => self.translation.read(cx).focus(window, cx),
+            Page::Timers => self.timers.read(cx).focus(window, cx),
         }
     }
 
@@ -392,6 +419,10 @@ impl Settings {
         }
         if self.page == Page::Translation {
             self.translation.update(cx, |page, cx| page.save(cx));
+            return;
+        }
+        if self.page == Page::Timers {
+            self.timers.update(cx, |page, cx| page.save(cx));
             return;
         }
         let Some(sheet) = self.compose(cx) else {
@@ -703,11 +734,18 @@ impl Render for Settings {
                 .overflow_hidden()
                 .child(self.translation.clone())
                 .into_any_element(),
+            Page::Timers => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.timers.clone())
+                .into_any_element(),
         };
         let dialog = match self.page {
             Page::Translation => self
                 .translation
                 .update(cx, |page, cx| page.render_dialog(cx)),
+            Page::Timers => self.timers.update(cx, |page, cx| page.render_dialog(cx)),
             _ => self
                 .quicklinks
                 .update(cx, |page, cx| page.render_dialog(cx)),
@@ -1053,6 +1091,7 @@ impl Settings {
             ),
             Page::Quicklinks => (self.quicklinks.read(cx).status(cx), false),
             Page::Translation => (self.translation.read(cx).status(), false),
+            Page::Timers => (self.timers.read(cx).status(), false),
         };
 
         div()

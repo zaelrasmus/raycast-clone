@@ -32,7 +32,7 @@ use std::time::{Duration, SystemTime};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::AsyncApp;
-use lumen_core::timers::{self, Clock, Command, Timer, duration, view};
+use lumen_core::timers::{self, Clock, Command, Preset, Timer, TimersConfig, duration, view};
 use lumen_core::view::Event;
 use lumen_platform::Platform;
 use lumen_ui::{Launcher, ViewSink};
@@ -66,6 +66,24 @@ pub struct Timers {
     plan: Rc<Cell<u64>>,
     viewer: Rc<RefCell<Option<Viewer>>>,
     views: Rc<Cell<u64>>,
+    /// What the view offers to start, resolved once per change to the file
+    /// rather than on every redraw -- resolving logs every broken preset.
+    offer: Rc<RefCell<Offer>>,
+}
+
+#[derive(Default, PartialEq)]
+struct Offer {
+    presets: Vec<Preset>,
+    quick: Vec<Duration>,
+}
+
+impl Offer {
+    fn of(config: &TimersConfig) -> Self {
+        Self {
+            presets: config.presets(),
+            quick: config.quick_start(),
+        }
+    }
 }
 
 fn now() -> timers::Millis {
@@ -75,7 +93,12 @@ fn now() -> timers::Millis {
 impl Timers {
     /// Read the timers left from the last run, report any that ended while
     /// nothing was running, and plan the next wake-up.
-    pub fn start(platform: Arc<dyn Platform>, path: PathBuf, cx: &AsyncApp) -> Self {
+    pub fn start(
+        platform: Arc<dyn Platform>,
+        path: PathBuf,
+        config: &TimersConfig,
+        cx: &AsyncApp,
+    ) -> Self {
         let clock = Clock::load(&path);
         if !clock.is_empty() {
             log::info!("{} timers carried over", clock.timers().len());
@@ -87,10 +110,30 @@ impl Timers {
             plan: Rc::default(),
             viewer: Rc::default(),
             views: Rc::default(),
+            offer: Rc::new(RefCell::new(Offer::of(config))),
         };
         timers.catch_up(cx);
         timers.plan(cx);
         timers
+    }
+
+    /// Take the presets and quick durations as `config.json` now has them,
+    /// and redraw an open view if they changed.
+    pub fn configure(&self, config: &TimersConfig) {
+        let offer = Offer::of(config);
+        if *self.offer.borrow() == offer {
+            return;
+        }
+        *self.offer.borrow_mut() = offer;
+        if let Some((_, viewer)) = self.viewer.borrow().as_ref() {
+            let _ = viewer.unbounded_send(Input::Refresh);
+        }
+    }
+
+    /// The view as it should look now.
+    fn render(&self) -> lumen_core::view::View {
+        let offer = self.offer.borrow();
+        view::view(&self.clock.borrow(), &offer.presets, &offer.quick, now())
     }
 
     /// Carry out a command from a root row or `lumen timer`.
@@ -215,7 +258,7 @@ impl Timers {
         let sink = ViewSink::new(move |event| {
             let _ = view_tx.unbounded_send(event);
         });
-        let first = view::view(&self.clock.borrow(), now());
+        let first = self.render();
         window
             .update(cx, |launcher, _window, cx| {
                 launcher.begin_view(sink, cx);
@@ -231,7 +274,12 @@ impl Timers {
             while let Some(input) = inputs.next().await {
                 match input {
                     Input::View(event) => {
-                        let acted = view::act(&mut this.clock.borrow_mut(), &event, now());
+                        let acted = view::act(
+                            &mut this.clock.borrow_mut(),
+                            &event,
+                            &this.offer.borrow().presets,
+                            now(),
+                        );
                         if acted {
                             this.changed(cx);
                         }
@@ -239,7 +287,7 @@ impl Timers {
                     Input::Closed => break,
                     Input::Tick(asked) if asked != tick => {}
                     Input::Tick(_) | Input::Refresh => {
-                        let view = view::view(&this.clock.borrow(), now());
+                        let view = this.render();
                         window
                             .update(cx, |launcher, _window, cx| launcher.show_view(view, cx))
                             .ok();

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clipboard::Retention;
 use crate::providers::files::{self, FileLimits};
+use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +33,8 @@ pub struct Config {
     pub preferred_browser: Option<String>,
     /// Translation (F7): which service, and the saved presets.
     pub translate: TranslateConfig,
+    /// Timers (F8): saved presets and the quick durations.
+    pub timers: TimersConfig,
 }
 
 /// File search (F3).
@@ -152,6 +155,7 @@ impl Default for Config {
             files: FileSearchConfig::default(),
             preferred_browser: None,
             translate: TranslateConfig::default(),
+            timers: TimersConfig::default(),
         }
     }
 }
