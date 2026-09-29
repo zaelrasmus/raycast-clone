@@ -289,20 +289,14 @@ impl RootSearch {
                     .is_some_and(|alias| crate::timers::presets::same(alias, query_trimmed))
         }) {
             let id = format!("timer:preset:{}", preset.name);
-            if let Some(at) = hits.iter().position(|hit| self.item(hit).id == id) {
-                let hit = hits.remove(at);
-                hits.insert(0, hit);
-            }
+            self.lead(&mut hits, &id);
         }
 
         // A quicklink typed exactly -- its whole name, or its alias -- is what
         // the user meant, and leads the matches. Scoring alone lets usage
         // put a longer name first: `google` opened Google Drive (F6).
-        if let Some(id) = self.quicklinks.exact(query)
-            && let Some(at) = hits.iter().position(|hit| self.item(hit).id == id)
-        {
-            let hit = hits.remove(at);
-            hits.insert(0, hit);
+        if let Some(id) = self.quicklinks.exact(query) {
+            self.lead(&mut hits, &id);
         }
 
         // An answer *is* what the user asked for -- it was computed from their
@@ -336,6 +330,35 @@ impl RootSearch {
 
         self.hits = hits;
         &self.hits
+    }
+
+    /// Put the indexed item `id` first among `hits`.
+    ///
+    /// Taken from the index when the matcher did not return it: the matcher
+    /// keeps only its best [`MAX_RESULTS`], and a two-letter alias such as
+    /// `io` matches dozens of names better than the keyword it is -- so the
+    /// row it names was cut before it could be promoted (F8, found by using
+    /// it).
+    fn lead(&self, hits: &mut Vec<Hit>, id: &str) {
+        if let Some(at) = hits.iter().position(|hit| self.item(hit).id == id) {
+            let hit = hits.remove(at);
+            hits.insert(0, hit);
+            return;
+        }
+        if let Some(index) = self
+            .index
+            .iter()
+            .position(|candidate| candidate.item.id == id)
+        {
+            hits.insert(
+                0,
+                Hit {
+                    source: Source::Indexed(index),
+                    highlights: Vec::new(),
+                    score: u32::MAX,
+                },
+            );
+        }
     }
 
     /// The quicklink `query` names exactly, for Tab (F6).
@@ -715,6 +738,33 @@ mod tests {
         // A prefix still competes on score.
         root.rank("zet");
         assert!(titles(&root).contains(&"Zeta".to_string()));
+    }
+
+    /// F8, found by using it: `io` matches far more than 64 names better
+    /// than a keyword, so the preset it names was cut before it could lead.
+    #[test]
+    fn a_short_alias_leads_even_when_it_matches_everything() {
+        use crate::providers::Provider as _;
+
+        let preset = crate::timers::Preset {
+            name: "preset test 2".into(),
+            alias: Some("io".into()),
+            duration: std::time::Duration::from_secs(60),
+            cycle: None,
+            focus: false,
+        };
+        let presets = providers::TimerPresetsProvider::new(vec![preset.clone()]);
+        let many: Vec<String> = (0..200).map(|n| format!("Studio {n}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut index = apps(&many);
+        index.extend(presets.catalogue().into_iter().map(Candidate::new));
+        let mut root = root(index);
+        root.replace_timer_presets(vec![preset]);
+
+        root.rank("io");
+
+        assert_eq!(titles(&root)[0], "preset test 2");
+        assert_eq!(root.hits().len(), MAX_RESULTS);
     }
 
     /// Only an exact name: a prefix is still a fuzzy match like any other.

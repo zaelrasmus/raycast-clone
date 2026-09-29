@@ -762,6 +762,11 @@ After living with it, three things were changed before F8 merged:
   - A preset's alias found it, but seventh, below files that happened to
     contain the letters. A timer preset's exact name or alias now leads the
     matches, as a quicklink's does (`RootSearch::replace_timer_presets`).
+    That fix only reordered the matcher's top 64, and a two-letter alias
+    such as `io` matches dozens of names better than a keyword does, so
+    the preset was cut before it could lead -- `zq` worked only because
+    it is rare. An exact name or alias is now taken from the index when
+    the matcher did not return it; quicklink aliases had the same gap.
 
 ---
 
