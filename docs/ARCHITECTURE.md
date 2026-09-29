@@ -115,7 +115,7 @@ once Lumen was measured well inside them (7.36).
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
-| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view), 2 (presets, settings page) and 3 (alert sounds, ringing) of six built. See F8 decisions |
+| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view), 2 (presets, settings page), 3 (alert sounds, ringing) and 4 (stopwatches) of six built. See F8 decisions |
 
 ### F4 build order is not optional
 
@@ -598,6 +598,25 @@ Slice 3 is built:
   after a four-minute release build and did not reproduce. Working set
   71.8-72.4 MB, 31 threads. The binary went from 16,315,904 to 16,381,952
   bytes, **+64 KB**.
+
+Slice 4 is built:
+
+- **A stopwatch is a timer with no duration,** kept in the same clock and
+  the same `timers.json`, with ids from the same sequence. Running, it
+  stores when it last started and what it had counted before; paused, what
+  it has counted. It has no deadline, so it never wakes the daemon, and it
+  keeps counting across a restart because the count is wall-clock time.
+- **Started like a timer.** *Start Stopwatch* is a root row, and
+  `stopwatch standup call` is an answer that starts one under that name --
+  the same shape as `25m name`. It shows under *Stopwatches* in *Timers*,
+  counting up, with Pause or Resume on `Enter`, and Reset and Stop in the
+  panel. *Stop Running Timer* stays about timers.
+- **The face rounds down,** the other way from a countdown's: a stopwatch
+  started half a second ago has counted nothing yet. The open view wakes
+  when a running stopwatch reaches its next whole second, and not at all
+  for a paused one.
+- **No laps.** A lap is a list that grows, a row has one line, and nobody
+  has asked for them.
 
 ---
 

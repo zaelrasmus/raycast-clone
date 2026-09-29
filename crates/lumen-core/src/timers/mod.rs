@@ -24,10 +24,12 @@
 pub mod duration;
 pub mod presets;
 pub mod sounds;
+pub mod stopwatch;
 pub mod store;
 pub mod view;
 
 pub use presets::{Preset, PresetConfig, Ring, TimersConfig};
+pub use stopwatch::{Stopwatch, Watch};
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -57,9 +59,11 @@ pub enum Command {
     StopNearest,
     /// Silence every timer ringing until dismissed (slice 3).
     DismissRinging,
+    /// Count up from zero, under `name` if there is one (slice 4).
+    StartStopwatch { name: Option<String> },
 }
 
-/// Every timer, running or paused.
+/// Every timer and stopwatch.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Clock {
@@ -67,6 +71,7 @@ pub struct Clock {
     /// not re-rendered yet can never name a newer timer.
     next_id: u64,
     timers: Vec<Timer>,
+    stopwatches: Vec<Stopwatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -177,6 +182,10 @@ impl Clock {
             }
             Command::StopNearest => self.stop_nearest(now),
             Command::DismissRinging => self.dismiss_ringing().into_iter().next(),
+            Command::StartStopwatch { name } => {
+                self.start_stopwatch(name.clone(), now);
+                None
+            }
         }
     }
 

@@ -175,6 +175,10 @@ impl Timers {
                 return;
             }
             (Command::DismissRinging, Some(_)) => log::info!("dismissed the ringing timers"),
+            (Command::StartStopwatch { name }, _) => log::info!(
+                "started a stopwatch{}",
+                if name.is_some() { ", named" } else { "" }
+            ),
             (Command::DismissRinging, None) => {
                 self.say("No timer is ringing", "There was nothing to dismiss.");
                 return;

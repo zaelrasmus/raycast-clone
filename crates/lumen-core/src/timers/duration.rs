@@ -207,6 +207,14 @@ pub fn clock_face(remaining: Duration) -> String {
     }
 }
 
+/// Time counted, as a stopwatch reads it: `0:00`, `12:34`, `1:02:03`.
+///
+/// Rounded down, the other way from [`clock_face`]: a stopwatch started half a
+/// second ago has not counted a second yet.
+pub fn stopwatch_face(elapsed: Duration) -> String {
+    clock_face(Duration::from_secs(elapsed.as_secs()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +311,13 @@ mod tests {
         assert_eq!(describe(Duration::from_secs(90 * 60)), "1 h 30 min");
         assert_eq!(describe(Duration::from_secs(45)), "45 s");
         assert_eq!(describe(Duration::from_secs(3601)), "1 h 1 s");
+    }
+
+    #[test]
+    fn time_counted_rounds_down() {
+        assert_eq!(stopwatch_face(Duration::from_millis(999)), "0:00");
+        assert_eq!(stopwatch_face(Duration::from_millis(61_500)), "1:01");
+        assert_eq!(stopwatch_face(Duration::from_secs(3723)), "1:02:03");
     }
 
     #[test]

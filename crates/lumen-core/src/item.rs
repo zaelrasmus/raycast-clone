@@ -214,6 +214,7 @@ impl Action {
             Action::Timer(crate::timers::Command::Start { .. }) => "Start",
             Action::Timer(crate::timers::Command::StopNearest) => "Stop",
             Action::Timer(crate::timers::Command::DismissRinging) => "Dismiss",
+            Action::Timer(crate::timers::Command::StartStopwatch { .. }) => "Start",
         }
     }
 

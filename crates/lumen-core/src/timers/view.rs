@@ -11,8 +11,8 @@
 
 use std::time::Duration;
 
-use super::duration::{clock_face, describe};
-use super::{Clock, Millis, Preset, State, Timer};
+use super::duration::{clock_face, describe, stopwatch_face};
+use super::{Clock, Millis, Preset, State, Stopwatch, Timer};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Icon, Item, List, Section, Tone, View,
 };
@@ -25,6 +25,8 @@ const RESTART: &str = "restart";
 const STOP: &str = "stop";
 const START: &str = "start";
 const DISMISS: &str = "dismiss";
+const WATCH: &str = "watch-";
+const RESET: &str = "reset";
 const PRESET: &str = "preset-";
 const QUICK: &str = "quick-";
 
@@ -55,6 +57,14 @@ pub fn view(clock: &Clock, presets: &[Preset], quick: &[Duration], now: Millis) 
             running.into_iter().map(|t| item(t, now)).collect(),
         ),
         ("Paused", paused.into_iter().map(|t| item(t, now)).collect()),
+        (
+            "Stopwatches",
+            clock
+                .stopwatches()
+                .iter()
+                .map(|w| stopwatch(w, now))
+                .collect(),
+        ),
         ("Presets", presets.iter().map(preset).collect()),
         (
             "Quick Start",
@@ -117,6 +127,38 @@ fn item(timer: &Timer, now: Millis) -> Item {
         accessories,
         keywords: timer.name.iter().cloned().collect(),
         actions: vec![toggle, action(RESTART, "Restart"), action(STOP, "Stop")],
+    }
+}
+
+fn stopwatch(watch: &Stopwatch, now: Millis) -> Item {
+    let mut accessories = Vec::new();
+    if !watch.is_running() {
+        accessories.push(Accessory::Tag {
+            text: "Paused".into(),
+            tone: Tone::Caution,
+        });
+    }
+    accessories.push(Accessory::Text {
+        text: stopwatch_face(watch.elapsed(now)),
+    });
+    let toggle = if watch.is_running() {
+        action(PAUSE, "Pause")
+    } else {
+        action(RESUME, "Resume")
+    };
+    Item {
+        id: format!("{WATCH}{}", watch.id),
+        title: watch.title(),
+        subtitle: None,
+        icon: Some(Icon::Glyph { name: GLYPH.into() }),
+        accessories,
+        keywords: watch
+            .name
+            .iter()
+            .cloned()
+            .chain(["stopwatch".to_string()])
+            .collect(),
+        actions: vec![toggle, action(RESET, "Reset"), action(STOP, "Stop")],
     }
 }
 
@@ -187,6 +229,15 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
         }
         return false;
     }
+    if let Some(id) = item.strip_prefix(WATCH).and_then(|id| id.parse().ok()) {
+        return match action.as_str() {
+            PAUSE => clock.pause_stopwatch(id, now),
+            RESUME => clock.resume_stopwatch(id, now),
+            RESET => clock.reset_stopwatch(id, now),
+            STOP => clock.stop_stopwatch(id).is_some(),
+            _ => false,
+        };
+    }
     let Some(id) = item.strip_prefix(TIMER).and_then(|id| id.parse().ok()) else {
         return false;
     };
@@ -206,7 +257,7 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
 /// remaining milliseconds cross a multiple of a thousand -- which is not when
 /// the wall clock's seconds do, since a timer starts whenever it was started.
 pub fn next_tick(clock: &Clock, now: Millis) -> Option<Duration> {
-    clock
+    let timers = clock
         .timers()
         .iter()
         .filter(|timer| timer.is_running())
@@ -216,9 +267,15 @@ pub fn next_tick(clock: &Clock, now: Millis) -> Option<Duration> {
                 0 => 1_000,
                 part => part,
             }
-        })
-        .min()
-        .map(Duration::from_millis)
+        });
+    // A stopwatch's face rounds down, so it turns over when the count
+    // reaches the next whole second.
+    let watches = clock
+        .stopwatches()
+        .iter()
+        .filter(|watch| watch.is_running())
+        .map(|watch| 1_000 - watch.elapsed(now).as_millis() as u64 % 1_000);
+    timers.chain(watches).min().map(Duration::from_millis)
 }
 
 #[cfg(test)]
@@ -400,6 +457,48 @@ mod tests {
         let id = format!("timer-{rang}");
         assert!(act(&mut clock, &invoke(&id, "dismiss"), &[], 60_000));
         assert!(!clock.is_ringing());
+    }
+
+    #[test]
+    fn a_stopwatch_counts_up_below_the_timers_and_can_be_reset() {
+        let mut clock = Clock::default();
+        clock.start(Duration::from_secs(600), None, 0);
+        let id = clock.start_stopwatch(Some("call".into()), 0);
+
+        let list = list(view(&clock, &[], &[], 75_400));
+        let sections: Vec<_> = list
+            .sections
+            .iter()
+            .map(|s| s.title.clone().unwrap())
+            .collect();
+        assert_eq!(sections, ["Running", "Stopwatches"]);
+        let row = list.item(1).unwrap();
+        assert_eq!(row.title, "call");
+        assert_eq!(texts(row), ["1:15"]);
+
+        let watch = format!("watch-{id}");
+        assert!(act(&mut clock, &invoke(&watch, "pause"), &[], 80_000));
+        let paused = list_of(&clock, 999_000);
+        assert_eq!(texts(paused.item(1).unwrap()), ["Paused", "1:20"]);
+
+        assert!(act(&mut clock, &invoke(&watch, "reset"), &[], 1_000_000));
+        assert_eq!(clock.stopwatches()[0].elapsed(1_000_000), Duration::ZERO);
+        assert!(act(&mut clock, &invoke(&watch, "stop"), &[], 1_000_000));
+        assert!(clock.stopwatches().is_empty());
+    }
+
+    fn list_of(clock: &Clock, now: Millis) -> List {
+        list(view(clock, &[], &[], now))
+    }
+
+    #[test]
+    fn a_running_stopwatch_wakes_the_open_view_at_the_next_whole_second() {
+        let mut clock = Clock::default();
+        let id = clock.start_stopwatch(None, 0);
+        assert_eq!(next_tick(&clock, 250), Some(Duration::from_millis(750)));
+        assert_eq!(next_tick(&clock, 1_000), Some(Duration::from_millis(1_000)));
+        clock.pause_stopwatch(id, 1_000);
+        assert_eq!(next_tick(&clock, 1_000), None);
     }
 
     #[test]

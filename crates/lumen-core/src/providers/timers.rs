@@ -60,6 +60,20 @@ fn preset(preset: &Preset) -> Item {
 /// Every typed duration shares one id, like every typed URL: the usage
 /// history should learn that timers are started, not which lengths were.
 const START: &str = "timer:start";
+/// Likewise for named stopwatches.
+const STOPWATCH: &str = "timer:stopwatch-named";
+
+/// The name in `stopwatch <name>`, when the query is that.
+fn stopwatch_name(query: &str) -> Option<&str> {
+    const WORD: &str = "stopwatch";
+    let head = query.get(..WORD.len())?;
+    let rest = &query[WORD.len()..];
+    if !head.eq_ignore_ascii_case(WORD) || !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let name = rest.trim();
+    (!name.is_empty()).then_some(name)
+}
 
 impl Provider for TimersProvider {
     fn id(&self) -> &'static str {
@@ -84,6 +98,15 @@ impl Provider for TimersProvider {
                 icon: None,
                 keywords: keywords(&["pomodoro", "focus", "stopwatch"]),
                 actions: vec![Action::OpenView(ViewSource::Timers)],
+                kind: Kind::Timer,
+            },
+            Item {
+                id: "timer:stopwatch".into(),
+                title: "Start Stopwatch".into(),
+                subtitle: Some("Count up from zero; type a name after \"stopwatch\"".into()),
+                icon: None,
+                keywords: keywords(&["stopwatch", "count", "elapsed"]),
+                actions: vec![Action::Timer(Command::StartStopwatch { name: None })],
                 kind: Kind::Timer,
             },
             Item {
@@ -118,9 +141,23 @@ impl Provider for TimersProvider {
 
     fn answer(&self, query: &str) -> Vec<Item> {
         // Rejected on the first character, as the contract asks: a duration
-        // starts with a digit or the word "timer".
-        if !query.starts_with(|c: char| c.is_ascii_digit() || c == 't' || c == 'T') {
+        // starts with a digit or the word "timer", a named stopwatch with
+        // the word "stopwatch".
+        if !query.starts_with(|c: char| c.is_ascii_digit() || matches!(c, 't' | 'T' | 's' | 'S')) {
             return Vec::new();
+        }
+        if let Some(name) = stopwatch_name(query) {
+            return vec![Item {
+                id: STOPWATCH.into(),
+                title: format!("Start stopwatch \u{201c}{name}\u{201d}"),
+                subtitle: Some("Counts up until you stop it".into()),
+                icon: None,
+                keywords: Vec::new(),
+                actions: vec![Action::Timer(Command::StartStopwatch {
+                    name: Some(name.to_string()),
+                })],
+                kind: Kind::Timer,
+            }];
         }
         let Some(typed) = duration::parse(query) else {
             return Vec::new();
@@ -215,6 +252,25 @@ mod tests {
                 name: Some("Deep work".into())
             })
         );
+    }
+
+    #[test]
+    fn stopwatch_and_a_name_start_a_named_stopwatch() {
+        let answers = TimersProvider.answer("stopwatch standup call");
+        assert_eq!(
+            answers[0].title,
+            "Start stopwatch \u{201c}standup call\u{201d}"
+        );
+        assert_eq!(
+            answers[0].primary(),
+            Action::Timer(Command::StartStopwatch {
+                name: Some("standup call".into())
+            })
+        );
+        // The bare word is the catalogue row's, not an answer.
+        assert!(TimersProvider.answer("stopwatch").is_empty());
+        assert!(TimersProvider.answer("stopwatches x").is_empty());
+        assert!(TimersProvider.answer("spotify").is_empty());
     }
 
     #[test]
