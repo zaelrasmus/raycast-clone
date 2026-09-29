@@ -93,6 +93,8 @@ keystroke would show in the budgets.
 | `install_tray` | `StatusNotifierItem` over D-Bus (`ksni` crate). Waybar and the other Hyprland bars display it | Easy |
 | `installed_browsers` | Desktop entries whose `MimeType=` lists `x-scheme-handler/https`, named by their `Name=`. The same scan as `enumerate_applications`, filtered | Easy |
 | `open_url` | `None`: `xdg-open`. `Some`: the browser's `Exec` with `%u` replaced by the URL, detached like `launch`. Keep `Browser::name` the desktop entry's `Name=` so `preferred-browser` is the same string on both systems | Easy |
+| `alert_sounds` | The XDG sound theme's `stereo/` folder (freedesktop: `alarm-clock-elapsed`, `bell`, `complete`...). Windows names (`Alarm01`) will not exist: a saved name that is not listed plays nothing and logs, so decide whether to map the Windows default to `alarm-clock-elapsed` | Easy |
+| `play_alert` / `stop_alert` | Spawn `pw-play` (or `paplay`) on the file, looping by respawning while `repeat`; stop by killing the child. One child at a time, like `PlaySoundW` | Easy |
 
 ---
 

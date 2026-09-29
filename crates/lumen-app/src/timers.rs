@@ -18,6 +18,13 @@
 //! through a deadline may wake the daemon late. Every summons of the launcher
 //! catches up first, so the view never shows a timer that has already ended.
 //!
+//! # One alert at a time
+//!
+//! A timer that ends plays the configured sound once, or -- set to ring until
+//! dismissed -- loops it and stays under *Ringing*. The system plays one alert
+//! at a time, so there is one loop however many are ringing, and it stops
+//! when the last of them is dismissed, stopped or restarted.
+//!
 //! # The view redraws only while it is open
 //!
 //! When a second on one of its faces turns over, and not otherwise. With the
@@ -32,7 +39,9 @@ use std::time::{Duration, SystemTime};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::AsyncApp;
-use lumen_core::timers::{self, Clock, Command, Preset, Timer, TimersConfig, duration, view};
+use lumen_core::timers::{
+    self, Clock, Command, Preset, Ring, Timer, TimersConfig, duration, sounds, store, view,
+};
 use lumen_core::view::Event;
 use lumen_platform::Platform;
 use lumen_ui::{Launcher, ViewSink};
@@ -69,12 +78,18 @@ pub struct Timers {
     /// What the view offers to start, resolved once per change to the file
     /// rather than on every redraw -- resolving logs every broken preset.
     offer: Rc<RefCell<Offer>>,
+    /// `config.json`, for *Use as Alert Sound*.
+    config_file: PathBuf,
+    /// Whether the alert is looping for a ringing timer.
+    looping: Rc<Cell<bool>>,
 }
 
 #[derive(Default, PartialEq)]
 struct Offer {
     presets: Vec<Preset>,
     quick: Vec<Duration>,
+    sound: Option<String>,
+    ring: Ring,
 }
 
 impl Offer {
@@ -82,6 +97,8 @@ impl Offer {
         Self {
             presets: config.presets(),
             quick: config.quick_start(),
+            sound: config.alert_sound.clone(),
+            ring: config.ring,
         }
     }
 }
@@ -96,6 +113,7 @@ impl Timers {
     pub fn start(
         platform: Arc<dyn Platform>,
         path: PathBuf,
+        config_file: PathBuf,
         config: &TimersConfig,
         cx: &AsyncApp,
     ) -> Self {
@@ -111,6 +129,8 @@ impl Timers {
             viewer: Rc::default(),
             views: Rc::default(),
             offer: Rc::new(RefCell::new(Offer::of(config))),
+            config_file,
+            looping: Rc::default(),
         };
         timers.catch_up(cx);
         timers.plan(cx);
@@ -154,6 +174,11 @@ impl Timers {
                 self.say("No timer is running", "There was nothing to stop.");
                 return;
             }
+            (Command::DismissRinging, Some(_)) => log::info!("dismissed the ringing timers"),
+            (Command::DismissRinging, None) => {
+                self.say("No timer is ringing", "There was nothing to dismiss.");
+                return;
+            }
         }
         self.changed(cx);
     }
@@ -161,14 +186,40 @@ impl Timers {
     /// Report every timer that has ended. Called by the sleep, and by every
     /// summons in case the sleep woke late.
     pub fn catch_up(&self, cx: &AsyncApp) {
-        let ended = self.clock.borrow_mut().expire(now());
+        let ring = self.offer.borrow().ring == Ring::UntilDismissed;
+        let ended = self.clock.borrow_mut().expire(now(), ring);
         if ended.is_empty() {
             return;
         }
         for timer in &ended {
             self.ended(timer);
         }
+        // Once for them all: several timers ending together is one alert.
+        if let Some(sound) = self.offer.borrow().sound.clone() {
+            self.looping.set(ring);
+            self.play(sound, ring);
+        }
         self.changed(cx);
+    }
+
+    /// Play an alert off this thread; a sound that will not play is a log
+    /// line, never a lost notification.
+    fn play(&self, sound: String, repeat: bool) {
+        let platform = self.platform.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = platform.play_alert(&sound, repeat) {
+                log::warn!("could not play the alert sound: {error:#}");
+            }
+        });
+    }
+
+    fn silence(&self) {
+        let platform = self.platform.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = platform.stop_alert() {
+                log::warn!("could not stop the alert sound: {error:#}");
+            }
+        });
     }
 
     fn ended(&self, timer: &Timer) {
@@ -192,6 +243,11 @@ impl Timers {
 
     /// The timers changed: keep them, re-plan the sleep, redraw the view.
     fn changed(&self, cx: &AsyncApp) {
+        // The last ringing timer went: dismissed, stopped or restarted.
+        if self.looping.get() && !self.clock.borrow().is_ringing() {
+            self.looping.set(false);
+            self.silence();
+        }
         self.save(cx);
         self.plan(cx);
         if let Some((_, viewer)) = self.viewer.borrow().as_ref() {
@@ -299,6 +355,74 @@ impl Timers {
             let mut viewer = this.viewer.borrow_mut();
             if viewer.as_ref().is_some_and(|(open, _)| *open == number) {
                 *viewer = None;
+            }
+        })
+        .detach();
+    }
+
+    /// Show *Preview Alert Sounds* in the launcher: `Enter` plays one, and
+    /// *Use as Alert Sound* writes it to `config.json`.
+    pub fn open_sounds(&self, window: gpui::WindowHandle<Launcher>, cx: &mut AsyncApp) {
+        let (view_tx, mut events) = mpsc::unbounded::<Event>();
+        let sink = ViewSink::new(move |event| {
+            let _ = view_tx.unbounded_send(event);
+        });
+        window
+            .update(cx, |launcher, _window, cx| launcher.begin_view(sink, cx))
+            .ok();
+
+        let this = self.clone();
+        cx.spawn(async move |cx| {
+            // A folder listing: off this thread, while the view says loading.
+            let platform = this.platform.clone();
+            let names = cx
+                .background_executor()
+                .spawn(async move { platform.alert_sounds() })
+                .await
+                .unwrap_or_else(|error| {
+                    log::warn!("could not list the alert sounds: {error:#}");
+                    Vec::new()
+                });
+            let mut current = this.offer.borrow().sound.clone();
+            let draw = |current: &Option<String>, cx: &mut AsyncApp| {
+                let view = sounds::view(&names, current.as_deref());
+                window
+                    .update(cx, |launcher, _window, cx| launcher.show_view(view, cx))
+                    .ok();
+            };
+            draw(&current, cx);
+
+            while let Some(event) = events.next().await {
+                match sounds::act(&event) {
+                    Some(sounds::Choice::Play(name)) => {
+                        // A preview replaces a ringing loop; closing the view
+                        // puts the loop back.
+                        this.play(name, false);
+                    }
+                    Some(sounds::Choice::Use(name)) => {
+                        let path = this.config_file.clone();
+                        let chosen = name.clone();
+                        cx.background_executor()
+                            .spawn(async move {
+                                if let Err(error) = store::set_alert_sound(&path, Some(&chosen)) {
+                                    log::warn!("could not choose the alert sound: {error:#}");
+                                }
+                            })
+                            .detach();
+                        // Drawn now; the file's watcher confirms it.
+                        current = Some(name);
+                        draw(&current, cx);
+                    }
+                    None => {}
+                }
+            }
+
+            // The view is gone: stop a preview, or bring the loop back.
+            let ringing = this.clock.borrow().is_ringing();
+            let sound = this.offer.borrow().sound.clone();
+            match (ringing && this.looping.get(), sound) {
+                (true, Some(sound)) => this.play(sound, true),
+                _ => this.silence(),
             }
         })
         .detach();

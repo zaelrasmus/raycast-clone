@@ -32,6 +32,7 @@ mod icons;
 mod input;
 mod monitor;
 mod scripts;
+mod sound;
 mod tray;
 mod window;
 
@@ -227,6 +228,18 @@ impl Platform for WindowsPlatform {
             // But it takes no flags, so a private window needs the program.
             (None, true) => browsers::open(url, &browsers::default()?, true),
         }
+    }
+
+    fn alert_sounds(&self) -> Result<Vec<String>> {
+        sound::names()
+    }
+
+    fn play_alert(&self, name: &str, repeat: bool) -> Result<()> {
+        sound::play(name, repeat)
+    }
+
+    fn stop_alert(&self) -> Result<()> {
+        sound::stop()
     }
 }
 

@@ -90,7 +90,7 @@ an aesthetic worth looking at fifty times a day.
   and *To* pills choose any language at any time, without losing the text:
   click one, or `Tab` to open its list. `Enter` copies the translation and
   closes.
-- **Timers** (F8, slices 1 and 2). Type a duration -- `25m`, `1h30`, `90s`, `1:30`
+- **Timers** (F8, slices 1 to 3). Type a duration -- `25m`, `1h30`, `90s`, `1:30`
   -- and *Start 25 min timer* leads the list; words after it name the timer,
   `25m write chapter 3`. A notification says when it ends. *Timers* shows
   what is running with the time left, and pauses, resumes, restarts or stops
@@ -100,7 +100,9 @@ an aesthetic worth looking at fifty times a day.
   timer 25m tea`. Save the ones you start often as **presets** on the
   *Timers* settings page -- *Deep work*, alias `dw`, `1h30` -- and each is a
   row of its own; *Timers* also offers them, and quick 2, 5, 10 and 30
-  minute timers, one Enter away.
+  minute timers, one Enter away. A timer ends with one of the system's
+  alarm sounds -- hear them all with *Preview Alert Sounds* -- once, or
+  until *Dismiss Ringing Timer* if you set it to ring until dismissed.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.

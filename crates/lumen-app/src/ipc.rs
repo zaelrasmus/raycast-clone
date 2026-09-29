@@ -72,6 +72,8 @@ pub enum Message {
     },
     /// Open the *Timers* view (F8).
     RunTimers,
+    /// Open *Preview Alert Sounds* (F8, slice 3).
+    RunAlertSounds,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.
     Timer(lumen_core::timers::Command),
 }

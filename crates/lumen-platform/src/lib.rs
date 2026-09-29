@@ -422,6 +422,23 @@ pub trait Platform: Send + Sync {
     /// cannot be asked for ([`Browser::private_flag`]) is an error, never an
     /// ordinary window.
     fn open_url(&self, url: &str, browser: Option<&Browser>, private: bool) -> Result<()>;
+
+    /// The alert sounds the system ships, by name, sorted (F8).
+    ///
+    /// The system's rather than bundled ones: Windows has twenty alarms and
+    /// rings in its media folder, and a desktop on Linux has a sound theme.
+    /// That is no installed size and no audio decoder in the binary.
+    fn alert_sounds(&self) -> Result<Vec<String>>;
+
+    /// Play the alert sound called `name`, once, or over and over until
+    /// [`Platform::stop_alert`] when `repeat`.
+    ///
+    /// Returns at once; the sound plays on the system's own time. One alert
+    /// at a time: playing another replaces it.
+    fn play_alert(&self, name: &str, repeat: bool) -> Result<()>;
+
+    /// Stop the alert that is playing, if one is. Stopping silence is fine.
+    fn stop_alert(&self) -> Result<()>;
 }
 
 #[cfg(test)]

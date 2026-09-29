@@ -23,10 +23,11 @@
 
 pub mod duration;
 pub mod presets;
+pub mod sounds;
 pub mod store;
 pub mod view;
 
-pub use presets::{Preset, PresetConfig, TimersConfig};
+pub use presets::{Preset, PresetConfig, Ring, TimersConfig};
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -54,6 +55,8 @@ pub enum Command {
     Start { seconds: u64, name: Option<String> },
     /// Stop the running timer closest to ending.
     StopNearest,
+    /// Silence every timer ringing until dismissed (slice 3).
+    DismissRinging,
 }
 
 /// Every timer, running or paused.
@@ -83,8 +86,17 @@ pub struct Timer {
     rename_all_fields = "kebab-case"
 )]
 pub enum State {
-    Running { ends_at: Millis },
-    Paused { remaining_ms: u64 },
+    Running {
+        ends_at: Millis,
+    },
+    Paused {
+        remaining_ms: u64,
+    },
+    /// Ended, and ringing until dismissed (slice 3). Only while the daemon
+    /// runs: see [`Clock::load`].
+    Ringing {
+        since: Millis,
+    },
 }
 
 impl Timer {
@@ -104,11 +116,16 @@ impl Timer {
         Duration::from_millis(match self.state {
             State::Running { ends_at } => ends_at.saturating_sub(now),
             State::Paused { remaining_ms } => remaining_ms,
+            State::Ringing { .. } => 0,
         })
     }
 
     pub fn is_running(&self) -> bool {
         matches!(self.state, State::Running { .. })
+    }
+
+    pub fn is_ringing(&self) -> bool {
+        matches!(self.state, State::Ringing { .. })
     }
 }
 
@@ -119,6 +136,11 @@ impl Clock {
 
     pub fn is_empty(&self) -> bool {
         self.timers.is_empty()
+    }
+
+    /// Whether any timer is ringing, and so the alert should be playing.
+    pub fn is_ringing(&self) -> bool {
+        self.timers.iter().any(Timer::is_ringing)
     }
 
     pub fn get(&self, id: u64) -> Option<&Timer> {
@@ -154,7 +176,17 @@ impl Clock {
                 None
             }
             Command::StopNearest => self.stop_nearest(now),
+            Command::DismissRinging => self.dismiss_ringing().into_iter().next(),
         }
+    }
+
+    /// Take out every ringing timer: the alert has been heard.
+    pub fn dismiss_ringing(&mut self) -> Vec<Timer> {
+        let (ringing, rest) = std::mem::take(&mut self.timers)
+            .into_iter()
+            .partition(Timer::is_ringing);
+        self.timers = rest;
+        ringing
     }
 
     /// Freeze a running timer. Returns whether anything changed.
@@ -213,16 +245,26 @@ impl Clock {
         self.stop(id)
     }
 
-    /// Take out every timer that has ended by `now`, first to end first.
-    pub fn expire(&mut self, now: Millis) -> Vec<Timer> {
+    /// Every timer that has ended by `now`, first to end first.
+    ///
+    /// With `ring`, they stay, ringing until dismissed; otherwise they are
+    /// taken out. Either way each is returned once, so each is announced
+    /// once: a ringing timer is not running, and never ends again.
+    pub fn expire(&mut self, now: Millis, ring: bool) -> Vec<Timer> {
         let (mut ended, running): (Vec<Timer>, Vec<Timer>) = std::mem::take(&mut self.timers)
             .into_iter()
             .partition(|timer| matches!(timer.state, State::Running { ends_at } if ends_at <= now));
         self.timers = running;
         ended.sort_by_key(|timer| match timer.state {
             State::Running { ends_at } => ends_at,
-            State::Paused { .. } => Millis::MAX,
+            State::Paused { .. } | State::Ringing { .. } => Millis::MAX,
         });
+        if ring {
+            self.timers.extend(ended.iter().cloned().map(|timer| Timer {
+                state: State::Ringing { since: now },
+                ..timer
+            }));
+        }
         ended
     }
 
@@ -233,7 +275,7 @@ impl Clock {
             .iter()
             .filter_map(|timer| match timer.state {
                 State::Running { ends_at } => Some(ends_at),
-                State::Paused { .. } => None,
+                State::Paused { .. } | State::Ringing { .. } => None,
             })
             .min()
     }
@@ -242,7 +284,17 @@ impl Clock {
     ///
     /// Lenient: a file that is missing or unreadable is no timers, with a log
     /// line for the second. Losing a timer is better than not starting.
+    ///
+    /// A timer that was ringing is not brought back: it was announced when it
+    /// ended, and an alarm that starts again at the next login, hours later,
+    /// is an alarm about nothing.
     pub fn load(path: &Path) -> Self {
+        let mut clock = Self::read(path);
+        clock.dismiss_ringing();
+        clock
+    }
+
+    fn read(path: &Path) -> Self {
         let source = match std::fs::read_to_string(path) {
             Ok(source) => source,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Self::default(),
@@ -330,7 +382,7 @@ mod tests {
         clock.start(Duration::from_secs(60), Some("eggs".into()), 0);
         clock.start(Duration::from_secs(10 * 60), Some("bread".into()), 0);
 
-        let ended = clock.expire(3 * MIN);
+        let ended = clock.expire(3 * MIN, false);
 
         let names: Vec<_> = ended.iter().map(|timer| timer.title()).collect();
         assert_eq!(names, ["eggs", "tea"]);
@@ -343,7 +395,53 @@ mod tests {
         let mut clock = Clock::default();
         let id = clock.start(Duration::from_secs(60), None, 0);
         clock.pause(id, 0);
-        assert!(clock.expire(u64::MAX).is_empty());
+        assert!(clock.expire(u64::MAX, false).is_empty());
+    }
+
+    #[test]
+    fn a_timer_that_rings_stays_until_dismissed_and_is_announced_once() {
+        let mut clock = Clock::default();
+        clock.start(Duration::from_secs(60), Some("tea".into()), 0);
+
+        assert_eq!(clock.expire(MIN, true).len(), 1);
+        assert!(clock.is_ringing());
+        assert_eq!(clock.next_deadline(), None);
+        // Ringing is not running: it does not end a second time.
+        assert!(clock.expire(10 * MIN, true).is_empty());
+        assert_eq!(clock.stop_nearest(10 * MIN), None);
+
+        let dismissed = clock.dismiss_ringing();
+        assert_eq!(dismissed[0].title(), "tea");
+        assert!(clock.is_empty());
+    }
+
+    #[test]
+    fn restarting_a_ringing_timer_silences_it() {
+        let mut clock = Clock::default();
+        let id = clock.start(Duration::from_secs(60), None, 0);
+        clock.expire(MIN, true);
+
+        assert!(clock.restart(id, MIN));
+        assert!(!clock.is_ringing());
+        assert_eq!(clock.next_deadline(), Some(2 * MIN));
+    }
+
+    #[test]
+    fn a_ringing_timer_does_not_come_back_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("lumen-timers-ring-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("timers.json");
+
+        let mut clock = Clock::default();
+        clock.start(Duration::from_secs(60), Some("rang".into()), 0);
+        clock.start(Duration::from_secs(600), Some("runs".into()), 0);
+        clock.expire(MIN, true);
+        clock.save(&path).unwrap();
+
+        let loaded = Clock::load(&path);
+        let titles: Vec<_> = loaded.timers().iter().map(Timer::title).collect();
+        assert_eq!(titles, ["runs"]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

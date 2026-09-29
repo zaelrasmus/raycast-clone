@@ -1,6 +1,7 @@
 //! The Timers page of the settings window (F8, slice 2).
 //!
-//! The quick durations and the presets, side by side, in the Translation
+//! The general settings -- the alert sound, how long it rings, the quick
+//! durations -- and the presets, side by side, in the Translation
 //! page's shape: a list on the left, the selected thing's form on the right,
 //! a question before a delete, and the same keys -- it shares that page's
 //! key contexts and list actions, so there is one way to move through a list
@@ -13,6 +14,12 @@
 //! `lumen_core::timers::store`, which changes only the `timers` section and
 //! finds a preset by name. The daemon's watcher then updates the launcher and
 //! an open *Timers* view, exactly as after a hand edit.
+//!
+//! # A sound is heard as it is chosen
+//!
+//! Choosing an alert sound in the dropdown plays it once, through the daemon,
+//! so choosing is previewing. The list is the platform's, read when the
+//! window opens.
 //!
 //! # Typed, in the launcher's grammar
 //!
@@ -29,10 +36,11 @@ use gpui::{
 };
 use lumen_core::layout::{self, settings as metrics};
 use lumen_core::theme::Colors;
-use lumen_core::timers::{PresetConfig, TimersConfig, duration, presets, store};
+use lumen_core::timers::{PresetConfig, Ring, TimersConfig, duration, presets, sounds, store};
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, DIALOG_CONTEXT};
+use crate::select::{Choice, Select, SelectEvent};
 use crate::settings::text_button;
 use crate::styling::{color, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
@@ -41,7 +49,7 @@ use crate::translate_page::{EditPreset, FORM_CONTEXT, LIST_CONTEXT, NextPreset, 
 /// What the list has selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Selection {
-    QuickStart,
+    General,
     /// A preset on disk, by name.
     Preset(String),
     /// A preset not saved yet.
@@ -49,7 +57,9 @@ enum Selection {
 }
 
 enum Form {
-    QuickStart {
+    General {
+        sound: Entity<Select>,
+        ring: Entity<Select>,
         durations: Entity<TextField>,
     },
     Preset {
@@ -62,7 +72,7 @@ enum Form {
 impl Form {
     fn fields(&self) -> Vec<&Entity<TextField>> {
         match self {
-            Form::QuickStart { durations } => vec![durations],
+            Form::General { durations, .. } => vec![durations],
             Form::Preset {
                 name,
                 alias,
@@ -72,9 +82,20 @@ impl Form {
     }
 }
 
+/// What the page asks of the window that hosts it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimersPageEvent {
+    /// Play this alert sound once: it was just chosen.
+    Preview(String),
+}
+
+impl gpui::EventEmitter<TimersPageEvent> for TimersPage {}
+
 pub struct TimersPage {
     path: PathBuf,
     colors: Colors,
+    /// The system's alert sounds, by name, once the window has read them.
+    sounds: Vec<String>,
     /// The section as the file last read had it.
     config: TimersConfig,
     /// Why the file could not be read. Nothing can be saved until it is fixed.
@@ -102,13 +123,14 @@ pub struct TimersPage {
 impl TimersPage {
     pub fn new(path: PathBuf, colors: Colors, cx: &mut Context<Self>) -> Self {
         let config = TimersConfig::default();
-        let form = quick_start_form(&config, &colors, cx);
+        let form = general_form(&config, &[], &colors, cx);
         let mut page = Self {
             path,
             colors,
+            sounds: Vec::new(),
             config,
             problem: None,
-            selection: Selection::QuickStart,
+            selection: Selection::General,
             form,
             edited: false,
             saving: false,
@@ -149,7 +171,7 @@ impl TimersPage {
                 if let Selection::Preset(name) = &page.selection
                     && page.find(name).is_none()
                 {
-                    page.selection = Selection::QuickStart;
+                    page.selection = Selection::General;
                     page.edited = false;
                 }
                 if !page.edited {
@@ -172,7 +194,7 @@ impl TimersPage {
     /// Fill the form in again from the file, for what is selected.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.form = match &self.selection {
-            Selection::QuickStart => quick_start_form(&self.config, &self.colors, cx),
+            Selection::General => general_form(&self.config, &self.sounds, &self.colors, cx),
             Selection::Preset(name) => {
                 let preset = self.find(name).cloned().unwrap_or_default();
                 preset_form(&preset, &self.colors, cx)
@@ -182,6 +204,15 @@ impl TimersPage {
         self.watch_form(cx);
         self.edited = false;
         self.error = None;
+    }
+
+    /// Take the system's alert sounds, for the General row's dropdown.
+    pub fn set_sounds(&mut self, sounds: Vec<String>, cx: &mut Context<Self>) {
+        self.sounds = sounds;
+        if self.selection == Selection::General && !self.edited {
+            self.rebuild(cx);
+        }
+        cx.notify();
     }
 
     /// Mark the form edited on any change to it.
@@ -194,6 +225,18 @@ impl TimersPage {
                 }
             })
             .detach();
+        }
+        if let Form::General { sound, ring, .. } = &self.form {
+            // Chosen is heard: the host plays it once.
+            cx.subscribe(sound, |page, select, SelectEvent::Changed, cx| {
+                if let Some(name) = select.read(cx).value() {
+                    cx.emit(TimersPageEvent::Preview(name.to_string()));
+                }
+                page.touched(cx);
+            })
+            .detach();
+            cx.subscribe(ring, |page, _, SelectEvent::Changed, cx| page.touched(cx))
+                .detach();
         }
     }
 
@@ -234,7 +277,7 @@ impl TimersPage {
 
     /// The list's rows, in order.
     fn rows(&self) -> Vec<Selection> {
-        std::iter::once(Selection::QuickStart)
+        std::iter::once(Selection::General)
             .chain(
                 self.config
                     .presets
@@ -279,17 +322,29 @@ impl TimersPage {
 
     // -- Focus ----------------------------------------------------------------
 
-    /// Focus the list, which always has at least the quick-start row.
+    /// Focus the list, which always has at least the General row.
     pub fn focus(&self, window: &mut Window, _cx: &App) {
         window.focus(&self.list_focus);
     }
 
     fn stops(&self, cx: &App) -> Vec<FocusHandle> {
-        self.form
-            .fields()
-            .into_iter()
-            .map(|field| field.focus_handle(cx))
-            .collect()
+        match &self.form {
+            Form::General {
+                sound,
+                ring,
+                durations,
+            } => vec![
+                sound.read(cx).focus_handle().clone(),
+                ring.read(cx).focus_handle().clone(),
+                durations.focus_handle(cx),
+            ],
+            Form::Preset { .. } => self
+                .form
+                .fields()
+                .into_iter()
+                .map(|field| field.focus_handle(cx))
+                .collect(),
+        }
     }
 
     fn focused(&self, window: &Window, cx: &App) -> Option<usize> {
@@ -327,7 +382,7 @@ impl TimersPage {
         self.warning = None;
         if !self.edited {
             if self.selection == Selection::New {
-                self.selection = Selection::QuickStart;
+                self.selection = Selection::General;
                 self.rebuild(cx);
             }
             self.focus(window, cx);
@@ -336,7 +391,7 @@ impl TimersPage {
         }
         self.status = Some("Changes discarded".into());
         if self.selection == Selection::New {
-            self.selection = Selection::QuickStart;
+            self.selection = Selection::General;
             self.rebuild(cx);
             self.focus(window, cx);
         } else {
@@ -360,7 +415,16 @@ impl TimersPage {
         let path = self.path.clone();
 
         match &self.form {
-            Form::QuickStart { durations } => {
+            Form::General {
+                sound,
+                ring,
+                durations,
+            } => {
+                let sound = sound.read(cx).value().map(str::to_string);
+                let ring = match ring.read(cx).value() {
+                    Some("until-dismissed") => Ring::UntilDismissed,
+                    _ => Ring::Once,
+                };
                 let durations: Vec<String> = durations
                     .read(cx)
                     .text()
@@ -368,9 +432,9 @@ impl TimersPage {
                     .map(|written| written.trim().to_string())
                     .collect();
                 self.write(
-                    move || store::set_quick_start(&path, &durations),
-                    Selection::QuickStart,
-                    "Saved the quick durations".into(),
+                    move || store::set_general(&path, sound.as_deref(), ring, &durations),
+                    Selection::General,
+                    "Saved the general settings".into(),
                     cx,
                 );
             }
@@ -463,7 +527,7 @@ impl TimersPage {
         self.edited = false;
         self.write(
             move || store::remove(&path, &removed),
-            Selection::QuickStart,
+            Selection::General,
             format!("Deleted {name}"),
             cx,
         );
@@ -475,6 +539,11 @@ impl TimersPage {
         let fields: Vec<Entity<TextField>> = self.form.fields().into_iter().cloned().collect();
         for field in fields {
             field.update(cx, |field, cx| field.set_colors(colors.clone(), cx));
+        }
+        if let Form::General { sound, ring, .. } = &self.form {
+            for select in [sound, ring] {
+                select.update(cx, |select, cx| select.set_colors(colors.clone(), cx));
+            }
         }
         self.colors = colors;
         cx.notify();
@@ -493,11 +562,53 @@ impl TimersPage {
     }
 }
 
-fn quick_start_form(config: &TimersConfig, colors: &Colors, cx: &mut App) -> Form {
+fn general_form(config: &TimersConfig, names: &[String], colors: &Colors, cx: &mut App) -> Form {
+    let (choices, selected) = sound_choices(names, config.alert_sound.as_deref());
+    let rings = [Ring::Once, Ring::UntilDismissed];
+    let ring_choices = rings
+        .iter()
+        .map(|ring| Choice {
+            value: serde_json::to_value(ring)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string)),
+            label: ring.label().to_string(),
+        })
+        .collect();
+    let ring_selected = rings
+        .iter()
+        .position(|ring| *ring == config.ring)
+        .unwrap_or(0);
     let written = config.quick_start.join(", ");
-    Form::QuickStart {
+    Form::General {
+        sound: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx)),
+        ring: cx.new(|cx| Select::new(ring_choices, ring_selected, colors.clone(), cx)),
         durations: cx.new(|cx| TextField::new(written, "2m, 5m, 10m, 30m", colors.clone(), cx)),
     }
+}
+
+/// "No sound", then every sound the system has, with `current` selected.
+///
+/// A saved name the system does not list -- the list has not arrived yet,
+/// or the file was edited by hand -- is kept as a choice of its own, so
+/// saving another field never changes the sound.
+fn sound_choices(names: &[String], current: Option<&str>) -> (Vec<Choice>, usize) {
+    let mut choices = vec![Choice {
+        value: None,
+        label: "No sound".into(),
+    }];
+    let listed = current.is_none_or(|current| names.iter().any(|name| name == current));
+    let extra = (!listed).then_some(current).flatten();
+    for name in names.iter().map(String::as_str).chain(extra) {
+        choices.push(Choice {
+            value: Some(name.to_string()),
+            label: sounds::label(name),
+        });
+    }
+    let selected = choices
+        .iter()
+        .position(|choice| choice.value.as_deref() == current)
+        .unwrap_or(0);
+    (choices, selected)
 }
 
 fn preset_form(preset: &PresetConfig, colors: &Colors, cx: &mut App) -> Form {
@@ -576,14 +687,15 @@ impl TimersPage {
         };
 
         let quick = row(
-            "timers-quick-start".into(),
-            "Quick Start".into(),
-            format!("{} durations", self.config.quick_start().len()),
-            self.selection == Selection::QuickStart,
+            "timers-general".into(),
+            "General".into(),
+            self.config
+                .alert_sound
+                .as_deref()
+                .map_or("Silent".into(), sounds::label),
+            self.selection == Selection::General,
         )
-        .on_click(
-            cx.listener(|page, _, window, cx| page.select(Selection::QuickStart, window, cx)),
-        );
+        .on_click(cx.listener(|page, _, window, cx| page.select(Selection::General, window, cx)));
 
         let presets = self
             .config
@@ -708,11 +820,22 @@ impl TimersPage {
         };
 
         let (rows, hints): (Vec<AnyElement>, Vec<&'static str>) = match &self.form {
-            Form::QuickStart { durations } => (
+            Form::General {
+                sound,
+                ring,
+                durations,
+            } => (
                 vec![
-                    field_row("Durations", durations.clone().into_any_element()).into_any_element(),
+                    field_row("Alert sound", sound.clone().into_any_element()).into_any_element(),
+                    field_row("Ring", ring.clone().into_any_element()).into_any_element(),
+                    field_row("Quick start", durations.clone().into_any_element())
+                        .into_any_element(),
                 ],
-                vec!["Offered under Quick Start in Timers, shortest first. Comma separated."],
+                vec![
+                    "Played when a timer ends. Choosing one plays it.",
+                    "Until dismissed: the sound loops until Dismiss Ringing Timer.",
+                    "Offered under Quick Start in Timers, shortest first. Comma separated.",
+                ],
             ),
             Form::Preset {
                 name,
@@ -853,6 +976,21 @@ impl TimersPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_saved_sound_is_selected_even_before_the_list_arrives() {
+        let names = vec!["Alarm01".to_string(), "Ring02".to_string()];
+
+        let (choices, selected) = sound_choices(&names, Some("Ring02"));
+        assert_eq!(choices.len(), 3);
+        assert_eq!(choices[selected].label, "Ring 2");
+
+        let (choices, selected) = sound_choices(&[], Some("Alarm05"));
+        assert_eq!(choices[selected].value.as_deref(), Some("Alarm05"));
+
+        let (choices, selected) = sound_choices(&names, None);
+        assert_eq!(choices[selected].label, "No sound");
+    }
 
     #[test]
     fn a_preset_the_launcher_skips_says_so_in_the_list() {

@@ -188,6 +188,8 @@ pub enum ViewSource {
     Translate { preset: Option<String> },
     /// The running timers (F8).
     Timers,
+    /// The system's alert sounds, to hear and choose from (F8, slice 3).
+    AlertSounds,
 }
 
 impl Action {
@@ -211,6 +213,7 @@ impl Action {
             Action::SaveAsQuicklink { .. } => "Save as Quicklink",
             Action::Timer(crate::timers::Command::Start { .. }) => "Start",
             Action::Timer(crate::timers::Command::StopNearest) => "Stop",
+            Action::Timer(crate::timers::Command::DismissRinging) => "Dismiss",
         }
     }
 

@@ -182,4 +182,16 @@ impl Platform for LinuxPlatform {
     fn open_url(&self, _url: &str, _browser: Option<&Browser>, _private: bool) -> Result<()> {
         todo!("F5: `xdg-open`, or the chosen desktop entry's Exec with %u")
     }
+
+    fn alert_sounds(&self) -> Result<Vec<String>> {
+        todo!("F5: the XDG sound theme's alarm-clock-elapsed and friends")
+    }
+
+    fn play_alert(&self, _name: &str, _repeat: bool) -> Result<()> {
+        todo!("F5: play through the sound theme, with canberra or pw-play")
+    }
+
+    fn stop_alert(&self) -> Result<()> {
+        todo!("F5: stop the player started by play_alert")
+    }
 }

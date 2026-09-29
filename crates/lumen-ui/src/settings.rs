@@ -40,7 +40,7 @@ use lumen_core::theme::{Colors, Theme};
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
-use crate::timers_page::TimersPage;
+use crate::timers_page::{TimersPage, TimersPageEvent};
 use crate::translate_page::TranslatePage;
 
 /// Which page the window shows.
@@ -104,6 +104,8 @@ pub enum SettingsEvent {
     /// The quicklink icon cache was refetched, so the launcher should reindex
     /// to show it.
     QuicklinkIconsChanged,
+    /// An alert sound was chosen on the Timers page: play it once (F8).
+    PreviewSound(String),
 }
 
 impl gpui::EventEmitter<SettingsEvent> for Settings {}
@@ -254,6 +256,10 @@ impl Settings {
             cx.new(|cx| TimersPage::new(config_file, colors, cx))
         };
         cx.observe(&timers, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&timers, |_, _, event: &TimersPageEvent, cx| match event {
+            TimersPageEvent::Preview(name) => cx.emit(SettingsEvent::PreviewSound(name.clone())),
+        })
+        .detach();
 
         Self {
             focus_handle,
@@ -285,6 +291,12 @@ impl Settings {
     /// Re-read `quicklinks.json`: on open, and whenever the file changes.
     pub fn reload_quicklinks(&mut self, cx: &mut Context<Self>) {
         self.quicklinks.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Name the system's alert sounds, for the Timers page's dropdown.
+    pub fn set_alert_sounds(&mut self, sounds: Vec<String>, cx: &mut Context<Self>) {
+        self.timers
+            .update(cx, |page, cx| page.set_sounds(sounds, cx));
     }
 
     /// Name the installed browsers, for the Quicklinks page's form.

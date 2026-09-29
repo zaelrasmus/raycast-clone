@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use super::duration::{clock_face, describe};
-use super::{Clock, Millis, Preset, Timer};
+use super::{Clock, Millis, Preset, State, Timer};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Icon, Item, List, Section, Tone, View,
 };
@@ -24,6 +24,7 @@ const RESUME: &str = "resume";
 const RESTART: &str = "restart";
 const STOP: &str = "stop";
 const START: &str = "start";
+const DISMISS: &str = "dismiss";
 const PRESET: &str = "preset-";
 const QUICK: &str = "quick-";
 
@@ -36,9 +37,19 @@ pub const GLYPH: &str = "timer";
 pub fn view(clock: &Clock, presets: &[Preset], quick: &[Duration], now: Millis) -> View {
     let mut running: Vec<&Timer> = clock.timers().iter().filter(|t| t.is_running()).collect();
     running.sort_by_key(|timer| (timer.remaining(now), timer.id));
-    let paused: Vec<&Timer> = clock.timers().iter().filter(|t| !t.is_running()).collect();
+    let paused: Vec<&Timer> = clock
+        .timers()
+        .iter()
+        .filter(|t| matches!(t.state, State::Paused { .. }))
+        .collect();
+    let ringing: Vec<&Timer> = clock.timers().iter().filter(|t| t.is_ringing()).collect();
 
     let sections = [
+        // First: it is making a noise, and Enter should be what stops it.
+        (
+            "Ringing",
+            ringing.into_iter().map(|t| item(t, now)).collect(),
+        ),
         (
             "Running",
             running.into_iter().map(|t| item(t, now)).collect(),
@@ -73,20 +84,25 @@ pub fn view(clock: &Clock, presets: &[Preset], quick: &[Duration], now: Millis) 
 
 fn item(timer: &Timer, now: Millis) -> Item {
     let mut accessories = Vec::new();
-    if !timer.is_running() {
-        accessories.push(Accessory::Tag {
+    match timer.state {
+        State::Paused { .. } => accessories.push(Accessory::Tag {
             text: "Paused".into(),
             tone: Tone::Caution,
-        });
+        }),
+        State::Ringing { .. } => accessories.push(Accessory::Tag {
+            text: "Ringing".into(),
+            tone: Tone::Accent,
+        }),
+        State::Running { .. } => {}
     }
     accessories.push(Accessory::Text {
         text: clock_face(timer.remaining(now)),
     });
 
-    let toggle = if timer.is_running() {
-        action(PAUSE, "Pause")
-    } else {
-        action(RESUME, "Resume")
+    let toggle = match timer.state {
+        State::Running { .. } => action(PAUSE, "Pause"),
+        State::Paused { .. } => action(RESUME, "Resume"),
+        State::Ringing { .. } => action(DISMISS, "Dismiss"),
     };
 
     Item {
@@ -178,7 +194,7 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
         PAUSE => clock.pause(id, now),
         RESUME => clock.resume(id, now),
         RESTART => clock.restart(id, now),
-        STOP => clock.stop(id).is_some(),
+        STOP | DISMISS => clock.stop(id).is_some(),
         _ => false,
     }
 }
@@ -362,6 +378,28 @@ mod tests {
         assert!(!act(&mut clock, &invoke("preset-Gone", "start"), &[], 0));
         assert!(!act(&mut clock, &invoke("quick-soon", "start"), &[], 0));
         assert!(clock.is_empty());
+    }
+
+    #[test]
+    fn a_ringing_timer_leads_and_enter_dismisses_it() {
+        let mut clock = Clock::default();
+        let runs = clock.start(Duration::from_secs(600), Some("runs".into()), 0);
+        let rang = clock.start(Duration::from_secs(60), Some("rang".into()), 0);
+        clock.expire(60_000, true);
+
+        let list = list(view(&clock, &[], &[], 60_000));
+        assert_eq!(list.sections[0].title.as_deref(), Some("Ringing"));
+        let row = list.item(0).unwrap();
+        assert_eq!(row.title, "rang");
+        assert_eq!(texts(row), ["Ringing", "0:00"]);
+        assert_eq!(row.actions[0].title, "Dismiss");
+        // Nothing to count on its face: it does not wake the view.
+        clock.pause(runs, 60_000);
+        assert_eq!(next_tick(&clock, 60_000), None);
+
+        let id = format!("timer-{rang}");
+        assert!(act(&mut clock, &invoke(&id, "dismiss"), &[], 60_000));
+        assert!(!clock.is_ringing());
     }
 
     #[test]

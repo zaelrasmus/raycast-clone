@@ -24,6 +24,10 @@ pub struct TimersConfig {
     pub presets: Vec<PresetConfig>,
     /// Durations as typed in the launcher: `"5m"`, `"1h30"`.
     pub quick_start: Vec<String>,
+    /// The system sound played when a timer ends, by name (slice 3). `null`
+    /// is silence: the notification alone.
+    pub alert_sound: Option<String>,
+    pub ring: Ring,
 }
 
 impl Default for TimersConfig {
@@ -31,6 +35,30 @@ impl Default for TimersConfig {
         Self {
             presets: Vec::new(),
             quick_start: ["2m", "5m", "10m", "30m"].map(String::from).to_vec(),
+            // The first alarm every Windows install has. A name the platform
+            // does not know plays nothing and says so in the log.
+            alert_sound: Some("Alarm01".into()),
+            ring: Ring::Once,
+        }
+    }
+}
+
+/// How long an ended timer's sound goes on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ring {
+    /// The sound plays through once, beside the notification.
+    #[default]
+    Once,
+    /// It loops, and the timer stays under *Ringing*, until *Dismiss*.
+    UntilDismissed,
+}
+
+impl Ring {
+    pub fn label(self) -> &'static str {
+        match self {
+            Ring::Once => "Once",
+            Ring::UntilDismissed => "Until dismissed",
         }
     }
 }
@@ -197,6 +225,17 @@ mod tests {
             config(r#"{ "quick-start": ["10m", "1:30", "soon", "10 min", "45s"] }"#).quick_start();
         let seconds: Vec<u64> = quick.iter().map(Duration::as_secs).collect();
         assert_eq!(seconds, [45, 90, 600]);
+    }
+
+    #[test]
+    fn a_timer_rings_once_with_the_first_alarm_unless_told_otherwise() {
+        let default = config("{}");
+        assert_eq!(default.alert_sound.as_deref(), Some("Alarm01"));
+        assert_eq!(default.ring, Ring::Once);
+
+        let silent = config(r#"{ "alert-sound": null, "ring": "until-dismissed" }"#);
+        assert_eq!(silent.alert_sound, None);
+        assert_eq!(silent.ring, Ring::UntilDismissed);
     }
 
     /// Emptied on purpose is empty, not the defaults.

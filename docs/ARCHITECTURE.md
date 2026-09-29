@@ -115,7 +115,7 @@ once Lumen was measured well inside them (7.36).
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
-| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view) and 2 (presets, settings page) of six built. See F8 decisions |
+| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view), 2 (presets, settings page) and 3 (alert sounds, ringing) of six built. See F8 decisions |
 
 ### F4 build order is not optional
 
@@ -564,6 +564,40 @@ Slice 2 is built:
 - **An alias is a keyword,** as for translate presets. Typing it finds the
   preset through the matcher; it does not lead the list the way a
   quicklink's alias does. Whether it should is something to learn from use.
+
+Slice 3 is built:
+
+- **The system's sounds, through `trait Platform`.** `alert_sounds`,
+  `play_alert` and `stop_alert` joined the trait with their Linux stubs in
+  the same commit (I-9). On Windows they list and play `%SystemRoot%\Media`'s
+  `Alarm*` and `Ring*` files with `PlaySoundW`, which is asynchronous, loops
+  on request, and plays one sound at a time -- so "one alert however many
+  timers are ringing" is the system's behaviour rather than code. A name is
+  never a path: anything with a separator or a dot is refused before the
+  file system is asked.
+- **Ringing is a state, not a sound.** With `"ring": "until-dismissed"` an
+  ended timer stays in the clock as *Ringing* -- first in the view, `Enter`
+  dismisses it -- and the loop stops when the last ringing timer is
+  dismissed, stopped or restarted. Several ending together are one alert.
+  *Dismiss Ringing Timer* in the root list silences them all, and says so
+  when nothing was ringing. A ringing timer is not saved across a restart:
+  it was announced when it ended, and an alarm that resumes at the next
+  login is an alarm about nothing.
+- **Choosing is hearing.** *Preview Alert Sounds* is a view: `Enter` plays a
+  sound once, *Use as Alert Sound* writes it, and the *In use* tag moves at
+  once. The settings page's *Alert sound* dropdown plays what is chosen.
+  A preview replaces a ringing loop -- one sound at a time -- so leaving the
+  view puts the loop back. `"alert-sound": null` is silence: the
+  notification alone. The default is `Alarm01`.
+- **Ring is a dropdown, Once or Until dismissed,** not a checkbox: the only
+  checkbox is built into the quicklink form, and two named choices read as
+  well as a tick.
+- **Measured again,** because `winmm.dll` is a new library in the process.
+  With three timers running, four runs: 0.013 %, then 0.000 % three times
+  (this build twice, slice 1 once, back to back). The first was straight
+  after a four-minute release build and did not reproduce. Working set
+  71.8-72.4 MB, 31 threads. The binary went from 16,315,904 to 16,381,952
+  bytes, **+64 KB**.
 
 ---
 

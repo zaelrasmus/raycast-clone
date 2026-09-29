@@ -912,6 +912,10 @@ impl Launcher {
                 cx.emit(LauncherEvent::RunTimers);
                 return;
             }
+            lumen_core::ViewSource::AlertSounds => {
+                cx.emit(LauncherEvent::RunAlertSounds);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -2022,6 +2026,8 @@ pub enum LauncherEvent {
     },
     /// The *Timers* view was chosen (F8).
     RunTimers,
+    /// *Preview Alert Sounds* was chosen (F8, slice 3).
+    RunAlertSounds,
     /// A timer is to be started or stopped (F8). Follows `Dismissed`.
     Timer(lumen_core::timers::Command),
     /// A layout was chosen for the window that held the foreground.

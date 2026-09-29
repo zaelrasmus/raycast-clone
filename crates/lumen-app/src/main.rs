@@ -383,6 +383,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         timers: timers::Timers::start(
             platform.clone(),
             paths.timers_file(),
+            paths.config_file(),
             &config.timers,
             &cx.to_async(),
         ),
@@ -695,11 +696,18 @@ fn open_settings(
                 .collect::<Vec<_>>()
         }
     });
+    // The alert sounds, for the Timers page: a folder listing, likewise.
+    let sounds = cx.background_executor().spawn({
+        let platform = platform.clone();
+        async move { platform.alert_sounds().unwrap_or_default() }
+    });
     cx.spawn(async move |cx| {
         let browsers = browsers.await;
+        let sounds = sounds.await;
         window
             .update(cx, |settings, _window, cx| {
-                settings.set_browsers(browsers, cx)
+                settings.set_browsers(browsers, cx);
+                settings.set_alert_sounds(sounds, cx);
             })
             .ok();
     })
@@ -778,6 +786,15 @@ fn subscribe_to_settings(
                 launcher
                     .update(cx, |launcher, _window, cx| launcher.reindex(cx))
                     .ok();
+            }
+            SettingsEvent::PreviewSound(name) => {
+                let platform = platform.clone();
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = platform.play_alert(&name, false) {
+                        log::warn!("could not preview {name:?}: {error:#}");
+                    }
+                });
             }
             SettingsEvent::Closed => {
                 let platform = platform.clone();
@@ -919,6 +936,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunTimers);
                 return;
             }
+            LauncherEvent::RunAlertSounds => {
+                let _ = commands.unbounded_send(Message::RunAlertSounds);
+                return;
+            }
             LauncherEvent::Timer(command) => {
                 let _ = commands.unbounded_send(Message::Timer(command.clone()));
                 return;
@@ -935,6 +956,7 @@ fn subscribe_to_launcher(
                 LauncherEvent::RunExtension { .. }
                 | LauncherEvent::RunTranslate { .. }
                 | LauncherEvent::RunTimers
+                | LauncherEvent::RunAlertSounds
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,
@@ -1261,6 +1283,10 @@ fn handle(
         }
         Message::RunTimers => {
             surfaces.timers.open_view(surfaces.launcher, cx);
+            Ok(())
+        }
+        Message::RunAlertSounds => {
+            surfaces.timers.open_sounds(surfaces.launcher, cx);
             Ok(())
         }
         Message::Timer(command) => {

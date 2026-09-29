@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde_json::{Map, Value};
 
-use super::presets::{Preset, PresetConfig, TimersConfig, parse_duration, resolve, same};
+use super::presets::{Preset, PresetConfig, Ring, TimersConfig, parse_duration, resolve, same};
 use crate::section;
 
 const SECTION: &str = "timers";
@@ -85,11 +85,49 @@ pub fn remove(path: &Path, name: &str) -> Result<()> {
     })
 }
 
+/// Choose the alert sound, `None` for silence (slice 3).
+pub fn set_alert_sound(path: &Path, sound: Option<&str>) -> Result<()> {
+    section::edit(path, SECTION, |written| {
+        written.insert("alert-sound".into(), sound_value(sound));
+        Ok(())
+    })
+}
+
+/// Save the General row's form: the sound, how long it rings, and the quick
+/// durations, in one write so a refusal changes none of them.
+pub fn set_general(
+    path: &Path,
+    sound: Option<&str>,
+    ring: Ring,
+    durations: &[String],
+) -> Result<()> {
+    let durations = checked(durations)?;
+    section::edit(path, SECTION, |written| {
+        written.insert("alert-sound".into(), sound_value(sound));
+        written.insert("ring".into(), serde_json::to_value(ring)?);
+        written.insert("quick-start".into(), durations);
+        Ok(())
+    })
+}
+
+fn sound_value(sound: Option<&str>) -> Value {
+    sound.map_or(Value::Null, |sound| Value::String(sound.to_string()))
+}
+
 /// Replace the quick durations with `durations`, as typed.
 ///
 /// Every one must read as a duration, or nothing is written: the loader would
 /// skip it quietly, and the page is where a mistake can still be seen.
 pub fn set_quick_start(path: &Path, durations: &[String]) -> Result<()> {
+    let durations = checked(durations)?;
+    section::edit(path, SECTION, |written| {
+        written.insert("quick-start".into(), durations);
+        Ok(())
+    })
+}
+
+/// `durations` as the file's list, each read as a duration first.
+fn checked(durations: &[String]) -> Result<Value> {
     let durations: Vec<&str> = durations
         .iter()
         .map(|written| written.trim())
@@ -101,18 +139,12 @@ pub fn set_quick_start(path: &Path, durations: &[String]) -> Result<()> {
     {
         bail!("{wrong:?} is not a duration Lumen can read; try 25m, 1h30 or 1:30");
     }
-    section::edit(path, SECTION, |written| {
-        written.insert(
-            "quick-start".into(),
-            Value::Array(
-                durations
-                    .iter()
-                    .map(|written| Value::String((*written).to_string()))
-                    .collect(),
-            ),
-        );
-        Ok(())
-    })
+    Ok(Value::Array(
+        durations
+            .iter()
+            .map(|written| Value::String((*written).to_string()))
+            .collect(),
+    ))
 }
 
 /// `preset`'s fields over `kept`, in the order a person would write them,
@@ -272,6 +304,26 @@ mod tests {
         remove(&file.0, "A").unwrap();
         assert!(read(&file.0).unwrap().presets.is_empty());
         assert!(remove(&file.0, "A").is_err());
+    }
+
+    #[test]
+    fn the_general_row_is_saved_whole_or_not_at_all() {
+        let file = Scratch::new("general", Some(CONFIG));
+
+        set_general(&file.0, None, Ring::UntilDismissed, &["5m".into()]).unwrap();
+        let read_back = read(&file.0).unwrap();
+        assert_eq!(read_back.alert_sound, None);
+        assert_eq!(read_back.ring, Ring::UntilDismissed);
+        assert!(file.contents().contains("\"alert-sound\": null"));
+
+        assert!(set_general(&file.0, Some("Ring02"), Ring::Once, &["later".into()]).is_err());
+        assert_eq!(read(&file.0).unwrap().ring, Ring::UntilDismissed);
+
+        set_alert_sound(&file.0, Some("Ring02")).unwrap();
+        assert_eq!(
+            read(&file.0).unwrap().alert_sound.as_deref(),
+            Some("Ring02")
+        );
     }
 
     #[test]
