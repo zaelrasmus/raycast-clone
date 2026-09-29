@@ -774,6 +774,25 @@ mod tests {
     }
 
     #[test]
+    fn several_currencies_can_be_pinned() {
+        let mut session = session();
+        typed(&mut session, "10");
+        for code in ["JPY", "EUR"] {
+            session.event(Event::ActionInvoked {
+                item: Some(format!("cur-{code}")),
+                action: "pin".into(),
+            });
+        }
+        let list = list_of(typed(&mut session, "11"));
+        let pinned: Vec<&str> = list.sections[0]
+            .items
+            .iter()
+            .map(|item| item.title.as_str())
+            .collect();
+        assert_eq!(pinned, ["EUR", "JPY"]);
+    }
+
+    #[test]
     fn an_unfinished_in_shows_every_currency() {
         let mut session = session();
         assert_eq!(list_of(typed(&mut session, "10 in")).len(), 3);
