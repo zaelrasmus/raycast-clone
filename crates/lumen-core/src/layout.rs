@@ -186,11 +186,30 @@ pub mod view {
     /// Options a scope's picker shows before it scrolls (F7). Drawn with the
     /// action panel's rows, so this many of those, plus its padding.
     pub const PICKER_ROWS: usize = 10;
+
+    /// The list's share of the width when a detail pane is beside it (F10).
+    /// The pane gets the rest: it holds sentences, the rows hold one line.
+    pub const DETAIL_LIST_SHARE: f32 = 0.4;
+
+    /// Padding inside the pane, above and below; the sides use the gutter.
+    pub const DETAIL_PADDING_Y: f32 = 12.0;
+
+    /// Between one block of a detail's body and the next.
+    pub const DETAIL_BLOCK_GAP: f32 = 8.0;
+
+    /// Between a bullet's mark and its text.
+    pub const DETAIL_BULLET_GAP: f32 = 6.0;
+
+    /// Between a metadata row's label and its value.
+    pub const DETAIL_METADATA_GAP: f32 = 12.0;
 }
 
 /// Type sizes. Not themeable (I-11); a theme may change the family only.
 pub mod text {
     pub const QUERY: f32 = 17.0;
+    /// A detail's first-level heading (F10): the query's size, so the word
+    /// being defined reads at the size it was typed.
+    pub const HEADING: f32 = QUERY;
     pub const TITLE: f32 = 13.5;
     pub const SUBTITLE: f32 = 12.0;
     pub const FOOTER: f32 = 11.5;

@@ -274,6 +274,7 @@ impl Session {
         };
 
         View::List(List {
+            showing_detail: false,
             placeholder: Some(format!("Convert from {}", self.from.name)),
             filtering: Filtering::Extension,
             scopes: vec![self.source_scope()],
@@ -370,6 +371,7 @@ impl Session {
             title: Some(self.service.label().into()),
             subtitle: None,
             items: vec![Item {
+                detail: None,
                 id: FAILED.into(),
                 title,
                 subtitle: Some(subtitle),
@@ -435,6 +437,7 @@ fn action(id: &str, title: &str) -> Action {
 /// One currency's row: `US  USD  $7.06          United States Dollar`.
 fn row(to: &'static Currency, value: f64, pinned: bool) -> Item {
     Item {
+        detail: None,
         id: format!("{ROW}{}", to.code),
         title: to.code.into(),
         subtitle: Some(format::shown(value, to)),

@@ -19,6 +19,7 @@ pub mod extension;
 pub mod frecency;
 pub mod item;
 pub mod layout;
+pub mod markdown;
 pub mod net;
 pub mod paths;
 pub mod protocol;

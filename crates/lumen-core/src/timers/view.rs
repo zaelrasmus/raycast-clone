@@ -87,6 +87,7 @@ pub fn view(clock: &Clock, presets: &[Preset], quick: &[Duration], now: Millis) 
     .collect();
 
     View::List(List {
+        showing_detail: false,
         placeholder: Some("Search timers".into()),
         filtering: Filtering::Host,
         scopes: Vec::new(),
@@ -159,6 +160,7 @@ fn item(timer: &Timer, now: Millis) -> Item {
     };
 
     Item {
+        detail: None,
         id: format!("{TIMER}{}", timer.id),
         title: timer.title(),
         // Where a cycle is; what a named timer counts; nothing for an
@@ -201,6 +203,7 @@ fn stopwatch(watch: &Stopwatch, now: Millis) -> Item {
         action(RESUME, "Resume")
     };
     Item {
+        detail: None,
         id: format!("{WATCH}{}", watch.id),
         title: watch.title(),
         subtitle: None,
@@ -218,6 +221,7 @@ fn stopwatch(watch: &Stopwatch, now: Millis) -> Item {
 
 fn preset(preset: &Preset) -> Item {
     Item {
+        detail: None,
         id: format!("{PRESET}{}", preset.name),
         title: preset.name.clone(),
         subtitle: Some(match &preset.cycle {
@@ -241,6 +245,7 @@ fn preset(preset: &Preset) -> Item {
 
 fn quick_start(duration: Duration) -> Item {
     Item {
+        detail: None,
         id: format!("{QUICK}{}", duration.as_secs()),
         title: describe(duration),
         subtitle: None,

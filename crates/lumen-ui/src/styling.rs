@@ -92,6 +92,10 @@ pub mod type_scale {
         px(layout::text::QUERY)
     }
 
+    pub fn heading() -> Pixels {
+        px(layout::text::HEADING)
+    }
+
     pub fn title() -> Pixels {
         px(layout::text::TITLE)
     }

@@ -32,10 +32,16 @@
 //! to show and had no say at all in how it looks.
 
 use gpui::prelude::*;
-use gpui::{AnyElement, ListAlignment, ListState, SharedString, Styled, div, list, px, svg};
+use gpui::{
+    AnyElement, FontStyle, FontWeight, HighlightStyle, ListAlignment, ListState, SharedString,
+    Styled, StyledText, div, list, px, relative, svg,
+};
 use lumen_core::layout;
+use lumen_core::markdown::{self, Block, Span};
 use lumen_core::theme::{Colors, Theme};
-use lumen_core::view::{Accessory, Detail, EmptyState, Icon, Item, List, MAX_ACCESSORIES, Tone};
+use lumen_core::view::{
+    Accessory, Detail, EmptyState, Icon, Item, ItemDetail, List, MAX_ACCESSORIES, MetadataRow, Tone,
+};
 
 use crate::styling::{color, metrics, type_scale};
 
@@ -112,26 +118,178 @@ pub fn render_list(
     // caller -- buys nothing at ten items and complicates the ownership at ten
     // thousand.
     let items: Vec<Item> = source.items().cloned().collect();
+    let detail = source
+        .showing_detail
+        .then(|| items.get(selected).and_then(|item| item.detail.clone()));
     let rows = rows.to_vec();
     let colors = theme.colors.clone();
 
+    let list = div().h(height).py(metrics::list_padding()).child(
+        list(state.clone(), move |index, _window, _cx| {
+            match rows.get(index) {
+                Some(Row::Section(title, subtitle)) => {
+                    render_section(title.clone(), subtitle.clone(), &colors)
+                }
+                Some(Row::Item(item)) => match items.get(*item) {
+                    Some(entry) => render_item(entry, *item == selected, &colors),
+                    None => div().into_any_element(),
+                },
+                None => div().into_any_element(),
+            }
+        })
+        .size_full(),
+    );
+
+    let Some(detail) = detail else {
+        return list.into_any_element();
+    };
+
+    // The list keeps its share whether or not the selected item has a
+    // detail: a pane that came and went with the selection would move every
+    // row sideways (I-10).
     div()
         .h(height)
-        .py(metrics::list_padding())
+        .flex()
         .child(
-            list(state.clone(), move |index, _window, _cx| {
-                match rows.get(index) {
-                    Some(Row::Section(title, subtitle)) => {
-                        render_section(title.clone(), subtitle.clone(), &colors)
-                    }
-                    Some(Row::Item(item)) => match items.get(*item) {
-                        Some(entry) => render_item(entry, *item == selected, &colors),
-                        None => div().into_any_element(),
-                    },
-                    None => div().into_any_element(),
-                }
+            list.w(relative(layout::view::DETAIL_LIST_SHARE))
+                .flex_none(),
+        )
+        .child(render_pane(detail.as_ref(), theme, height))
+        .into_any_element()
+}
+
+/// The pane beside a list, showing the selected item's detail (F10).
+///
+/// It scrolls with the wheel when the body is longer than the window; the
+/// keys stay the list's, so arrowing moves between items as it always does.
+fn render_pane(detail: Option<&ItemDetail>, theme: &Theme, height: gpui::Pixels) -> AnyElement {
+    let colors = &theme.colors;
+
+    div()
+        .id("detail-pane")
+        .h(height)
+        .flex_1()
+        .min_w(px(0.0))
+        .border_l_1()
+        .border_color(color(colors.border_subtle))
+        .px(metrics::gutter())
+        .py(px(layout::view::DETAIL_PADDING_Y))
+        .overflow_y_scroll()
+        .when_some(detail, |pane, detail| {
+            pane.child(render_body(&detail.markdown, &detail.metadata, colors))
+        })
+        .into_any_element()
+}
+
+/// A detail's body and its metadata, stacked.
+fn render_body(source: &str, metadata: &[MetadataRow], colors: &Colors) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(layout::view::DETAIL_BLOCK_GAP))
+        .children(
+            markdown::parse(source)
+                .iter()
+                .map(|block| render_block(block, colors)),
+        )
+        .when(!metadata.is_empty(), |body| {
+            body.child(
+                div()
+                    .pt(px(layout::view::DETAIL_BLOCK_GAP))
+                    .border_t_1()
+                    .border_color(color(colors.border_subtle))
+                    .flex()
+                    .flex_col()
+                    .gap(px(layout::view::DETAIL_BULLET_GAP))
+                    .children(metadata.iter().map(|row| render_metadata(row, colors))),
+            )
+        })
+        .into_any_element()
+}
+
+fn render_block(block: &Block, colors: &Colors) -> AnyElement {
+    match block {
+        Block::Heading(level, spans) => div()
+            .text_size(if *level == 1 {
+                type_scale::heading()
+            } else {
+                type_scale::title()
             })
-            .size_full(),
+            .font_weight(FontWeight::BOLD)
+            .text_color(color(if *level == 3 {
+                colors.text_muted
+            } else {
+                colors.text_primary
+            }))
+            .child(styled(spans, colors))
+            .into_any_element(),
+        Block::Paragraph(spans) => div()
+            .text_size(type_scale::title())
+            .text_color(color(colors.text_primary))
+            .child(styled(spans, colors))
+            .into_any_element(),
+        Block::Bullet(spans) => div()
+            .flex()
+            .gap(px(layout::view::DETAIL_BULLET_GAP))
+            .text_size(type_scale::title())
+            .text_color(color(colors.text_primary))
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(color(colors.text_muted))
+                    .child("\u{2022}"),
+            )
+            .child(div().flex_1().min_w(px(0.0)).child(styled(spans, colors)))
+            .into_any_element(),
+        Block::Rule => div()
+            .border_t_1()
+            .border_color(color(colors.border_subtle))
+            .into_any_element(),
+    }
+}
+
+/// One run of text with its spans styled in place, so a line wraps as one
+/// line rather than as a row of separate pieces.
+fn styled(spans: &[Span], colors: &Colors) -> StyledText {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for span in spans {
+        let start = text.len();
+        text.push_str(&span.text);
+        if !(span.strong || span.emphasis || span.code) {
+            continue;
+        }
+        let style = HighlightStyle {
+            font_weight: span.strong.then_some(FontWeight::BOLD),
+            font_style: span.emphasis.then_some(FontStyle::Italic),
+            // Emphasis is also dimmed: it is how an example reads apart from
+            // the definition above it, in every theme's own muted colour.
+            color: (span.emphasis || span.code).then(|| color(colors.text_muted)),
+            background_color: span.code.then(|| color(colors.selection_background)),
+            ..Default::default()
+        };
+        highlights.push((start..text.len(), style));
+    }
+    StyledText::new(text).with_highlights(highlights)
+}
+
+fn render_metadata(row: &MetadataRow, colors: &Colors) -> AnyElement {
+    div()
+        .flex()
+        .gap(px(layout::view::DETAIL_METADATA_GAP))
+        .text_size(type_scale::footer())
+        .child(
+            div()
+                .flex_none()
+                .text_color(color(colors.text_muted))
+                .child(row.label.clone()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .text_color(color(tone_foreground(row.tone, colors)))
+                .child(row.value.clone()),
         )
         .into_any_element()
 }
@@ -378,47 +536,20 @@ pub fn render_loading(theme: &Theme, height: gpui::Pixels) -> AnyElement {
         .into_any_element()
 }
 
-/// Draw a detail view.
-///
-/// The Markdown is drawn as plain paragraphs for now, which is honest about
-/// where this is: the vocabulary says "a restricted subset of Markdown" and
-/// rendering that subset properly is its own piece of work. What matters at
-/// step 2 is that `Detail` has a place in the renderer and the caller does not
-/// have to care which variant it holds.
+/// Draw a detail view: its Markdown and metadata, as the pane beside a list
+/// draws an item's (F10), over the whole width.
 pub fn render_detail(detail: &Detail, theme: &Theme, height: gpui::Pixels) -> AnyElement {
-    let colors = &theme.colors;
-
     div()
+        .id("detail")
         .h(height)
         .px(metrics::gutter())
-        .py(metrics::list_padding())
-        .flex()
-        .flex_col()
-        .gap(px(layout::view::EMPTY_GAP))
-        .child(
-            div()
-                .flex_1()
-                .overflow_hidden()
-                .text_size(type_scale::title())
-                .text_color(color(colors.text_primary))
-                .child(detail.markdown.clone()),
-        )
-        .children(detail.metadata.iter().map(|row| {
-            div()
-                .flex()
-                .justify_between()
-                .text_size(type_scale::footer())
-                .child(
-                    div()
-                        .text_color(color(colors.text_muted))
-                        .child(row.label.clone()),
-                )
-                .child(
-                    div()
-                        .text_color(color(tone_foreground(row.tone, colors)))
-                        .child(row.value.clone()),
-                )
-        }))
+        .py(px(layout::view::DETAIL_PADDING_Y))
+        .overflow_y_scroll()
+        .child(render_body(
+            &detail.markdown,
+            &detail.metadata,
+            &theme.colors,
+        ))
         .into_any_element()
 }
 

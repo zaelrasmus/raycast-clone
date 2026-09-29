@@ -160,6 +160,7 @@ pub fn refusal(what: &str, timer: Option<&Timer>, now: Millis) -> View {
         shortcut: None,
     };
     View::List(List {
+        showing_detail: false,
         placeholder: Some("Esc to go back".into()),
         filtering: Filtering::Host,
         scopes: Vec::new(),
@@ -168,6 +169,7 @@ pub fn refusal(what: &str, timer: Option<&Timer>, now: Millis) -> View {
             title: Some("Blocked while you focus".into()),
             subtitle: None,
             items: vec![view::Item {
+                detail: None,
                 id: "blocked".into(),
                 title: format!("{what} is blocked"),
                 subtitle: Some(subtitle),

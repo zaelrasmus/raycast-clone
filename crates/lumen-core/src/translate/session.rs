@@ -351,6 +351,7 @@ impl Session {
         };
 
         View::List(List {
+            showing_detail: false,
             placeholder: Some(format!(
                 "Translate {}",
                 super::describe(self.languages.from, &self.languages.to)
@@ -511,6 +512,7 @@ impl Session {
         }
 
         Item {
+            detail: None,
             id: format!("{TARGET}{index}"),
             title,
             subtitle,

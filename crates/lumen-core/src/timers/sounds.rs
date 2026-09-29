@@ -41,6 +41,7 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
     let items = names
         .iter()
         .map(|name| Item {
+            detail: None,
             id: format!("{SOUND}{name}"),
             title: label(name),
             subtitle: None,
@@ -72,6 +73,7 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
         .collect();
 
     View::List(List {
+        showing_detail: false,
         placeholder: Some("Search alert sounds".into()),
         filtering: Filtering::Host,
         scopes: Vec::new(),

@@ -102,6 +102,15 @@ pub struct List {
     pub scopes: Vec<Scope>,
     /// Shown instead of the list when it is empty.
     pub empty: Option<EmptyState>,
+    /// Show the selected item's [`Item::detail`] in a pane beside the list
+    /// (F10).
+    ///
+    /// A property of the list, not of each item, so the pane is there or not
+    /// for the whole view: an item without a detail leaves it blank rather
+    /// than taking it away, and moving the selection never changes the
+    /// layout (I-10). The rows keep their height and narrow to the list's
+    /// share of the width.
+    pub showing_detail: bool,
     pub sections: Vec<Section>,
 }
 
@@ -226,6 +235,27 @@ pub struct Item {
     pub keywords: Vec<String>,
     /// Most important first. The first is what `Enter` runs.
     pub actions: Vec<Action>,
+    /// What the pane shows while this item is selected, when the list is
+    /// [`showing_detail`](List::showing_detail). Ignored otherwise.
+    ///
+    /// Carried by the item rather than sent when the selection moves: the
+    /// pane follows the selection in the same frame, with nothing to wait
+    /// for, which is what a row one line tall needs to be readable at all.
+    pub detail: Option<ItemDetail>,
+}
+
+/// An item's detail, shown in the pane beside the list (F10).
+///
+/// A [`Detail`] without actions: in a list the actions are the selected
+/// row's, and a second set in the pane would be two answers to what `Enter`
+/// does.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ItemDetail {
+    /// The body, in the same restricted Markdown as [`Detail::markdown`].
+    pub markdown: String,
+    /// Labelled values shown under the body.
+    pub metadata: Vec<MetadataRow>,
 }
 
 /// The most accessories a row will draw.
@@ -449,10 +479,19 @@ mod tests {
                     name: "command".into(),
                 }),
             }),
+            showing_detail: true,
             sections: vec![Section {
                 title: Some("Assigned".into()),
                 subtitle: None,
                 items: vec![Item {
+                    detail: Some(ItemDetail {
+                        markdown: "# Fix the seam\n\nThe pane *follows*.".into(),
+                        metadata: vec![MetadataRow {
+                            label: "Opened".into(),
+                            value: "2 days ago".into(),
+                            tone: Tone::Neutral,
+                        }],
+                    }),
                     id: "1".into(),
                     title: "Fix the seam".into(),
                     subtitle: Some("lumen#12".into()),
@@ -524,6 +563,30 @@ mod tests {
         let scope = scope(&["a", "b"], "gone");
         assert!(scope.current().is_none());
         assert_eq!(scope.position(), 0);
+    }
+
+    /// Lists written before the pane existed load without one, and an item
+    /// may carry a detail with only a body.
+    #[test]
+    fn the_detail_pane_is_opt_in() {
+        let View::List(list) = from_json(r#"{ "type": "list" }"#).unwrap() else {
+            panic!("expected a list")
+        };
+        assert!(!list.showing_detail);
+
+        let view = from_json(
+            r##"{ "type": "list", "showing-detail": true, "sections": [{ "items": [
+                { "id": "x", "title": "X", "detail": { "markdown": "# X" } }
+            ] }] }"##,
+        )
+        .unwrap();
+        let View::List(list) = view else {
+            panic!("expected a list")
+        };
+        assert!(list.showing_detail);
+        let detail = list.item(0).unwrap().detail.as_ref().unwrap();
+        assert_eq!(detail.markdown, "# X");
+        assert!(detail.metadata.is_empty());
     }
 
     /// Lists written before scopes existed must still load, with none.

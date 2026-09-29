@@ -852,12 +852,25 @@ impl Launcher {
         let cap = self.config.window.visible_rows as f32 * lumen_core::layout::ROW_HEIGHT;
 
         let mut used = 0.0;
+        let mut all_fit = true;
         for row in &state.rows {
             let height = crate::view::row_height(row);
             if used + height > cap {
+                all_fit = false;
                 break;
             }
             used += height;
+        }
+
+        // A list with a detail pane is as tall as the window allows, however
+        // few rows it has (F10): the pane holds sentences, and sizing the
+        // window to two senses would leave it no room to show either. When
+        // the rows overflow, they still end on a whole row.
+        if all_fit
+            && let lumen_core::view::View::List(list) = &state.view
+            && list.showing_detail
+        {
+            return cap;
         }
 
         // A single row taller than the whole cap is shown anyway: an empty
