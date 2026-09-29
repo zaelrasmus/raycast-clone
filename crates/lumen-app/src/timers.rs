@@ -248,6 +248,10 @@ impl Timers {
         let length = duration::describe(cycle.length());
         let title = timer.title();
         let (heading, body) = match cycle.phase {
+            Phase::Work if cycle.round == 1 => (
+                "New set",
+                format!("{title} \u{00b7} work 1 of {}, {length}", cycle.plan.rounds),
+            ),
             Phase::Work => (
                 "Back to work",
                 format!(

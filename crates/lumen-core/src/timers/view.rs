@@ -28,6 +28,8 @@ const DISMISS: &str = "dismiss";
 const WATCH: &str = "watch-";
 const RESET: &str = "reset";
 const SKIP: &str = "skip";
+const REPEAT: &str = "repeat";
+const ONE_SET: &str = "one-set";
 const PRESET: &str = "preset-";
 const QUICK: &str = "quick-";
 
@@ -118,8 +120,13 @@ fn item(timer: &Timer, now: Millis) -> Item {
 
     // A cycle can move on early: a break not needed, work done sooner.
     let mut actions = vec![toggle];
-    if timer.cycle.is_some() && !timer.is_ringing() {
+    if let Some(cycle) = timer.cycle.filter(|_| !timer.is_ringing()) {
         actions.push(action(SKIP, "Skip to Next Phase"));
+        actions.push(if cycle.plan.repeat {
+            action(ONE_SET, "End After This Set")
+        } else {
+            action(REPEAT, "Repeat the Set")
+        });
     }
     actions.extend([action(RESTART, "Restart"), action(STOP, "Stop")]);
 
@@ -267,6 +274,8 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
         RESTART => clock.restart(id, now),
         STOP | DISMISS => clock.stop(id).is_some(),
         SKIP => clock.skip(id, now),
+        REPEAT => clock.set_repeat(id, true),
+        ONE_SET => clock.set_repeat(id, false),
         _ => false,
     }
 }
@@ -468,6 +477,14 @@ mod tests {
         assert_eq!(row.title, "Pomodoro");
         assert_eq!(row.subtitle.as_deref(), Some("Work 1 of 4"));
         assert_eq!(row.actions[1].title, "Skip to Next Phase");
+        assert_eq!(row.actions[2].title, "Repeat the Set");
+        assert!(act(
+            &mut clock,
+            &invoke(&format!("timer-{id}"), "repeat"),
+            &[],
+            0
+        ));
+        assert!(clock.get(id).unwrap().cycle.unwrap().plan.repeat);
 
         assert!(act(
             &mut clock,

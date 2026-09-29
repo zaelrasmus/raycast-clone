@@ -70,6 +70,8 @@ enum Form {
         short_break: Entity<TextField>,
         long_break: Entity<TextField>,
         rounds: Entity<TextField>,
+        /// After the set: end, or start again.
+        repeat: Entity<Select>,
     },
 }
 
@@ -84,6 +86,7 @@ impl Form {
                 short_break,
                 long_break,
                 rounds,
+                ..
             } => vec![name, alias, duration, short_break, long_break, rounds],
         }
     }
@@ -452,7 +455,9 @@ impl TimersPage {
                 short_break,
                 long_break,
                 rounds,
+                repeat,
             } => {
+                let repeat = repeat.read(cx).value() == Some("repeat");
                 let written = rounds.read(cx).text().trim().to_string();
                 let rounds = match written.as_str() {
                     "" => None,
@@ -473,6 +478,7 @@ impl TimersPage {
                     short_break: optional(short_break),
                     long_break: optional(long_break),
                     rounds,
+                    repeat,
                     ..store::preset(
                         name.read(cx).text().trim(),
                         alias.read(cx).text(),
@@ -672,6 +678,19 @@ fn preset_form(preset: &PresetConfig, colors: &Colors, cx: &mut App) -> Form {
             "4",
             cx,
         ),
+        repeat: cx.new(|cx| {
+            let choices = vec![
+                Choice {
+                    value: None,
+                    label: "End".into(),
+                },
+                Choice {
+                    value: Some("repeat".into()),
+                    label: "Start again, until stopped".into(),
+                },
+            ];
+            Select::new(choices, usize::from(preset.repeat), colors.clone(), cx)
+        }),
     }
 }
 
@@ -900,6 +919,7 @@ impl TimersPage {
                 short_break,
                 long_break,
                 rounds,
+                repeat,
             } => (
                 vec![
                     field_row("Name", name.clone().into_any_element()).into_any_element(),
@@ -909,6 +929,8 @@ impl TimersPage {
                     field_row("Long break", long_break.clone().into_any_element())
                         .into_any_element(),
                     field_row("Rounds", rounds.clone().into_any_element()).into_any_element(),
+                    field_row("After the set", repeat.clone().into_any_element())
+                        .into_any_element(),
                 ],
                 vec![
                     "Its row in the launcher, and the timer's name while it runs.",
@@ -917,6 +939,7 @@ impl TimersPage {
                     "Between rounds. Set, the timer cycles work and break by itself.",
                     "After the last round, then the set ends. Empty: it ends with the work.",
                     "How many work rounds in the set: 1 to 12. Empty is 4.",
+                    "Start again repeats the set until you stop it. Ctrl+K on its row starts it the other way.",
                 ],
             ),
         };

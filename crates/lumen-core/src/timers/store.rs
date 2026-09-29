@@ -180,6 +180,7 @@ fn fields(preset: &PresetConfig, mut kept: Map<String, Value>) -> Map<String, Va
         ("short-break", text(&preset.short_break)),
         ("long-break", text(&preset.long_break)),
         ("rounds", preset.rounds.map(Value::from)),
+        ("repeat", preset.repeat.then_some(Value::Bool(true))),
     ];
     for (key, value) in cycle {
         if let Some(value) = value {
@@ -193,6 +194,7 @@ fn fields(preset: &PresetConfig, mut kept: Map<String, Value>) -> Map<String, Va
         "short-break",
         "long-break",
         "rounds",
+        "repeat",
     ] {
         kept.remove(key);
     }

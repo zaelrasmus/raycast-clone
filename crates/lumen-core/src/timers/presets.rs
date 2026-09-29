@@ -79,6 +79,8 @@ pub struct PresetConfig {
     pub long_break: Option<String>,
     /// How many work phases; four when absent.
     pub rounds: Option<u32>,
+    /// Start the set again after it ends, until stopped.
+    pub repeat: bool,
 }
 
 /// A preset that makes sense.
@@ -187,7 +189,7 @@ fn plan(name: &str, written: &PresetConfig, work: Duration) -> Result<Option<Pla
     };
     let (short, long) = (text(&written.short_break), text(&written.long_break));
     let Some(short) = short else {
-        if long.is_some() || written.rounds.is_some() {
+        if long.is_some() || written.rounds.is_some() || written.repeat {
             return Err(format!(
                 "{name:?} has rounds or a long break but no break; add one to make it a cycle"
             ));
@@ -211,6 +213,7 @@ fn plan(name: &str, written: &PresetConfig, work: Duration) -> Result<Option<Pla
         break_secs: short.as_secs(),
         long_break_secs: long.map_or(0, |long| long.as_secs()),
         rounds,
+        repeat: written.repeat,
     }))
 }
 
@@ -263,6 +266,14 @@ mod tests {
             )
         };
         assert!(with(r#""rounds": 3"#).is_err());
+        assert!(with(r#""repeat": true"#).is_err());
+        assert!(
+            with(r#""short-break": "5m", "repeat": true"#)
+                .unwrap()
+                .cycle
+                .unwrap()
+                .repeat
+        );
         assert!(with(r#""long-break": "15m""#).is_err());
         assert!(with(r#""short-break": "soon""#).is_err());
         assert!(with(r#""short-break": "5m", "rounds": 0"#).is_err());

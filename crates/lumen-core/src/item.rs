@@ -215,7 +215,10 @@ impl Action {
             Action::Timer(crate::timers::Command::StopNearest) => "Stop",
             Action::Timer(crate::timers::Command::DismissRinging) => "Dismiss",
             Action::Timer(crate::timers::Command::StartStopwatch { .. }) => "Start",
-            Action::Timer(crate::timers::Command::StartCycle { .. }) => "Start",
+            Action::Timer(crate::timers::Command::StartCycle { plan, .. }) if plan.repeat => {
+                "Start Repeating"
+            }
+            Action::Timer(crate::timers::Command::StartCycle { .. }) => "Start One Set",
         }
     }
 

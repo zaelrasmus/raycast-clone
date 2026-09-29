@@ -49,9 +49,25 @@ fn preset(preset: &Preset) -> Item {
         subtitle: Some(format!("Start {}", preset.describe())),
         icon: None,
         keywords,
-        actions: vec![start(preset)],
+        actions: starts(preset),
         kind: Kind::Timer,
     }
+}
+
+/// `start`, and for a cycle the other way of ending -- one set or repeating --
+/// second, where `Ctrl+K` reaches it.
+fn starts(preset: &Preset) -> Vec<Action> {
+    let mut actions = vec![start(preset)];
+    if let Some(plan) = preset.cycle {
+        actions.push(Action::Timer(Command::StartCycle {
+            name: Some(preset.name.clone()),
+            plan: Plan {
+                repeat: !plan.repeat,
+                ..plan
+            },
+        }));
+    }
+    actions
 }
 
 /// What starting `preset` asks the daemon for.
@@ -115,10 +131,16 @@ impl Provider for TimersProvider {
                 subtitle: Some(Plan::POMODORO.describe()),
                 icon: None,
                 keywords: keywords(&["pomodoro", "focus", "tomato", "work", "break"]),
-                actions: vec![Action::Timer(Command::StartCycle {
-                    name: Some("Pomodoro".into()),
-                    plan: Plan::POMODORO,
-                })],
+                actions: vec![
+                    Action::Timer(Command::StartCycle {
+                        name: Some("Pomodoro".into()),
+                        plan: Plan::POMODORO,
+                    }),
+                    Action::Timer(Command::StartCycle {
+                        name: Some("Pomodoro".into()),
+                        plan: Plan::POMODORO.repeating(),
+                    }),
+                ],
                 kind: Kind::Timer,
             },
             Item {
@@ -290,6 +312,8 @@ mod tests {
             Action::Timer(Command::StartCycle { .. })
         ));
         assert!(items[0].keywords.contains(&"pomodoro".to_string()));
+        // The other ending, one Ctrl+K away.
+        assert_eq!(items[0].actions[1].verb(), "Start Repeating");
     }
 
     #[test]

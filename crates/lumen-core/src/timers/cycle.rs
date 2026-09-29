@@ -6,12 +6,14 @@
 //! timer's deadline passes. Each phase is an ordinary countdown, so pausing,
 //! restarting and the one sleep until the next deadline work unchanged.
 //!
-//! # One set, then done
+//! # One set, then done -- unless asked to repeat
 //!
-//! A plan has an end: `rounds` work phases with a break between each, then
-//! the long break, and the timer ends like any other -- with the alert, and
-//! ringing if asked. A cycle that went round forever would still be going at
-//! midnight, which is not what anyone starting one at nine meant.
+//! By default a plan has an end: `rounds` work phases with a break between
+//! each, then the long break, and the timer ends like any other -- with the
+//! alert, and ringing if asked. A plan that `repeat`s starts the set again
+//! after the long break instead, until it is stopped; that is a choice made
+//! on purpose, per preset or per start, because a cycle nobody meant to
+//! leave running would still be going at midnight.
 
 use std::time::Duration;
 
@@ -32,6 +34,10 @@ pub struct Plan {
     /// After the last work phase. Zero is none: the cycle ends with the work.
     pub long_break_secs: u64,
     pub rounds: u32,
+    /// Start the set again after it ends, until stopped. Absent in a file
+    /// written before it existed, and so off.
+    #[serde(default)]
+    pub repeat: bool,
 }
 
 impl Plan {
@@ -42,7 +48,16 @@ impl Plan {
         break_secs: 5 * 60,
         long_break_secs: 15 * 60,
         rounds: 4,
+        repeat: false,
     };
+
+    /// The same plan, going round again after each set.
+    pub fn repeating(self) -> Plan {
+        Plan {
+            repeat: true,
+            ..self
+        }
+    }
 
     /// The plan in words: "4 × 25 min, 5 min breaks, then 15 min".
     pub fn describe(&self) -> String {
@@ -57,6 +72,9 @@ impl Plan {
                 ", then {}",
                 describe(Duration::from_secs(self.long_break_secs))
             ));
+        }
+        if self.repeat {
+            text.push_str(", repeating");
         }
         text
     }
@@ -101,11 +119,17 @@ impl Cycle {
     /// The phase after this one, or `None` when the plan is done.
     pub fn next(&self) -> Option<Cycle> {
         let last = self.round >= self.plan.rounds;
+        let repeat = self.plan.repeat;
         let (round, phase) = match self.phase {
             Phase::Work if !last => (self.round, Phase::Break),
             Phase::Work if self.plan.long_break_secs > 0 => (self.round, Phase::LongBreak),
-            Phase::Work | Phase::LongBreak => return None,
+            // No long break: a repeating set rests with an ordinary one.
+            Phase::Work if repeat => (self.round, Phase::Break),
+            Phase::Work => return None,
+            Phase::Break if last => (1, Phase::Work),
             Phase::Break => (self.round + 1, Phase::Work),
+            Phase::LongBreak if repeat => (1, Phase::Work),
+            Phase::LongBreak => return None,
         };
         Some(Cycle {
             plan: self.plan,
@@ -152,6 +176,19 @@ impl Clock {
         id
     }
 
+    /// Make a running cycle repeat, or end after this set. Returns whether
+    /// anything changed.
+    pub fn set_repeat(&mut self, id: u64, repeat: bool) -> bool {
+        let Some(cycle) = self.get_mut(id).and_then(|timer| timer.cycle.as_mut()) else {
+            return false;
+        };
+        if cycle.plan.repeat == repeat {
+            return false;
+        }
+        cycle.plan.repeat = repeat;
+        true
+    }
+
     /// End the phase now and start the next: a break not needed, a work
     /// phase finished early. The last phase skipped is the cycle stopped.
     pub fn skip(&mut self, id: u64, now: Millis) -> bool {
@@ -180,6 +217,7 @@ mod tests {
             break_secs: 5 * 60,
             long_break_secs: 15 * 60,
             rounds: 2,
+            repeat: false,
         }
     }
 
@@ -205,6 +243,57 @@ mod tests {
                 (2, Phase::LongBreak)
             ]
         );
+    }
+
+    #[test]
+    fn a_repeating_plan_starts_again_after_the_long_break() {
+        let long_break = Cycle {
+            plan: plan().repeating(),
+            round: 2,
+            phase: Phase::LongBreak,
+        };
+        let next = long_break.next().unwrap();
+        assert_eq!((next.round, next.phase), (1, Phase::Work));
+    }
+
+    #[test]
+    fn a_repeating_plan_with_no_long_break_rests_with_a_short_one() {
+        let last_work = Cycle {
+            plan: Plan {
+                long_break_secs: 0,
+                ..plan().repeating()
+            },
+            round: 2,
+            phase: Phase::Work,
+        };
+        let rest = last_work.next().unwrap();
+        assert_eq!((rest.round, rest.phase), (2, Phase::Break));
+        let again = rest.next().unwrap();
+        assert_eq!((again.round, again.phase), (1, Phase::Work));
+    }
+
+    #[test]
+    fn repeating_can_be_turned_on_and_off_while_it_runs() {
+        let mut clock = Clock::default();
+        let id = clock.start_cycle(plan(), None, 0);
+        assert!(clock.set_repeat(id, true));
+        assert!(!clock.set_repeat(id, true));
+        assert!(clock.get(id).unwrap().cycle.unwrap().plan.repeat);
+
+        // Past the end of one set, it is still going.
+        clock.expire(2 * 60 * MIN, false);
+        assert_eq!(clock.timers().len(), 1);
+        assert!(clock.set_repeat(id, false));
+    }
+
+    /// Files written before `repeat` existed still load.
+    #[test]
+    fn a_plan_without_repeat_does_not_repeat() {
+        let plan: Plan = serde_json::from_str(
+            r#"{ "work-secs": 1500, "break-secs": 300, "long-break-secs": 900, "rounds": 4 }"#,
+        )
+        .unwrap();
+        assert_eq!(plan, Plan::POMODORO);
     }
 
     #[test]
@@ -289,6 +378,12 @@ mod tests {
         assert_eq!(
             Plan::POMODORO.describe(),
             "4 \u{00d7} 25 min, 5 min breaks, then 15 min"
+        );
+        assert!(
+            Plan::POMODORO
+                .repeating()
+                .describe()
+                .ends_with(", repeating")
         );
     }
 

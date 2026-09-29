@@ -109,6 +109,8 @@ an aesthetic worth looking at fifty times a day.
   15 minute break at the end, moving on by itself and telling you at each
   change; *Skip to Next Phase* is in `Ctrl+K`. Give any preset a *Break* in
   settings and it cycles the same way, with your own lengths and rounds.
+  A set ends after its long break, or repeats until you stop it: choose
+  per preset, with `Ctrl+K` when starting, or on the running timer.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.

@@ -644,6 +644,15 @@ Slice 5 is built:
   rounds without a break is refused rather than guessed at.
 - **Verified end to end,** not only in tests: a 3-second, two-round cycle in
   `timers.json` went work, break, work, done under the real daemon.
+- **Repeating is a choice, made three ways.** A plan may `repeat`: after
+  the long break -- or after an ordinary break, when there is no long one --
+  the set starts again at work 1 of N, announced as *New set*, until
+  stopped. Off by default, as one set then done is still the safer thing
+  to leave running. On per preset (*After the set*: End or Start again, in
+  settings), per start (`Ctrl+K` on *Start Pomodoro*, or on any cycling
+  preset, offers the other ending), and while it runs (*Repeat the Set* /
+  *End After This Set* on its row in *Timers*). A `timers.json` written
+  before the field existed reads as not repeating.
 - **Laps stay out.** Asked about and declined: they are the one piece that
   would need new interface, for a use -- timing splits -- that none of the
   intended ones have.
