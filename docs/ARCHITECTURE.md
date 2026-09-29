@@ -116,6 +116,7 @@ once Lumen was measured well inside them (7.36).
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
 | **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
+| **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **In progress.** See F9 decisions |
 
 ### F4 build order is not optional
 
@@ -767,6 +768,127 @@ After living with it, three things were changed before F8 merged:
     the preset was cut before it could lead -- `zq` worked only because
     it is rare. An exact name or alias is now taken from the index when
     the matcher did not return it; quicklink aliases had the same gap.
+
+### F9 decisions
+
+The shape is Raycast's *Currency Exchange* extension (MIT, by xeric): open
+it, pick the currency you have, type an amount, read it in every other
+currency. Its source taught the one thing that matters: **the network is
+not on the typing path.** It fetches one table of rates, base USD, once a
+day, and every conversion after that -- CAD to AED included -- is a
+division. So unlike F7, a currency view is not a request per keystroke,
+and the design is about the table: where it comes from, where it is kept,
+and how old it is allowed to be.
+
+- **A table, fetched at most once per publication.** A rate source returns
+  every rate against one base, when it was published and when the next
+  table is due. The table is kept in `currency.json` in the data folder
+  with those two moments, and opening the view with a table that is not
+  yet due makes no request at all. A table that is due is still shown at
+  once, with its real date, while one refresh runs on a thread; its answer
+  redraws the view. Nothing is scheduled: a daemon that is never asked for
+  a conversion never fetches one, so the idle budget does not move.
+- **Keyless by default.** `open.er-api.com/v6/latest/USD` is
+  ExchangeRate-API's open endpoint: no key, 166 currencies, a new table
+  daily, a `429` for twenty minutes to whoever asks too often -- which a
+  once-a-day cache never does. Its terms ask for attribution, which the
+  view gives in the line that carries the date: *Rates of 28 Sep 2026 ·
+  ExchangeRate-API*. So the command works on first use, as Translate does.
+  UniRateAPI answered `401 Missing API key` without one, so it cannot be
+  the default.
+- **A source behind a trait, chosen by the user.** `currency.service` in
+  `config.json` picks one: `open` (the default), `exchangerate-api` with
+  `currency.api-key` (the same data, the keyed endpoint and its quota), or
+  `unirate` with the same key field. No fallback between them, as in F7:
+  the user chose who is asked. The key is never logged (`Debug` by hand)
+  and never shown back. The cached table records its source, so changing
+  service fetches afresh rather than showing one service's rates under
+  another's name. A *Currency* settings page edits the section through a
+  store, like *Translation*.
+- **Historical rates are left a door, not built.** The keyless endpoint has
+  no history (`/v6/history` is a `404`); ExchangeRate-API and UniRateAPI
+  sell it. Frankfurter (ECB data) is keyless with history back to 1999,
+  but covers thirty currencies. So the source contract asks for rates
+  *latest* or *on a day*, the cache is keyed by both, and every source
+  built now refuses a day. A dated query (`10 usd in cad at 2025-01-02`) is
+  then one more source and one more clause in the parser, not a redesign.
+- **A built-in view source, not an extension.** `ViewSource::Currency`
+  speaks the `lumen_core::view` contract in process, under
+  `Filtering::Extension`, as Translate does (I-13). The decisions are a
+  value: `currency::session::Session` takes events and tables and returns
+  effects -- render, fetch, copy, remember -- and is unit-tested;
+  `lumen-app/src/currency.rs` owns the thread, the client and the file.
+  The client is F7's blocking `zed-reqwest`, dropped when the fetch ends:
+  one request a day does not need a pool kept warm.
+- **What is typed:** `<amount> [<code>] [in|to <filter>]`.
+  - The amount is the calculator's arithmetic, so `1+2`, `(3*4)/2` and
+    `10%3` work. The calculator's gate -- an operator must appear -- is
+    what keeps the root list quiet, and it is wrong in a view whose whole
+    purpose is a number, so the gate and the evaluator are separated and
+    the view asks for the evaluator alone: `10` is an amount here.
+  - A code after the amount is the source for this query, over the one
+    picked in *From*: `10 cad in eur` converts Canadian dollars whatever
+    the picker says. The picker is the default, the text is the exception.
+  - The filter after `in` or `to` narrows the rows with the root list's
+    matcher, against each currency's code, name and **every country that
+    uses it**, from ISO 4217 (published 2026-09-17): `in canada` finds CAD,
+    `in spain` finds EUR, and `in c` ranks word starts -- CAD, CHF, CNY --
+    first, exactly as root search would. An unfinished `10 in` shows every
+    currency rather than none.
+- **One row per currency, in the screenshot's shape.** The icon is the
+  region's two letters (`Icon::Text`, since Windows ships no flag emoji),
+  the title the code, the subtitle the amount with its symbol where one is
+  common (`$`, `CA$`, `€`, `£`, `¥`, ...) and the code otherwise, the
+  accessory the currency's name. The rows are the table's order, by code,
+  with the source left out; the set of rows changes only when the filter
+  does, never while a table arrives (I-10). `Enter` copies the plain
+  number -- no symbol, no grouping -- because it is pasted into forms.
+- **Amounts in the currency's own units.** Two decimals for most, none for
+  the yen or the won (ISO 4217's minor units), grouped by thousands. An
+  amount below one gets the decimals it needs to show three significant
+  digits, so ten dong in dollars is `$0.000379`, not `$0.00`.
+- **The date is a section subtitle,** which the vocabulary gains: `Section`
+  had only a title, and the screenshot's dimmer second half is exactly a
+  subtitle. One optional field, in the one definition (I-13), drawn in the
+  same header row so no height changes (I-10). The date is the table's
+  publication date in UTC, which is when it is published.
+- **The source is a scope, and the picker learns to search.** *From* is
+  the scope Translate introduced, with 166 options. Arrowing through 166
+  is not choosing, so typing while the picker is open filters its options
+  with the same matcher -- `can`, `yen`, `japan` -- and closing it gives
+  the search field back its query. Translate's thirty languages get the
+  same for free. The chosen source is remembered in `currency.json`, across
+  restarts: the currency someone holds does not change daily.
+- **Pins.** *Pin* in the action panel keeps a currency in a section of its
+  own above the rest, remembered with the source. The filter applies to
+  both sections.
+- **Offline is F7's sorting, and it matters less.** With a table in the
+  cache the view works offline and the date says how old it is. Only with
+  no table at all is *No internet connection* a row, with *Try Again*.
+- **The root list answers `10 usd in cad`, from the cache alone.** F7 kept
+  translation out of the root list because it is a request per keystroke.
+  A conversion is not: it is a division against a table in memory, so a
+  root answer costs what the calculator's does, and I-3 holds as long as
+  the provider never fetches. The launcher holds the table the daemon last
+  loaded; the provider reads it and nothing else. It answers only when
+  the query is unambiguous -- an amount, a known source code, `in` or `to`,
+  and a target that is exactly a code, a currency name or a country --
+  and says both sides: *14.16 CAD*, with *10 USD = 14.16 CAD · rates of
+  28 Sep 2026* beneath. Recognising such a query with no table, or a table
+  that is due, asks the daemon for a refresh in the background; the answer
+  appears when it lands, and the keystroke in hand is never held for it.
+- **The slices,** one acceptance criterion each:
+  1. *Currency* opens a view; typing `1+2` shows every conversion from
+     USD with the table's date and source; `Enter` copies. Keyless fetch,
+     the cache, and offline.
+  2. A searchable *From* picker, remembered across restarts.
+  3. `in <filter>` with the root matcher and country names, and a code
+     after the amount as this query's source.
+  4. Pins.
+  5. `10 usd in cad` answered in the root list from the cache.
+  6. The service and key in `config.json` and a *Currency* settings page.
+
+  The idle baseline is measured before slice 1, and again after 5.
 
 ---
 
