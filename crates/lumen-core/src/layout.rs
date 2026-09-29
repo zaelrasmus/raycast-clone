@@ -117,6 +117,11 @@ pub mod form {
     /// fallback checkbox.
     pub const HEIGHT_WITH_SETTINGS_ROWS: f32 = HEIGHT + ROW_HEIGHT * 2.0;
 
+    /// One of a duration's three fields -- hours, minutes, seconds -- and
+    /// the gap before and after its unit (F8).
+    pub const DURATION_FIELD_WIDTH: f32 = 56.0;
+    pub const DURATION_GAP: f32 = 6.0;
+
     /// The fallback checkbox, and the gap before its caption.
     pub const CHECKBOX_SIZE: f32 = 16.0;
     pub const CHECKBOX_RADIUS: f32 = 4.0;

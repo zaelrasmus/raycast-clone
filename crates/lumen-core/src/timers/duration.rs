@@ -207,6 +207,30 @@ pub fn clock_face(remaining: Duration) -> String {
     }
 }
 
+/// Whole hours, minutes and seconds: what the settings form's three fields
+/// show.
+pub fn split(duration: Duration) -> (u64, u64, u64) {
+    let total = duration.as_secs();
+    (total / 3600, total / 60 % 60, total % 60)
+}
+
+/// A duration as the launcher's grammar writes it, for `config.json`:
+/// `25m`, `1h30m`, `1m30s`, `45s`. The form picks the numbers; the file
+/// keeps a string a person can still read and edit.
+pub fn written(duration: Duration) -> String {
+    let (hours, minutes, seconds) = split(duration);
+    let written: String = [(hours, "h"), (minutes, "m"), (seconds, "s")]
+        .into_iter()
+        .filter(|(value, _)| *value > 0)
+        .map(|(value, unit)| format!("{value}{unit}"))
+        .collect();
+    if written.is_empty() {
+        "0s".into()
+    } else {
+        written
+    }
+}
+
 /// Time counted, as a stopwatch reads it: `0:00`, `12:34`, `1:02:03`.
 ///
 /// Rounded down, the other way from [`clock_face`]: a stopwatch started half a
@@ -311,6 +335,22 @@ mod tests {
         assert_eq!(describe(Duration::from_secs(90 * 60)), "1 h 30 min");
         assert_eq!(describe(Duration::from_secs(45)), "45 s");
         assert_eq!(describe(Duration::from_secs(3601)), "1 h 1 s");
+    }
+
+    #[test]
+    fn a_duration_is_written_back_so_the_parser_reads_it_the_same() {
+        for (secs, text) in [
+            (1500, "25m"),
+            (5400, "1h30m"),
+            (90, "1m30s"),
+            (45, "45s"),
+            (3661, "1h1m1s"),
+        ] {
+            let duration = Duration::from_secs(secs);
+            assert_eq!(written(duration), text);
+            assert_eq!(parse(text).unwrap().duration, duration, "{text}");
+        }
+        assert_eq!(split(Duration::from_secs(3661)), (1, 1, 1));
     }
 
     #[test]

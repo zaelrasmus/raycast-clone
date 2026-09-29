@@ -1103,7 +1103,7 @@ impl Settings {
             ),
             Page::Quicklinks => (self.quicklinks.read(cx).status(cx), false),
             Page::Translation => (self.translation.read(cx).status(), false),
-            Page::Timers => (self.timers.read(cx).status(), false),
+            Page::Timers => (self.timers.read(cx).status(cx), false),
         };
 
         div()

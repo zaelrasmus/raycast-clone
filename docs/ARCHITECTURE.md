@@ -692,6 +692,24 @@ Slice 6 is built, and with it F8:
   not a Tab stop, did not mark the form edited and did not follow the theme.
   Every dropdown on the page now goes through one list that does all three.
 
+After living with it, three things were changed before F8 merged:
+
+- **A duration in a form is three numbers.** `25m` and `1h30` are right in
+  the launcher, where typing is the point, and wrong in a form, where a
+  person wants to see which box is the minutes. `DurationInput` is three
+  short fields -- hours, minutes, seconds -- used for a preset's duration,
+  break and long break. An empty field is zero and a field may overflow
+  (`90` minutes). What is saved is still written in the launcher's grammar
+  (`duration::written`: `1h30m`), so `config.json` stays readable by hand
+  and reads back to the same numbers.
+- **A preset shows what matters now.** Name, alias, duration, focus and
+  *Cycle*; only with *Cycle* on do break, long break, rounds and *After the
+  set* appear. The form is `TimerForm`, its own entity with its own key
+  context, so the launcher can host the same one (below).
+- **Focus has its own row.** The blocked apps and sites were in *General*
+  beside the alert sound, which they have nothing to do with. The list is
+  now *General*, *Focus*, then the presets.
+
 ---
 
 ## 7. Deviations from the plan

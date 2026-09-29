@@ -78,6 +78,9 @@ const LIST_CONTEXT: &str = crate::quicklinks_page::LIST_CONTEXT;
 const PRESET_FORM_CONTEXT: &str = crate::translate_page::FORM_CONTEXT;
 const PRESET_LIST_CONTEXT: &str = crate::translate_page::LIST_CONTEXT;
 
+/// The timer preset form, in the launcher and in settings (F8).
+const TIMER_FORM_CONTEXT: &str = crate::timer_form::CONTEXT;
+
 /// A dropdown, inside a form.
 const SELECT_CONTEXT: &str = crate::select::CONTEXT;
 
@@ -343,6 +346,12 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("enter", SubmitForm, Some(FORM_CONTEXT)),
         KeyBinding::new("escape", CancelForm, Some(FORM_CONTEXT)),
         // The translation page's form moves and saves the same way (F7).
+        KeyBinding::new("tab", NextField, Some(TIMER_FORM_CONTEXT)),
+        KeyBinding::new("down", NextField, Some(TIMER_FORM_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousField, Some(TIMER_FORM_CONTEXT)),
+        KeyBinding::new("up", PreviousField, Some(TIMER_FORM_CONTEXT)),
+        KeyBinding::new("enter", SubmitForm, Some(TIMER_FORM_CONTEXT)),
+        KeyBinding::new("escape", CancelForm, Some(TIMER_FORM_CONTEXT)),
         KeyBinding::new("tab", NextField, Some(PRESET_FORM_CONTEXT)),
         KeyBinding::new("down", NextField, Some(PRESET_FORM_CONTEXT)),
         KeyBinding::new("shift-tab", PreviousField, Some(PRESET_FORM_CONTEXT)),

@@ -97,6 +97,17 @@ pub fn set_alert_sound(path: &Path, sound: Option<&str>) -> Result<()> {
 /// durations, in one write so a refusal changes none of them.
 pub fn set_general(path: &Path, general: &General) -> Result<()> {
     let durations = checked(&general.durations)?;
+    section::edit(path, SECTION, |written| {
+        written.insert("alert-sound".into(), sound_value(general.sound.as_deref()));
+        written.insert("ring".into(), serde_json::to_value(general.ring)?);
+        written.insert("quick-start".into(), durations);
+        Ok(())
+    })
+}
+
+/// Save what focus blocks: application names and sites, as typed; empty
+/// entries are dropped.
+pub fn set_blocked(path: &Path, apps: &[String], sites: &[String]) -> Result<()> {
     let list = |values: &[String]| {
         Value::Array(
             values
@@ -108,11 +119,8 @@ pub fn set_general(path: &Path, general: &General) -> Result<()> {
         )
     };
     section::edit(path, SECTION, |written| {
-        written.insert("alert-sound".into(), sound_value(general.sound.as_deref()));
-        written.insert("ring".into(), serde_json::to_value(general.ring)?);
-        written.insert("quick-start".into(), durations);
-        written.insert("blocked-apps".into(), list(&general.blocked_apps));
-        written.insert("blocked-sites".into(), list(&general.blocked_sites));
+        written.insert("blocked-apps".into(), list(apps));
+        written.insert("blocked-sites".into(), list(sites));
         Ok(())
     })
 }
@@ -123,8 +131,6 @@ pub struct General {
     pub sound: Option<String>,
     pub ring: Ring,
     pub durations: Vec<String>,
-    pub blocked_apps: Vec<String>,
-    pub blocked_sites: Vec<String>,
 }
 
 fn sound_value(sound: Option<&str>) -> Value {
@@ -383,10 +389,14 @@ mod tests {
             sound: None,
             ring: Ring::UntilDismissed,
             durations: vec!["5m".into()],
-            blocked_apps: vec![" Discord ".into(), String::new()],
-            blocked_sites: vec!["youtube.com".into()],
         };
         set_general(&file.0, &general).unwrap();
+        set_blocked(
+            &file.0,
+            &[" Discord ".into(), String::new()],
+            &["youtube.com".into()],
+        )
+        .unwrap();
         let read_back = read(&file.0).unwrap();
         assert_eq!(read_back.alert_sound, None);
         assert_eq!(read_back.ring, Ring::UntilDismissed);

@@ -1,11 +1,18 @@
-//! The Timers page of the settings window (F8, slice 2).
+//! The Timers page of the settings window (F8).
 //!
-//! The general settings -- the alert sound, how long it rings, the quick
-//! durations -- and the presets, side by side, in the Translation
-//! page's shape: a list on the left, the selected thing's form on the right,
-//! a question before a delete, and the same keys -- it shares that page's
-//! key contexts and list actions, so there is one way to move through a list
-//! of presets, not two.
+//! Three kinds of row in the list on the left, each with its form on the
+//! right: *General* -- the alert sound, how long it rings, the quick
+//! durations -- then *Focus* -- what a focus timer keeps Lumen from opening
+//! -- then the presets. The Translation page's shape and keys: it shares that
+//! page's list context and actions, so there is one way to move through a
+//! list of presets, not two.
+//!
+//! # A preset is the launcher's form
+//!
+//! A preset's form is [`TimerForm`], the same entity the launcher shows for
+//! *Create Timer Preset*, so what can be made here can be made there. This
+//! page hosts it and reacts when it saves or is left; the General and Focus
+//! forms are this page's own.
 //!
 //! # The file stays the source of truth
 //!
@@ -20,12 +27,6 @@
 //! Choosing an alert sound in the dropdown plays it once, through the daemon,
 //! so choosing is previewing. The list is the platform's, read when the
 //! window opens.
-//!
-//! # Typed, in the launcher's grammar
-//!
-//! A duration is typed as it would be in the launcher -- `25m`, `1h30`,
-//! `1:30` -- and checked by the same parser, so what saves here is what the
-//! launcher would have understood.
 
 use std::path::PathBuf;
 
@@ -44,12 +45,14 @@ use crate::select::{Choice, Select, SelectEvent};
 use crate::settings::text_button;
 use crate::styling::{color, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
+use crate::timer_form::{TimerForm, TimerFormEvent};
 use crate::translate_page::{EditPreset, FORM_CONTEXT, LIST_CONTEXT, NextPreset, PreviousPreset};
 
 /// What the list has selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Selection {
     General,
+    Focus,
     /// A preset on disk, by name.
     Preset(String),
     /// A preset not saved yet.
@@ -61,51 +64,29 @@ enum Form {
         sound: Entity<Select>,
         ring: Entity<Select>,
         durations: Entity<TextField>,
-        /// What focus blocks, comma separated (slice 6).
+    },
+    Focus {
         apps: Entity<TextField>,
         sites: Entity<TextField>,
     },
-    Preset {
-        name: Entity<TextField>,
-        alias: Entity<TextField>,
-        duration: Entity<TextField>,
-        /// A break between work phases, which makes the preset a cycle.
-        short_break: Entity<TextField>,
-        long_break: Entity<TextField>,
-        rounds: Entity<TextField>,
-        /// After the set: end, or start again.
-        repeat: Entity<Select>,
-        /// Start with focus on, or off.
-        focus: Entity<Select>,
-    },
+    Preset(Entity<TimerForm>),
 }
 
 impl Form {
     fn fields(&self) -> Vec<&Entity<TextField>> {
         match self {
-            Form::General {
-                durations,
-                apps,
-                sites,
-                ..
-            } => vec![durations, apps, sites],
-            Form::Preset {
-                name,
-                alias,
-                duration,
-                short_break,
-                long_break,
-                rounds,
-                ..
-            } => vec![name, alias, duration, short_break, long_break, rounds],
+            Form::General { durations, .. } => vec![durations],
+            Form::Focus { apps, sites } => vec![apps, sites],
+            Form::Preset(_) => Vec::new(),
         }
     }
 
-    /// Every dropdown, so each is watched, themed and reached with Tab.
+    /// Every dropdown of the page's own forms, so each is watched, themed
+    /// and reached with Tab.
     fn selects(&self) -> Vec<&Entity<Select>> {
         match self {
             Form::General { sound, ring, .. } => vec![sound, ring],
-            Form::Preset { repeat, focus, .. } => vec![repeat, focus],
+            Form::Focus { .. } | Form::Preset(_) => Vec::new(),
         }
     }
 }
@@ -130,7 +111,8 @@ pub struct TimersPage {
     problem: Option<String>,
     selection: Selection,
     form: Form,
-    /// Whether the form has changed since it was filled in or saved.
+    /// Whether the General or Focus form has changed since it was filled in
+    /// or saved. A preset's form keeps its own.
     edited: bool,
     saving: bool,
     /// Why the last save was refused, under the form.
@@ -146,6 +128,8 @@ pub struct TimersPage {
     /// Put the caret back in the form at the next frame: undoing rebuilds it
     /// with no `Window` at hand to focus the new fields with.
     refocus_form: bool,
+    /// Put focus back on the list at the next frame, likewise.
+    refocus_list: bool,
 }
 
 impl TimersPage {
@@ -170,6 +154,7 @@ impl TimersPage {
             list_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
             refocus_form: false,
+            refocus_list: false,
         };
         page.watch_form(cx);
         page
@@ -202,7 +187,7 @@ impl TimersPage {
                     page.selection = Selection::General;
                     page.edited = false;
                 }
-                if !page.edited {
+                if !page.dirty(cx) {
                     page.rebuild(cx);
                 }
                 cx.notify();
@@ -219,19 +204,67 @@ impl TimersPage {
             .find(|preset| preset.name.trim() == name.trim())
     }
 
+    /// Whether the form on screen holds changes that are not saved.
+    fn dirty(&self, cx: &App) -> bool {
+        match &self.form {
+            Form::Preset(form) => form.read(cx).is_edited(),
+            _ => self.edited,
+        }
+    }
+
     /// Fill the form in again from the file, for what is selected.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.form = match &self.selection {
             Selection::General => general_form(&self.config, &self.sounds, &self.colors, cx),
+            Selection::Focus => focus_form(&self.config, &self.colors, cx),
             Selection::Preset(name) => {
                 let preset = self.find(name).cloned().unwrap_or_default();
-                preset_form(&preset, &self.colors, cx)
+                self.preset_form(preset, Some(name.clone()), cx)
             }
-            Selection::New => preset_form(&PresetConfig::default(), &self.colors, cx),
+            Selection::New => self.preset_form(PresetConfig::default(), None, cx),
         };
         self.watch_form(cx);
         self.edited = false;
         self.error = None;
+    }
+
+    fn preset_form(
+        &self,
+        preset: PresetConfig,
+        replacing: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Form {
+        let (path, colors) = (self.path.clone(), self.colors.clone());
+        let form = cx.new(|cx| TimerForm::new(path, preset, replacing, colors, cx));
+        cx.observe(&form, |page, _, cx| {
+            page.warning = None;
+            cx.notify();
+        })
+        .detach();
+        cx.subscribe(&form, |page, form, event, cx| match event {
+            TimerFormEvent::Saved(name) => {
+                page.status = Some(format!("Saved {name}").into());
+                page.warning = None;
+                page.selection = Selection::Preset(name.clone());
+                page.reload(cx);
+            }
+            TimerFormEvent::Cancelled => {
+                page.warning = None;
+                if form.read(cx).is_edited() {
+                    page.status = Some("Changes discarded".into());
+                    page.rebuild(cx);
+                    page.refocus_form = !matches!(page.selection, Selection::New);
+                }
+                if page.selection == Selection::New {
+                    page.selection = Selection::General;
+                    page.rebuild(cx);
+                }
+                page.refocus_list = !page.refocus_form;
+                cx.notify();
+            }
+        })
+        .detach();
+        Form::Preset(form)
     }
 
     /// Take the system's alert sounds, for the General row's dropdown.
@@ -243,7 +276,7 @@ impl TimersPage {
         cx.notify();
     }
 
-    /// Mark the form edited on any change to it.
+    /// Mark the page's own forms edited on any change to them.
     fn watch_form(&mut self, cx: &mut Context<Self>) {
         let fields: Vec<Entity<TextField>> = self.form.fields().into_iter().cloned().collect();
         for field in fields {
@@ -281,7 +314,7 @@ impl TimersPage {
 
     /// Whether the form may be replaced. Not with unsaved changes in it.
     fn may_leave(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.edited {
+        if self.dirty(cx) {
             self.warning =
                 Some("Save the changes first, or press Esc in the form to undo them".into());
             cx.notify();
@@ -309,7 +342,8 @@ impl TimersPage {
 
     /// The list's rows, in order.
     fn rows(&self) -> Vec<Selection> {
-        std::iter::once(Selection::General)
+        [Selection::General, Selection::Focus]
+            .into_iter()
             .chain(
                 self.config
                     .presets
@@ -354,36 +388,25 @@ impl TimersPage {
 
     // -- Focus ----------------------------------------------------------------
 
-    /// Focus the list, which always has at least the General row.
+    /// Focus the list, which always has at least the General and Focus rows.
     pub fn focus(&self, window: &mut Window, _cx: &App) {
         window.focus(&self.list_focus);
     }
 
+    /// The Tab stops of the page's own forms; a preset's form has its own.
     fn stops(&self, cx: &App) -> Vec<FocusHandle> {
         match &self.form {
             Form::General {
                 sound,
                 ring,
                 durations,
-                apps,
-                sites,
             } => vec![
                 sound.read(cx).focus_handle().clone(),
                 ring.read(cx).focus_handle().clone(),
                 durations.focus_handle(cx),
-                apps.focus_handle(cx),
-                sites.focus_handle(cx),
             ],
-            Form::Preset { repeat, focus, .. } => self
-                .form
-                .fields()
-                .into_iter()
-                .map(|field| field.focus_handle(cx))
-                .chain([
-                    repeat.read(cx).focus_handle().clone(),
-                    focus.read(cx).focus_handle().clone(),
-                ])
-                .collect(),
+            Form::Focus { apps, sites } => vec![apps.focus_handle(cx), sites.focus_handle(cx)],
+            Form::Preset(_) => Vec::new(),
         }
     }
 
@@ -394,6 +417,10 @@ impl TimersPage {
     }
 
     fn focus_form(&self, window: &mut Window, cx: &App) {
+        if let Form::Preset(form) = &self.form {
+            form.read(cx).focus(window, cx);
+            return;
+        }
         if let Some(first) = self.stops(cx).first() {
             window.focus(first);
         }
@@ -401,6 +428,9 @@ impl TimersPage {
 
     fn move_focus(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         let stops = self.stops(cx);
+        if stops.is_empty() {
+            return;
+        }
         let next = match self.focused(window, cx) {
             Some(index) => (index as isize + delta).rem_euclid(stops.len() as isize) as usize,
             None => 0,
@@ -417,27 +447,18 @@ impl TimersPage {
         self.move_focus(-1, window, cx);
     }
 
-    /// Escape in the form: undo what was typed, or back to the list.
+    /// Escape in the General or Focus form: undo what was typed, or back to
+    /// the list.
     fn cancel(&mut self, _: &CancelForm, window: &mut Window, cx: &mut Context<Self>) {
         self.warning = None;
         if !self.edited {
-            if self.selection == Selection::New {
-                self.selection = Selection::General;
-                self.rebuild(cx);
-            }
             self.focus(window, cx);
             cx.notify();
             return;
         }
         self.status = Some("Changes discarded".into());
-        if self.selection == Selection::New {
-            self.selection = Selection::General;
-            self.rebuild(cx);
-            self.focus(window, cx);
-        } else {
-            self.rebuild(cx);
-            self.refocus_form = true;
-        }
+        self.rebuild(cx);
+        self.refocus_form = true;
         cx.notify();
     }
 
@@ -453,41 +474,28 @@ impl TimersPage {
             return;
         }
         let path = self.path.clone();
+        let list = |field: &Entity<TextField>, cx: &App| -> Vec<String> {
+            field
+                .read(cx)
+                .text()
+                .split(',')
+                .map(|written| written.trim().to_string())
+                .collect()
+        };
 
         match &self.form {
             Form::General {
                 sound,
                 ring,
                 durations,
-                apps,
-                sites,
             } => {
-                let list = |field: &Entity<TextField>| -> Vec<String> {
-                    field
-                        .read(cx)
-                        .text()
-                        .split(',')
-                        .map(|written| written.trim().to_string())
-                        .collect()
-                };
-                let (blocked_apps, blocked_sites) = (list(apps), list(sites));
-                let sound = sound.read(cx).value().map(str::to_string);
-                let ring = match ring.read(cx).value() {
-                    Some("until-dismissed") => Ring::UntilDismissed,
-                    _ => Ring::Once,
-                };
-                let durations: Vec<String> = durations
-                    .read(cx)
-                    .text()
-                    .split(',')
-                    .map(|written| written.trim().to_string())
-                    .collect();
                 let general = store::General {
-                    sound,
-                    ring,
-                    durations,
-                    blocked_apps,
-                    blocked_sites,
+                    sound: sound.read(cx).value().map(str::to_string),
+                    ring: match ring.read(cx).value() {
+                        Some("until-dismissed") => Ring::UntilDismissed,
+                        _ => Ring::Once,
+                    },
+                    durations: list(durations, cx),
                 };
                 self.write(
                     move || store::set_general(&path, &general),
@@ -496,61 +504,16 @@ impl TimersPage {
                     cx,
                 );
             }
-            Form::Preset {
-                name,
-                alias,
-                duration,
-                short_break,
-                long_break,
-                rounds,
-                repeat,
-                focus,
-            } => {
-                let repeat = repeat.read(cx).value() == Some("repeat");
-                let focus = focus.read(cx).value() == Some("focus");
-                let written = rounds.read(cx).text().trim().to_string();
-                let rounds = match written.as_str() {
-                    "" => None,
-                    number => match number.parse::<u32>() {
-                        Ok(rounds) => Some(rounds),
-                        Err(_) => {
-                            self.error = Some(format!("Rounds is a number, not {number:?}"));
-                            cx.notify();
-                            return;
-                        }
-                    },
-                };
-                let optional = |field: &Entity<TextField>| {
-                    let text = field.read(cx).text().trim().to_string();
-                    (!text.is_empty()).then_some(text)
-                };
-                let preset = PresetConfig {
-                    short_break: optional(short_break),
-                    long_break: optional(long_break),
-                    rounds,
-                    repeat,
-                    focus,
-                    ..store::preset(
-                        name.read(cx).text().trim(),
-                        alias.read(cx).text(),
-                        duration.read(cx).text(),
-                    )
-                };
-                let saved = preset.name.clone();
-                let replacing = match &self.selection {
-                    Selection::Preset(name) => Some(name.clone()),
-                    _ => None,
-                };
+            Form::Focus { apps, sites } => {
+                let (apps, sites) = (list(apps, cx), list(sites, cx));
                 self.write(
-                    move || match replacing {
-                        Some(old) => store::replace(&path, &old, preset),
-                        None => store::add(&path, preset),
-                    },
-                    Selection::Preset(saved.clone()),
-                    format!("Saved {saved}"),
+                    move || store::set_blocked(&path, &apps, &sites),
+                    Selection::Focus,
+                    "Saved what focus blocks".into(),
                     cx,
                 );
             }
+            Form::Preset(form) => form.update(cx, |form, cx| form.save(cx)),
         }
     }
 
@@ -613,6 +576,9 @@ impl TimersPage {
         let path = self.path.clone();
         let removed = name.clone();
         self.edited = false;
+        // The form is about to go with the preset: nothing in it to keep.
+        self.selection = Selection::General;
+        self.rebuild(cx);
         self.write(
             move || store::remove(&path, &removed),
             Selection::General,
@@ -632,17 +598,20 @@ impl TimersPage {
         for select in selects {
             select.update(cx, |select, cx| select.set_colors(colors.clone(), cx));
         }
+        if let Form::Preset(form) = &self.form {
+            form.update(cx, |form, cx| form.set_colors(colors.clone(), cx));
+        }
         self.colors = colors;
         cx.notify();
     }
 
     /// What the footer says. Unsaved changes first: a "Saved" from before
     /// them is no longer true.
-    pub fn status(&self) -> Option<SharedString> {
+    pub fn status(&self, cx: &App) -> Option<SharedString> {
         if let Some(warning) = &self.warning {
             return Some(warning.clone());
         }
-        if self.edited {
+        if self.dirty(cx) {
             return Some("Unsaved changes  Enter to save, Esc to undo".into());
         }
         self.status.clone()
@@ -670,6 +639,11 @@ fn general_form(config: &TimersConfig, names: &[String], colors: &Colors, cx: &m
         sound: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx)),
         ring: cx.new(|cx| Select::new(ring_choices, ring_selected, colors.clone(), cx)),
         durations: cx.new(|cx| TextField::new(written, "2m, 5m, 10m, 30m", colors.clone(), cx)),
+    }
+}
+
+fn focus_form(config: &TimersConfig, colors: &Colors, cx: &mut App) -> Form {
+    Form::Focus {
         apps: cx.new(|cx| {
             let written = config.blocked_apps.join(", ");
             TextField::new(written, "Discord, Steam", colors.clone(), cx)
@@ -706,65 +680,6 @@ fn sound_choices(names: &[String], current: Option<&str>) -> (Vec<Choice>, usize
     (choices, selected)
 }
 
-fn preset_form(preset: &PresetConfig, colors: &Colors, cx: &mut App) -> Form {
-    let text = |value: String, placeholder: &'static str, cx: &mut App| {
-        cx.new(|cx| TextField::new(value, placeholder, colors.clone(), cx))
-    };
-    Form::Preset {
-        name: text(preset.name.clone(), "Deep work", cx),
-        alias: text(
-            preset.alias.clone().unwrap_or_default(),
-            "Optional: one word to start it by, like dw",
-            cx,
-        ),
-        duration: text(preset.duration.clone(), "25m, 1h30 or 1:30", cx),
-        short_break: text(
-            preset.short_break.clone().unwrap_or_default(),
-            "Optional: 5m makes it a cycle, like Pomodoro",
-            cx,
-        ),
-        long_break: text(
-            preset.long_break.clone().unwrap_or_default(),
-            "Optional: 15m after the last round",
-            cx,
-        ),
-        rounds: text(
-            preset
-                .rounds
-                .map(|rounds| rounds.to_string())
-                .unwrap_or_default(),
-            "4",
-            cx,
-        ),
-        repeat: cx.new(|cx| {
-            let choices = vec![
-                Choice {
-                    value: None,
-                    label: "End".into(),
-                },
-                Choice {
-                    value: Some("repeat".into()),
-                    label: "Start again, until stopped".into(),
-                },
-            ];
-            Select::new(choices, usize::from(preset.repeat), colors.clone(), cx)
-        }),
-        focus: cx.new(|cx| {
-            let choices = vec![
-                Choice {
-                    value: None,
-                    label: "Off".into(),
-                },
-                Choice {
-                    value: Some("focus".into()),
-                    label: "On: block the General row's apps and sites".into(),
-                },
-            ];
-            Select::new(choices, usize::from(preset.focus), colors.clone(), cx)
-        }),
-    }
-}
-
 /// What the list says beside a preset: its length, or that the launcher
 /// skips it -- shown so it can be fixed here.
 fn detail(preset: &PresetConfig) -> String {
@@ -786,7 +701,7 @@ impl Render for TimersPage {
         if self.confirming.is_none() {
             if std::mem::take(&mut self.refocus_form) {
                 self.focus_form(window, cx);
-            } else if window.focused(cx).is_none() {
+            } else if std::mem::take(&mut self.refocus_list) || window.focused(cx).is_none() {
                 // A rebuilt form takes the focused field with it, and a
                 // window with nothing focused hears no keys, not even Escape.
                 self.focus(window, cx);
@@ -832,7 +747,7 @@ impl TimersPage {
                 )
         };
 
-        let quick = row(
+        let general = row(
             "timers-general".into(),
             "General".into(),
             self.config
@@ -842,6 +757,19 @@ impl TimersPage {
             self.selection == Selection::General,
         )
         .on_click(cx.listener(|page, _, window, cx| page.select(Selection::General, window, cx)));
+
+        let blocked = self.config.blocked_apps.len() + self.config.blocked_sites.len();
+        let focus = row(
+            "timers-focus".into(),
+            "Focus".into(),
+            match blocked {
+                0 => "Nothing blocked".into(),
+                1 => "1 blocked".into(),
+                count => format!("{count} blocked"),
+            },
+            self.selection == Selection::Focus,
+        )
+        .on_click(cx.listener(|page, _, window, cx| page.select(Selection::Focus, window, cx)));
 
         let presets = self
             .config
@@ -893,7 +821,8 @@ impl TimersPage {
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
-                .child(quick)
+                .child(general)
+                .child(focus)
                 .child(heading)
                 .children(presets)
                 .into_any_element(),
@@ -948,6 +877,15 @@ impl TimersPage {
                 .into_any_element();
         }
 
+        // A preset's form draws itself, rows, keys and message line.
+        if let Form::Preset(form) = &self.form {
+            return div()
+                .flex_1()
+                .py(px(metrics::PADDING))
+                .child(form.clone())
+                .into_any_element();
+        }
+
         let label = |text: &'static str| {
             div()
                 .w(px(layout::form::LABEL_WIDTH))
@@ -963,6 +901,7 @@ impl TimersPage {
                 .items_center()
                 .child(label(text))
                 .child(div().flex_1().child(control))
+                .into_any_element()
         };
 
         let (rows, hints): (Vec<AnyElement>, Vec<&'static str>) = match &self.form {
@@ -970,58 +909,29 @@ impl TimersPage {
                 sound,
                 ring,
                 durations,
-                apps,
-                sites,
             } => (
                 vec![
-                    field_row("Alert sound", sound.clone().into_any_element()).into_any_element(),
-                    field_row("Ring", ring.clone().into_any_element()).into_any_element(),
-                    field_row("Quick start", durations.clone().into_any_element())
-                        .into_any_element(),
-                    field_row("Blocked apps", apps.clone().into_any_element()).into_any_element(),
-                    field_row("Blocked sites", sites.clone().into_any_element()).into_any_element(),
+                    field_row("Alert sound", sound.clone().into_any_element()),
+                    field_row("Ring", ring.clone().into_any_element()),
+                    field_row("Quick start", durations.clone().into_any_element()),
                 ],
                 vec![
                     "Played when a timer ends. Choosing one plays it.",
                     "Until dismissed: the sound loops until Dismiss Ringing Timer.",
-                    "Offered under Quick Start in Timers, shortest first. Comma separated.",
-                    "While focus is on, Lumen won't open these. Names as the launcher shows them.",
-                    "Domains, subdomains included. Only links opened through Lumen are checked.",
+                    "Offered under Quick Start in Timers, shortest first: 5m, 1h30, comma separated.",
                 ],
             ),
-            Form::Preset {
-                name,
-                alias,
-                duration,
-                short_break,
-                long_break,
-                rounds,
-                repeat,
-                focus,
-            } => (
+            Form::Focus { apps, sites } => (
                 vec![
-                    field_row("Name", name.clone().into_any_element()).into_any_element(),
-                    field_row("Alias", alias.clone().into_any_element()).into_any_element(),
-                    field_row("Duration", duration.clone().into_any_element()).into_any_element(),
-                    field_row("Break", short_break.clone().into_any_element()).into_any_element(),
-                    field_row("Long break", long_break.clone().into_any_element())
-                        .into_any_element(),
-                    field_row("Rounds", rounds.clone().into_any_element()).into_any_element(),
-                    field_row("After the set", repeat.clone().into_any_element())
-                        .into_any_element(),
-                    field_row("Focus", focus.clone().into_any_element()).into_any_element(),
+                    field_row("Blocked apps", apps.clone().into_any_element()),
+                    field_row("Blocked sites", sites.clone().into_any_element()),
                 ],
                 vec![
-                    "Its row in the launcher, and the timer's name while it runs.",
-                    "One word the launcher finds it by.",
-                    "As you would type it in the launcher: 25m, 1h30, 1:30. With a break, each work round.",
-                    "Between rounds. Set, the timer cycles work and break by itself.",
-                    "After the last round, then the set ends. Empty: it ends with the work.",
-                    "How many work rounds in the set: 1 to 12. Empty is 4.",
-                    "Start again repeats the set until you stop it. Ctrl+K on its row starts it the other way.",
-                    "On blocks the General row's apps and sites while it runs; in a cycle, only during work.",
+                    "Names as the launcher shows them, comma separated. Discord also blocks Discord PTB.",
+                    "Domains, comma separated; their subdomains too. Only links opened through Lumen.",
                 ],
             ),
+            Form::Preset(_) => unreachable!("drawn above"),
         };
 
         let (message, is_error) = match (&self.error, self.focused(window, cx)) {
@@ -1029,7 +939,7 @@ impl TimersPage {
             (None, Some(index)) => (hints.get(index).copied().unwrap_or("").to_string(), false),
             (None, None) => (
                 match self.selection {
-                    Selection::New => "A new preset. Enter saves it.",
+                    Selection::Focus => "While a timer with focus on runs, Lumen won't open these.",
                     _ => "Enter or Ctrl+S saves. Esc undoes, then goes back to the list.",
                 }
                 .to_string(),
