@@ -147,6 +147,13 @@ pub enum Action {
     ///
     /// The launcher's, like `OpenView`: the form takes the list's place.
     CreateQuicklink,
+    /// Show the timer preset form in place of the list (F8): empty to create
+    /// one, filled in to save a timer as one, or editing the preset on disk
+    /// called `replacing`. The launcher's, like `CreateQuicklink`.
+    OpenTimerForm {
+        preset: crate::timers::PresetConfig,
+        replacing: Option<String>,
+    },
     /// Start or stop a timer (F8).
     ///
     /// Carried back to the daemon like a [`Builtin`]: the timers, the one
@@ -211,6 +218,11 @@ impl Action {
             Action::AskArgument(_) => "Search",
             Action::CreateQuicklink => "Create",
             Action::SaveAsQuicklink { .. } => "Save as Quicklink",
+            Action::OpenTimerForm {
+                replacing: Some(_), ..
+            } => "Edit Preset",
+            Action::OpenTimerForm { preset, .. } if preset.duration.is_empty() => "Create",
+            Action::OpenTimerForm { .. } => "Save as Preset",
             Action::Timer(crate::timers::Command::Start { focus: true, .. })
             | Action::Timer(crate::timers::Command::StartCycle { focus: true, .. }) => {
                 "Start with Focus"
@@ -252,6 +264,7 @@ impl Action {
             | Action::ChooseBrowser(_)
             | Action::SaveAsQuicklink { .. }
             | Action::CreateQuicklink
+            | Action::OpenTimerForm { .. }
             | Action::Timer(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }

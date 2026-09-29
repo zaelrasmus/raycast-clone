@@ -38,6 +38,7 @@ use crate::icons::IconCache;
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
 use crate::styling::{color, metrics, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
+use crate::timer_form::{TimerForm, TimerFormEvent};
 
 actions!(
     lumen,
@@ -117,7 +118,8 @@ struct PanelEntry {
 enum Mode {
     Root,
     View(Box<ViewState>),
-    /// Saving a new quicklink (F6). Like a view, it takes the list's place.
+    /// Saving a quicklink (F6) or a timer preset (F8). Like a view, it takes
+    /// the list's place.
     Form(FormState),
 }
 
@@ -138,10 +140,22 @@ enum PickerMove {
     Last,
 }
 
-/// The quicklink form, and the subscription that hears it finish.
+/// A form in the list's place, and the subscriptions that hear it.
 struct FormState {
-    form: Entity<QuicklinkForm>,
+    form: FormKind,
+    /// What the search row says instead of taking input.
+    title: &'static str,
+    /// The form's own height, which the window hugs. A timer preset's grows
+    /// when *Cycle* is turned on.
+    height: f32,
     _events: Subscription,
+    /// Follows the form's height, for a form whose height changes.
+    _resize: Option<Subscription>,
+}
+
+enum FormKind {
+    Quicklink(Entity<QuicklinkForm>),
+    Timer(Entity<TimerForm>),
 }
 
 /// Where a view's events go.
@@ -680,9 +694,12 @@ impl Launcher {
         let colors = theme.colors.clone();
         if let Mode::Form(state) = &self.mode {
             let colors = colors.clone();
-            state
-                .form
-                .update(cx, |form, cx| form.set_colors(colors, cx));
+            match &state.form {
+                FormKind::Quicklink(form) => {
+                    form.update(cx, |form, cx| form.set_colors(colors, cx))
+                }
+                FormKind::Timer(form) => form.update(cx, |form, cx| form.set_colors(colors, cx)),
+            }
         }
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
@@ -742,10 +759,8 @@ impl Launcher {
 
         match &self.mode {
             Mode::Root => self.config.window_height(self.visible_rows()),
-            Mode::Form(_) => {
-                lumen_core::layout::SEARCH_HEIGHT
-                    + lumen_core::layout::form::HEIGHT
-                    + lumen_core::layout::FOOTER_HEIGHT
+            Mode::Form(state) => {
+                lumen_core::layout::SEARCH_HEIGHT + state.height + lumen_core::layout::FOOTER_HEIGHT
             }
             Mode::View(state) if state.loading => self.loading_height(),
             Mode::View(state) => {
@@ -1709,6 +1724,10 @@ impl Launcher {
             self.open_form(Some((name, link)), window, cx);
             return;
         }
+        if let Action::OpenTimerForm { preset, replacing } = action {
+            self.open_timer_form(preset, replacing, window, cx);
+            return;
+        }
 
         cx.emit(LauncherEvent::Dismissed);
 
@@ -1835,8 +1854,11 @@ impl Launcher {
         self.clear_query_text(cx);
         self.picker = None;
         self.mode = Mode::Form(FormState {
-            form: form.clone(),
+            form: FormKind::Quicklink(form.clone()),
+            title: "Create Quicklink",
+            height: lumen_core::layout::form::HEIGHT,
             _events: events,
+            _resize: None,
         });
         form.read(cx).focus(window, cx);
 
@@ -1876,6 +1898,63 @@ impl Launcher {
         })
         .detach();
 
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// Show the timer preset form in place of the list (F8): `preset` to
+    /// start from, editing the preset on disk called `replacing` if there is
+    /// one. Public for the daemon, which opens it for *Save as Preset* in the
+    /// *Timers* view.
+    pub fn open_timer_form(
+        &mut self,
+        preset: lumen_core::timers::PresetConfig,
+        replacing: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous_height = self.content_height();
+        let title = match (&replacing, preset.duration.is_empty()) {
+            (Some(_), _) => "Edit Timer Preset",
+            (None, true) => "Create Timer Preset",
+            (None, false) => "Save as Timer Preset",
+        };
+
+        let path = self.paths.config_file();
+        let colors = self.theme.colors.clone();
+        let form = cx.new(|cx| {
+            let mut form = TimerForm::new(path, preset, replacing, colors, cx);
+            form.open_menus_upward(cx);
+            form
+        });
+        let events = cx.subscribe_in(&form, window, |this, _, event, window, cx| {
+            let saved = match event {
+                TimerFormEvent::Saved(name) => Some(name.clone()),
+                TimerFormEvent::Cancelled => None,
+            };
+            this.leave_form(saved, window, cx);
+        });
+        let resize = cx.observe(&form, |this, form, cx| {
+            let previous = this.content_height();
+            if let Mode::Form(state) = &mut this.mode {
+                state.height = form.read(cx).height();
+            }
+            this.resize_if_needed(previous, cx);
+        });
+        let height = form.read(cx).height();
+
+        self.action_panel = None;
+        self.argument = None;
+        self.clear_query_text(cx);
+        self.picker = None;
+        self.mode = Mode::Form(FormState {
+            form: FormKind::Timer(form.clone()),
+            title,
+            height,
+            _events: events,
+            _resize: Some(resize),
+        });
+        form.read(cx).focus(window, cx);
         self.resize_if_needed(previous_height, cx);
         cx.notify();
     }
@@ -2146,7 +2225,10 @@ impl Render for Launcher {
             .or_else(|| self.render_picker(cx));
         let body = match (over, &self.mode) {
             (Some(over), _) => over,
-            (None, Mode::Form(state)) => state.form.clone().into_any_element(),
+            (None, Mode::Form(state)) => match &state.form {
+                FormKind::Quicklink(form) => form.clone().into_any_element(),
+                FormKind::Timer(form) => form.clone().into_any_element(),
+            },
             (None, Mode::View(state)) => self.render_view(state),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
         };
@@ -2181,7 +2263,7 @@ impl Launcher {
         // over an extension in its own window.
         // A form's fields take the input, so the search row only says what
         // the form is.
-        if matches!(self.mode, Mode::Form(_)) {
+        if let Mode::Form(state) = &self.mode {
             return div()
                 .flex()
                 .items_center()
@@ -2191,7 +2273,7 @@ impl Launcher {
                 .border_color(color(colors.border_subtle))
                 .text_size(type_scale::query())
                 .text_color(color(colors.text_primary))
-                .child("Create Quicklink");
+                .child(state.title);
         }
 
         let placeholder = match &self.mode {

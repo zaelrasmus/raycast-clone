@@ -8,7 +8,7 @@
 
 use crate::item::{Action, Item, Kind, ViewSource};
 use crate::providers::Provider;
-use crate::timers::{Command, Plan, Preset, duration};
+use crate::timers::{Command, Plan, Preset, PresetConfig, duration};
 
 pub struct TimersProvider;
 
@@ -75,6 +75,10 @@ fn starts(preset: &Preset) -> Vec<Action> {
             focus: !preset.focus,
         },
     }));
+    actions.push(Action::OpenTimerForm {
+        preset: preset.to_config(),
+        replacing: Some(preset.name.clone()),
+    });
     actions
 }
 
@@ -135,6 +139,18 @@ impl Provider for TimersProvider {
                 icon: None,
                 keywords: keywords(&["pomodoro", "focus", "stopwatch"]),
                 actions: vec![Action::OpenView(ViewSource::Timers)],
+                kind: Kind::Timer,
+            },
+            Item {
+                id: "timer:create-preset".into(),
+                title: "Create Timer Preset".into(),
+                subtitle: Some("Save a timer you start often, with a name and an alias".into()),
+                icon: None,
+                keywords: keywords(&["preset", "new", "save", "create"]),
+                actions: vec![Action::OpenTimerForm {
+                    preset: PresetConfig::default(),
+                    replacing: None,
+                }],
                 kind: Kind::Timer,
             },
             Item {
@@ -268,7 +284,8 @@ impl Provider for TimersProvider {
             ),
         };
 
-        // The other side of focus second, where Ctrl+K reaches it.
+        // The other side of focus second, where Ctrl+K reaches it; then
+        // keeping it, as typed, for next time.
         let start = |focus: bool| {
             Action::Timer(Command::Start {
                 seconds: typed.duration.as_secs(),
@@ -276,13 +293,22 @@ impl Provider for TimersProvider {
                 focus,
             })
         };
+        let save = Action::OpenTimerForm {
+            preset: PresetConfig {
+                name: typed.name.clone().unwrap_or_default(),
+                duration: duration::written(typed.duration),
+                focus,
+                ..PresetConfig::default()
+            },
+            replacing: None,
+        };
         vec![Item {
             id: START.into(),
             title,
             subtitle: Some(subtitle),
             icon: None,
             keywords: Vec::new(),
-            actions: vec![start(focus), start(!focus)],
+            actions: vec![start(focus), start(!focus), save],
             kind: Kind::Timer,
         }]
     }
@@ -306,6 +332,7 @@ mod tests {
             })
         );
         assert_eq!(answers[0].actions[1].verb(), "Start with Focus");
+        assert_eq!(answers[0].actions[2].verb(), "Save as Preset");
     }
 
     #[test]
@@ -356,6 +383,10 @@ mod tests {
             })
         );
         assert_eq!(items[0].actions[1].verb(), "Start with Focus");
+        assert!(matches!(
+            &items[0].actions[2],
+            Action::OpenTimerForm { replacing: Some(name), preset } if name == "Deep work" && preset.duration == "1h30m"
+        ));
     }
 
     #[test]

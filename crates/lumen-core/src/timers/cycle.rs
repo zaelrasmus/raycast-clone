@@ -149,6 +149,27 @@ impl Cycle {
 }
 
 impl Timer {
+    /// The timer as a preset, for *Save as Preset*: its name, its length --
+    /// a cycle's work length and plan -- and whether it holds focus.
+    pub fn as_preset(&self) -> super::PresetConfig {
+        let written = |secs: u64| super::duration::written(Duration::from_secs(secs));
+        let mut preset = super::PresetConfig {
+            name: self.name.clone().unwrap_or_default(),
+            duration: super::duration::written(self.duration()),
+            focus: self.focus,
+            ..super::PresetConfig::default()
+        };
+        if let Some(cycle) = self.cycle {
+            let plan = cycle.plan;
+            preset.duration = written(plan.work_secs);
+            preset.short_break = Some(written(plan.break_secs));
+            preset.long_break = (plan.long_break_secs > 0).then(|| written(plan.long_break_secs));
+            preset.rounds = Some(plan.rounds);
+            preset.repeat = plan.repeat;
+        }
+        preset
+    }
+
     /// Move to the phase after this one, its deadline counted from `from`.
     /// Returns whether there was one.
     pub(super) fn advance(&mut self, from: Millis) -> bool {

@@ -32,6 +32,7 @@ const REPEAT: &str = "repeat";
 const ONE_SET: &str = "one-set";
 const FOCUS_ON: &str = "focus-on";
 const FOCUS_OFF: &str = "focus-off";
+const SAVE: &str = "save-preset";
 const PRESET: &str = "preset-";
 const QUICK: &str = "quick-";
 
@@ -143,7 +144,11 @@ fn item(timer: &Timer, now: Millis) -> Item {
             action(FOCUS_ON, "Turn Focus On")
         });
     }
-    actions.extend([action(RESTART, "Restart"), action(STOP, "Stop")]);
+    actions.extend([
+        action(RESTART, "Restart"),
+        action(SAVE, "Save as Preset"),
+        action(STOP, "Stop"),
+    ]);
 
     // Every time something blocked was opened anyway, said where it counts.
     let overrides = match timer.overrides {
@@ -308,6 +313,24 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
         FOCUS_OFF => clock.set_focus(id, false),
         _ => false,
     }
+}
+
+/// The preset to fill the form with, when the view asked to save a timer
+/// as one. The daemon hands it to the launcher's form; the clock is not
+/// changed.
+pub fn saving(clock: &Clock, event: &Event) -> Option<super::PresetConfig> {
+    let Event::ActionInvoked {
+        item: Some(item),
+        action,
+    } = event
+    else {
+        return None;
+    };
+    if action != SAVE {
+        return None;
+    }
+    let id = item.strip_prefix(TIMER)?.parse().ok()?;
+    clock.get(id).map(Timer::as_preset)
 }
 
 /// How long until a face the view shows changes, or `None` when none will:
@@ -550,6 +573,20 @@ mod tests {
             Some("10 min timer \u{00b7} opened anyway 2 times")
         );
         assert_eq!(row.actions[1].title, "Turn Focus Off");
+    }
+
+    #[test]
+    fn a_running_timer_can_be_saved_as_a_preset() {
+        let mut clock = Clock::default();
+        let id = clock.start_cycle(super::super::Plan::POMODORO, Some("Pomodoro".into()), 0);
+        clock.set_focus(id, true);
+
+        let preset = saving(&clock, &invoke(&format!("timer-{id}"), "save-preset")).unwrap();
+        assert_eq!(preset.name, "Pomodoro");
+        assert_eq!(preset.duration, "25m");
+        assert_eq!(preset.short_break.as_deref(), Some("5m"));
+        assert!(preset.focus);
+        assert!(saving(&clock, &invoke(&format!("timer-{id}"), "stop")).is_none());
     }
 
     #[test]

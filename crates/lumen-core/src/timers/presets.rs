@@ -71,7 +71,7 @@ impl Ring {
 }
 
 /// A preset as written, before it is checked.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct PresetConfig {
     pub name: String,
@@ -103,6 +103,26 @@ pub struct Preset {
 }
 
 impl Preset {
+    /// The preset as the file would write it, for a form to edit. Anything
+    /// the form does not show is kept by the store when it replaces it.
+    pub fn to_config(&self) -> PresetConfig {
+        let written = |secs: u64| duration::written(Duration::from_secs(secs));
+        let mut config = PresetConfig {
+            name: self.name.clone(),
+            alias: self.alias.clone(),
+            duration: duration::written(self.duration),
+            focus: self.focus,
+            ..PresetConfig::default()
+        };
+        if let Some(plan) = self.cycle {
+            config.short_break = Some(written(plan.break_secs));
+            config.long_break = (plan.long_break_secs > 0).then(|| written(plan.long_break_secs));
+            config.rounds = Some(plan.rounds);
+            config.repeat = plan.repeat;
+        }
+        config
+    }
+
     /// What starting it does, in words.
     pub fn describe(&self) -> String {
         match &self.cycle {
@@ -271,6 +291,19 @@ mod tests {
         let sprint = presets[1].cycle.unwrap();
         assert_eq!((sprint.rounds, sprint.long_break_secs), (2, 0));
         assert_eq!(presets[1].describe(), "2 \u{00d7} 50 min, 10 min breaks");
+    }
+
+    #[test]
+    fn a_preset_goes_back_to_what_the_file_would_say() {
+        let written = r#"{ "presets": [
+            { "name": "Pomodoro", "alias": "pom", "duration": "25m", "short-break": "5m",
+              "long-break": "15m", "rounds": 4, "focus": true }
+        ] }"#;
+        let preset = &config(written).presets()[0];
+        let back = preset.to_config();
+        assert_eq!(resolve(&back).unwrap(), *preset);
+        assert_eq!(back.duration, "25m");
+        assert_eq!(back.long_break.as_deref(), Some("15m"));
     }
 
     #[test]

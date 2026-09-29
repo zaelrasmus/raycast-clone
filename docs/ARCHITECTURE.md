@@ -709,6 +709,17 @@ After living with it, three things were changed before F8 merged:
 - **Focus has its own row.** The blocked apps and sites were in *General*
   beside the alert sound, which they have nothing to do with. The list is
   now *General*, *Focus*, then the presets.
+- **Presets are made where timers are started.** The launcher hosts the
+  same `TimerForm` the settings page does, in place of the list, as it
+  hosts the quicklink form: *Create Timer Preset* in the root list, *Edit
+  Preset* in `Ctrl+K` on a preset's row, and *Save as Preset* in `Ctrl+K`
+  on a typed duration (`25m write chapter 3` fills in the name and the
+  length) and on a running timer in *Timers* (its name, length, cycle and
+  focus). One action, `OpenTimerForm`, carries the preset to start from and
+  the name it replaces. The launcher's `Mode::Form` now holds either form,
+  and follows the timer form's height as *Cycle* adds its rows. A save goes
+  back to the root list with the preset's name typed, so the confirmation
+  is its row.
 
 ---
 

@@ -476,6 +476,17 @@ impl Timers {
             while let Some(input) = inputs.next().await {
                 match input {
                     Input::View(event) => {
+                        // Save as Preset: the launcher's form replaces the
+                        // view, and this loop ends when its sink goes.
+                        let saving = view::saving(&this.clock.borrow(), &event);
+                        if let Some(preset) = saving {
+                            window
+                                .update(cx, |launcher, window, cx| {
+                                    launcher.open_timer_form(preset, None, window, cx)
+                                })
+                                .ok();
+                            continue;
+                        }
                         let acted = view::act(
                             &mut this.clock.borrow_mut(),
                             &event,
