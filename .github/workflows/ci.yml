@@ -36,8 +36,11 @@ jobs:
   # core until porting becomes a rewrite -- detectable the same day rather than
   # in F5. In particular, changing `trait Platform` without updating both
   # implementations (I-9) fails here.
+  #
+  # Paused until F5 resumes (docs/ARCHITECTURE.md, 7.38).
   linux-cross-check:
     name: Linux cross-check (I-2)
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -11,7 +11,7 @@ Not negotiated case by case.
 | #    | Invariant |
 | ---- | --------- |
 | I-1  | `lumen-core` contains no `#[cfg(windows)]` or `#[cfg(unix)]` and no direct OS call. Everything goes through `trait Platform`. |
-| I-2  | `lumen-platform-linux` always compiles, even if its methods are `todo!()`. CI runs `cargo check --target x86_64-unknown-linux-gnu` on every commit. |
+| I-2  | `lumen-platform-linux` always compiles, even if its methods are `todo!()`. **Paused:** the Linux cross-check is not run, locally or in CI, until F5 resumes (ARCHITECTURE 7.38). |
 | I-3  | Root search never waits on an extension process. No exceptions and no "short" timeouts. |
 | I-4  | The window is created once when the daemon starts and from then on is only shown or hidden. Never destroyed. |
 | I-5  | No colour, spacing, radius or type size appears literally in UI code. Everything comes from a token module: colour and type family from the theme file, geometry from `lumen_core::layout`. |
@@ -45,8 +45,8 @@ Numbers, not adjectives. Measured, not asserted.
 - For anything performance-related, write the measurement first and the
   functionality second. A benchmark written beforehand is a constraint; written
   afterwards it is a justification.
-- `cargo fmt --check`, `cargo clippy -- -D warnings`, and the Linux cross-check
-  all pass before a commit.
+- `cargo fmt --check` and `cargo clippy -- -D warnings` pass before a commit.
+  Do not run the Linux cross-check: it is paused (ARCHITECTURE 7.38).
 - The characteristic risk here is **volume**, not incorrect code. It is very easy
   to accumulate functionality faster than it can be polished, and this project is
   defined by polish. When the invariants and budgets conflict with moving faster,

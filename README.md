@@ -691,8 +691,9 @@ crates/
 The dependency rule is the point. `lumen-core` has no `#[cfg(windows)]`, no
 `#[cfg(unix)]`, no system calls and no GPUI: everything that touches the system
 goes through `trait Platform`, and everything that draws lives in `lumen-ui`.
-CI cross-checks the Linux crates on every commit so that a Windows assumption
-leaking into the core is caught the same day rather than in a year.
+CI can cross-check the Linux crates on every commit, so that a Windows
+assumption leaking into the core is caught the same day rather than in a year.
+That check is paused while the Linux port is frozen (ARCHITECTURE 7.38).
 
 The views decide nothing either. What the root list shows and in what order is
 `lumen_core::root`, and what choosing a row does is `Action::perform`, so both

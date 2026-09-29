@@ -112,7 +112,7 @@ once Lumen was measured well inside them (7.36).
 | **F2** | Design system and aesthetics: token file with live reload, theme tier T0, bundled typeface, icon set, action panel, appearance animation | **Done.** Themes, live reload, the fade, the bundled typeface, the icon set and the action panel are all in; the appearance animation omits the scale, deliberately (7.5) |
 | **F3** | Internal providers: calculator, clipboard history, snippets, window management, file search. Tier T1 script commands. Context-aware shortcut overlay | **Done.** Overlay, settings editor, calculator, snippets, clipboard history, window management, file search and tier T1, behind the `trait Provider` seam |
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
-| **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
+| **F5** | Port to Linux and Wayland | **Frozen.** Stubbed; the cross-check (I-2) is paused until F5 resumes (7.38). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
 | **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
@@ -1566,6 +1566,20 @@ handed. A WebAssembly runtime would run in-process under wasmtime and never go
 through `spawn_extension` at all. Abstracting the child would add an interface
 with one implementation to serve a runtime that does not use it.
 
+### 7.38 The Linux cross-check is paused until F5 resumes
+
+I-2 asked for `lumen-platform-linux` to be cross-checked on every commit.
+Run locally, the check builds a second copy of the dependency tree for
+another target, and during F9 that filled the disk and cost the working
+session. F5 is frozen, so the check was guarding a port nobody is working
+on, at a cost paid on every commit.
+
+It is paused, not dropped. It is not run locally, and the CI job is kept
+but disabled (`if: false`), so turning it back on is one line. Until then
+R-4 is guarded by I-1 alone: `lumen-core` still has no `#[cfg]` and no
+direct system call, and review still holds it to that. The first thing F5
+does is re-enable the job and fix whatever it finds.
+
 ---
 
 ## 8. Risk register
@@ -1575,7 +1589,7 @@ with one implementation to serve a runtime that does not use it.
 | R-1 | Real transparency unworkable; the system backdrop does not show | F0 | **Hit and mitigated.** See 7.3. Three backdrop modes are implemented and configurable. |
 | R-2 | Breaking changes in GPUI between versions | all | `gpui` pinned exactly (I-6). F0 assertions re-apply the window styles rather than assuming GPUI's. The vendored patch (7.35) is re-applied and re-measured on every upgrade. |
 | R-3 | Insufficient GPUI documentation | all | Mitigated by reading the crate source directly; it ships its `examples/`. |
-| R-4 | Windows assumptions leaking into the core | F1–F4 | I-1 and I-2, cross-checked in CI from the first commit. |
+| R-4 | Windows assumptions leaking into the core | F1–F4 | I-1 and I-2, cross-checked in CI from the first commit. The cross-check is paused until F5 resumes (7.38); I-1 alone guards it meanwhile. |
 | R-5 | GPUI does not implement `wlr-layer-shell` | F5 | Accepted as a planned task with its own estimate. |
 | R-6 | The extension protocol becomes coupled to its first runtime | F4 | AD-06, AD-09. |
 | R-7 | Uncontrolled growth of the UI primitive vocabulary | F4 | Every new primitive requires explicit justification. |
