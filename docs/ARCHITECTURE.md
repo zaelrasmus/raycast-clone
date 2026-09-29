@@ -115,6 +115,7 @@ once Lumen was measured well inside them (7.36).
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
+| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Designed; built in six slices. See F8 decisions |
 
 ### F4 build order is not optional
 
@@ -423,6 +424,75 @@ built; what changed on the way from the plan is said where it happened.
   own code, were not. That is 0.8 % of the 40 MB budget, and accepted. Not
   measured: idle *after* using the translator, which needs the view driven
   by hand, and is what the thirty-second release of the client exists for.
+
+### F8 decisions
+
+Raycast has Timers, Pomodoro and Focus as three things, and that split is an
+accident of its store: the first two are extensions by different authors. To
+the person using them they are one intention -- *time this* -- with more or
+less attached. So Lumen has **one concept, a timer**, and every other feature
+is an optional field on it.
+
+| Field | Empty | Filled |
+| ----- | ----- | ------ |
+| Duration | counts up: a stopwatch | counts down |
+| Name | "25 min timer" | the row's title and the notification's |
+| Cycles and breaks | one run | work and breaks alternate: Pomodoro |
+| Blocked apps and sites | nothing | Lumen refuses to launch them: focus |
+
+"Pomodoro" and "Deep work" are then **presets** -- saved timers with a name and
+an alias -- not modes. `timer`, `focus` and `pomodoro` all find the same place.
+
+- **Nothing ticks.** The budget is 0.02 % CPU idle, and a timer that wakes the
+  daemon every second to count is the obvious way to break it. The daemon
+  sleeps once, until the nearest deadline, and re-plans when anything changes.
+  The only per-second work is redrawing the *Timers* view, and only while it
+  is on screen. This was measured before the first line: idle on `main`, window
+  hidden, CPU 0.000 %, working set 71.4 MB, private 87.3 MB, 31 threads, binary
+  16,057,856 bytes. `lumen timer 25m` exists partly so the same script can
+  measure a daemon with timers running.
+- **A deadline, not a counter.** A running timer stores the wall-clock moment
+  it ends, in milliseconds since the epoch; a paused one stores what is left.
+  So a timer survives the daemon restarting and the machine sleeping, and a
+  timer that ended while nothing was running is reported when the daemon comes
+  back. The state is `timers.json` in the data folder, written by rename.
+- **The decisions are a value, the daemon carries them out** -- F7's shape.
+  `timers::Clock` takes `now` as an argument and never reads a clock, so
+  starting, pausing, expiring and the view's rows are all unit tests.
+  `lumen-app/src/timers.rs` owns the one sleep, the notification and the file.
+- **A duration is an answer.** `25m`, `1h30`, `90s`, `1:30` or `timer 10m` is
+  recognised as it is typed, like the calculator, and leads with *Start 25 min
+  timer*. Text after the duration names it: `25m write chapter 3`. A unit is
+  required -- `25` alone is a number, and the calculator's.
+- **One view, `ViewSource::Timers`,** in the existing vocabulary: rows with the
+  time left as a text accessory and *Paused* as a tag. No new primitive.
+- **Presets live in `config.json`,** under `timers.presets`, read leniently
+  like translate presets, edited on a *Timers* settings page through a store
+  that changes only that section. Each is a root row found by name and alias.
+  The running state is not configuration and stays in the data folder.
+- **Sound is the system's.** Windows ships `Alarm01-10.wav` and
+  `Ring01-10.wav`; `PlaySoundW` plays one once or in a loop. No crate, no
+  bundled audio, no installed size. `trait Platform` gains `play_alert` and
+  `stop_alert`, with the Linux side a `todo!()` like the rest of F5 (I-2, I-9).
+  *Ring continuously* loops until *Dismiss Ringing Timer*.
+- **Focus blocks Lumen, not the machine.** While a focus timer runs, launching
+  a listed app, or opening a listed domain from a quicklink, a web search or a
+  typed URL, is refused with the timer's name and time left, and *Open anyway*
+  as a second action, which is counted. The app can still be opened outside
+  Lumen: a nudge, not a wall. That needs no platform hook, no admin rights and
+  no browser extension, and it is a check in `core` before `perform`.
+- **The slices,** one acceptance criterion each:
+  1. Type `25m`, press Enter, get a notification when it ends; see, pause,
+     resume and stop it in *Timers*.
+  2. Named presets with aliases, and the *Timers* settings page.
+  3. Alert sounds, *Ring continuously*, *Dismiss Ringing Timer*, a preview.
+  4. Stopwatches.
+  5. Cycles, and the Pomodoro preset.
+  6. Focus.
+
+  Running timers at the top of the root list, with the time left in the row,
+  wait until slice 1 has been lived with: it is the one part that changes
+  `RootSearch`, and the view may turn out to be enough.
 
 ---
 
