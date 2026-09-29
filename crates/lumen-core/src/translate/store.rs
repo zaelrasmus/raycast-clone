@@ -1,24 +1,18 @@
 //! Writing the `translate` section of `config.json` from the settings page
 //! (F7).
 //!
-//! The same rules as the quicklinks store, applied to a file that holds far
-//! more than presets: the hotkey, the window, the theme.
-//!
-//! - **Only the `translate` section changes.** The file is edited as a JSON
-//!   document, in its own key order, so every other setting -- and anything
-//!   this build does not know -- is written back as it was read.
-//! - **A file that does not parse is never overwritten.** Someone halfway
-//!   through a hand edit must not lose it to a save from the settings window.
-//! - **Nothing is left half written.** The new contents go to a sibling file
-//!   that is renamed over the old one.
-//!
-//! The daemon's watcher on `config.json` does the rest, as after a hand edit:
-//! the launcher re-indexes, and the next translate view uses the new presets.
+//! Only the `translate` section changes, by the rules in [`crate::section`]:
+//! the rest of the file is written back as it was read, a file that does not
+//! parse is never overwritten, and nothing is left half written. The daemon's
+//! watcher does the rest: the launcher re-indexes, and the next translate view
+//! uses the new presets.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::{Map, Value};
+
+use crate::section;
 
 use super::{MAX_TARGETS, Preset, PresetConfig, Service, Targets, TranslateConfig, resolve};
 
@@ -29,16 +23,7 @@ const SECTION: &str = "translate";
 /// A missing file or section is the defaults. A file that does not parse is
 /// an error: the loader forgives it, the writer must not.
 pub fn read(path: &Path) -> Result<TranslateConfig> {
-    let root = document(path)?;
-    match root.get(SECTION) {
-        None => Ok(TranslateConfig::default()),
-        Some(section) => serde_json::from_value(section.clone()).with_context(|| {
-            format!(
-                "the translate section of {} has a mistake in it",
-                path.display()
-            )
-        }),
-    }
+    section::read(path, SECTION)
 }
 
 /// Choose the service, and set or keep DeepL's key.
@@ -47,15 +32,15 @@ pub fn read(path: &Path) -> Result<TranslateConfig> {
 /// settings page never shows a saved key, so an untouched field must not
 /// erase it.
 pub fn set_service(path: &Path, service: Service, key: Option<&str>) -> Result<()> {
-    edit(path, |section| {
-        section.insert("service".into(), serde_json::to_value(service)?);
+    section::edit(path, SECTION, |written| {
+        written.insert("service".into(), serde_json::to_value(service)?);
         match key.map(str::trim) {
             None => {}
             Some("") => {
-                section.remove("deepl-key");
+                written.remove("deepl-key");
             }
             Some(key) => {
-                section.insert("deepl-key".into(), Value::String(key.to_string()));
+                written.insert("deepl-key".into(), Value::String(key.to_string()));
             }
         }
         Ok(())
@@ -100,8 +85,8 @@ pub fn check(
 pub fn add(path: &Path, preset: PresetConfig) -> Result<()> {
     let existing = read(path)?.presets;
     check(&existing, &preset, None)?;
-    edit(path, |section| {
-        presets(section)?.push(Value::Object(fields(&preset, Map::new())));
+    section::edit(path, SECTION, |written| {
+        section::list(written, "presets")?.push(Value::Object(fields(&preset, Map::new())));
         Ok(())
     })
 }
@@ -111,9 +96,9 @@ pub fn add(path: &Path, preset: PresetConfig) -> Result<()> {
 pub fn replace(path: &Path, name: &str, preset: PresetConfig) -> Result<()> {
     let existing = read(path)?.presets;
     check(&existing, &preset, Some(name))?;
-    edit(path, |section| {
-        let presets = presets(section)?;
-        let index = position(presets, name)?;
+    section::edit(path, SECTION, |written| {
+        let presets = section::list(written, "presets")?;
+        let index = section::position(presets, name)?;
         let kept = match presets[index].take() {
             Value::Object(map) => map,
             _ => Map::new(),
@@ -125,92 +110,12 @@ pub fn replace(path: &Path, name: &str, preset: PresetConfig) -> Result<()> {
 
 /// Remove the preset called `name`.
 pub fn remove(path: &Path, name: &str) -> Result<()> {
-    edit(path, |section| {
-        let presets = presets(section)?;
-        let index = position(presets, name)?;
+    section::edit(path, SECTION, |written| {
+        let presets = section::list(written, "presets")?;
+        let index = section::position(presets, name)?;
         presets.remove(index);
         Ok(())
     })
-}
-
-/// The whole file, as a document. Missing is empty.
-fn document(path: &Path) -> Result<Map<String, Value>> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(source) => source,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
-    };
-    let mistake = || {
-        format!(
-            "{} has a mistake in it; fix it before saving from Lumen",
-            path.display()
-        )
-    };
-    match serde_json::from_str(&source).with_context(mistake)? {
-        Value::Object(root) => Ok(root),
-        _ => bail!(mistake()),
-    }
-}
-
-/// Read the file, change its `translate` section, write it back.
-fn edit(path: &Path, change: impl FnOnce(&mut Map<String, Value>) -> Result<()>) -> Result<()> {
-    let mut root = document(path)?;
-    let section = root
-        .entry(SECTION)
-        .or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(section) = section else {
-        bail!(
-            "the translate section of {} is not an object",
-            path.display()
-        );
-    };
-    change(section)?;
-    write(path, &Value::Object(root))
-}
-
-fn write(path: &Path, root: &Value) -> Result<()> {
-    let mut contents = serde_json::to_string_pretty(root)?;
-    contents.push('\n');
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let staging = staging_path(path);
-    std::fs::write(&staging, contents).with_context(|| format!("writing {}", staging.display()))?;
-    // `rename` replaces an existing file on every platform Lumen targets.
-    std::fs::rename(&staging, path).with_context(|| format!("replacing {}", path.display()))
-}
-
-fn staging_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".saving");
-    path.with_file_name(name)
-}
-
-/// The section's list of presets, created if absent.
-fn presets(section: &mut Map<String, Value>) -> Result<&mut Vec<Value>> {
-    match section
-        .entry("presets")
-        .or_insert_with(|| Value::Array(Vec::new()))
-    {
-        Value::Array(presets) => Ok(presets),
-        _ => bail!("translate.presets is not a list"),
-    }
-}
-
-/// Where the preset called `name` is. By name rather than position: the file
-/// can be edited by hand while the page is open.
-fn position(presets: &[Value], name: &str) -> Result<usize> {
-    presets
-        .iter()
-        .position(|preset| {
-            preset
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|written| written.trim() == name.trim())
-        })
-        .with_context(|| format!("there is no preset called {name:?} any more"))
 }
 
 /// `preset`'s fields over `kept`, in the order a person would write them,
@@ -275,6 +180,7 @@ pub fn preset(name: &str, alias: &str, from: Option<&str>, to: &[&str]) -> Prese
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     struct Scratch(PathBuf);
 
@@ -449,6 +355,6 @@ mod tests {
 
         set_service(&file.0, Service::Deepl, Some("")).unwrap();
         assert_eq!(read(&file.0).unwrap().deepl_key, None);
-        assert!(!staging_path(&file.0).exists());
+        assert!(!section::staging_path(&file.0).exists());
     }
 }

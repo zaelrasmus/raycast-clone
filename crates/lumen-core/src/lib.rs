@@ -23,6 +23,7 @@ pub mod protocol;
 pub mod providers;
 pub mod root;
 pub mod search;
+pub mod section;
 pub mod sheets;
 pub mod theme;
 pub mod timers;
