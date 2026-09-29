@@ -86,8 +86,10 @@ an aesthetic worth looking at fifty times a day.
   translated as you pause, by Google (no setup) or DeepL (your own key).
   Save the directions you use as **presets** -- *Spanish → English*, or one
   source into up to four languages at once -- and each is its own row in the
-  root list, so choosing one means you only type. `Tab` switches preset
-  without losing the text; `Enter` copies the translation and closes.
+  root list, so choosing one means you only type. In the view, the *From*
+  and *To* pills choose any language at any time, without losing the text:
+  click one, or `Tab` to open its list. `Enter` copies the translation and
+  closes.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -262,7 +264,7 @@ Then run the binary once to start the daemon:
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy, cut, paste |
 | `Ctrl+K` | Show every action for the selected row |
 | `Tab` | Type a search for the selected quicklink, or the one whose name or alias is the query |
-| `Tab` / `Shift+Tab` in *Translate* | Next / previous preset |
+| `Tab` / `Shift+Tab` in *Translate* | Open the *From* / *To* language list; again, the other one. `↑`/`↓` and `Enter` choose, `Esc` closes |
 
 The query is a real text field: the mouse places the caret and drags a
 selection, double-click selects a word, and dead keys, AltGr and input-method
@@ -629,7 +631,8 @@ Latvian, Lithuanian, Norwegian (`nb`), Polish, Portuguese, Romanian, Russian,
 Slovak, Slovenian, Spanish, Swedish, Turkish and Ukrainian. A preset naming
 anything else is skipped and logged, and the others still load.
 
-*Translate* on its own opens the preset you used last. The view names the
+*Translate* on its own opens the languages you used last, whether they came
+from a preset or were chosen in the view. The view names the
 service that receives your text, before you type any. Nothing is sent until
 you pause, and nothing longer than 5,000 characters. The Google service is an
 undocumented endpoint and may stop working without notice; if it does, the

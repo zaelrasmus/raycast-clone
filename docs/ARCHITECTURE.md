@@ -114,7 +114,7 @@ once Lumen was measured well inside them (7.36).
 | **F4** | View extensions, tiers T2 and T3 | **Frozen after step 3.** The UI vocabulary and event types exist once, in `lumen_core::view` (AD-06, I-13); the GPUI renderer draws lists and details with virtualisation; extensions run as subprocesses speaking JSON over stdio, and two (World Clock, Characters) were written against it before anything was called stable. No WebAssembly runtime (T2) and no JS runtime (T3): see 7.37 |
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
-| **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Step 1 done**, and the settings page of step 2. Google and DeepL behind `trait Translator`, presets from `config.json` as root rows, switched in the view with `Tab` through a new `Scope` in the view vocabulary, edited on a *Translation* settings page. Still to do: *Save as Preset* from the view. Offline later. See F7 decisions |
+| **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
 
 ### F4 build order is not optional
 
@@ -326,22 +326,36 @@ built; what changed on the way from the plan is said where it happened.
   per preset, found by its name, its alias, and the codes and names of its
   languages, so `es en` finds it, and ranked by use like anything else.
   Choosing one opens the view on it: the user types, and chooses nothing.
-  The plain *Translate* opens the preset used last -- remembered for the
-  daemon's lifetime, not written to disk.
-- **The preset is a scope, which the vocabulary gained.** The plan had the
-  placeholder name the preset and two keymap actions switch it. Building it
-  showed the keys had nowhere to go: a view's events were all about rows or
-  the query, and an empty list has no row to carry an action. So `List`
-  gained an optional `Scope` -- Raycast's search-bar dropdown: options and
-  the one selected -- and `Event` gained `ScopeChanged`. The launcher draws
-  the selected option as a pill at the end of the search field, styled like
-  the quicklink argument pill, and `Tab` / `Shift+Tab` step through the
-  options. Those keys are bound in a `Scoped` key context that the search row
-  has only while the view declares a scope; GPUI ranks bindings by context
-  depth first, so `Tab` still types a quicklink's argument in the root list
-  (I-14). The pill changes on the key, and the view's render confirms it. A
-  view that declares no scope is never sent the event, so World Clock and
-  Characters did not change.
+  The plain *Translate* opens the languages used last, from a preset or
+  chosen in the view -- remembered for the daemon's lifetime, not written
+  to disk.
+- **Presets start the languages; they do not lock them.** The first build
+  made the preset itself the view's one choice, stepped with `Tab`. Used,
+  that was a cage: a language no preset named could not be reached from the
+  view at all. So the view has two choices, *From* (detection, or any
+  language) and *To* (any language, or a set of several that a preset
+  names), and a preset is only where they start. *Switch to …* in the
+  action panel still applies a whole preset at once.
+- **The choices are scopes, which the vocabulary gained.** A view's events
+  were all about rows or the query, and an empty list has no row to carry an
+  action, so `List` gained `scopes` -- Raycast's search-bar dropdown, more
+  than one of them: an id, a title, options, and the one selected -- and
+  `Event` gained `ScopeChanged`, naming the scope and the option. The
+  launcher draws each as a pill at the end of the search field, "From
+  Spanish", styled like the quicklink argument pill. A click on a pill, or
+  `Tab` / `Shift+Tab`, opens its options in the list's place; there `Tab`
+  moves to the other scope, the arrows and `Enter` choose and `Esc` closes.
+  It is not the action panel, which sizes itself to every row it has: a
+  scope has thirty options, so the picker is a virtualised list of the
+  panel's rows capped at `layout::view::PICKER_ROWS`. The keys are bound in
+  a `Scoped` key context that the search row has only while the view
+  declares scopes; GPUI ranks bindings by context depth first, so `Tab`
+  still types a quicklink's argument in the root list (I-14). The pill
+  changes when the option is taken, and the view's render confirms it. A
+  view that declares no scopes is never sent the event, so World Clock and
+  Characters did not change. Changing a target keeps the text of rows whose
+  language stayed and empties the others, so a French translation never
+  sits under a German tag.
 - **Presets live in `config.json`,** under `translate.presets`, read
   leniently: `to` takes one language or a list, a language is a code or a
   name, and a preset with no name, a repeated name, no target or a language
@@ -350,7 +364,8 @@ built; what changed on the way from the plan is said where it happened.
   translates, all of which Google does too, so changing `service` never
   turns a working preset into a skipped one. With none usable, one is
   implied, *Any Language → English*. A changed preset re-indexes the root
-  list. *Save as Preset* from the view is still to come.
+  list. *Save as Preset* from the view was not built: the settings page
+  covers it, and the view's own choices now cover the one-off case.
 - **A settings page, written through a store.** The *Translation* tab has the
   Quicklinks page's shape: the service and the presets in a list, the
   selected one's form beside it, a dialog before a delete. Languages are
@@ -382,13 +397,12 @@ built; what changed on the way from the plan is said where it happened.
   stepping back from a detail, so it would have thrown the text away. Long
   translations are truncated on screen and copied whole. *Paste to Active
   App* is left out: nothing in Lumen pastes into another application yet.
-- **Offline is a second implementation, not a second design.** Local neural
-  translation exists (OPUS-MT models run through `candle`, or Mozilla's
-  Bergamot, which Firefox uses offline), but a model is 15 to 300 MB per
-  language pair against an installed budget of 40 MB. When it comes, it is a
-  third `Translator`, whose models are downloaded per pair on request,
-  loaded when the view opens and freed when it closes. Nothing above changes
-  for it.
+- **Offline is frozen.** Local neural translation exists (OPUS-MT models
+  run through `candle`, or Mozilla's Bergamot, which Firefox uses offline),
+  but a model is 15 to 300 MB per language pair against an installed budget
+  of 40 MB. If it is ever taken up, it is a third `Translator`, whose models
+  are downloaded per pair on request, loaded when the view opens and freed
+  when it closes; nothing above changes for it. It is not planned.
 - **Measured before it was built, and one number moved.** The baseline was
   built before the first line of the feature. Idle, window hidden, never
   opened: CPU 0.004 % before and 0.000 % after, working set 72.4 MB and
