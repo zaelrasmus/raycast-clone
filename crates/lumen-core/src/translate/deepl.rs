@@ -105,6 +105,7 @@ pub fn parse(body: &str) -> Result<Translation> {
             .as_deref()
             .and_then(languages::detected),
         text: first.text,
+        alternatives: Vec::new(),
     })
 }
 

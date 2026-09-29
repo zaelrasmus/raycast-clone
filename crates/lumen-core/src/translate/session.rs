@@ -29,10 +29,12 @@
 //! (I-10). The previous translation stays in its row while the next is
 //! requested rather than flashing to empty.
 
-use super::{Failure, LANGUAGES, Language, MAX_TARGETS, Preset, Service, Translation, languages};
+use super::{
+    Alternative, Failure, LANGUAGES, Language, MAX_TARGETS, Preset, Service, Translation, languages,
+};
 use crate::view::{
-    Accessory, Action, EmptyState, Event, Filtering, Item, List, Scope, ScopeOption, Section, Tone,
-    View,
+    Accessory, Action, EmptyState, Event, Filtering, Icon, Item, List, Scope, ScopeOption, Section,
+    Tone, View,
 };
 
 /// What the driver should do next.
@@ -101,6 +103,9 @@ pub struct Session {
     query: String,
     generation: u64,
     rows: Vec<Row>,
+    /// A single word's other translations, per target (F10), beside `rows`.
+    /// Kept while the next answer is asked for, as a row keeps its text.
+    alternatives: Vec<Vec<Alternative>>,
     /// What the service last said the source was.
     detected: Option<&'static Language>,
 }
@@ -112,6 +117,9 @@ const COPY_ALL: &str = "copy-all";
 const RETRY: &str = "retry";
 const PRESET: &str = "preset-";
 const TARGET: &str = "target-";
+const ALTERNATIVE: &str = "alternative-";
+const COPY_TERM: &str = "copy-term";
+const COPY_TERMS: &str = "copy-terms";
 /// The scopes, and the prefixes of their options.
 const FROM: &str = "from";
 const TO: &str = "to";
@@ -130,6 +138,7 @@ impl Session {
             "a translate session needs a target"
         );
         let rows = vec![Row::Idle; languages.to.len()];
+        let alternatives = vec![Vec::new(); languages.to.len()];
         Self {
             presets,
             languages,
@@ -137,6 +146,7 @@ impl Session {
             query: String::new(),
             generation: 0,
             rows,
+            alternatives,
             detected: None,
         }
     }
@@ -184,9 +194,13 @@ impl Session {
                 if translation.detected.is_some() {
                     self.detected = translation.detected;
                 }
+                self.alternatives[target] = translation.alternatives;
                 Row::Done(translation.text)
             }
-            Err(failure) => Row::Failed(failure),
+            Err(failure) => {
+                self.alternatives[target].clear();
+                Row::Failed(failure)
+            }
         };
         vec![Effect::Render(self.view())]
     }
@@ -199,8 +213,14 @@ impl Session {
 
         if self.text().is_empty() {
             self.rows.fill(Row::Idle);
+            self.alternatives.iter_mut().for_each(Vec::clear);
             self.detected = None;
             return vec![Effect::Render(self.view())];
+        }
+        // More than one word has no alternatives coming: drop the last
+        // word's now rather than leave them under a sentence.
+        if !super::is_one_word(self.text()) {
+            self.alternatives.iter_mut().for_each(Vec::clear);
         }
 
         for row in &mut self.rows {
@@ -261,6 +281,17 @@ impl Session {
         if languages.from != self.languages.from {
             self.detected = None;
         }
+        self.alternatives = languages
+            .to
+            .iter()
+            .map(|to| {
+                self.languages
+                    .to
+                    .iter()
+                    .position(|old| old == to)
+                    .map_or(Vec::new(), |old| self.alternatives[old].clone())
+            })
+            .collect();
         self.rows = rows;
         self.languages = languages;
 
@@ -292,6 +323,19 @@ impl Session {
             return match self.presets.get(preset) {
                 Some(preset) => self.set(Languages::of(preset)),
                 None => Vec::new(),
+            };
+        }
+        if let Some((target, index)) = item.and_then(alternative) {
+            let terms = self
+                .alternatives
+                .get(target)
+                .and_then(|alternatives| alternatives.get(index))
+                .map(|alternative| &alternative.terms);
+            return match (action, terms) {
+                (COPY_TERM, Some(terms)) => vec![Effect::Copy(terms[0].clone())],
+                (COPY_TERMS, Some(terms)) => vec![Effect::Copy(terms.join(", "))],
+                (COPY_ORIGINAL, _) => vec![Effect::Copy(self.query.trim().to_string())],
+                _ => Vec::new(),
             };
         }
         match action {
@@ -330,7 +374,7 @@ impl Session {
             icon: None,
         };
 
-        let sections = if self.text().is_empty() {
+        let mut sections = if self.text().is_empty() {
             Vec::new()
         } else {
             vec![Section {
@@ -349,6 +393,9 @@ impl Session {
                     .collect(),
             }]
         };
+        if !self.text().is_empty() {
+            sections.extend(self.alternative_sections());
+        }
 
         View::List(List {
             showing_detail: false,
@@ -361,6 +408,58 @@ impl Session {
             empty: Some(empty),
             sections,
         })
+    }
+
+    /// A section of alternatives under the translations, per target that
+    /// has any: a row per part of speech, the most common term first.
+    fn alternative_sections(&self) -> Vec<Section> {
+        let several = self.languages.to.len() > 1;
+        self.alternatives
+            .iter()
+            .zip(&self.languages.to)
+            .enumerate()
+            .filter(|(_, (alternatives, _))| !alternatives.is_empty())
+            .map(|(target, (alternatives, to))| Section {
+                title: Some(if several {
+                    format!("Other translations \u{00b7} {}", to.name)
+                } else {
+                    "Other translations".into()
+                }),
+                subtitle: None,
+                items: alternatives
+                    .iter()
+                    .enumerate()
+                    .map(|(index, alternative)| {
+                        let action = |id: &str, title: String| Action {
+                            id: id.into(),
+                            title,
+                            shortcut: None,
+                        };
+                        Item {
+                            detail: None,
+                            id: format!("{ALTERNATIVE}{target}-{index}"),
+                            title: alternative.terms.join(", "),
+                            subtitle: None,
+                            icon: Some(Icon::Text {
+                                text: abbreviation(&alternative.part),
+                            }),
+                            accessories: vec![Accessory::Text {
+                                text: alternative.part.clone(),
+                            }],
+                            keywords: Vec::new(),
+                            actions: vec![
+                                action(
+                                    COPY_TERM,
+                                    format!("Copy \u{201c}{}\u{201d}", alternative.terms[0]),
+                                ),
+                                action(COPY_TERMS, "Copy All of Them".into()),
+                                action(COPY_ORIGINAL, "Copy Original".into()),
+                            ],
+                        }
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     /// *From*: detection, then every language.
@@ -543,6 +642,30 @@ fn targets(option: &str) -> Option<Vec<&'static Language>> {
     (!to.is_empty() && to.len() <= MAX_TARGETS).then_some(to)
 }
 
+/// The target and the part that an alternative row's id names:
+/// `"alternative-0-1"`.
+fn alternative(id: &str) -> Option<(usize, usize)> {
+    let (target, index) = id.strip_prefix(ALTERNATIVE)?.split_once('-')?;
+    Some((target.parse().ok()?, index.parse().ok()?))
+}
+
+/// A part of speech as a dictionary abbreviates it, for the icon square.
+fn abbreviation(part: &str) -> String {
+    match part {
+        "noun" => "n.",
+        "verb" => "v.",
+        "adjective" => "adj.",
+        "adverb" => "adv.",
+        "pronoun" => "pron.",
+        "preposition" => "prep.",
+        "conjunction" => "conj.",
+        "interjection" => "int.",
+        "article" => "art.",
+        other => return other.chars().take(3).collect(),
+    }
+    .into()
+}
+
 /// `"preset-2"` with prefix `"preset-"` is 2.
 fn index(id: &str, prefix: &str) -> Option<usize> {
     id.strip_prefix(prefix)?.parse().ok()
@@ -617,7 +740,7 @@ mod tests {
     fn done(text: &str) -> Result<Translation, Failure> {
         Ok(Translation {
             text: text.into(),
-            detected: None,
+            ..Default::default()
         })
     }
 
@@ -832,6 +955,7 @@ mod tests {
             Ok(Translation {
                 text: "Hello".into(),
                 detected: find("es"),
+                ..Default::default()
             }),
         ));
         assert_eq!(
@@ -929,6 +1053,78 @@ mod tests {
             action: "retry".into(),
         });
         assert_eq!(sends(&effects).len(), 1);
+    }
+
+    fn with_alternatives(text: &str) -> Result<Translation, Failure> {
+        Ok(Translation {
+            text: text.into(),
+            alternatives: vec![
+                Alternative {
+                    part: "verb".into(),
+                    terms: vec!["show".into(), "display".into()],
+                },
+                Alternative {
+                    part: "noun".into(),
+                    terms: vec!["sample".into()],
+                },
+            ],
+            ..Default::default()
+        })
+    }
+
+    /// F10: a single word's other translations, from the same answer, in a
+    /// section under the translation.
+    #[test]
+    fn a_words_alternatives_follow_its_translation() {
+        let mut session = session();
+        typed(&mut session, "mostrar");
+        let generation = session.generation;
+        let list = list(&session.answer(generation, 0, with_alternatives("show")));
+
+        assert_eq!(list.sections.len(), 2);
+        assert_eq!(
+            list.sections[1].title.as_deref(),
+            Some("Other translations")
+        );
+        let verb = &list.sections[1].items[0];
+        assert_eq!(verb.title, "show, display");
+        assert_eq!(verb.icon, Some(Icon::Text { text: "v.".into() }));
+
+        let effects = session.event(Event::ActionInvoked {
+            item: Some(verb.id.clone()),
+            action: verb.actions[0].id.clone(),
+        });
+        assert_eq!(effects, [Effect::Copy("show".into())]);
+        let effects = session.event(Event::ActionInvoked {
+            item: Some(verb.id.clone()),
+            action: "copy-terms".into(),
+        });
+        assert_eq!(effects, [Effect::Copy("show, display".into())]);
+    }
+
+    /// Kept while the same word is asked again, gone under a sentence.
+    #[test]
+    fn alternatives_leave_when_the_text_is_more_than_a_word() {
+        let mut session = session();
+        typed(&mut session, "mostrar");
+        let generation = session.generation;
+        session.answer(generation, 0, with_alternatives("show"));
+
+        assert_eq!(list(&typed(&mut session, "mostrarr")).sections.len(), 2);
+        assert_eq!(list(&typed(&mut session, "mostrar algo")).sections.len(), 1);
+    }
+
+    #[test]
+    fn several_targets_name_whose_alternatives_they_are() {
+        let mut session = session();
+        chose(&mut session, "to", "lang-en,fr,de");
+        typed(&mut session, "mostrar");
+        let generation = session.generation;
+        let list = list(&session.answer(generation, 1, with_alternatives("montrer")));
+        assert_eq!(
+            list.sections[1].title.as_deref(),
+            Some("Other translations \u{00b7} French")
+        );
     }
 
     #[test]

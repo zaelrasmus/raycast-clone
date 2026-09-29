@@ -269,12 +269,35 @@ pub fn resolve(written: &PresetConfig) -> std::result::Result<Preset, String> {
 }
 
 /// What a service answered.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Translation {
     pub text: String,
     /// What the service thinks the source was, when it says and it is a
     /// language in the table.
     pub detected: Option<&'static Language>,
+    /// A single word's other translations, by part of speech (F10). Only
+    /// Google gives them, and only for one word; empty otherwise.
+    pub alternatives: Vec<Alternative>,
+}
+
+/// Other translations of a word as one part of speech: *verb: mostrar,
+/// exhibir, desplegar*.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Alternative {
+    /// As the service names it, lower case: "verb".
+    pub part: String,
+    /// Most common first, at most [`MAX_ALTERNATIVES`].
+    pub terms: Vec<String>,
+}
+
+/// The most terms kept per part of speech. Google lists thirty for a common
+/// verb; past the first few they are rare senses nobody is looking for.
+pub const MAX_ALTERNATIVES: usize = 8;
+
+/// Whether `text` is one word, and so worth asking for alternatives.
+pub fn is_one_word(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && !text.contains(char::is_whitespace)
 }
 
 /// A translation service.

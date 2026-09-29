@@ -13,13 +13,20 @@
 //! request, whatever the headers, while curl on the same machine got 200 --
 //! it judges the TLS client, not the request. This host answered the same
 //! client normally.
+//!
+//! A single word goes to [`SINGLE`] on the same host instead (F10): the same
+//! translation, plus the word's other translations by part of speech, in
+//! one request. Checked against the blocking client before it was built --
+//! the lesson above -- and it answered normally. Text of more than one word
+//! stays on `/t`, which keeps line breaks.
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use super::{Language, Translation, Translator, languages};
+use super::{Alternative, Language, MAX_ALTERNATIVES, Translation, Translator, languages};
 
 const ENDPOINT: &str = "https://clients5.google.com/translate_a/t";
+const SINGLE: &str = "https://clients5.google.com/translate_a/single";
 
 pub struct Google {
     client: reqwest::blocking::Client,
@@ -38,7 +45,12 @@ impl Translator for Google {
         from: Option<&'static Language>,
         to: &'static Language,
     ) -> Result<Translation> {
-        let url = url(text, from, to)?;
+        let single = super::is_one_word(text);
+        let url = if single {
+            url_single(text.trim(), from, to)?
+        } else {
+            url(text, from, to)?
+        };
         // Without the URL: it carries the text, and errors reach the log.
         let response = self
             .client
@@ -54,7 +66,11 @@ impl Translator for Google {
             .text()
             .map_err(reqwest::Error::without_url)
             .context("reading Google's answer")?;
-        parse(&body)
+        if single {
+            parse_single(&body)
+        } else {
+            parse(&body)
+        }
     }
 }
 
@@ -68,6 +84,78 @@ fn url(text: &str, from: Option<&'static Language>, to: &'static Language) -> Re
             ("q", text),
         ],
     )?)
+}
+
+/// The request for one word: the translation (`dt=t`) and the dictionary
+/// (`dt=bd`), as an object (`dj=1`).
+fn url_single(
+    word: &str,
+    from: Option<&'static Language>,
+    to: &'static Language,
+) -> Result<url::Url> {
+    Ok(url::Url::parse_with_params(
+        SINGLE,
+        [
+            ("client", "dict-chrome-ex"),
+            ("sl", from.map_or("auto", Language::google)),
+            ("tl", to.google()),
+            ("dj", "1"),
+            ("dt", "t"),
+            ("dt", "bd"),
+            ("q", word),
+        ],
+    )?)
+}
+
+/// Read the answer for one word: `sentences[].trans` is the translation,
+/// `src` the detected source, and `dict` the alternatives by part of speech.
+/// A word with no alternatives -- a name, a typo -- has no `dict`.
+pub fn parse_single(body: &str) -> Result<Translation> {
+    let value: Value = serde_json::from_str(body).context("Google's answer is not JSON")?;
+    let text: String = value
+        .get("sentences")
+        .and_then(Value::as_array)
+        .context("Google's answer has no translation in it")?
+        .iter()
+        .filter_map(|sentence| sentence.get("trans").and_then(Value::as_str))
+        .collect();
+    if text.trim().is_empty() {
+        bail!("Google returned an empty translation");
+    }
+
+    let alternatives = value
+        .get("dict")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| {
+                    let terms: Vec<String> = part
+                        .get("terms")?
+                        .as_array()?
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .take(MAX_ALTERNATIVES)
+                        .map(str::to_string)
+                        .collect();
+                    let name = part.get("pos").and_then(Value::as_str).unwrap_or_default();
+                    (!terms.is_empty()).then(|| Alternative {
+                        part: name.trim().to_lowercase(),
+                        terms,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Translation {
+        text,
+        detected: value
+            .get("src")
+            .and_then(Value::as_str)
+            .and_then(languages::detected),
+        alternatives,
+    })
 }
 
 /// Read the endpoint's answer.
@@ -97,6 +185,7 @@ pub fn parse(body: &str) -> Result<Translation> {
     Ok(Translation {
         text: text.to_string(),
         detected: detected.and_then(languages::detected),
+        alternatives: Vec::new(),
     })
 }
 
@@ -157,6 +246,51 @@ mod tests {
             .unwrap();
         assert_eq!(translation.detected.unwrap().code, "es");
         assert!(translation.text.to_lowercase().contains("good morning"));
+
+        // One word: the dictionary endpoint, with its alternatives.
+        let translation = google
+            .translate("display", None, find("es").unwrap())
+            .unwrap();
+        assert_eq!(translation.text, "mostrar");
+        assert!(!translation.alternatives.is_empty());
+    }
+
+    /// Trimmed from the live endpoint: ten terms per part, two entries.
+    #[test]
+    fn one_word_comes_with_its_alternatives_by_part_of_speech() {
+        let translation = parse_single(include_str!("fixtures/single-display.json")).unwrap();
+        assert_eq!(translation.text, "mostrar");
+        assert_eq!(translation.detected.unwrap().code, "en");
+        let parts: Vec<&str> = translation
+            .alternatives
+            .iter()
+            .map(|alternative| alternative.part.as_str())
+            .collect();
+        assert_eq!(parts, ["verb", "noun"]);
+        assert_eq!(
+            translation.alternatives[0].terms[..2],
+            ["mostrar", "exhibir"]
+        );
+        assert!(translation.alternatives[0].terms.len() <= MAX_ALTERNATIVES);
+    }
+
+    #[test]
+    fn a_word_without_a_dictionary_entry_has_no_alternatives() {
+        let body = r#"{"sentences":[{"trans":"qwzzx","orig":"qwzzx"}],"src":"en"}"#;
+        let translation = parse_single(body).unwrap();
+        assert_eq!(translation.text, "qwzzx");
+        assert!(translation.alternatives.is_empty());
+        assert!(parse_single(r#"{"sentences":[]}"#).is_err());
+        assert!(parse_single("<html>").is_err());
+    }
+
+    #[test]
+    fn one_word_asks_the_dictionary_endpoint() {
+        let url = url_single("display", None, find("es").unwrap()).unwrap();
+        assert!(url.path().ends_with("/single"));
+        let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        assert!(query.contains(&("dt".into(), "bd".into())));
+        assert!(query.contains(&("q".into(), "display".into())));
     }
 
     #[test]

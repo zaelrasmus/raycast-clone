@@ -1,0 +1,92 @@
+{
+ "sentences": [
+  {
+   "trans": "mostrar",
+   "orig": "display",
+   "backend": 10
+  }
+ ],
+ "dict": [
+  {
+   "pos": "verb",
+   "terms": [
+    "mostrar",
+    "exhibir",
+    "desplegar",
+    "exponer",
+    "presentar",
+    "demostrar",
+    "manifestar",
+    "ostentar",
+    "lucir",
+    "hacer ostentación de"
+   ],
+   "entry": [
+    {
+     "word": "mostrar",
+     "reverse_translation": [
+      "show",
+      "display",
+      "exhibit",
+      "present",
+      "indicate",
+      "manifest"
+     ],
+     "score": 0.64564854
+    },
+    {
+     "word": "exhibir",
+     "reverse_translation": [
+      "display",
+      "exhibit",
+      "show"
+     ],
+     "score": 0.026649097
+    }
+   ],
+   "base_form": "display",
+   "pos_enum": 2
+  },
+  {
+   "pos": "noun",
+   "terms": [
+    "visualización",
+    "exhibición",
+    "presentación",
+    "despliegue",
+    "exposición",
+    "demostración",
+    "manifestación",
+    "alarde",
+    "ostentación",
+    "escaparate"
+   ],
+   "entry": [
+    {
+     "word": "visualización",
+     "reverse_translation": [
+      "display",
+      "visualization"
+     ],
+     "score": 0.10874496,
+     "previous_word": "la"
+    },
+    {
+     "word": "exhibición",
+     "reverse_translation": [
+      "display",
+      "exhibition",
+      "exposure"
+     ],
+     "score": 0.034218118,
+     "previous_word": "la"
+    }
+   ],
+   "base_form": "display",
+   "pos_enum": 1
+  }
+ ],
+ "src": "en",
+ "confidence": 1.0,
+ "spell": {}
+}
