@@ -21,6 +21,7 @@
 //! for. The daemon (`lumen-app`) owns the sleep, the notification and the
 //! file, as it does for the translator.
 
+pub mod cycle;
 pub mod duration;
 pub mod presets;
 pub mod sounds;
@@ -28,8 +29,26 @@ pub mod stopwatch;
 pub mod store;
 pub mod view;
 
+pub use cycle::{Cycle, Phase, Plan};
 pub use presets::{Preset, PresetConfig, Ring, TimersConfig};
 pub use stopwatch::{Stopwatch, Watch};
+
+/// What happened to a timer whose deadline passed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ending {
+    /// It is over.
+    Done(Timer),
+    /// Its cycle moved on; the timer as it is now, in its new phase.
+    Next(Timer),
+}
+
+impl Ending {
+    pub fn timer(&self) -> &Timer {
+        match self {
+            Ending::Done(timer) | Ending::Next(timer) => timer,
+        }
+    }
+}
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -61,6 +80,8 @@ pub enum Command {
     DismissRinging,
     /// Count up from zero, under `name` if there is one (slice 4).
     StartStopwatch { name: Option<String> },
+    /// Work and breaks by `plan`, under `name` (slice 5).
+    StartCycle { name: Option<String>, plan: Plan },
 }
 
 /// Every timer and stopwatch.
@@ -82,6 +103,10 @@ pub struct Timer {
     /// What it counts down from, for restarting and for its description.
     pub duration_ms: u64,
     pub state: State,
+    /// Where in its plan a cycling timer is; `duration_ms` is then the
+    /// phase's length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle: Option<Cycle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +193,7 @@ impl Clock {
             state: State::Running {
                 ends_at: now + duration_ms,
             },
+            cycle: None,
         });
         id
     }
@@ -184,6 +210,10 @@ impl Clock {
             Command::DismissRinging => self.dismiss_ringing().into_iter().next(),
             Command::StartStopwatch { name } => {
                 self.start_stopwatch(name.clone(), now);
+                None
+            }
+            Command::StartCycle { name, plan } => {
+                self.start_cycle(*plan, name.clone(), now);
                 None
             }
         }
@@ -254,12 +284,15 @@ impl Clock {
         self.stop(id)
     }
 
-    /// Every timer that has ended by `now`, first to end first.
+    /// Every timer whose deadline has passed by `now`, first to end first.
     ///
-    /// With `ring`, they stay, ringing until dismissed; otherwise they are
-    /// taken out. Either way each is returned once, so each is announced
-    /// once: a ringing timer is not running, and never ends again.
-    pub fn expire(&mut self, now: Millis, ring: bool) -> Vec<Timer> {
+    /// A timer with a cycle moves on to its next phase, counted from the
+    /// deadline rather than from `now` so a late wake does not stretch the
+    /// plan -- through several phases if the machine slept through them, and
+    /// reported once, as where it is now. A timer with nothing after it ends:
+    /// with `ring` it stays, ringing until dismissed, otherwise it is taken
+    /// out. Either way each is returned once, so each is announced once.
+    pub fn expire(&mut self, now: Millis, ring: bool) -> Vec<Ending> {
         let (mut ended, running): (Vec<Timer>, Vec<Timer>) = std::mem::take(&mut self.timers)
             .into_iter()
             .partition(|timer| matches!(timer.state, State::Running { ends_at } if ends_at <= now));
@@ -268,13 +301,31 @@ impl Clock {
             State::Running { ends_at } => ends_at,
             State::Paused { .. } | State::Ringing { .. } => Millis::MAX,
         });
-        if ring {
-            self.timers.extend(ended.iter().cloned().map(|timer| Timer {
-                state: State::Ringing { since: now },
-                ..timer
-            }));
+
+        let mut endings = Vec::new();
+        for mut timer in ended {
+            let mut advanced = false;
+            while let State::Running { ends_at } = timer.state {
+                if ends_at > now || !timer.advance(ends_at) {
+                    break;
+                }
+                advanced = true;
+            }
+            let still_running = matches!(timer.state, State::Running { ends_at } if ends_at > now);
+            if advanced && still_running {
+                self.timers.push(timer.clone());
+                endings.push(Ending::Next(timer));
+                continue;
+            }
+            if ring {
+                self.timers.push(Timer {
+                    state: State::Ringing { since: now },
+                    ..timer.clone()
+                });
+            }
+            endings.push(Ending::Done(timer));
         }
-        ended
+        endings
     }
 
     /// When the next running timer ends: the one moment the daemon has to be
@@ -393,7 +444,7 @@ mod tests {
 
         let ended = clock.expire(3 * MIN, false);
 
-        let names: Vec<_> = ended.iter().map(|timer| timer.title()).collect();
+        let names: Vec<_> = ended.iter().map(|ending| ending.timer().title()).collect();
         assert_eq!(names, ["eggs", "tea"]);
         assert_eq!(clock.timers().len(), 1);
         assert_eq!(clock.next_deadline(), Some(10 * MIN));

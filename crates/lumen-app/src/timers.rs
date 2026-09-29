@@ -40,7 +40,8 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::AsyncApp;
 use lumen_core::timers::{
-    self, Clock, Command, Preset, Ring, Timer, TimersConfig, duration, sounds, store, view,
+    self, Clock, Command, Ending, Phase, Preset, Ring, Timer, TimersConfig, duration, sounds,
+    store, view,
 };
 use lumen_core::view::Event;
 use lumen_platform::Platform;
@@ -175,6 +176,9 @@ impl Timers {
                 return;
             }
             (Command::DismissRinging, Some(_)) => log::info!("dismissed the ringing timers"),
+            (Command::StartCycle { plan, .. }, _) => {
+                log::info!("started a cycle, {}", plan.describe())
+            }
             (Command::StartStopwatch { name }, _) => log::info!(
                 "started a stopwatch{}",
                 if name.is_some() { ", named" } else { "" }
@@ -191,17 +195,27 @@ impl Timers {
     /// summons in case the sleep woke late.
     pub fn catch_up(&self, cx: &AsyncApp) {
         let ring = self.offer.borrow().ring == Ring::UntilDismissed;
-        let ended = self.clock.borrow_mut().expire(now(), ring);
-        if ended.is_empty() {
+        let endings = self.clock.borrow_mut().expire(now(), ring);
+        if endings.is_empty() {
             return;
         }
-        for timer in &ended {
-            self.ended(timer);
+        for ending in &endings {
+            match ending {
+                Ending::Done(timer) => self.ended(timer),
+                Ending::Next(timer) => self.moved_on(timer),
+            }
         }
-        // Once for them all: several timers ending together is one alert.
-        if let Some(sound) = self.offer.borrow().sound.clone() {
-            self.looping.set(ring);
-            self.play(sound, ring);
+        // Once for them all: several timers ending together is one alert. A
+        // phase changing plays it once; only a timer that is over rings.
+        let done = endings
+            .iter()
+            .any(|ending| matches!(ending, Ending::Done(_)));
+        let repeat = ring && done;
+        if let Some(sound) = self.offer.borrow().sound.clone()
+            && !self.looping.get()
+        {
+            self.looping.set(repeat);
+            self.play(sound, repeat);
         }
         self.changed(cx);
     }
@@ -226,7 +240,41 @@ impl Timers {
         });
     }
 
+    /// A cycle moved to its next phase: say which, and for how long.
+    fn moved_on(&self, timer: &Timer) {
+        let Some(cycle) = &timer.cycle else {
+            return;
+        };
+        let length = duration::describe(cycle.length());
+        let title = timer.title();
+        let (heading, body) = match cycle.phase {
+            Phase::Work => (
+                "Back to work",
+                format!(
+                    "{title} \u{00b7} work {} of {}, {length}",
+                    cycle.round, cycle.plan.rounds
+                ),
+            ),
+            Phase::Break => ("Take a break", format!("{title} \u{00b7} {length}")),
+            Phase::LongBreak => (
+                "Long break",
+                format!("{title} \u{00b7} {length}, the last of the set"),
+            ),
+        };
+        self.say(heading, &body);
+    }
+
     fn ended(&self, timer: &Timer) {
+        if let Some(cycle) = &timer.cycle {
+            let body = format!(
+                "{} \u{00b7} {} rounds of {}",
+                timer.title(),
+                cycle.plan.rounds,
+                duration::describe(std::time::Duration::from_secs(cycle.plan.work_secs))
+            );
+            self.say("Set complete", &body);
+            return;
+        }
         let body = match &timer.name {
             Some(name) => format!("{name} \u{00b7} {}", duration::describe(timer.duration())),
             None => timer.title(),

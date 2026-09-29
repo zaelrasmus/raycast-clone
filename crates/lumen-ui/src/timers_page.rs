@@ -66,6 +66,10 @@ enum Form {
         name: Entity<TextField>,
         alias: Entity<TextField>,
         duration: Entity<TextField>,
+        /// A break between work phases, which makes the preset a cycle.
+        short_break: Entity<TextField>,
+        long_break: Entity<TextField>,
+        rounds: Entity<TextField>,
     },
 }
 
@@ -77,7 +81,10 @@ impl Form {
                 name,
                 alias,
                 duration,
-            } => vec![name, alias, duration],
+                short_break,
+                long_break,
+                rounds,
+            } => vec![name, alias, duration, short_break, long_break, rounds],
         }
     }
 }
@@ -442,12 +449,36 @@ impl TimersPage {
                 name,
                 alias,
                 duration,
+                short_break,
+                long_break,
+                rounds,
             } => {
-                let preset = store::preset(
-                    name.read(cx).text().trim(),
-                    alias.read(cx).text(),
-                    duration.read(cx).text(),
-                );
+                let written = rounds.read(cx).text().trim().to_string();
+                let rounds = match written.as_str() {
+                    "" => None,
+                    number => match number.parse::<u32>() {
+                        Ok(rounds) => Some(rounds),
+                        Err(_) => {
+                            self.error = Some(format!("Rounds is a number, not {number:?}"));
+                            cx.notify();
+                            return;
+                        }
+                    },
+                };
+                let optional = |field: &Entity<TextField>| {
+                    let text = field.read(cx).text().trim().to_string();
+                    (!text.is_empty()).then_some(text)
+                };
+                let preset = PresetConfig {
+                    short_break: optional(short_break),
+                    long_break: optional(long_break),
+                    rounds,
+                    ..store::preset(
+                        name.read(cx).text().trim(),
+                        alias.read(cx).text(),
+                        duration.read(cx).text(),
+                    )
+                };
                 let saved = preset.name.clone();
                 let replacing = match &self.selection {
                     Selection::Preset(name) => Some(name.clone()),
@@ -623,6 +654,24 @@ fn preset_form(preset: &PresetConfig, colors: &Colors, cx: &mut App) -> Form {
             cx,
         ),
         duration: text(preset.duration.clone(), "25m, 1h30 or 1:30", cx),
+        short_break: text(
+            preset.short_break.clone().unwrap_or_default(),
+            "Optional: 5m makes it a cycle, like Pomodoro",
+            cx,
+        ),
+        long_break: text(
+            preset.long_break.clone().unwrap_or_default(),
+            "Optional: 15m after the last round",
+            cx,
+        ),
+        rounds: text(
+            preset
+                .rounds
+                .map(|rounds| rounds.to_string())
+                .unwrap_or_default(),
+            "4",
+            cx,
+        ),
     }
 }
 
@@ -630,7 +679,14 @@ fn preset_form(preset: &PresetConfig, colors: &Colors, cx: &mut App) -> Form {
 /// skips it -- shown so it can be fixed here.
 fn detail(preset: &PresetConfig) -> String {
     match presets::resolve(preset) {
-        Ok(resolved) => duration::describe(resolved.duration),
+        Ok(resolved) => match resolved.cycle {
+            Some(plan) => format!(
+                "{} \u{00d7} {}",
+                plan.rounds,
+                duration::describe(resolved.duration)
+            ),
+            None => duration::describe(resolved.duration),
+        },
         Err(_) => "not used".into(),
     }
 }
@@ -841,16 +897,26 @@ impl TimersPage {
                 name,
                 alias,
                 duration,
+                short_break,
+                long_break,
+                rounds,
             } => (
                 vec![
                     field_row("Name", name.clone().into_any_element()).into_any_element(),
                     field_row("Alias", alias.clone().into_any_element()).into_any_element(),
                     field_row("Duration", duration.clone().into_any_element()).into_any_element(),
+                    field_row("Break", short_break.clone().into_any_element()).into_any_element(),
+                    field_row("Long break", long_break.clone().into_any_element())
+                        .into_any_element(),
+                    field_row("Rounds", rounds.clone().into_any_element()).into_any_element(),
                 ],
                 vec![
                     "Its row in the launcher, and the timer's name while it runs.",
                     "One word the launcher finds it by.",
-                    "As you would type it in the launcher: 25m, 1h30, 1:30.",
+                    "As you would type it in the launcher: 25m, 1h30, 1:30. With a break, each work round.",
+                    "Between rounds. Set, the timer cycles work and break by itself.",
+                    "After the last round, then the set ends. Empty: it ends with the work.",
+                    "How many work rounds in the set: 1 to 12. Empty is 4.",
                 ],
             ),
         };
@@ -998,5 +1064,11 @@ mod tests {
         let bad = store::preset("Tea", "", "soon");
         assert_eq!(detail(&good), "3 min");
         assert_eq!(detail(&bad), "not used");
+        let cycle = PresetConfig {
+            short_break: Some("5m".into()),
+            rounds: Some(3),
+            ..store::preset("Sprint", "", "50m")
+        };
+        assert_eq!(detail(&cycle), "3 \u{00d7} 50 min");
     }
 }

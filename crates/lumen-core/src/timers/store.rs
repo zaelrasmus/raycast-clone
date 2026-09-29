@@ -169,7 +169,31 @@ fn fields(preset: &PresetConfig, mut kept: Map<String, Value>) -> Map<String, Va
         "duration".into(),
         Value::String(preset.duration.trim().to_string()),
     );
-    for key in ["name", "alias", "duration"] {
+    let text = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| Value::String(value.to_string()))
+    };
+    let cycle = [
+        ("short-break", text(&preset.short_break)),
+        ("long-break", text(&preset.long_break)),
+        ("rounds", preset.rounds.map(Value::from)),
+    ];
+    for (key, value) in cycle {
+        if let Some(value) = value {
+            map.insert(key.into(), value);
+        }
+    }
+    for key in [
+        "name",
+        "alias",
+        "duration",
+        "short-break",
+        "long-break",
+        "rounds",
+    ] {
         kept.remove(key);
     }
     map.extend(kept);
@@ -182,6 +206,7 @@ pub fn preset(name: &str, alias: &str, duration: &str) -> PresetConfig {
         name: name.to_string(),
         alias: Some(alias.to_string()),
         duration: duration.to_string(),
+        ..PresetConfig::default()
     }
 }
 
@@ -269,6 +294,29 @@ mod tests {
         let read = read(&file.0).unwrap();
         assert_eq!(read.presets[0].name, "A2");
         assert_eq!(read.presets[1].name, "B");
+    }
+
+    #[test]
+    fn a_cycle_is_written_and_unwritten() {
+        let file = Scratch::new("cycle", Some(CONFIG));
+        let pomodoro = PresetConfig {
+            short_break: Some("5m".into()),
+            long_break: Some("15m".into()),
+            rounds: Some(4),
+            ..preset("Pomodoro", "pom", "25m")
+        };
+        add(&file.0, pomodoro).unwrap();
+        let written = file.contents();
+        assert!(written.contains("\"short-break\": \"5m\""), "{written}");
+        assert!(written.contains("\"rounds\": 4"), "{written}");
+
+        // Emptying the break makes it a plain timer again, with no leftovers.
+        replace(&file.0, "Pomodoro", preset("Pomodoro", "pom", "25m")).unwrap();
+        let written = file.contents();
+        assert!(
+            !written.contains("break") && !written.contains("rounds"),
+            "{written}"
+        );
     }
 
     #[test]

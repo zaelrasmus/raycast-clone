@@ -8,7 +8,7 @@
 
 use crate::item::{Action, Item, Kind, ViewSource};
 use crate::providers::Provider;
-use crate::timers::{Command, Preset, duration};
+use crate::timers::{Command, Plan, Preset, duration};
 
 pub struct TimersProvider;
 
@@ -39,22 +39,31 @@ fn preset(preset: &Preset) -> Item {
     // "timer" too, so typing the word lists every preset beside the view.
     let mut keywords = vec!["timer".to_string()];
     keywords.extend(preset.alias.clone());
+    if preset.cycle.is_some() {
+        keywords.push("pomodoro".into());
+    }
     Item {
         // By name, so usage survives reordering the presets in the file.
         id: format!("timer:preset:{}", preset.name),
         title: preset.name.clone(),
-        subtitle: Some(format!(
-            "Start a {} timer",
-            duration::describe(preset.duration)
-        )),
+        subtitle: Some(format!("Start {}", preset.describe())),
         icon: None,
         keywords,
-        actions: vec![Action::Timer(Command::Start {
-            seconds: preset.duration.as_secs(),
-            name: Some(preset.name.clone()),
-        })],
+        actions: vec![start(preset)],
         kind: Kind::Timer,
     }
+}
+
+/// What starting `preset` asks the daemon for.
+pub fn start(preset: &Preset) -> Action {
+    let name = Some(preset.name.clone());
+    Action::Timer(match preset.cycle {
+        Some(plan) => Command::StartCycle { name, plan },
+        None => Command::Start {
+            seconds: preset.duration.as_secs(),
+            name,
+        },
+    })
 }
 
 /// Every typed duration shares one id, like every typed URL: the usage
@@ -98,6 +107,18 @@ impl Provider for TimersProvider {
                 icon: None,
                 keywords: keywords(&["pomodoro", "focus", "stopwatch"]),
                 actions: vec![Action::OpenView(ViewSource::Timers)],
+                kind: Kind::Timer,
+            },
+            Item {
+                id: "timer:pomodoro".into(),
+                title: "Start Pomodoro".into(),
+                subtitle: Some(Plan::POMODORO.describe()),
+                icon: None,
+                keywords: keywords(&["pomodoro", "focus", "tomato", "work", "break"]),
+                actions: vec![Action::Timer(Command::StartCycle {
+                    name: Some("Pomodoro".into()),
+                    plan: Plan::POMODORO,
+                })],
                 kind: Kind::Timer,
             },
             Item {
@@ -235,6 +256,7 @@ mod tests {
             name: "Deep work".into(),
             alias: Some("dw".into()),
             duration: std::time::Duration::from_secs(90 * 60),
+            cycle: None,
         }])
         .catalogue();
 
@@ -250,6 +272,38 @@ mod tests {
             Action::Timer(Command::Start {
                 seconds: 90 * 60,
                 name: Some("Deep work".into())
+            })
+        );
+    }
+
+    #[test]
+    fn a_cycling_preset_starts_its_cycle() {
+        let items = TimerPresetsProvider::new(vec![Preset {
+            name: "Sprint".into(),
+            alias: None,
+            duration: std::time::Duration::from_secs(50 * 60),
+            cycle: Some(Plan::POMODORO),
+        }])
+        .catalogue();
+        assert!(matches!(
+            items[0].primary(),
+            Action::Timer(Command::StartCycle { .. })
+        ));
+        assert!(items[0].keywords.contains(&"pomodoro".to_string()));
+    }
+
+    #[test]
+    fn pomodoro_is_there_without_configuring_anything() {
+        let items = TimersProvider.catalogue();
+        let pomodoro = items
+            .iter()
+            .find(|item| item.title == "Start Pomodoro")
+            .unwrap();
+        assert_eq!(
+            pomodoro.primary(),
+            Action::Timer(Command::StartCycle {
+                name: Some("Pomodoro".into()),
+                plan: Plan::POMODORO
             })
         );
     }

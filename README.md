@@ -90,7 +90,7 @@ an aesthetic worth looking at fifty times a day.
   and *To* pills choose any language at any time, without losing the text:
   click one, or `Tab` to open its list. `Enter` copies the translation and
   closes.
-- **Timers** (F8, slices 1 to 4). Type a duration -- `25m`, `1h30`, `90s`, `1:30`
+- **Timers** (F8, slices 1 to 5). Type a duration -- `25m`, `1h30`, `90s`, `1:30`
   -- and *Start 25 min timer* leads the list; words after it name the timer,
   `25m write chapter 3`. A notification says when it ends. *Timers* shows
   what is running with the time left, and pauses, resumes, restarts or stops
@@ -105,6 +105,10 @@ an aesthetic worth looking at fifty times a day.
   until *Dismiss Ringing Timer* if you set it to ring until dismissed.
   *Start Stopwatch* counts up instead -- `stopwatch standup` names it --
   and it lives in *Timers* too, with pause, reset and stop.
+  *Start Pomodoro* runs 4 × 25 minutes of work with 5 minute breaks and a
+  15 minute break at the end, moving on by itself and telling you at each
+  change; *Skip to Next Phase* is in `Ctrl+K`. Give any preset a *Break* in
+  settings and it cycles the same way, with your own lengths and rounds.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.

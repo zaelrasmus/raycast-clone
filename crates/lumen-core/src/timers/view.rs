@@ -27,6 +27,7 @@ const START: &str = "start";
 const DISMISS: &str = "dismiss";
 const WATCH: &str = "watch-";
 const RESET: &str = "reset";
+const SKIP: &str = "skip";
 const PRESET: &str = "preset-";
 const QUICK: &str = "quick-";
 
@@ -115,18 +116,30 @@ fn item(timer: &Timer, now: Millis) -> Item {
         State::Ringing { .. } => action(DISMISS, "Dismiss"),
     };
 
+    // A cycle can move on early: a break not needed, work done sooner.
+    let mut actions = vec![toggle];
+    if timer.cycle.is_some() && !timer.is_ringing() {
+        actions.push(action(SKIP, "Skip to Next Phase"));
+    }
+    actions.extend([action(RESTART, "Restart"), action(STOP, "Stop")]);
+
     Item {
         id: format!("{TIMER}{}", timer.id),
         title: timer.title(),
-        // A named timer says what it counts; an unnamed one already does.
-        subtitle: timer
-            .name
-            .as_ref()
-            .map(|_| format!("{} timer", describe(timer.duration()))),
+        // Where a cycle is; what a named timer counts; nothing for an
+        // unnamed one, whose title already says it.
+        subtitle: match (&timer.cycle, &timer.name) {
+            (Some(cycle), _) if timer.is_ringing() => {
+                Some(format!("{} done", cycle.plan.describe()))
+            }
+            (Some(cycle), _) => Some(cycle.label()),
+            (None, Some(_)) => Some(format!("{} timer", describe(timer.duration()))),
+            (None, None) => None,
+        },
         icon: Some(Icon::Glyph { name: GLYPH.into() }),
         accessories,
         keywords: timer.name.iter().cloned().collect(),
-        actions: vec![toggle, action(RESTART, "Restart"), action(STOP, "Stop")],
+        actions,
     }
 }
 
@@ -166,7 +179,10 @@ fn preset(preset: &Preset) -> Item {
     Item {
         id: format!("{PRESET}{}", preset.name),
         title: preset.name.clone(),
-        subtitle: Some(describe(preset.duration)),
+        subtitle: Some(match &preset.cycle {
+            Some(plan) => plan.describe(),
+            None => describe(preset.duration),
+        }),
         icon: Some(Icon::Glyph { name: GLYPH.into() }),
         // The alias, where the root list's rows show their kind: the word
         // that finds this preset from anywhere.
@@ -220,7 +236,11 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
             let Some(preset) = presets.iter().find(|preset| preset.name == name) else {
                 return false;
             };
-            clock.start(preset.duration, Some(preset.name.clone()), now);
+            let name = Some(preset.name.clone());
+            match preset.cycle {
+                Some(plan) => clock.start_cycle(plan, name, now),
+                None => clock.start(preset.duration, name, now),
+            };
             return true;
         }
         if let Some(seconds) = item.strip_prefix(QUICK).and_then(|s| s.parse().ok()) {
@@ -246,6 +266,7 @@ pub fn act(clock: &mut Clock, event: &Event, presets: &[Preset], now: Millis) ->
         RESUME => clock.resume(id, now),
         RESTART => clock.restart(id, now),
         STOP | DISMISS => clock.stop(id).is_some(),
+        SKIP => clock.skip(id, now),
         _ => false,
     }
 }
@@ -386,6 +407,7 @@ mod tests {
             name: "Deep work".into(),
             alias: Some("dw".into()),
             duration: Duration::from_secs(90 * 60),
+            cycle: None,
         }
     }
 
@@ -435,6 +457,38 @@ mod tests {
         assert!(!act(&mut clock, &invoke("preset-Gone", "start"), &[], 0));
         assert!(!act(&mut clock, &invoke("quick-soon", "start"), &[], 0));
         assert!(clock.is_empty());
+    }
+
+    #[test]
+    fn a_cycle_says_where_it_is_and_can_skip() {
+        let mut clock = Clock::default();
+        let id = clock.start_cycle(super::super::Plan::POMODORO, Some("Pomodoro".into()), 0);
+
+        let row = list(view(&clock, &[], &[], 0)).item(0).unwrap().clone();
+        assert_eq!(row.title, "Pomodoro");
+        assert_eq!(row.subtitle.as_deref(), Some("Work 1 of 4"));
+        assert_eq!(row.actions[1].title, "Skip to Next Phase");
+
+        assert!(act(
+            &mut clock,
+            &invoke(&format!("timer-{id}"), "skip"),
+            &[],
+            60_000
+        ));
+        let row = list(view(&clock, &[], &[], 60_000))
+            .item(0)
+            .unwrap()
+            .clone();
+        assert_eq!(row.subtitle.as_deref(), Some("Break"));
+        assert_eq!(texts(&row), ["5:00"]);
+    }
+
+    #[test]
+    fn a_plain_timer_offers_no_skip() {
+        let mut clock = Clock::default();
+        clock.start(Duration::from_secs(60), None, 0);
+        let row = list(view(&clock, &[], &[], 0)).item(0).unwrap().clone();
+        assert!(row.actions.iter().all(|action| action.id != "skip"));
     }
 
     #[test]

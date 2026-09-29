@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use super::cycle::{MAX_ROUNDS, Plan};
 use super::duration;
 
 /// The `timers` section of `config.json`.
@@ -69,8 +70,15 @@ impl Ring {
 pub struct PresetConfig {
     pub name: String,
     pub alias: Option<String>,
-    /// As typed in the launcher: `"25m"`, `"1h30"`, `"1:30"`.
+    /// As typed in the launcher: `"25m"`, `"1h30"`, `"1:30"`. With a break,
+    /// the length of each work phase.
     pub duration: String,
+    /// A break between work phases, which makes the preset a cycle (slice 5).
+    pub short_break: Option<String>,
+    /// After the last work phase. Absent, the cycle ends with the work.
+    pub long_break: Option<String>,
+    /// How many work phases; four when absent.
+    pub rounds: Option<u32>,
 }
 
 /// A preset that makes sense.
@@ -79,6 +87,18 @@ pub struct Preset {
     pub name: String,
     pub alias: Option<String>,
     pub duration: Duration,
+    /// Work and breaks, when the preset is a cycle.
+    pub cycle: Option<Plan>,
+}
+
+impl Preset {
+    /// What starting it does, in words.
+    pub fn describe(&self) -> String {
+        match &self.cycle {
+            Some(plan) => plan.describe(),
+            None => format!("a {} timer", duration::describe(self.duration)),
+        }
+    }
 }
 
 impl TimersConfig {
@@ -152,7 +172,46 @@ pub fn resolve(written: &PresetConfig) -> Result<Preset, String> {
         name: name.to_string(),
         alias: alias.map(str::to_string),
         duration,
+        cycle: plan(name, written, duration)?,
     })
+}
+
+/// The cycle a preset describes, if it has a break.
+fn plan(name: &str, written: &PresetConfig, work: Duration) -> Result<Option<Plan>, String> {
+    let text = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let (short, long) = (text(&written.short_break), text(&written.long_break));
+    let Some(short) = short else {
+        if long.is_some() || written.rounds.is_some() {
+            return Err(format!(
+                "{name:?} has rounds or a long break but no break; add one to make it a cycle"
+            ));
+        }
+        return Ok(None);
+    };
+    let read = |field: &str, value: &str| {
+        parse_duration(value)
+            .ok_or_else(|| format!("{name:?} has a {field} Lumen cannot read ({value:?})"))
+    };
+    let short = read("break", &short)?;
+    let long = long.map(|long| read("long break", &long)).transpose()?;
+    let rounds = written.rounds.unwrap_or(4);
+    if !(1..=MAX_ROUNDS).contains(&rounds) {
+        return Err(format!(
+            "{name:?} needs 1 to {MAX_ROUNDS} rounds, not {rounds}"
+        ));
+    }
+    Ok(Some(Plan {
+        work_secs: work.as_secs(),
+        break_secs: short.as_secs(),
+        long_break_secs: long.map_or(0, |long| long.as_secs()),
+        rounds,
+    }))
 }
 
 #[cfg(test)]
@@ -175,8 +234,39 @@ mod tests {
                 name: "Deep work".into(),
                 alias: Some("dw".into()),
                 duration: Duration::from_secs(90 * 60),
+                cycle: None,
             }]
         );
+    }
+
+    #[test]
+    fn a_break_makes_a_preset_a_cycle() {
+        let presets = config(
+            r#"{ "presets": [
+                { "name": "Pomodoro", "duration": "25m", "short-break": "5m", "long-break": "15m" },
+                { "name": "Sprint", "duration": "50m", "short-break": "10m", "rounds": 2 }
+            ] }"#,
+        )
+        .presets();
+        assert_eq!(presets[0].cycle, Some(Plan::POMODORO));
+        let sprint = presets[1].cycle.unwrap();
+        assert_eq!((sprint.rounds, sprint.long_break_secs), (2, 0));
+        assert_eq!(presets[1].describe(), "2 \u{00d7} 50 min, 10 min breaks");
+    }
+
+    #[test]
+    fn a_cycle_that_makes_no_sense_is_refused() {
+        let with = |extra: &str| {
+            resolve(
+                &serde_json::from_str(&format!(r#"{{ "name": "X", "duration": "25m", {extra} }}"#))
+                    .unwrap(),
+            )
+        };
+        assert!(with(r#""rounds": 3"#).is_err());
+        assert!(with(r#""long-break": "15m""#).is_err());
+        assert!(with(r#""short-break": "soon""#).is_err());
+        assert!(with(r#""short-break": "5m", "rounds": 0"#).is_err());
+        assert!(with(r#""short-break": "5m", "rounds": 13"#).is_err());
     }
 
     #[test]
@@ -201,6 +291,7 @@ mod tests {
             name: "Deep work".into(),
             alias: Some("deep work".into()),
             duration: "90m".into(),
+            ..PresetConfig::default()
         })
         .unwrap_err();
         assert!(error.contains("space"), "{error}");

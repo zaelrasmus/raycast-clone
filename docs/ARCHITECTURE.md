@@ -115,7 +115,7 @@ once Lumen was measured well inside them (7.36).
 | **F5** | Port to Linux and Wayland | **Frozen.** Stubbed and cross-checked in CI (I-2). The work, method by method, is in [`F5-LINUX.md`](F5-LINUX.md) |
 | **F6** | Quicklinks and web search: saved links opened in a chosen browser, with a `{query}` placeholder that makes "search Google" one quicklink among others | **Done.** Step 1: file, placeholders, alias and fallback in root search, browser choice. Step 2: an argument pill on `Tab`, a *Create Quicklink* form in the launcher, and a Quicklinks page in settings. Step 3: site icons, and the browser picked from a dropdown |
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
-| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view), 2 (presets, settings page), 3 (alert sounds, ringing) and 4 (stopwatches) of six built. See F8 decisions |
+| **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **In progress.** Slices 1 (start, notify, view), 2 (presets, settings page), 3 (alert sounds, ringing), 4 (stopwatches) and 5 (cycles, Pomodoro) of six built. See F8 decisions |
 
 ### F4 build order is not optional
 
@@ -617,6 +617,36 @@ Slice 4 is built:
   for a paused one.
 - **No laps.** A lap is a list that grows, a row has one line, and nobody
   has asked for them.
+
+Slice 5 is built:
+
+- **Pomodoro is a plan on a timer, not a mode.** A timer may carry a
+  `Cycle`: work, break, rounds, an optional long break. Each phase is an
+  ordinary countdown, so pause, restart, the one sleep and persistence did
+  not change. When a phase's deadline passes, `Clock::expire` moves the
+  timer to the next phase instead of ending it -- `Ending::Next` beside
+  `Ending::Done` -- with a notification (*Take a break*, *Back to work*,
+  *Long break*) and the alert sound once.
+- **One set, then done.** `rounds` work phases with a break between, then
+  the long break, then the timer ends like any other, ringing if asked
+  (*Set complete*). A cycle that went round forever would still be going at
+  midnight.
+- **Counted from the deadline, not the wake.** The next phase ends one phase
+  length after the last one ended, so a late wake does not stretch the plan.
+  A machine that slept through several phases catches up through all of
+  them and says once where the cycle is now.
+- **Skip is the one new action**: end this phase now, start the next -- a
+  break not needed, work done early. Skipping the last phase stops the set.
+- **Built in, and a preset field.** *Start Pomodoro* is always in the root
+  list: 4 × 25 min, 5 min breaks, then 15 min. A preset becomes a cycle by
+  having a `short-break` (with `long-break` and `rounds`, 1-12, default 4),
+  on the settings page as three optional fields. A break, a long break or
+  rounds without a break is refused rather than guessed at.
+- **Verified end to end,** not only in tests: a 3-second, two-round cycle in
+  `timers.json` went work, break, work, done under the real daemon.
+- **Laps stay out.** Asked about and declined: they are the one piece that
+  would need new interface, for a use -- timing splits -- that none of the
+  intended ones have.
 
 ---
 
