@@ -1,0 +1,169 @@
+{
+ "word": "display",
+ "entries": [
+  {
+   "language": {
+    "code": "en",
+    "name": "English"
+   },
+   "partOfSpeech": "noun",
+   "pronunciations": [
+    {
+     "type": "ipa",
+     "text": "/dɪsˈpleɪ/",
+     "tags": []
+    },
+    {
+     "type": "ipa",
+     "text": "/ˈɖɪsˌple/",
+     "tags": []
+    }
+   ],
+   "forms": [
+    {
+     "word": "displays",
+     "tags": [
+      "plural"
+     ]
+    }
+   ],
+   "senses": [
+    {
+     "definition": "A show or spectacle.",
+     "tags": [
+      "countable",
+      "uncountable"
+     ],
+     "examples": [
+      "The trapeze artist put on an amazing acrobatic display."
+     ],
+     "quotes": [],
+     "synonyms": [],
+     "antonyms": [],
+     "subsenses": []
+    },
+    {
+     "definition": "A piece of work to be presented visually.",
+     "tags": [
+      "countable",
+      "uncountable"
+     ],
+     "examples": [
+      "Pupils are expected to produce a wall display about a country of their choice."
+     ],
+     "quotes": [],
+     "synonyms": [],
+     "antonyms": [],
+     "subsenses": []
+    },
+    {
+     "definition": "A device, furniture or marketing-oriented bulk packaging for visual presentation for sales promotion.",
+     "tags": [
+      "countable",
+      "uncountable"
+     ],
+     "examples": [],
+     "quotes": [],
+     "synonyms": [
+      "cardboard display"
+     ],
+     "antonyms": [],
+     "subsenses": []
+    }
+   ],
+   "synonyms": [],
+   "antonyms": []
+  },
+  {
+   "language": {
+    "code": "en",
+    "name": "English"
+   },
+   "partOfSpeech": "verb",
+   "pronunciations": [
+    {
+     "type": "ipa",
+     "text": "/dɪsˈpleɪ/",
+     "tags": []
+    },
+    {
+     "type": "ipa",
+     "text": "/ˈɖɪsˌple/",
+     "tags": []
+    }
+   ],
+   "forms": [
+    {
+     "word": "displays",
+     "tags": [
+      "present",
+      "singular",
+      "third-person"
+     ]
+    },
+    {
+     "word": "displaying",
+     "tags": [
+      "participle",
+      "present"
+     ]
+    },
+    {
+     "word": "displayed",
+     "tags": [
+      "participle",
+      "past"
+     ]
+    },
+    {
+     "word": "displayed",
+     "tags": [
+      "past"
+     ]
+    }
+   ],
+   "senses": [
+    {
+     "definition": "(transitive) To show conspicuously; to exhibit; to demonstrate; to manifest.",
+     "tags": [
+      "transitive"
+     ],
+     "examples": [],
+     "quotes": [],
+     "synonyms": [],
+     "antonyms": [],
+     "subsenses": []
+    },
+    {
+     "definition": "(intransitive) To make a display; to act as one making a show or demonstration.",
+     "tags": [
+      "intransitive"
+     ],
+     "examples": [],
+     "quotes": [],
+     "synonyms": [],
+     "antonyms": [],
+     "subsenses": []
+    },
+    {
+     "definition": "(military) To extend the front of (a column), bringing it into line, deploy.",
+     "tags": [],
+     "examples": [],
+     "quotes": [],
+     "synonyms": [],
+     "antonyms": [],
+     "subsenses": []
+    }
+   ],
+   "synonyms": [],
+   "antonyms": []
+  }
+ ],
+ "source": {
+  "url": "https://en.wiktionary.org/wiki/display",
+  "license": {
+   "name": "CC BY-SA 4.0",
+   "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+  }
+ }
+}

@@ -1030,6 +1030,11 @@ impl Launcher {
                 cx.emit(LauncherEvent::RunCurrency);
                 return;
             }
+            // Definitions are looked up by the daemon, like translations.
+            lumen_core::ViewSource::Define => {
+                cx.emit(LauncherEvent::RunDefine);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -2393,6 +2398,8 @@ pub enum LauncherEvent {
     RunAlertSounds,
     /// The currency view was chosen (F9).
     RunCurrency,
+    /// The dictionary was chosen (F10).
+    RunDefine,
     /// A conversion was typed in the root list with no table of rates, or
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.

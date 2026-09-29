@@ -1,0 +1,192 @@
+{
+ "word": "mostrar",
+ "entries": [
+  {
+   "language": {
+    "code": "es",
+    "name": "Spanish"
+   },
+   "partOfSpeech": "verb",
+   "pronunciations": [
+    {
+     "type": "ipa",
+     "text": "/mosˈtɾaɾ/",
+     "tags": []
+    },
+    {
+     "type": "ipa",
+     "text": "[mosˈt̪ɾaɾ]",
+     "tags": []
+    }
+   ],
+   "forms": [
+    {
+     "word": "muestro",
+     "tags": [
+      "first-person",
+      "present",
+      "singular"
+     ]
+    },
+    {
+     "word": "mostré",
+     "tags": [
+      "first-person",
+      "preterite",
+      "singular"
+     ]
+    },
+    {
+     "word": "mostrado",
+     "tags": [
+      "participle",
+      "past"
+     ]
+    },
+    {
+     "word": "no-table-tags",
+     "tags": [
+      "table-tags"
+     ]
+    },
+    {
+     "word": "es-conj",
+     "tags": [
+      "inflection-template"
+     ]
+    },
+    {
+     "word": "o-ue alternation",
+     "tags": [
+      "class"
+     ]
+    },
+    {
+     "word": "mostrar",
+     "tags": [
+      "infinitive"
+     ]
+    },
+    {
+     "word": "mostrando",
+     "tags": [
+      "gerund"
+     ]
+    },
+    {
+     "word": "mostrado",
+     "tags": [
+      "masculine",
+      "participle",
+      "past",
+      "singular"
+     ]
+    },
+    {
+     "word": "mostrada",
+     "tags": [
+      "feminine",
+      "participle",
+      "past",
+      "singular"
+     ]
+    },
+    {
+     "word": "mostrados",
+     "tags": [
+      "masculine",
+      "participle",
+      "past",
+      "plural"
+     ]
+    },
+    {
+     "word": "mostradas",
+     "tags": [
+      "feminine",
+      "participle",
+      "past",
+      "plural"
+     ]
+    },
+    {
+     "word": "muestro",
+     "tags": [
+      "first-person",
+      "indicative",
+      "present",
+      "singular"
+     ]
+    },
+    {
+     "word": "muestras",
+     "tags": [
+      "indicative",
+      "informal",
+      "present",
+      "second-person",
+      "singular"
+     ]
+    },
+    {
+     "word": "mostrás",
+     "tags": [
+      "indicative",
+      "informal",
+      "present",
+      "second-person",
+      "singular",
+      "vos-form"
+     ]
+    },
+    {
+     "word": "muestra",
+     "tags": [
+      "indicative",
+      "present",
+      "singular",
+      "third-person"
+     ]
+    }
+   ],
+   "senses": [
+    {
+     "definition": "(transitive) to show (have somebody see something)",
+     "tags": [
+      "transitive"
+     ],
+     "examples": [
+      "Quiero mostrarte el jardín",
+      "Muéstrame el camino."
+     ],
+     "quotes": [],
+     "synonyms": [
+      "enseñar",
+      "indicar",
+      "señalar"
+     ],
+     "antonyms": [],
+     "subsenses": []
+    },
+    {
+     "definition": "to demonstrate or display",
+     "tags": [],
+     "examples": [],
+     "quotes": [],
+     "synonyms": [],
+     "antonyms": [],
+     "subsenses": []
+    }
+   ],
+   "synonyms": [],
+   "antonyms": []
+  }
+ ],
+ "source": {
+  "url": "https://en.wiktionary.org/wiki/mostrar",
+  "license": {
+   "name": "CC BY-SA 4.0",
+   "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+  }
+ }
+}

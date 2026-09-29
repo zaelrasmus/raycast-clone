@@ -202,6 +202,8 @@ pub enum ViewSource {
     AlertSounds,
     /// The currency converter (F9).
     Currency,
+    /// The dictionary (F10).
+    Define,
 }
 
 impl Action {

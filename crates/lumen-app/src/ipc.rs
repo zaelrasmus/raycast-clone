@@ -79,6 +79,8 @@ pub enum Message {
     RunAlertSounds,
     /// Open the currency view (F9).
     RunCurrency,
+    /// Open the dictionary (F10).
+    RunDefine,
     /// Fetch exchange rates for a conversion typed at the root (F9).
     RefreshRates,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.

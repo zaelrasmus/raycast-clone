@@ -24,6 +24,7 @@ pub mod calculator;
 pub mod clipboard;
 pub mod commands;
 pub mod currency;
+pub mod define;
 pub mod extensions;
 pub mod files;
 pub mod quicklinks;
@@ -37,6 +38,7 @@ pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;
 pub use commands::CommandsProvider;
 pub use currency::CurrencyProvider;
+pub use define::DefineProvider;
 pub use extensions::ExtensionProvider;
 pub use quicklinks::{Quicklink, QuicklinkProvider};
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
@@ -102,6 +104,7 @@ impl Providers {
         providers.register(Box::new(ArrangeProvider));
         providers.register(Box::new(TimersProvider));
         providers.register(Box::new(CurrencyProvider));
+        providers.register(Box::new(DefineProvider));
         providers
     }
 

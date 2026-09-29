@@ -36,6 +36,7 @@ use lumen_platform::{
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
 mod currency;
+mod define;
 mod extensions;
 mod ipc;
 mod timers;
@@ -966,6 +967,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunCurrency);
                 return;
             }
+            LauncherEvent::RunDefine => {
+                let _ = commands.unbounded_send(Message::RunDefine);
+                return;
+            }
             LauncherEvent::RefreshRates => {
                 let _ = commands.unbounded_send(Message::RefreshRates);
                 return;
@@ -988,6 +993,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunTimers
                 | LauncherEvent::RunAlertSounds
                 | LauncherEvent::RunCurrency
+                | LauncherEvent::RunDefine
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
@@ -1342,6 +1348,13 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| currency::run(platform, config, path, window, cx))
                 .context("reaching the app to open the currency view")
+        }
+        Message::RunDefine => {
+            let platform = platform.clone();
+            let browser = config.preferred_browser.clone();
+            let window = surfaces.launcher;
+            cx.update(move |cx| define::run(platform, browser, window, cx))
+                .context("reaching the app to open the dictionary")
         }
         Message::RefreshRates => {
             let config = config.currency.clone();
