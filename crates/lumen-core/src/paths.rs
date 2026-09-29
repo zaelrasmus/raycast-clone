@@ -88,6 +88,12 @@ impl Paths {
         self.data_dir.join("frecency.json")
     }
 
+    /// The timers running or paused (F8). State, not configuration: the
+    /// presets are in `config.json`.
+    pub fn timers_file(&self) -> PathBuf {
+        self.data_dir.join("timers.json")
+    }
+
     pub fn ensure_exists(&self) -> Result<()> {
         for dir in [
             &self.config_dir,

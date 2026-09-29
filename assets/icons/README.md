@@ -1,6 +1,6 @@
 # The icon set
 
-Nine glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
+Ten glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
 
 ## The grid
 
@@ -42,3 +42,4 @@ are further from the centre and there is no shading to soften them.
 | `window.svg` | A window layout |
 | `file.svg` | A file |
 | `link.svg` | A quicklink |
+| `timer.svg` | A timer, and the *Timers* view (F8) |

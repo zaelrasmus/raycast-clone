@@ -18,13 +18,21 @@
 # like a 40 MB regression.
 #
 #   powershell -File scripts/measure-idle.ps1 -Exe target/release/lumen.exe
+#
+# With timers running (F8), which must cost nothing while the window is
+# hidden -- the daemon sleeps until the nearest deadline and does not tick:
+#
+#   powershell -File scripts/measure-idle.ps1 -Exe target/release/lumen.exe -Timers 25m,1h,90m
 
 param(
     [Parameter(Mandatory)] [string] $Exe,
     # Long enough for the application index, the warm-up frame and any
     # one-shot timers to finish.
     [int] $SettleSeconds = 20,
-    [int] $SampleSeconds = 60
+    [int] $SampleSeconds = 60,
+    # Durations to start with `lumen timer` before settling. Longer than the
+    # measurement, so none of them ends inside it.
+    [string[]] $Timers = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,6 +57,23 @@ Start-Sleep -Seconds 5
 Stop-Lumen
 
 $process = Start-Process -FilePath $exe -PassThru
+
+# Split here as well: under `powershell -File`, `-Timers 25m,1h` arrives as
+# one string, and `lumen timer "25m,1h"` is refused -- measuring a daemon
+# with no timers while the heading says three.
+$Timers = @($Timers | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+if ($Timers.Count -gt 0) {
+    # The daemon answers its socket well within this.
+    Start-Sleep -Seconds 3
+    foreach ($timer in $Timers) {
+        $started = Start-Process -FilePath $exe -ArgumentList 'timer', $timer -Wait -PassThru
+        if ($started.ExitCode -ne 0) {
+            throw "``lumen timer $timer`` failed with exit code $($started.ExitCode)"
+        }
+    }
+    'timers       {0}' -f ($Timers -join ', ')
+}
+
 Start-Sleep -Seconds $SettleSeconds
 
 if ($process.HasExited) {

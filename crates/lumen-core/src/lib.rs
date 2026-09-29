@@ -25,6 +25,7 @@ pub mod root;
 pub mod search;
 pub mod sheets;
 pub mod theme;
+pub mod timers;
 pub mod translate;
 pub mod view;
 pub mod watcher;

@@ -494,6 +494,49 @@ an alias -- not modes. `timer`, `focus` and `pomodoro` all find the same place.
   wait until slice 1 has been lived with: it is the one part that changes
   `RootSearch`, and the view may turn out to be enough.
 
+Slice 1 is built. What the building settled:
+
+- **One sleep, re-planned, never cancelled.** GPUI's timer is a one-shot
+  WinRT `ThreadPoolTimer`, which costs nothing while it waits. Every change
+  bumps a plan number and sleeps afresh; the superseded sleep still wakes,
+  once, and does nothing. Cancelling would need a handle per sleep for no
+  saving anyone could measure.
+- **A summons catches up.** The sleep is relative time and a deadline is wall
+  time, so a machine that sleeps through a deadline may wake the daemon late.
+  Every *show* and *toggle* reports what has ended before the launcher draws,
+  so the view never shows a timer that is over, and a notification is at
+  worst late, never lost. A timer that ended while the daemon was not running
+  is reported when it starts.
+- **The view redraws when a face turns over.** A face reads whole seconds
+  rounded up, so it changes when a timer's remaining milliseconds cross a
+  multiple of a thousand -- not on the wall clock's second, since a timer
+  starts whenever it was started. `timers::view::next_tick` asks for exactly
+  that moment, plus 5 ms so the redraw lands after the change, not before it.
+  With nothing running, an open view wakes for nothing either.
+- **Ids are never reused,** so an action from a view that has not re-rendered
+  yet cannot land on a newer timer; one on a timer that has already ended
+  does nothing.
+- **Silence on start, a word on stop.** Starting closes the launcher, and the
+  *Timers* row is where to look; a notification per start would be noise.
+  *Stop Running Timer* runs with the launcher gone, so it names the timer it
+  stopped, or says nothing was running.
+- **`lumen timer 25m tea`** sends the same command over the socket, and says
+  so when no daemon is listening rather than starting one that would not
+  receive it. It is how `measure-idle.ps1 -Timers 25m,1h,90m` starts timers.
+- **Measured, and it held.** Idle with the window hidden, on `main` and then
+  with slice 1 -- the second with three timers running (25, 60 and 90 min,
+  checked in `timers.json` afterwards, because the first attempt passed the
+  list as one string and measured no timers at all):
+
+  | | `main` | slice 1 | slice 1, 3 timers |
+  | - | - | - | - |
+  | CPU | 0.000 % | 0.000 % | 0.000 % |
+  | Working set | 71.4 MB | 71.6 MB | 71.7 MB |
+  | Private | 87.3 MB | 85.8 MB | 87.7 MB |
+  | Threads | 31 | 31 | 31 |
+
+  The binary went from 16,057,856 to 16,164,352 bytes, **+104 KB**.
+
 ---
 
 ## 7. Deviations from the plan

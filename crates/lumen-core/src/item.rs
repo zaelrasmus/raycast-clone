@@ -51,6 +51,8 @@ pub enum Kind {
     Quicklink,
     /// A URL typed into the search field (F6).
     Website,
+    /// A timer to start, or one of the commands about them (F8).
+    Timer,
 }
 
 impl Kind {
@@ -67,6 +69,7 @@ impl Kind {
             Kind::Extension => "Extension",
             Kind::Quicklink => "Quicklink",
             Kind::Website => "Website",
+            Kind::Timer => "Timer",
         }
     }
 }
@@ -144,6 +147,12 @@ pub enum Action {
     ///
     /// The launcher's, like `OpenView`: the form takes the list's place.
     CreateQuicklink,
+    /// Start or stop a timer (F8).
+    ///
+    /// Carried back to the daemon like a [`Builtin`]: the timers, the one
+    /// sleep until the next of them ends and the file they are kept in are
+    /// all the daemon's, and the list only asks.
+    Timer(crate::timers::Command),
 }
 
 /// Commands Lumen provides for itself.
@@ -177,6 +186,8 @@ pub enum ViewSource {
     },
     /// The translate view (F7), on a preset by name, or on the one used last.
     Translate { preset: Option<String> },
+    /// The running timers (F8).
+    Timers,
 }
 
 impl Action {
@@ -198,6 +209,8 @@ impl Action {
             Action::AskArgument(_) => "Search",
             Action::CreateQuicklink => "Create",
             Action::SaveAsQuicklink { .. } => "Save as Quicklink",
+            Action::Timer(crate::timers::Command::Start { .. }) => "Start",
+            Action::Timer(crate::timers::Command::StopNearest) => "Stop",
         }
     }
 
@@ -226,7 +239,8 @@ impl Action {
             | Action::AskArgument(_)
             | Action::ChooseBrowser(_)
             | Action::SaveAsQuicklink { .. }
-            | Action::CreateQuicklink => {
+            | Action::CreateQuicklink
+            | Action::Timer(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }
         }
@@ -360,6 +374,7 @@ mod tests {
             Kind::Snippet,
             Kind::Clipboard,
             Kind::Quicklink,
+            Kind::Timer,
         ] {
             assert!(!kind.label().is_empty());
         }

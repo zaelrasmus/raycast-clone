@@ -37,6 +37,7 @@ use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, Setting
 
 mod extensions;
 mod ipc;
+mod timers;
 mod timing;
 mod translate;
 
@@ -62,6 +63,7 @@ fn main() -> Result<()> {
         Some("settings") => dispatch(Message::Settings),
         Some("reload" | "reload-sheets") => forward_only(Message::ReloadSheets),
         Some("quit") => forward_only(Message::Quit),
+        Some("timer") => start_timer(),
         Some("--version" | "-V") => {
             println!("lumen {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -91,9 +93,32 @@ fn print_help() {
          overlay-release    Report that the hold gesture ended\n    \
          settings           Open the settings window\n    \
          reload             Re-read the configuration, sheets, scripts, snippets and quicklinks\n    \
+         timer DURATION [NAME]  Start a timer in the running daemon: `lumen timer 25m tea`\n    \
          quit               Stop the running daemon\n\n\
          With no running daemon, `toggle`, `show` and `settings` start one."
     );
+}
+
+/// `lumen timer 25m tea`: the same grammar as the launcher, from a terminal.
+///
+/// Forwarded only. Starting a daemon here would drop the timer on the floor,
+/// since a new daemon does not replay the message that started it -- so
+/// having nothing to send to is said, not swallowed.
+fn start_timer() -> Result<()> {
+    let typed: Vec<String> = std::env::args().skip(2).collect();
+    let Some(typed) = lumen_core::timers::duration::parse(&typed.join(" ")) else {
+        eprintln!("lumen: expected a duration such as 25m, 1h30 or 1:30, then an optional name");
+        std::process::exit(2);
+    };
+    let command = lumen_core::timers::Command::Start {
+        seconds: typed.duration.as_secs(),
+        name: typed.name,
+    };
+    if !ipc::send(Message::Timer(command))? {
+        eprintln!("lumen: no daemon is running; start one with `lumen`");
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// Send `message`; if nothing is listening, become the daemon.
@@ -353,6 +378,9 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         theme: Rc::new(RefCell::new(theme.clone())),
         config: live,
         reload_theme,
+        // A timer that ended while the daemon was not running is reported
+        // now, not when the next one ends.
+        timers: timers::Timers::start(platform.clone(), paths.timers_file(), &cx.to_async()),
     };
 
     watch_sheets(cx, &surfaces);
@@ -459,6 +487,8 @@ struct Surfaces {
     config: Rc<RefCell<Config>>,
     /// Asks the theme watch to reload, for when `theme` names another file.
     reload_theme: mpsc::UnboundedSender<()>,
+    /// The running timers (F8).
+    timers: timers::Timers,
 }
 
 impl Surfaces {
@@ -876,6 +906,19 @@ fn subscribe_to_launcher(
             });
             return;
         }
+        // The timers are the event loop's (F8), so these go on its queue:
+        // behind the dismissal that came first, in order.
+        match &event {
+            LauncherEvent::RunTimers => {
+                let _ = commands.unbounded_send(Message::RunTimers);
+                return;
+            }
+            LauncherEvent::Timer(command) => {
+                let _ = commands.unbounded_send(Message::Timer(command.clone()));
+                return;
+            }
+            _ => {}
+        }
 
         off_the_callback(cx, move || {
             let outcome = match event {
@@ -883,7 +926,10 @@ fn subscribe_to_launcher(
                 LauncherEvent::Resized(height) => resize(&platform, &config, &shell, height),
                 LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
                 // Handled above, before this task was spawned.
-                LauncherEvent::RunExtension { .. } | LauncherEvent::RunTranslate { .. } => Ok(()),
+                LauncherEvent::RunExtension { .. }
+                | LauncherEvent::RunTranslate { .. }
+                | LauncherEvent::RunTimers
+                | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,
                 // and it means `lumen settings` from a terminal and "Configure
@@ -1140,6 +1186,12 @@ fn handle(
     // collide with.
     let config = &surfaces.config.borrow().clone();
 
+    // A sleep may have woken late -- the machine slept through a deadline --
+    // so a summons reports what has ended before anything is drawn (F8).
+    if matches!(message, Message::Toggle | Message::Show) {
+        surfaces.timers.catch_up(cx);
+    }
+
     match message {
         Message::Toggle => {
             let visible = shell.borrow().visible;
@@ -1196,6 +1248,14 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| translate::run(platform, config, preset, window, cx))
                 .context("reaching the app to open the translator")
+        }
+        Message::RunTimers => {
+            surfaces.timers.open_view(surfaces.launcher, cx);
+            Ok(())
+        }
+        Message::Timer(command) => {
+            surfaces.timers.command(command, cx);
+            Ok(())
         }
         Message::Quit => {
             log::info!("stopping the daemon");

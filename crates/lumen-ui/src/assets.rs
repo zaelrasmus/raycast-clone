@@ -53,6 +53,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/window.svg",
         include_bytes!("../../../assets/icons/window.svg"),
     ),
+    (
+        "icons/timer.svg",
+        include_bytes!("../../../assets/icons/timer.svg"),
+    ),
 ];
 
 pub struct Assets;
@@ -93,6 +97,7 @@ mod tests {
             Kind::Window,
             Kind::File,
             Kind::Quicklink,
+            Kind::Timer,
         ] {
             let path = crate::icons::glyph(kind);
             assert!(

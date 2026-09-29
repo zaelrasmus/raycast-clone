@@ -904,6 +904,11 @@ impl Launcher {
                 });
                 return;
             }
+            // The timers are the daemon's (F8), and so is the view of them.
+            lumen_core::ViewSource::Timers => {
+                cx.emit(LauncherEvent::RunTimers);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -1674,6 +1679,13 @@ impl Launcher {
             return;
         }
 
+        // So are the timers (F8): the daemon holds them and the one sleep
+        // until the next of them ends.
+        if let Action::Timer(command) = action {
+            cx.emit(LauncherEvent::Timer(command));
+            return;
+        }
+
         // A quicklink that names no browser opens in the preferred one, which
         // only the configuration knows.
         let action = match action {
@@ -2005,6 +2017,10 @@ pub enum LauncherEvent {
     RunTranslate {
         preset: Option<String>,
     },
+    /// The *Timers* view was chosen (F8).
+    RunTimers,
+    /// A timer is to be started or stopped (F8). Follows `Dismissed`.
+    Timer(lumen_core::timers::Command),
     /// A layout was chosen for the window that held the foreground.
     ///
     /// Carries no window handle: the daemon is the only thing that has one,

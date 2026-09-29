@@ -28,6 +28,7 @@ pub mod files;
 pub mod quicklinks;
 pub mod scripts;
 pub mod snippets;
+pub mod timers;
 pub mod translate;
 pub mod web;
 
@@ -38,6 +39,7 @@ pub use extensions::ExtensionProvider;
 pub use quicklinks::{Quicklink, QuicklinkProvider};
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
 pub use snippets::{Snippet, SnippetProvider};
+pub use timers::TimersProvider;
 pub use translate::TranslateProvider;
 
 /// A source of results.
@@ -96,6 +98,7 @@ impl Providers {
         providers.register(Box::new(CommandsProvider));
         providers.register(Box::new(CalculatorProvider));
         providers.register(Box::new(ArrangeProvider));
+        providers.register(Box::new(TimersProvider));
         providers
     }
 
@@ -207,14 +210,21 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_catalogue_is_commands_and_window_layouts() {
+    fn the_builtin_catalogue_is_commands_window_layouts_and_timers() {
         let items = Providers::builtin().catalogue();
         assert!(!items.is_empty());
         assert!(
             items
                 .iter()
-                .all(|item| matches!(item.kind, Kind::Command | Kind::Window))
+                .all(|item| matches!(item.kind, Kind::Command | Kind::Window | Kind::Timer))
         );
+    }
+
+    /// F8: a typed duration is an answer, and leads like a calculation.
+    #[test]
+    fn a_duration_is_answered_with_a_timer() {
+        let answers = Providers::builtin().answers("25m");
+        assert!(answers.iter().any(|item| item.kind == Kind::Timer));
     }
 
     /// The calculator must not contribute to the catalogue, or every launch

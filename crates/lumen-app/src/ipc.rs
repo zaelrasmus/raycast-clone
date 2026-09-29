@@ -70,6 +70,10 @@ pub enum Message {
     RunTranslate {
         preset: Option<String>,
     },
+    /// Open the *Timers* view (F8).
+    RunTimers,
+    /// Start or stop a timer (F8), from a root row or `lumen timer`.
+    Timer(lumen_core::timers::Command),
 }
 
 /// Send `message` to a running daemon.
