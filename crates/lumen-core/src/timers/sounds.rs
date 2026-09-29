@@ -82,6 +82,7 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
         }),
         sections: vec![Section {
             title: Some("Enter plays \u{00b7} Ctrl+K to use one".into()),
+            subtitle: None,
             items,
         }],
     })

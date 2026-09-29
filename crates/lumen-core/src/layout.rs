@@ -160,6 +160,9 @@ pub mod view {
     /// like a four-item one.
     pub const SECTION_HEIGHT: f32 = 28.0;
 
+    /// Between a section's title and its subtitle (F9).
+    pub const SECTION_SUBTITLE_GAP: f32 = 8.0;
+
     /// Gap between an accessory and the next thing to its left.
     pub const ACCESSORY_GAP: f32 = 8.0;
 

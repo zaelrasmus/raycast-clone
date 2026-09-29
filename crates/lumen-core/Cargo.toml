@@ -30,6 +30,9 @@ reqwest = { package = "zed-reqwest", version = "=0.12.15-zed", default-features 
 url = "2"
 image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "webp", "gif", "bmp"] }
 resvg = "0.45"
+# Dates of exchange-rate tables (F9). Already in the build through
+# env_logger, with the same features, so it costs nothing.
+jiff = { version = "=0.2.35", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }

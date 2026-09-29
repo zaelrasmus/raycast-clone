@@ -955,6 +955,11 @@ impl Launcher {
                 cx.emit(LauncherEvent::RunAlertSounds);
                 return;
             }
+            // Rates are fetched by the daemon, like translations.
+            lumen_core::ViewSource::Currency => {
+                cx.emit(LauncherEvent::RunCurrency);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -1374,7 +1379,13 @@ impl Launcher {
             if rows.len() > first
                 && let Some(title) = &section.title
             {
-                rows.insert(first, crate::view::Row::Section(title.clone().into()));
+                rows.insert(
+                    first,
+                    crate::view::Row::Section(
+                        title.clone().into(),
+                        section.subtitle.clone().map(Into::into),
+                    ),
+                );
             }
         }
 
@@ -1385,7 +1396,7 @@ impl Launcher {
             .iter()
             .find_map(|row| match row {
                 crate::view::Row::Item(index) => Some(*index),
-                crate::view::Row::Section(_) => None,
+                crate::view::Row::Section(..) => None,
             })
             .unwrap_or(0);
 
@@ -1403,7 +1414,7 @@ impl Launcher {
             .iter()
             .filter_map(|row| match row {
                 crate::view::Row::Item(index) => Some(*index),
-                crate::view::Row::Section(_) => None,
+                crate::view::Row::Section(..) => None,
             })
             .collect()
     }
@@ -2206,6 +2217,8 @@ pub enum LauncherEvent {
     RunTimers,
     /// *Preview Alert Sounds* was chosen (F8, slice 3).
     RunAlertSounds,
+    /// The currency view was chosen (F9).
+    RunCurrency,
     /// Focus refused to open `what` (F8, slice 6). `action` is what would
     /// have run, for *Open Anyway*. Replaces `Dismissed`: the launcher stays
     /// up to say why.

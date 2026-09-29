@@ -197,6 +197,8 @@ pub enum ViewSource {
     Timers,
     /// The system's alert sounds, to hear and choose from (F8, slice 3).
     AlertSounds,
+    /// The currency converter (F9).
+    Currency,
 }
 
 impl Action {

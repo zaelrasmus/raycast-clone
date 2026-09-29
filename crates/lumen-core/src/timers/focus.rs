@@ -166,6 +166,7 @@ pub fn refusal(what: &str, timer: Option<&Timer>, now: Millis) -> View {
         empty: None,
         sections: vec![Section {
             title: Some("Blocked while you focus".into()),
+            subtitle: None,
             items: vec![view::Item {
                 id: "blocked".into(),
                 title: format!("{what} is blocked"),

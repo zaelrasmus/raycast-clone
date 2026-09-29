@@ -77,6 +77,8 @@ pub enum Message {
     ShowTimers,
     /// Open *Preview Alert Sounds* (F8, slice 3).
     RunAlertSounds,
+    /// Open the currency view (F9).
+    RunCurrency,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.
     Timer(lumen_core::timers::Command),
 }

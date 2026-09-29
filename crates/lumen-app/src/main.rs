@@ -35,6 +35,7 @@ use lumen_platform::{
 };
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
+mod currency;
 mod extensions;
 mod ipc;
 mod timers;
@@ -960,6 +961,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunAlertSounds);
                 return;
             }
+            LauncherEvent::RunCurrency => {
+                let _ = commands.unbounded_send(Message::RunCurrency);
+                return;
+            }
             LauncherEvent::Timer(command) => {
                 let _ = commands.unbounded_send(Message::Timer(command.clone()));
                 return;
@@ -977,6 +982,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunTranslate { .. }
                 | LauncherEvent::RunTimers
                 | LauncherEvent::RunAlertSounds
+                | LauncherEvent::RunCurrency
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
@@ -1321,6 +1327,14 @@ fn handle(
             }
             surfaces.timers.open_view(surfaces.launcher, cx);
             Ok(())
+        }
+        Message::RunCurrency => {
+            let platform = platform.clone();
+            let config = config.currency.clone();
+            let path = surfaces.paths.currency_file();
+            let window = surfaces.launcher;
+            cx.update(move |cx| currency::run(platform, config, path, window, cx))
+                .context("reaching the app to open the currency view")
         }
         Message::RunAlertSounds => {
             surfaces.timers.open_sounds(surfaces.launcher, cx);

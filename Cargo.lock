@@ -3413,6 +3413,7 @@ dependencies = [
  "criterion",
  "directories",
  "image",
+ "jiff",
  "log",
  "lumen-platform",
  "notify",

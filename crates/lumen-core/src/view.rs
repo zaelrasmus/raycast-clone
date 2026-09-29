@@ -198,6 +198,10 @@ pub enum Filtering {
 #[serde(default, rename_all = "kebab-case")]
 pub struct Section {
     pub title: Option<String>,
+    /// Drawn dimmer, after the title, in the same header (F9): the date a
+    /// table of rates was published, say. Ignored without a title, since a
+    /// header row appears only for one.
+    pub subtitle: Option<String>,
     pub items: Vec<Item>,
 }
 
@@ -380,10 +384,12 @@ mod tests {
             sections: vec![
                 Section {
                     title: Some("First".into()),
+                    subtitle: None,
                     items: vec![item("a", "A"), item("b", "B")],
                 },
                 Section {
                     title: Some("Second".into()),
+                    subtitle: None,
                     items: vec![item("c", "C")],
                 },
             ],
@@ -442,6 +448,7 @@ mod tests {
             }),
             sections: vec![Section {
                 title: Some("Assigned".into()),
+                subtitle: None,
                 items: vec![Item {
                     id: "1".into(),
                     title: "Fix the seam".into(),
@@ -542,6 +549,7 @@ mod tests {
         let view = View::List(List {
             sections: vec![Section {
                 title: None,
+                subtitle: None,
                 items: vec![
                     Item {
                         actions: vec![Action {

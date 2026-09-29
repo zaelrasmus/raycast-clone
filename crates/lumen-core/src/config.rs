@@ -11,6 +11,7 @@ use lumen_platform::{BackdropMode, Hotkey};
 use serde::{Deserialize, Serialize};
 
 use crate::clipboard::Retention;
+use crate::currency::CurrencyConfig;
 use crate::providers::files::{self, FileLimits};
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
@@ -35,6 +36,8 @@ pub struct Config {
     pub translate: TranslateConfig,
     /// Timers (F8): saved presets and the quick durations.
     pub timers: TimersConfig,
+    /// Currency (F9): which service asks for rates, and its key.
+    pub currency: CurrencyConfig,
 }
 
 /// File search (F3).
@@ -156,6 +159,7 @@ impl Default for Config {
             preferred_browser: None,
             translate: TranslateConfig::default(),
             timers: TimersConfig::default(),
+            currency: CurrencyConfig::default(),
         }
     }
 }

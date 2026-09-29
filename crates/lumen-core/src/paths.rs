@@ -94,6 +94,11 @@ impl Paths {
         self.data_dir.join("timers.json")
     }
 
+    /// The last table of exchange rates and the currency chosen (F9).
+    pub fn currency_file(&self) -> PathBuf {
+        self.data_dir.join("currency.json")
+    }
+
     pub fn ensure_exists(&self) -> Result<()> {
         for dir in [
             &self.config_dir,

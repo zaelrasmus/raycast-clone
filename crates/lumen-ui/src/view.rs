@@ -46,7 +46,8 @@ use crate::styling::{color, metrics, type_scale};
 /// walking the sections to find it.
 #[derive(Clone)]
 pub enum Row {
-    Section(SharedString),
+    /// A section's title, and its subtitle if it has one.
+    Section(SharedString, Option<SharedString>),
     /// An index into the view's flat item order.
     Item(usize),
 }
@@ -58,7 +59,10 @@ pub fn rows(source: &List) -> Vec<Row> {
 
     for section in &source.sections {
         if let Some(title) = &section.title {
-            rows.push(Row::Section(title.clone().into()));
+            rows.push(Row::Section(
+                title.clone().into(),
+                section.subtitle.clone().map(Into::into),
+            ));
         }
         for _ in &section.items {
             rows.push(Row::Item(index));
@@ -79,7 +83,7 @@ pub fn list_state(count: usize) -> ListState {
 /// The height of one row, so the window can be sized before anything is drawn.
 pub fn row_height(row: &Row) -> f32 {
     match row {
-        Row::Section(_) => layout::view::SECTION_HEIGHT,
+        Row::Section(..) => layout::view::SECTION_HEIGHT,
         Row::Item(_) => layout::ROW_HEIGHT,
     }
 }
@@ -117,7 +121,9 @@ pub fn render_list(
         .child(
             list(state.clone(), move |index, _window, _cx| {
                 match rows.get(index) {
-                    Some(Row::Section(title)) => render_section(title.clone(), &colors),
+                    Some(Row::Section(title, subtitle)) => {
+                        render_section(title.clone(), subtitle.clone(), &colors)
+                    }
                     Some(Row::Item(item)) => match items.get(*item) {
                         Some(entry) => render_item(entry, *item == selected, &colors),
                         None => div().into_any_element(),
@@ -130,15 +136,32 @@ pub fn render_list(
         .into_any_element()
 }
 
-fn render_section(title: SharedString, colors: &Colors) -> AnyElement {
+/// A section's header: the title, and the subtitle after it in the same row
+/// and the same size, only dimmer -- so a header with a subtitle is exactly
+/// as tall as one without (I-10).
+fn render_section(
+    title: SharedString,
+    subtitle: Option<SharedString>,
+    colors: &Colors,
+) -> AnyElement {
     div()
         .h(px(layout::view::SECTION_HEIGHT))
         .px(metrics::gutter())
         .flex()
         .items_center()
+        .gap(px(layout::view::SECTION_SUBTITLE_GAP))
+        .overflow_hidden()
         .text_size(type_scale::footer())
         .text_color(color(colors.text_muted))
-        .child(title)
+        .child(div().flex_none().child(title))
+        .when_some(subtitle, |header, subtitle| {
+            header.child(
+                div()
+                    .truncate()
+                    .text_color(color(colors.text_placeholder))
+                    .child(subtitle),
+            )
+        })
         .into_any_element()
 }
 
@@ -417,10 +440,12 @@ mod tests {
             sections: vec![
                 Section {
                     title: Some("First".into()),
+                    subtitle: None,
                     items: vec![item("a"), item("b")],
                 },
                 Section {
                     title: None,
+                    subtitle: None,
                     items: vec![item("c")],
                 },
             ],
@@ -434,7 +459,7 @@ mod tests {
     fn only_titled_sections_produce_a_header() {
         let rows = rows(&example());
         assert_eq!(rows.len(), 4);
-        assert!(matches!(rows[0], Row::Section(_)));
+        assert!(matches!(rows[0], Row::Section(..)));
         assert!(matches!(rows[1], Row::Item(0)));
         assert!(matches!(rows[2], Row::Item(1)));
         assert!(matches!(rows[3], Row::Item(2)));
@@ -449,7 +474,7 @@ mod tests {
             .iter()
             .filter_map(|row| match row {
                 Row::Item(index) => Some(*index),
-                Row::Section(_) => None,
+                Row::Section(..) => None,
             })
             .collect();
         assert_eq!(items, [0, 1, 2]);
@@ -457,7 +482,7 @@ mod tests {
 
     #[test]
     fn a_header_is_shorter_than_a_row() {
-        assert!(row_height(&Row::Section("x".into())) < row_height(&Row::Item(0)));
+        assert!(row_height(&Row::Section("x".into(), None)) < row_height(&Row::Item(0)));
     }
 
     /// The file the plan asks for in step 1, parsed and counted, so that

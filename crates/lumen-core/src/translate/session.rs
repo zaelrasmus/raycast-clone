@@ -339,6 +339,7 @@ impl Session {
                 } else {
                     format!("{} \u{00b7} {}", self.source_title(), self.service.label())
                 }),
+                subtitle: None,
                 items: self
                     .rows
                     .iter()

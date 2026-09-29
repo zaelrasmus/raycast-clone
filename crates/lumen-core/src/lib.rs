@@ -14,10 +14,12 @@
 
 pub mod clipboard;
 pub mod config;
+pub mod currency;
 pub mod extension;
 pub mod frecency;
 pub mod item;
 pub mod layout;
+pub mod net;
 pub mod paths;
 pub mod protocol;
 pub mod providers;

@@ -159,6 +159,7 @@ mod tests {
             view: View::List(List {
                 sections: vec![Section {
                     title: Some("Open".into()),
+                    subtitle: None,
                     items: vec![Item {
                         id: "1".into(),
                         title: "Something".into(),

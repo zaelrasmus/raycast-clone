@@ -81,6 +81,7 @@ pub fn view(clock: &Clock, presets: &[Preset], quick: &[Duration], now: Millis) 
     .filter(|(_, items): &(&str, Vec<Item>)| !items.is_empty())
     .map(|(title, items)| Section {
         title: Some(title.into()),
+        subtitle: None,
         items,
     })
     .collect();

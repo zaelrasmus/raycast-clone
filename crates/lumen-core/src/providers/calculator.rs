@@ -58,7 +58,16 @@ pub fn evaluate(input: &str) -> Option<f64> {
     if !looks_like_arithmetic(trimmed) {
         return None;
     }
+    amount(trimmed)
+}
 
+/// Evaluate `input` as arithmetic, a bare number included.
+///
+/// [`evaluate`] without its gate. The gate keeps the root list quiet, and is
+/// wrong where a number is what was asked for: in the currency view (F9),
+/// `10` is an amount.
+pub fn amount(input: &str) -> Option<f64> {
+    let trimmed = input.trim();
     let tokens = tokenize(trimmed)?;
     let mut parser = Parser { tokens, at: 0 };
     let value = parser.expression()?;
@@ -381,6 +390,15 @@ mod tests {
     fn declines_non_finite_results() {
         assert_eq!(evaluate("1/0"), None);
         assert_eq!(evaluate("0/0"), None);
+    }
+
+    #[test]
+    fn an_amount_may_be_a_bare_number_but_not_junk() {
+        assert_eq!(amount("10"), Some(10.0));
+        assert_eq!(amount(" 1+2 "), Some(3.0));
+        assert_eq!(amount("10 usd"), None);
+        assert_eq!(amount(""), None);
+        assert_eq!(amount("1/0"), None);
     }
 
     #[test]
