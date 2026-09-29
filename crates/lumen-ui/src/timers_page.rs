@@ -118,10 +118,13 @@ pub struct TimersPage {
     /// Why the last save was refused, under the form.
     error: Option<String>,
     status: Option<SharedString>,
-    /// Why the last move was refused.
-    warning: Option<SharedString>,
     /// The preset waiting on the delete dialog.
     confirming: Option<String>,
+    /// Where the user asked to go while the form held unsaved changes: the
+    /// question on screen is whether to save them first.
+    leaving: Option<Selection>,
+    /// Where to go once the save asked for on the way there succeeds.
+    continue_to: Option<Selection>,
     dialog_focus: FocusHandle,
     list_focus: FocusHandle,
     list_scroll: ScrollHandle,
@@ -148,8 +151,9 @@ impl TimersPage {
             saving: false,
             error: None,
             status: None,
-            warning: None,
             confirming: None,
+            leaving: None,
+            continue_to: None,
             dialog_focus: cx.focus_handle(),
             list_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
@@ -236,20 +240,20 @@ impl TimersPage {
     ) -> Form {
         let (path, colors) = (self.path.clone(), self.colors.clone());
         let form = cx.new(|cx| TimerForm::new(path, preset, replacing, colors, cx));
-        cx.observe(&form, |page, _, cx| {
-            page.warning = None;
-            cx.notify();
-        })
-        .detach();
+        cx.observe(&form, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&form, |page, form, event, cx| match event {
             TimerFormEvent::Saved(name) => {
                 page.status = Some(format!("Saved {name}").into());
-                page.warning = None;
-                page.selection = Selection::Preset(name.clone());
+                page.selection = page
+                    .continue_to
+                    .take()
+                    .unwrap_or_else(|| Selection::Preset(name.clone()));
+                page.refocus_form = page.selection == Selection::New;
                 page.reload(cx);
             }
+            // Refused: stay, and let the form say why.
+            TimerFormEvent::Failed => page.continue_to = None,
             TimerFormEvent::Cancelled => {
-                page.warning = None;
                 if form.read(cx).is_edited() {
                     page.status = Some("Changes discarded".into());
                     page.rebuild(cx);
@@ -308,25 +312,42 @@ impl TimersPage {
     fn touched(&mut self, cx: &mut Context<Self>) {
         self.edited = true;
         self.error = None;
-        self.warning = None;
         cx.notify();
     }
 
-    /// Whether the form may be replaced. Not with unsaved changes in it.
-    fn may_leave(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.dirty(cx) {
-            self.warning =
-                Some("Save the changes first, or press Esc in the form to undo them".into());
-            cx.notify();
-            return false;
+    /// Whether the form may be replaced now. With unsaved changes in it, it
+    /// may not: the page asks what to do with them, and goes to `to` once
+    /// that is answered.
+    fn may_leave(&mut self, to: Selection, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.dirty(cx) {
+            return true;
         }
-        true
+        self.leaving = Some(to);
+        window.focus(&self.dialog_focus);
+        cx.notify();
+        false
+    }
+
+    /// *Discard* in the unsaved-changes dialog: forget them, and go.
+    fn discard_and_leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(to) = self.leaving.take() else {
+            return;
+        };
+        self.edited = false;
+        self.status = Some("Changes discarded".into());
+        self.selection = to;
+        self.rebuild(cx);
+        if self.selection == Selection::New {
+            self.focus_form(window, cx);
+        } else {
+            self.focus(window, cx);
+        }
+        cx.notify();
     }
 
     fn select(&mut self, selection: Selection, window: &mut Window, cx: &mut Context<Self>) {
         if selection != self.selection {
-            if !self.may_leave(cx) {
-                self.focus_form(window, cx);
+            if !self.may_leave(selection.clone(), window, cx) {
                 return;
             }
             self.selection = selection;
@@ -376,7 +397,7 @@ impl TimersPage {
     }
 
     fn new_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.may_leave(cx) {
+        if !self.may_leave(Selection::New, window, cx) {
             return;
         }
         self.selection = Selection::New;
@@ -450,7 +471,6 @@ impl TimersPage {
     /// Escape in the General or Focus form: undo what was typed, or back to
     /// the list.
     fn cancel(&mut self, _: &CancelForm, window: &mut Window, cx: &mut Context<Self>) {
-        self.warning = None;
         if !self.edited {
             self.focus(window, cx);
             cx.notify();
@@ -535,12 +555,13 @@ impl TimersPage {
                     Ok(()) => {
                         log::info!("{done}");
                         page.status = Some(done.into());
-                        page.warning = None;
-                        page.selection = then;
+                        page.selection = page.continue_to.take().unwrap_or(then);
+                        page.refocus_form = page.selection == Selection::New;
                         page.edited = false;
                         page.reload(cx);
                     }
                     Err(error) => {
+                        page.continue_to = None;
                         log::warn!("could not save the timer settings: {error:#}");
                         page.error = Some(format!("{error:#}"));
                     }
@@ -562,13 +583,26 @@ impl TimersPage {
         }
     }
 
+    /// Esc: no delete, or back to the form that has the changes.
     fn cancel_dialog(&mut self, _: &CancelDialog, window: &mut Window, cx: &mut Context<Self>) {
         self.confirming = None;
-        self.focus(window, cx);
+        if self.leaving.take().is_some() {
+            self.focus_form(window, cx);
+        } else {
+            self.focus(window, cx);
+        }
         cx.notify();
     }
 
+    /// Enter: delete; or save the changes, then go where the user asked.
     fn confirm_dialog(&mut self, _: &ConfirmDialog, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(to) = self.leaving.take() {
+            self.continue_to = Some(to);
+            self.focus(window, cx);
+            self.save(cx);
+            cx.notify();
+            return;
+        }
         let Some(name) = self.confirming.take() else {
             return;
         };
@@ -608,9 +642,6 @@ impl TimersPage {
     /// What the footer says. Unsaved changes first: a "Saved" from before
     /// them is no longer true.
     pub fn status(&self, cx: &App) -> Option<SharedString> {
-        if let Some(warning) = &self.warning {
-            return Some(warning.clone());
-        }
         if self.dirty(cx) {
             return Some("Unsaved changes  Enter to save, Esc to undo".into());
         }
@@ -698,7 +729,7 @@ fn detail(preset: &PresetConfig) -> String {
 
 impl Render for TimersPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.confirming.is_none() {
+        if self.confirming.is_none() && self.leaving.is_none() {
             if std::mem::take(&mut self.refocus_form) {
                 self.focus_form(window, cx);
             } else if std::mem::take(&mut self.refocus_list) || window.focused(cx).is_none() {
@@ -981,10 +1012,38 @@ impl TimersPage {
             .into_any_element()
     }
 
-    /// The delete dialog, over the whole window, drawn by the host.
+    /// What the unsaved-changes dialog calls the form it is about.
+    fn editing(&self) -> String {
+        match &self.selection {
+            Selection::General => "General".into(),
+            Selection::Focus => "Focus".into(),
+            Selection::Preset(name) => name.clone(),
+            Selection::New => "the new preset".into(),
+        }
+    }
+
+    /// The dialog on screen, if one is, over the whole window, drawn by the
+    /// host: a delete to confirm, or unsaved changes to save or discard.
     pub fn render_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let name = self.confirming.clone()?;
         let colors = &self.colors;
+        let (title, body, cancel, confirm, discard) = match (&self.confirming, &self.leaving) {
+            (Some(name), _) => (
+                format!("Delete {name}?"),
+                "It is removed from config.json, with its row in the launcher. \
+                 A timer it started keeps running.",
+                "Cancel  Esc",
+                "Delete  Enter",
+                false,
+            ),
+            (None, Some(_)) => (
+                format!("Unsaved changes to {}", self.editing()),
+                "Save them before moving on, or discard them.",
+                "Keep editing  Esc",
+                "Save  Enter",
+                true,
+            ),
+            (None, None) => return None,
+        };
 
         let buttons = div()
             .pt(px(metrics::GAP))
@@ -993,13 +1052,21 @@ impl TimersPage {
             .gap(px(metrics::GAP))
             .child(text_button(
                 "timer-dialog-cancel",
-                "Cancel  Esc",
+                cancel,
                 colors,
                 cx.listener(|page, _, window, cx| page.cancel_dialog(&CancelDialog, window, cx)),
             ))
+            .when(discard, |buttons| {
+                buttons.child(text_button(
+                    "timer-dialog-discard",
+                    "Discard",
+                    colors,
+                    cx.listener(|page, _, window, cx| page.discard_and_leave(window, cx)),
+                ))
+            })
             .child(text_button(
                 "timer-dialog-confirm",
-                "Delete  Enter",
+                confirm,
                 colors,
                 cx.listener(|page, _, window, cx| page.confirm_dialog(&ConfirmDialog, window, cx)),
             ));
@@ -1022,16 +1089,13 @@ impl TimersPage {
                 div()
                     .text_size(px(metrics::text::TITLE))
                     .text_color(color(colors.text_primary))
-                    .child(format!("Delete {name}?")),
+                    .child(title),
             )
             .child(
                 div()
                     .text_size(px(metrics::text::HINT))
                     .text_color(color(colors.text_muted))
-                    .child(
-                        "It is removed from config.json, with its row in the launcher. \
-                         A timer it started keeps running.",
-                    ),
+                    .child(body),
             )
             .child(buttons);
 

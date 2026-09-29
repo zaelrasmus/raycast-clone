@@ -46,6 +46,8 @@ pub const CONTEXT: &str = "TimerForm";
 pub enum TimerFormEvent {
     /// The preset was written, under this name.
     Saved(String),
+    /// Saving was refused; the form says why, under its fields.
+    Failed,
     Cancelled,
 }
 
@@ -391,6 +393,7 @@ impl TimerForm {
             Ok(preset) => preset,
             Err(problem) => {
                 self.error = Some(problem);
+                cx.emit(TimerFormEvent::Failed);
                 cx.notify();
                 return;
             }
@@ -423,6 +426,7 @@ impl TimerForm {
                     Err(error) => {
                         log::warn!("could not save timer preset {name:?}: {error:#}");
                         form.error = Some(format!("{error:#}"));
+                        cx.emit(TimerFormEvent::Failed);
                     }
                 }
                 cx.notify();

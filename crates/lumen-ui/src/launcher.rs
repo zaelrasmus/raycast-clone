@@ -527,6 +527,7 @@ impl Launcher {
         let current = self.root.index();
         let presets = self.config.translate.presets();
         let timers = self.config.timers.presets();
+        let timer_presets = timers.clone();
 
         cx.spawn(async move |this, cx| {
             // Built and compared on the background thread: enumeration and
@@ -582,10 +583,11 @@ impl Launcher {
                 this.browsers = browsers;
                 this.fetch_icons(sites, cx);
                 let links_changed = this.root.replace_quicklinks(quicklinks);
+                let presets_changed = this.root.replace_timer_presets(timer_presets);
                 // Nothing to show means nothing to re-rank: that would put the
                 // selection back on the first row under somebody who had just
                 // moved it (see `same_index`).
-                if index.is_none() && !links_changed {
+                if index.is_none() && !links_changed && !presets_changed {
                     return;
                 }
                 if let Some(index) = index {
@@ -1992,6 +1994,8 @@ impl Launcher {
             let saved = match event {
                 TimerFormEvent::Saved(name) => Some(name.clone()),
                 TimerFormEvent::Cancelled => None,
+                // The form says why, and stays.
+                TimerFormEvent::Failed => return,
             };
             this.leave_form(saved, window, cx);
         });
@@ -2742,9 +2746,13 @@ impl Launcher {
             .and_then(|picker| scopes.get(picker.scope).map(|scope| (picker.scope, scope)));
         let status = match (&self.mode, count) {
             (Mode::Form(_), _) => "Next field  Tab".to_string(),
-            // What is counting is worth more than how many rows there are,
-            // and the root list is where the launcher opens (F8).
-            (Mode::Root, _) if self.argument.is_none() && self.timers_line().is_some() => {
+            // What is counting, while nothing is typed: the launcher opens
+            // on it. Once a search starts, how many it found is the news (F8).
+            (Mode::Root, _)
+                if self.argument.is_none()
+                    && self.query.trim().is_empty()
+                    && self.timers_line().is_some() =>
+            {
                 self.timers_line().unwrap_or_default()
             }
             // Where Tab goes next, when there is somewhere.

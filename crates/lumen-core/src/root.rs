@@ -137,6 +137,9 @@ pub struct RootSearch {
     /// The quicklinks, held here rather than among the providers because they
     /// are the one provider the user edits while the daemon runs (F6).
     quicklinks: QuicklinkProvider,
+    /// The timer presets, for their names and aliases (F8): typed exactly,
+    /// one leads the matches, as a quicklink does.
+    timer_presets: Vec<crate::timers::Preset>,
     /// This query's fallbacks.
     fallbacks: Vec<Item>,
     /// How many rows the window shows, so the fallbacks can be kept in view.
@@ -154,6 +157,7 @@ impl RootSearch {
             asides: std::array::from_fn(|_| Arc::new(Vec::new())),
             answers: Vec::new(),
             quicklinks: QuicklinkProvider::default(),
+            timer_presets: Vec::new(),
             fallbacks: Vec::new(),
             // What the configuration defaults to; the launcher sets the real
             // value before the first query.
@@ -191,6 +195,16 @@ impl RootSearch {
             return false;
         }
         self.quicklinks = quicklinks;
+        true
+    }
+
+    /// Take the timer presets as they now are in `config.json`. Returns
+    /// whether anything changed.
+    pub fn replace_timer_presets(&mut self, presets: Vec<crate::timers::Preset>) -> bool {
+        if self.timer_presets == presets {
+            return false;
+        }
+        self.timer_presets = presets;
         true
     }
 
@@ -262,6 +276,24 @@ impl RootSearch {
                 .cmp(&a.score)
                 .then_with(|| self.item(a).title.cmp(&self.item(b).title))
         });
+
+        // Likewise a timer preset (F8). Its alias is only a keyword to the
+        // matcher, and a short one like `dw` scores below any file that
+        // happens to contain the letters -- found, but seventh.
+        let query_trimmed = query.trim();
+        if let Some(preset) = self.timer_presets.iter().find(|preset| {
+            crate::timers::presets::same(&preset.name, query_trimmed)
+                || preset
+                    .alias
+                    .as_deref()
+                    .is_some_and(|alias| crate::timers::presets::same(alias, query_trimmed))
+        }) {
+            let id = format!("timer:preset:{}", preset.name);
+            if let Some(at) = hits.iter().position(|hit| self.item(hit).id == id) {
+                let hit = hits.remove(at);
+                hits.insert(0, hit);
+            }
+        }
 
         // A quicklink typed exactly -- its whole name, or its alias -- is what
         // the user meant, and leads the matches. Scoring alone lets usage
@@ -651,6 +683,38 @@ mod tests {
         // The alias alone, with no space and so no answer yet.
         root.rank("G");
         assert_eq!(titles(&root)[0], "Google");
+    }
+
+    /// F8, found by using it: a preset's alias found it seventh, below files
+    /// whose names happen to hold the letters, and its name second.
+    #[test]
+    fn a_timer_preset_named_exactly_leads_the_matches() {
+        use crate::providers::Provider as _;
+
+        let preset = crate::timers::Preset {
+            name: "Zeta".into(),
+            alias: Some("zq".into()),
+            duration: std::time::Duration::from_secs(420),
+            cycle: None,
+            focus: false,
+        };
+        let presets = providers::TimerPresetsProvider::new(vec![preset.clone()]);
+        let mut index = apps(&["Zed Quick", "Modrinth App"]);
+        index.extend(presets.catalogue().into_iter().map(Candidate::new));
+        let mut root = root(index);
+        root.replace_aside(
+            Aside::Files,
+            files(&["ZedQ2016.fantome", "Zeta_backup.zip"]),
+        );
+        root.replace_timer_presets(vec![preset]);
+
+        root.rank("zq");
+        assert_eq!(titles(&root)[0], "Zeta");
+        root.rank("ZETA");
+        assert_eq!(titles(&root)[0], "Zeta");
+        // A prefix still competes on score.
+        root.rank("zet");
+        assert!(titles(&root).contains(&"Zeta".to_string()));
     }
 
     /// Only an exact name: a prefix is still a fuzzy match like any other.

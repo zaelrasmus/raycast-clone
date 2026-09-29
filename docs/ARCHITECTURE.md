@@ -752,6 +752,16 @@ After living with it, three things were changed before F8 merged:
     machine that is never perfectly idle, not a tick -- a once-a-second
     wake would be sixty of them a minute. All within 0.02 %. Working set
     72.8-73.6 MB, 31 threads. Binary 16,630,272 bytes.
+- **Three bugs found in use, each reproduced on screen before the fix:**
+  - The footer's timer line replaced the result count while searching. It
+    now shows only while the query is empty; a search shows its count.
+  - Clicking another row in settings did nothing after an edit: the page
+    refused to leave a form with unsaved changes and said so only in the
+    footer, which read as a dead mouse. It now asks, in a dialog -- *Keep
+    editing*, *Discard*, or *Save* and then go where the click asked.
+  - A preset's alias found it, but seventh, below files that happened to
+    contain the letters. A timer preset's exact name or alias now leads the
+    matches, as a quicklink's does (`RootSearch::replace_timer_presets`).
 
 ---
 
