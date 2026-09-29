@@ -390,7 +390,17 @@ built; what changed on the way from the plan is said where it happened.
 - **The actions follow the row.** `Enter` copies the translation, line breaks
   kept, and closes the launcher; the panel adds *Copy Original*, *Copy All
   Translations* (one per line) and *Switch to …* for each other preset. A
-  failed row offers *Try Again*. Two planned actions were dropped: *Swap
+  failed row offers *Try Again*, first, so `Enter` retries. **No connection
+  is said as such.** The raw error for a machine without internet is
+  "error sending request", which tells nobody to check their Wi-Fi. So
+  `translate::failure` sorts errors: a connection that never opened --
+  refused, or a name that did not resolve -- is `Failure::Offline`, drawn as
+  *No internet connection* with a caution tag, and the section title says
+  *Offline* when every row is. A timeout is not offline: the service was
+  slow, and sending the user to check a working network is worse than
+  saying so. Nothing retries on a timer; typing or `Enter` does, which keeps
+  a daemon without a network from polling one. Two planned actions were
+  dropped: *Swap
   Languages*, because a view cannot set the text of the search field and
   swapping without the text is half a swap; and opening a long translation
   as a `Detail`, because `Esc` in a view clears the query rather than

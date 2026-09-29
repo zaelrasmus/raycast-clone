@@ -638,6 +638,10 @@ you pause, and nothing longer than 5,000 characters. The Google service is an
 undocumented endpoint and may stop working without notice; if it does, the
 row says why, and DeepL is the documented alternative.
 
+Without an internet connection each row says **No internet connection**,
+naming the service it could not reach, and the section title says
+*Offline*. `Enter` tries again, and so does typing.
+
 ---
 
 ## Layout
