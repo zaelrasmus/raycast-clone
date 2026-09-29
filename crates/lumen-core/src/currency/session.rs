@@ -39,6 +39,8 @@ pub enum Effect {
 const ROW: &str = "cur-";
 const COPY: &str = "copy";
 const COPY_SHOWN: &str = "copy-shown";
+const PIN: &str = "pin";
+const UNPIN: &str = "unpin";
 const RETRY: &str = "retry";
 const FAILED: &str = "failed";
 /// The one scope, and the prefix of its options.
@@ -47,6 +49,8 @@ const FROM: &str = "from";
 pub struct Session {
     service: Service,
     from: &'static Currency,
+    /// Kept in a section above the rest (F9, slice 4).
+    pinned: Vec<&'static Currency>,
     rates: Option<Rates>,
     /// A fetch is out.
     fetching: bool,
@@ -65,6 +69,7 @@ impl Session {
         Self {
             service,
             from: state.from(),
+            pinned: state.pinned(),
             rates: state.rates,
             fetching: false,
             failure: None,
@@ -127,6 +132,11 @@ impl Session {
     pub fn state(&self) -> State {
         State {
             from: Some(self.from.code.to_string()),
+            pinned: self
+                .pinned
+                .iter()
+                .map(|currency| currency.code.to_string())
+                .collect(),
             rates: self.rates.clone(),
         }
     }
@@ -159,6 +169,17 @@ impl Session {
         else {
             return Vec::new();
         };
+        match action {
+            PIN if !self.pinned.contains(&to) => {
+                self.pinned.push(to);
+                return vec![Effect::Render(self.view()), Effect::Save(self.state())];
+            }
+            UNPIN if self.pinned.contains(&to) => {
+                self.pinned.retain(|pinned| *pinned != to);
+                return vec![Effect::Render(self.view()), Effect::Save(self.state())];
+            }
+            _ => {}
+        }
         let Some(value) = self.parsed().and_then(|query| self.convert(&query, to)) else {
             return Vec::new();
         };
@@ -246,9 +267,7 @@ impl Session {
                 },
                 Vec::new(),
             ),
-            (Some(rates), Some(query)) => {
-                (self.waiting(), vec![self.section(rates, &query, &targets)])
-            }
+            (Some(rates), Some(query)) => (self.waiting(), self.sections(rates, &query, &targets)),
             (None, Some(_)) if self.fetching => (self.waiting(), Vec::new()),
             // No table, and none coming: a row, so Enter can try again.
             (None, Some(_)) => (self.waiting(), vec![self.failed()]),
@@ -271,7 +290,15 @@ impl Session {
         }
     }
 
-    fn section(&self, rates: &Rates, query: &Query, targets: &[&'static Currency]) -> Section {
+    /// The rows under a header that says what is converted and how old the
+    /// rates are: the pinned first, when there are any, and the rest under
+    /// a heading of their own. The filter narrows both.
+    fn sections(
+        &self,
+        rates: &Rates,
+        query: &Query,
+        targets: &[&'static Currency],
+    ) -> Vec<Section> {
         let source = self.source(query);
         let mut subtitle = format!(
             "Rates of {} \u{00b7} {}",
@@ -285,18 +312,43 @@ impl Session {
             (None, false) => {}
         }
 
-        Section {
-            title: Some(format!(
-                "Exchange from {} {}",
-                format::shown(query.amount, source),
-                source.name
-            )),
-            subtitle: Some(subtitle),
-            items: targets
+        let rows = |pinned: bool| -> Vec<Item> {
+            targets
                 .iter()
-                .filter_map(|to| Some(row(to, rates.convert(query.amount, source.code, to.code)?)))
-                .collect(),
+                .filter(|to| self.pinned.contains(to) == pinned)
+                .filter_map(|to| {
+                    let value = rates.convert(query.amount, source.code, to.code)?;
+                    Some(row(to, value, pinned))
+                })
+                .collect()
+        };
+        let (pinned, rest) = (rows(true), rows(false));
+
+        let header = format!(
+            "Exchange from {} {}",
+            format::shown(query.amount, source),
+            source.name
+        );
+        if pinned.is_empty() {
+            return vec![Section {
+                title: Some(header),
+                subtitle: Some(subtitle),
+                items: rest,
+            }];
         }
+        let mut sections = vec![Section {
+            title: Some(header),
+            subtitle: Some(subtitle),
+            items: pinned,
+        }];
+        if !rest.is_empty() {
+            sections.push(Section {
+                title: Some("Other currencies".into()),
+                subtitle: None,
+                items: rest,
+            });
+        }
+        sections
     }
 
     fn failed(&self) -> Section {
@@ -381,7 +433,7 @@ fn action(id: &str, title: &str) -> Action {
 }
 
 /// One currency's row: `US  USD  $7.06          United States Dollar`.
-fn row(to: &'static Currency, value: f64) -> Item {
+fn row(to: &'static Currency, value: f64, pinned: bool) -> Item {
     Item {
         id: format!("{ROW}{}", to.code),
         title: to.code.into(),
@@ -396,6 +448,11 @@ fn row(to: &'static Currency, value: f64) -> Item {
         actions: vec![
             action(COPY, &format!("Copy {}", format::plain(value, to))),
             action(COPY_SHOWN, &format!("Copy {}", format::shown(value, to))),
+            if pinned {
+                action(UNPIN, "Unpin")
+            } else {
+                action(PIN, "Pin")
+            },
         ],
     }
 }
@@ -414,6 +471,7 @@ mod tests {
         let mut session = Session::new(
             State {
                 from: None,
+                pinned: Vec::new(),
                 rates: Some(table()),
             },
             Service::Open,
@@ -530,6 +588,7 @@ mod tests {
         let mut session = Session::new(
             State {
                 from: None,
+                pinned: Vec::new(),
                 rates: Some(table()),
             },
             Service::Open,
@@ -559,6 +618,7 @@ mod tests {
         let mut session = Session::new(
             State {
                 from: None,
+                pinned: Vec::new(),
                 rates: Some(table()),
             },
             Service::Unirate,
@@ -618,6 +678,7 @@ mod tests {
         let mut session = Session::new(
             State {
                 from: None,
+                pinned: Vec::new(),
                 rates: Some(table()),
             },
             Service::Open,
@@ -671,6 +732,45 @@ mod tests {
                 "{typed_text}"
             );
         }
+    }
+
+    #[test]
+    fn a_pin_keeps_a_currency_above_the_rest_and_is_kept() {
+        let mut session = session();
+        typed(&mut session, "10");
+        let effects = session.event(Event::ActionInvoked {
+            item: Some("cur-JPY".into()),
+            action: "pin".into(),
+        });
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Save(State { pinned, .. }) if pinned == &["JPY".to_string()]
+        )));
+
+        let list = list(&effects);
+        let titles = |section: &Section| -> Vec<String> {
+            section
+                .items
+                .iter()
+                .map(|item| item.title.clone())
+                .collect()
+        };
+        assert_eq!(titles(&list.sections[0]), ["JPY"]);
+        assert!(list.sections[0].subtitle.is_some(), "the date stays on top");
+        assert_eq!(list.sections[1].title.as_deref(), Some("Other currencies"));
+        assert_eq!(titles(&list.sections[1]), ["CAD", "EUR"]);
+        assert_eq!(list.item(0).unwrap().actions[2].id, "unpin");
+
+        // The filter narrows the pinned too.
+        let list = list_of(typed(&mut session, "10 in cad"));
+        assert_eq!(list.sections.len(), 1);
+        assert_eq!(titles(&list.sections[0]), ["CAD"]);
+
+        let list = list_of(session.event(Event::ActionInvoked {
+            item: Some("cur-JPY".into()),
+            action: "unpin".into(),
+        }));
+        assert_eq!(list.sections.len(), 1);
     }
 
     #[test]

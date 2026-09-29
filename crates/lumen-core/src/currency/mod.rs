@@ -171,6 +171,8 @@ pub trait RateSource: Send + Sync {
 pub struct State {
     /// The currency converted from, by code.
     pub from: Option<String>,
+    /// The currencies pinned above the rest, by code (F9, slice 4).
+    pub pinned: Vec<String>,
     pub rates: Option<Rates>,
 }
 
@@ -204,6 +206,17 @@ impl State {
         std::fs::write(&temporary, source)
             .with_context(|| format!("writing {}", temporary.display()))?;
         std::fs::rename(&temporary, path).with_context(|| format!("replacing {}", path.display()))
+    }
+
+    /// The pinned currencies Lumen still knows, once each.
+    pub fn pinned(&self) -> Vec<&'static Currency> {
+        let mut pinned: Vec<&'static Currency> = Vec::new();
+        for currency in self.pinned.iter().filter_map(|code| currencies::find(code)) {
+            if !pinned.contains(&currency) {
+                pinned.push(currency);
+            }
+        }
+        pinned
     }
 
     /// The currency to convert from: the one chosen, or the default.
@@ -285,6 +298,7 @@ mod tests {
 
         let state = State {
             from: Some("CAD".into()),
+            pinned: vec!["EUR".into(), "ZZZ".into(), "EUR".into()],
             rates: Some(rates(&[("USD", 1.0), ("CAD", 1.4), ("ZZZ", 2.0)])),
         };
         state.save(&path).unwrap();
@@ -292,6 +306,8 @@ mod tests {
         std::fs::remove_dir_all(&folder).ok();
 
         assert_eq!(loaded.from().code, "CAD");
+        let pinned: Vec<&str> = loaded.pinned().iter().map(|pin| pin.code).collect();
+        assert_eq!(pinned, ["EUR"], "known, once each");
         let codes: Vec<&String> = loaded.rates.as_ref().unwrap().rates.keys().collect();
         assert_eq!(codes, ["CAD", "USD"]);
     }
