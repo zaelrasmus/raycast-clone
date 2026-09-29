@@ -29,7 +29,7 @@
 //! (I-10). The previous translation stays in its row while the next is
 //! requested rather than flashing to empty.
 
-use super::{LANGUAGES, Language, MAX_TARGETS, Preset, Service, Translation, languages};
+use super::{Failure, LANGUAGES, Language, MAX_TARGETS, Preset, Service, Translation, languages};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Item, List, Scope, ScopeOption, Section, Tone,
     View,
@@ -90,7 +90,7 @@ enum Row {
         previous: Option<String>,
     },
     Done(String),
-    Failed(String),
+    Failed(Failure),
 }
 
 pub struct Session {
@@ -174,7 +174,7 @@ impl Session {
         &mut self,
         generation: u64,
         target: usize,
-        result: Result<Translation, String>,
+        result: Result<Translation, Failure>,
     ) -> Vec<Effect> {
         if generation != self.generation || target >= self.rows.len() {
             return Vec::new();
@@ -186,7 +186,7 @@ impl Session {
                 }
                 Row::Done(translation.text)
             }
-            Err(message) => Row::Failed(message),
+            Err(failure) => Row::Failed(failure),
         };
         vec![Effect::Render(self.view())]
     }
@@ -334,11 +334,11 @@ impl Session {
             Vec::new()
         } else {
             vec![Section {
-                title: Some(format!(
-                    "{} \u{00b7} {}",
-                    self.source_title(),
-                    self.service.label()
-                )),
+                title: Some(if self.offline() {
+                    format!("Offline \u{00b7} {}", self.service.label())
+                } else {
+                    format!("{} \u{00b7} {}", self.source_title(), self.service.label())
+                }),
                 items: self
                     .rows
                     .iter()
@@ -417,6 +417,13 @@ impl Session {
         }
     }
 
+    /// Every row failed for want of a connection.
+    fn offline(&self) -> bool {
+        self.rows
+            .iter()
+            .all(|row| matches!(row, Row::Failed(Failure::Offline)))
+    }
+
     fn source_title(&self) -> String {
         if let Some(from) = self.languages.from {
             return format!("From {}", from.name);
@@ -443,7 +450,17 @@ impl Session {
             Row::Pending { previous: None } | Row::Idle => {
                 ("Translating\u{2026}".into(), None, Tone::Neutral)
             }
-            Row::Failed(message) => (
+            // Said as what it is, with what to do: the raw error names a
+            // socket, not the Wi-Fi.
+            Row::Failed(Failure::Offline) => (
+                "No internet connection".into(),
+                Some(format!(
+                    "Translate needs the internet to reach {}. Enter tries again.",
+                    self.service.label()
+                )),
+                Tone::Caution,
+            ),
+            Row::Failed(Failure::Other(message)) => (
                 "Could not translate".into(),
                 Some(message.clone()),
                 Tone::Danger,
@@ -590,7 +607,7 @@ mod tests {
             .collect()
     }
 
-    fn done(text: &str) -> Result<Translation, String> {
+    fn done(text: &str) -> Result<Translation, Failure> {
         Ok(Translation {
             text: text.into(),
             detected: None,
@@ -853,12 +870,52 @@ mod tests {
         let mut session = session();
         typed(&mut session, "hola");
         let generation = session.generation;
-        let list = list(&session.answer(generation, 0, Err("Google answered 429".into())));
+        let list = list(&session.answer(
+            generation,
+            0,
+            Err(Failure::Other("Google answered 429".into())),
+        ));
 
         let item = list.item(0).unwrap();
         assert_eq!(item.title, "Could not translate");
         assert_eq!(item.subtitle.as_deref(), Some("Google answered 429"));
         assert_eq!(item.actions[0].id, "retry");
+
+        let effects = session.event(Event::ActionInvoked {
+            item: Some("target-0".into()),
+            action: "retry".into(),
+        });
+        assert_eq!(sends(&effects).len(), 1);
+    }
+
+    /// Offline is said plainly, in the row and the section, and Enter retries.
+    #[test]
+    fn no_connection_is_said_as_such_and_can_be_retried() {
+        let mut session = session();
+        typed(&mut session, "hola");
+        let generation = session.generation;
+        let list = list(&session.answer(generation, 0, Err(Failure::Offline)));
+
+        assert_eq!(
+            list.sections[0].title.as_deref(),
+            Some("Offline \u{00b7} Google Translate")
+        );
+        let item = list.item(0).unwrap();
+        assert_eq!(item.title, "No internet connection");
+        assert!(
+            item.subtitle
+                .as_deref()
+                .unwrap()
+                .contains("Enter tries again")
+        );
+        assert_eq!(item.actions[0].id, "retry");
+        assert!(matches!(
+            &item.accessories[0],
+            Accessory::Tag {
+                tone: Tone::Caution,
+                ..
+            }
+        ));
 
         let effects = session.event(Event::ActionInvoked {
             item: Some("target-0".into()),

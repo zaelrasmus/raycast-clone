@@ -30,7 +30,7 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::App;
 use lumen_core::translate::session::{Effect, Languages, Request, Session};
-use lumen_core::translate::{self, TranslateConfig, Translation, Translator};
+use lumen_core::translate::{self, Failure, TranslateConfig, Translation, Translator};
 use lumen_core::view::Event;
 use lumen_platform::Platform;
 use lumen_ui::{Launcher, ViewSink};
@@ -61,7 +61,7 @@ enum Input {
     Answered {
         generation: u64,
         target: usize,
-        result: Result<Translation, String>,
+        result: Result<Translation, Failure>,
     },
     /// Nothing has been sent since request number `.0`.
     Quiet(u64),
@@ -208,12 +208,12 @@ fn send(
                 .and_then(|translator| {
                     translator.translate(&request.text, request.from, request.to)
                 })
-                .map_err(|error| format!("{error:#}"));
-            if let Err(error) = &result {
-                // The error, never the text: what the user typed stays out of
-                // the log.
-                log::warn!("translation failed: {error}");
-            }
+                .map_err(|error| {
+                    // The error, never the text: what the user typed stays
+                    // out of the log.
+                    log::warn!("translation failed: {error:#}");
+                    translate::failure(&error)
+                });
             let _ = reply.unbounded_send(Input::Answered {
                 generation,
                 target,
@@ -225,7 +225,9 @@ fn send(
         let _ = tx.unbounded_send(Input::Answered {
             generation,
             target,
-            result: Err(format!("could not start a request: {error}")),
+            result: Err(Failure::Other(format!(
+                "could not start a request: {error}"
+            ))),
         });
     }
 }
