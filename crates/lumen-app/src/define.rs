@@ -43,6 +43,12 @@ enum Input {
 
 type Client = Arc<Mutex<Option<Arc<dyn Dictionary>>>>;
 
+/// The word language chosen last, for the next time the view opens.
+///
+/// In memory, as Translate keeps its languages: it lasts as long as the
+/// daemon, which is as long as anybody remembers having chosen it.
+static LAST: Mutex<Option<&'static languages::Language>> = Mutex::new(None);
+
 /// Open the Define view.
 ///
 /// `browser` is the preferred one from the configuration, for *Open in
@@ -54,7 +60,7 @@ pub fn run(
     cx: &mut App,
 ) {
     let mut session = Session::new(
-        languages::english(),
+        LAST.lock().unwrap_or_else(languages::english),
         dictionary::explanation_language(),
         dictionary::attribution(),
     );
@@ -131,6 +137,7 @@ pub fn run(
                             .update(cx, |launcher, _window, cx| launcher.close(cx))
                             .ok();
                     }
+                    Effect::Remember(language) => *LAST.lock() = Some(language),
                     Effect::Open(url) => {
                         window
                             .update(cx, |launcher, _window, cx| launcher.close(cx))

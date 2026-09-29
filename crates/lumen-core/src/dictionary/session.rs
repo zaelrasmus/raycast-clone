@@ -22,11 +22,11 @@
 
 use std::collections::HashMap;
 
-use super::languages::Language;
+use super::languages::{self, LANGUAGES, Language};
 use super::{Entry, Failure, Part, Sense};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Icon, Item, ItemDetail, List, MetadataRow,
-    Section, Tone, View,
+    Scope, ScopeOption, Section, Tone, View,
 };
 
 /// What the driver should do next.
@@ -43,6 +43,8 @@ pub enum Effect {
     Copy(String),
     /// Open this page in the browser and close the launcher.
     Open(String),
+    /// This word language was chosen; open with it next time.
+    Remember(&'static Language),
 }
 
 /// One lookup to make.
@@ -90,6 +92,9 @@ const OPEN: &str = "open";
 const RETRY: &str = "retry";
 const SENSE: &str = "sense-";
 const FAILURE: &str = "failure";
+/// The word language's scope, and the prefix of its options.
+const FROM: &str = "from";
+const LANGUAGE: &str = "lang-";
 
 impl Session {
     pub fn new(
@@ -131,9 +136,8 @@ impl Session {
                 self.restart(false)
             }
             Event::ActionInvoked { item, action } => self.act(item.as_deref(), &action),
-            Event::ScopeChanged { .. } | Event::SelectionChanged { .. } | Event::Dismissed => {
-                Vec::new()
-            }
+            Event::ScopeChanged { scope, option } => self.choose(&scope, &option),
+            Event::SelectionChanged { .. } | Event::Dismissed => Vec::new(),
         }
     }
 
@@ -167,6 +171,47 @@ impl Session {
             Err(failure) => State::Failed(failure),
         };
         vec![Effect::Render(self.view())]
+    }
+
+    /// A word language was chosen in *From*: look the same text up in it, at
+    /// once. What the view already had for the other language stays in its
+    /// answers, so switching back costs nothing.
+    fn choose(&mut self, scope: &str, option: &str) -> Vec<Effect> {
+        if scope != FROM {
+            return Vec::new();
+        }
+        let Some(language) = option.strip_prefix(LANGUAGE).and_then(languages::find) else {
+            return Vec::new();
+        };
+        if language == self.language {
+            return Vec::new();
+        }
+        self.language = language;
+        // The entry on screen is in the other language: it must not stay up
+        // as if it were the answer being waited for.
+        if matches!(self.state, State::Found(_) | State::Pending { .. }) {
+            self.state = State::Pending { previous: None };
+        }
+        let mut effects = vec![Effect::Remember(language)];
+        effects.extend(self.restart(true));
+        effects
+    }
+
+    /// *From*: every language the source covers well.
+    fn source_scope(&self) -> Scope {
+        Scope {
+            id: FROM.into(),
+            title: "From".into(),
+            options: LANGUAGES
+                .iter()
+                .map(|language| ScopeOption {
+                    id: format!("{LANGUAGE}{}", language.code),
+                    title: language.name.into(),
+                    keywords: vec![language.code.into()],
+                })
+                .collect(),
+            selected: format!("{LANGUAGE}{}", self.language.code),
+        }
     }
 
     /// What should be looked up changed: start a new generation.
@@ -261,7 +306,7 @@ impl Session {
                 Some(empty(
                     "Type a word to define".into(),
                     Some(format!(
-                        "Looked up as you type, in {}.",
+                        "Looked up as you type, in {}. Tab chooses the language.",
                         self.attribution_short()
                     )),
                 )),
@@ -297,7 +342,7 @@ impl Session {
         View::List(List {
             placeholder: Some(format!("Define a word in {}", self.language.name)),
             filtering: Filtering::Extension,
-            scopes: Vec::new(),
+            scopes: vec![self.source_scope()],
             empty,
             showing_detail: entry.is_some(),
             sections,
@@ -697,6 +742,76 @@ mod tests {
 
     fn list_after(effects: Vec<Effect>) -> List {
         list(&effects)
+    }
+
+    fn chose(session: &mut Session, option: &str) -> Vec<Effect> {
+        session.event(Event::ScopeChanged {
+            scope: "from".into(),
+            option: option.into(),
+        })
+    }
+
+    /// `significado` in Spanish, explained in English: the case F10 is for.
+    #[test]
+    fn choosing_a_language_looks_the_same_word_up_in_it_at_once() {
+        let mut session = session();
+        typed(&mut session, "significado");
+        let generation = session.generation;
+        session.answer(generation, Ok(None));
+
+        let effects = chose(&mut session, "lang-es");
+        let spanish = languages::find("es").unwrap();
+        assert!(effects.contains(&Effect::Remember(spanish)));
+        let requests = sends(&effects);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].word, "significado");
+        assert_eq!(requests[0].language, spanish);
+        assert_eq!(requests[0].explained_in, "en");
+
+        let list = list(&effects);
+        let from = &list.scopes[0];
+        assert_eq!(from.current().unwrap().title, "Spanish");
+        assert_eq!(from.options.len(), LANGUAGES.len());
+        assert_eq!(
+            list.placeholder.as_deref(),
+            Some("Define a word in Spanish")
+        );
+    }
+
+    /// An English entry must not stay up while the Spanish one is asked for.
+    #[test]
+    fn the_other_languages_entry_is_not_shown_while_waiting() {
+        let mut session = session();
+        found(&mut session, "display");
+        let list = list(&chose(&mut session, "lang-fr"));
+        assert!(list.is_empty());
+        assert!(!list.showing_detail);
+    }
+
+    /// Each language's answer is kept apart: going back asks nothing.
+    #[test]
+    fn switching_back_to_a_language_uses_its_answer() {
+        let mut session = session();
+        found(&mut session, "display");
+        chose(&mut session, "lang-fr");
+        let effects = chose(&mut session, "lang-en");
+        assert!(sends(&effects).is_empty());
+        assert_eq!(
+            list(&effects).item(0).unwrap().title,
+            "A show or spectacle."
+        );
+    }
+
+    #[test]
+    fn an_unknown_or_current_language_changes_nothing() {
+        let mut session = session();
+        assert!(chose(&mut session, "lang-xx").is_empty());
+        assert!(chose(&mut session, "lang-en").is_empty());
+        let other = session.event(Event::ScopeChanged {
+            scope: "to".into(),
+            option: "lang-es".into(),
+        });
+        assert!(other.is_empty());
     }
 
     /// A definition that opens with its labels does not repeat them.
