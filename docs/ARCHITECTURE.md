@@ -1309,6 +1309,36 @@ What changed on the way, and what was learned:
   over a short built-in list (WezTerm, Alacritty, mintty), and `trait
   Platform` gained `window_application` to say which program owns the
   captured window, off the UI thread.
+- **Placeholders are Raycast's syntax, read from its manual, and what is not
+  one is text.** The design said a typo would be reported; the manual says
+  an unrecognised placeholder is left alone, and for snippets that is right,
+  because they are often code: `function() { return x; }` and a JSON object
+  must paste as written. So anything in braces that is not a valid
+  placeholder -- unknown name, parameter or modifier, a bad offset, a
+  `format` beside a `locale` -- is pasted exactly as written, and a
+  placeholder that cannot be filled (a snippet that does not exist, a
+  locale the system does not know) is too. There is no `{{` escape. Modifiers
+  are a pipe, `{clipboard | trim | uppercase}`, with `raw` accepted and
+  changing nothing in a snippet; offsets are `offset="+2y +5M"`, `m` minutes
+  and `M` months; `{snippet}` goes one level deep and refuses a snippet that
+  refers to others, which also stops one that names itself.
+- **Dates are written by the system.** Raycast's `{date}` follows the
+  system's regional settings and `locale="fr-FR"` picks another, which needs
+  every locale's names and orders. Windows has them: `trait Platform` gained
+  `format_date`, over `GetDateFormatEx` and `GetTimeFormatEx` -- the short
+  date and the time without seconds, as the taskbar clock writes them, so
+  `{date}` on this machine is `30/09/2026`, not Raycast's `30 Sep 2026`.
+  Bundling ICU4X instead was several megabytes for what the system already
+  has. A custom `format` is a Unicode pattern (`EEEE, MMM d, yyyy`, `'text'`
+  quoted) written in core, with English names, since a pattern and a locale
+  are never given together; Raycast's ten examples are its tests. Raycast's
+  Unicode extensions in a locale (`en-US-u-hc-h23`) are not Windows locale
+  names and are refused.
+- **The calculator is both a placeholder and a modifier.**
+  `{calculator expression="12*7"}` for a fixed sum, and `| calculate` to
+  evaluate what another placeholder produced -- `{clipboard | calculate}` --
+  with the launcher's own calculator. A value that is not arithmetic is left
+  as it was.
 - **A paste is never logged with its text.** `Paste`'s `Debug` prints the
   length only, because the daemon logs an event that failed with `{:?}`, and
   a snippet can be a password.

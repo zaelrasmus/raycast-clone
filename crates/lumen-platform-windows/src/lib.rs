@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ApplicationsSink, Browser, ClipboardSink, FocusOwner, ForegroundApp, GestureSink,
-    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Paste, Platform, Rect,
-    TrayInfo, TraySink, WindowLayout, WindowRole,
+    AppEntry, ApplicationsSink, Browser, ClipboardSink, DateStyle, FocusOwner, ForegroundApp,
+    GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime, MonitorInfo,
+    Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -27,6 +27,7 @@ mod browsers;
 mod clipboard;
 mod clipboard_watch;
 mod com;
+mod date;
 mod foreground;
 mod icons;
 mod input;
@@ -199,6 +200,15 @@ impl Platform for WindowsPlatform {
 
     fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()> {
         arrange::arrange(window, layout)
+    }
+
+    fn format_date(
+        &self,
+        when: &LocalTime,
+        style: DateStyle,
+        locale: Option<&str>,
+    ) -> Result<String> {
+        date::format(when, style, locale)
     }
 
     fn paste(&self, window: FocusOwner, paste: &Paste) -> Result<()> {

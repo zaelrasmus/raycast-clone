@@ -29,9 +29,9 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ApplicationsSink, Browser, ClipboardSink, FocusOwner, ForegroundApp, GestureSink,
-    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Paste, Platform, Rect,
-    TrayInfo, TraySink, WindowLayout, WindowRole,
+    AppEntry, ApplicationsSink, Browser, ClipboardSink, DateStyle, FocusOwner, ForegroundApp,
+    GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime, MonitorInfo,
+    Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -184,6 +184,15 @@ impl Platform for LinuxPlatform {
 
     fn window_application(&self, _window: FocusOwner) -> Result<Option<ForegroundApp>> {
         todo!("F5: Hyprland's `clients` over its IPC socket, by window address")
+    }
+
+    fn format_date(
+        &self,
+        _when: &LocalTime,
+        _style: DateStyle,
+        _locale: Option<&str>,
+    ) -> Result<String> {
+        todo!("F5: the locale's patterns from glibc (nl_langinfo) or ICU")
     }
 
     fn paste(&self, _window: FocusOwner, _paste: &Paste) -> Result<()> {

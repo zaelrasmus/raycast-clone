@@ -16,6 +16,7 @@
 //! way it could be done without a `WH_KEYBOARD_LL` hook, and defers it.
 
 pub mod session;
+pub mod template;
 
 use std::path::Path;
 

@@ -752,6 +752,25 @@ into, the snippet is copied. The `snippets` section of `config.json`:
 | `paste` | `"restore"` (default) puts back what was on the clipboard as soon as the application has read the snippet, and keeps the snippet out of clipboard history, Lumen's and Windows'. `"keep"` leaves the snippet on the clipboard, like any copy. |
 | `paste-keys` | The keystroke that pastes, by program: `"ctrl+v"` (everything not named), `"ctrl+shift+v"` or `"shift+insert"`. For terminals that pass `Ctrl+V` on to the program running in them. WezTerm, Alacritty and mintty are known already; an entry here wins. |
 
+**Placeholders** are filled in when a snippet is pasted, in Raycast's
+syntax:
+
+| placeholder | becomes |
+| ----------- | ------- |
+| `{clipboard}` | The clipboard's text; `{clipboard offset=1}` the entry before it in clipboard history |
+| `{date}`, `{time}`, `{datetime}`, `{day}` | Now, as your regional settings write it; `locale="fr-FR"` for another locale's way |
+| `{date format="yyyy-MM-dd"}` | Now, by a Unicode pattern: `EEEE, MMM d, yyyy`, `HH:mm`, `'literal text'` |
+| `offset="+1d"` on any date | Another moment: `+`/`-`, a number, and `m`, `h`, `d`, `M` (months) or `y`; several at once, `"+2y +5M"` |
+| `{uuid}` | A new random UUID |
+| `{snippet name="Signature"}` | Another snippet, one level deep |
+| `{calculator expression="12*7"}` | `84` |
+
+After any of them, modifiers in order: `{clipboard | trim | uppercase}`, with
+`uppercase`, `lowercase`, `trim`, `percent-encode`, `json-stringify`,
+`calculate` (evaluate the value as arithmetic) and `raw`. Anything in braces
+that is not a valid placeholder is pasted as written, so code and JSON are
+safe.
+
 A window running as administrator cannot be typed into by Lumen -- Windows
 discards the keystrokes without a word -- so the snippet is left on the
 clipboard, and a notification says to paste it by hand.

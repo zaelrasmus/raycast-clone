@@ -410,6 +410,14 @@ impl Launcher {
         self.refresh_clipboard(cx);
     }
 
+    /// The clipboard history, for `{clipboard offset=1}` in a snippet (F11).
+    /// `None` when it is off or could not be opened.
+    pub fn clipboard_history(
+        &self,
+    ) -> Option<Arc<parking_lot::Mutex<lumen_core::clipboard::History>>> {
+        self.clipboard.clone()
+    }
+
     /// Re-read the clipboard snapshot.
     ///
     /// Called by the daemon after it records an entry, rather than on a timer

@@ -25,6 +25,8 @@ interprocess = "2.4"
 parking_lot.workspace = true
 
 futures = "0.3"
+# `{uuid}` in snippets (F11). Already in the build through gpui, with v4.
+uuid = { version = "1", features = ["v4"] }
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]

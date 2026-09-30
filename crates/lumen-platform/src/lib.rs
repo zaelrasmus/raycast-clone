@@ -167,6 +167,36 @@ pub enum PasteKeys {
     ShiftInsert,
 }
 
+/// A moment on the user's wall clock, already in their time zone (F11).
+///
+/// Plain fields rather than a date library's type, so the boundary does not
+/// tie both implementations to one crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: i16,
+    /// 1 to 12.
+    pub month: u8,
+    pub day: u8,
+    /// 0 is Sunday, as the system's calendars count.
+    pub weekday: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+/// Which part of a [`LocalTime`] to write (F11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DateStyle {
+    /// The short date: `30/09/2026`, or `9/30/2026`.
+    Date,
+    /// Hours and minutes.
+    Time,
+    /// Both, the date first.
+    DateTime,
+    /// The day of the week, in full.
+    Weekday,
+}
+
 /// Where an application's icon can be found. Resolving it to pixels is the
 /// platform's job, because the mechanism differs entirely between
 /// `IShellItemImageFactory` and the XDG icon theme specification.
@@ -441,6 +471,19 @@ pub trait Platform: Send + Sync {
     /// clipboard has been put back, which is when the window has read the
     /// text or has been given up on. Call it on a thread of its own.
     fn paste(&self, window: FocusOwner, paste: &Paste) -> Result<()>;
+
+    /// A date or time written the way the user's regional settings write it,
+    /// or `locale`'s (`"fr-FR"`) when one is named (F11).
+    ///
+    /// The system's, not Lumen's: the system already knows every locale's
+    /// month names and orders, and "the way my computer writes dates" is the
+    /// system's to define. An unknown locale is an error.
+    fn format_date(
+        &self,
+        when: &LocalTime,
+        style: DateStyle,
+        locale: Option<&str>,
+    ) -> Result<String>;
 
     /// Start a long-lived extension process with its input and output piped
     /// (F4, step 3).
