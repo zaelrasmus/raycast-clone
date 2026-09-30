@@ -118,7 +118,7 @@ once Lumen was measured well inside them (7.36).
 | **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
-| **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **In progress.** Expansion is deferred. See F11 decisions |
+| **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
 
 ### F4 build order is not optional
 
@@ -1409,6 +1409,25 @@ What changed on the way, and what was learned:
   is the plain text.
 - **Toolbar buttons grow to their label.** Found on the first look: they
   were fixed squares, and *Link* spilled onto its neighbours.
+- **Placeholders are picked, not remembered.** Raycast's editor lists them
+  when `{` is typed; so does this one, and a `{ }` button at the toolbar's
+  far end opens the same list. What is typed after the `{` filters it, by
+  title, keyword or name; choosing one replaces the `{` and the filter with
+  the placeholder's syntax, the caret left inside `name=""` where there is
+  something to type. A space, a brace or moving the caret away closes it,
+  and what was typed stays text. While it is open the editor carries a
+  second key context whose bindings are declared after its own, so Up,
+  Down, Enter, Tab and Escape go to the list: GPUI prefers the later of two
+  bindings at the same depth, and that is what makes the list modal without
+  a key being compared by hand (I-14). The rows have no icons, unlike
+  Raycast's: the icon set is eight files (7.23).
+- **Measured.** With `scripts/measure-idle.ps1`, 60 s hidden, same machine:
+  before slice 1, 0.007 % CPU, 73.5 MB working set, 89.1 MB private, 31
+  threads, binary 17,357,312 bytes; after the picker, 0.007 %, 73.7 MB,
+  86.1 MB, 31 threads, binary 18,161,664 bytes (**+786 KB**). No thread is
+  added while hidden: a paste has a thread of its own for as long as the
+  target takes to read, and none is kept. The growth was not broken down;
+  it includes `jiff`'s time zones, now compiled in, and the editor.
 - **A paste is never logged with its text.** `Paste`'s `Debug` prints the
   length only, because the daemon logs an event that failed with `{:?}`, and
   a snippet can be a password.
