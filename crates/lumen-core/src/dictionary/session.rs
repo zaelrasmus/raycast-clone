@@ -20,6 +20,16 @@
 //! While the next word is looked up the previous one stays on screen without
 //! its actions, so `Enter` cannot copy a definition that is about to change.
 //!
+//! # Detect
+//!
+//! With no word language chosen, one request asks for every language in
+//! the table, and the view chooses: the language with the most senses --
+//! how much of a word it is there -- then, on a tie, a language the user
+//! has looked words up in, then English. The others stay one key away as
+//! *Show in ...*, and *From* still chooses one outright. Every language in
+//! the answer is kept apart among the answers, so showing another asks
+//! nothing.
+//!
 //! # Favourites and history
 //!
 //! What an empty search shows. A favourite keeps its whole entry and is put
@@ -52,8 +62,9 @@ pub enum Effect {
     Copy(String),
     /// Open this page in the browser and close the launcher.
     Open(String),
-    /// This word language was chosen; open with it next time.
-    Remember(&'static Language),
+    /// This word language was chosen, or detection (`None`); open with it
+    /// next time.
+    Remember(Option<&'static Language>),
     /// Open Translate on this word (F10).
     Translate(String),
     /// Put this in the search field, as if typed: a favourite or a recent
@@ -68,7 +79,8 @@ pub enum Effect {
 pub struct Request {
     pub generation: u64,
     pub word: String,
-    pub language: &'static Language,
+    /// `None` detects it.
+    pub language: Option<&'static Language>,
     pub explained_in: &'static str,
 }
 
@@ -87,18 +99,25 @@ enum State {
     Failed(Failure),
 }
 
+/// A word, the language asked for -- a code, or [`DETECT`] -- and the
+/// explanation language.
 type Key = (String, &'static str, &'static str);
 
 pub struct Session {
-    language: &'static Language,
+    /// `None` detects it.
+    language: Option<&'static Language>,
+    /// With detection, the other languages that have the word on screen, in
+    /// the order they were ranked.
+    also: Vec<&'static Language>,
     explained_in: &'static str,
     /// Who the definitions come from, said in every pane.
     attribution: &'static str,
     query: String,
     generation: u64,
     state: State,
-    /// Every answer this view has had, favourites included.
-    answers: HashMap<Key, Option<Entry>>,
+    /// Every answer this view has had, favourites included: none, one, or
+    /// with detection one per language.
+    answers: HashMap<Key, Vec<Entry>>,
     /// Favourites and history, as `dictionary.json` holds them.
     saved: store::State,
     /// Whether history is kept (`dictionary.history`).
@@ -123,6 +142,12 @@ const CLEAR_HISTORY: &str = "clear-history";
 /// The word language's scope, and the prefix of its options.
 const FROM: &str = "from";
 const LANGUAGE: &str = "lang-";
+/// *Detect*, as an option of *From* and in the answers' keys.
+const DETECT: &str = "detect";
+/// *Show in ...*, by code.
+const SHOW_IN: &str = "in-";
+/// How many other languages *Show in ...* offers.
+const MAX_ALSO: usize = 5;
 
 impl Session {
     /// A session looking words up in `language`, explained in
@@ -131,7 +156,7 @@ impl Session {
     /// With history off, what it held is dropped, and the next save writes
     /// that: turning history off clears it.
     pub fn new(
-        language: &'static Language,
+        language: Option<&'static Language>,
         explained_in: &'static str,
         attribution: &'static str,
         mut saved: store::State,
@@ -147,12 +172,13 @@ impl Session {
             {
                 answers.insert(
                     (entry.word.clone(), language.code, explained_in),
-                    Some(entry.clone()),
+                    vec![entry.clone()],
                 );
             }
         }
         Self {
             language,
+            also: Vec::new(),
             explained_in,
             attribution,
             query: String::new(),
@@ -193,7 +219,7 @@ impl Session {
     fn key(&self) -> Option<Key> {
         Some((
             self.word()?.to_string(),
-            self.language.code,
+            self.language.map_or(DETECT, |language| language.code),
             self.explained_in,
         ))
     }
@@ -224,27 +250,77 @@ impl Session {
     }
 
     /// A lookup came back.
-    pub fn answer(
-        &mut self,
-        generation: u64,
-        result: Result<Option<Entry>, Failure>,
-    ) -> Vec<Effect> {
+    pub fn answer(&mut self, generation: u64, result: Result<Vec<Entry>, Failure>) -> Vec<Effect> {
         if generation != self.generation {
             return Vec::new();
         }
-        self.state = match result {
-            Ok(entry) => {
+        match result {
+            Ok(entries) => {
+                if let Some((word, _, explained_in)) = self.key() {
+                    // Each language on its own too, so *Show in ...* and
+                    // choosing it in *From* ask nothing.
+                    if self.language.is_none() {
+                        for entry in &entries {
+                            if let Some(language) = languages::find(&entry.language) {
+                                self.answers.insert(
+                                    (word.clone(), language.code, explained_in),
+                                    vec![entry.clone()],
+                                );
+                            }
+                        }
+                    }
+                }
                 if let Some(key) = self.key() {
-                    self.answers.insert(key, entry.clone());
+                    self.answers.insert(key, entries.clone());
                 }
-                match entry {
-                    Some(entry) => State::Found(entry),
-                    None => State::NotFound,
-                }
+                self.resolve(entries);
             }
-            Err(failure) => State::Failed(failure),
-        };
+            Err(failure) => {
+                self.also.clear();
+                self.state = State::Failed(failure);
+            }
+        }
         vec![Effect::Render(self.view())]
+    }
+
+    /// Show an answer: the one entry asked for, or with detection the best
+    /// of them, the rest kept as *Show in ...*.
+    fn resolve(&mut self, entries: Vec<Entry>) {
+        let mut entries = entries;
+        if self.language.is_none() {
+            let preferred = self.preferred();
+            rank(&mut entries, &preferred);
+        }
+        self.also = entries
+            .iter()
+            .skip(1)
+            .filter_map(|entry| languages::find(&entry.language))
+            .collect();
+        if self.language.is_some() {
+            self.also.clear();
+        }
+        self.state = match entries.into_iter().next() {
+            Some(entry) => State::Found(entry),
+            None => State::NotFound,
+        };
+    }
+
+    /// The languages the user looks words up in, most recent first: a tie
+    /// in detection goes to one of these.
+    fn preferred(&self) -> Vec<String> {
+        let mut preferred: Vec<String> = Vec::new();
+        let saved = self
+            .saved
+            .history
+            .iter()
+            .map(|recent| &recent.language)
+            .chain(self.saved.favourites.iter().map(|entry| &entry.language));
+        for language in saved {
+            if !preferred.contains(language) {
+                preferred.push(language.clone());
+            }
+        }
+        preferred
     }
 
     /// A word language was chosen in *From*: look the same text up in it, at
@@ -254,8 +330,13 @@ impl Session {
         if scope != FROM {
             return Vec::new();
         }
-        let Some(language) = option.strip_prefix(LANGUAGE).and_then(languages::find) else {
-            return Vec::new();
+        let language = if option == DETECT {
+            None
+        } else {
+            match option.strip_prefix(LANGUAGE).and_then(languages::find) {
+                Some(language) => Some(language),
+                None => return Vec::new(),
+            }
         };
         if language == self.language {
             return Vec::new();
@@ -271,20 +352,27 @@ impl Session {
         effects
     }
 
-    /// *From*: every language the source covers well.
+    /// *From*: detection, then every language the source covers well.
     fn source_scope(&self) -> Scope {
+        let detect = ScopeOption {
+            id: DETECT.into(),
+            title: "Detect language".into(),
+            keywords: vec!["auto".into(), "any".into()],
+        };
         Scope {
             id: FROM.into(),
             title: "From".into(),
-            options: LANGUAGES
-                .iter()
-                .map(|language| ScopeOption {
+            options: std::iter::once(detect)
+                .chain(LANGUAGES.iter().map(|language| ScopeOption {
                     id: format!("{LANGUAGE}{}", language.code),
                     title: language.name.into(),
                     keywords: vec![language.code.into()],
-                })
+                }))
                 .collect(),
-            selected: format!("{LANGUAGE}{}", self.language.code),
+            selected: match self.language {
+                Some(language) => format!("{LANGUAGE}{}", language.code),
+                None => DETECT.into(),
+            },
         }
     }
 
@@ -302,11 +390,8 @@ impl Session {
             self.state = State::TooLong;
             return vec![Effect::Render(self.view())];
         };
-        if let Some(answer) = self.answers.get(&key) {
-            self.state = match answer.clone() {
-                Some(entry) => State::Found(entry),
-                None => State::NotFound,
-            };
+        if let Some(entries) = self.answers.get(&key).cloned() {
+            self.resolve(entries);
             return vec![Effect::Render(self.view())];
         }
 
@@ -343,6 +428,12 @@ impl Session {
     fn act(&mut self, item: Option<&str>, action: &str) -> Vec<Effect> {
         if let Some(effects) = self.act_on_saved(item, action) {
             return effects;
+        }
+        // Another language the word is in: shown from what the view has,
+        // and not remembered -- the next opening still detects.
+        if let Some(language) = action.strip_prefix(SHOW_IN).and_then(languages::find) {
+            self.language = Some(language);
+            return self.restart(true);
         }
         let State::Found(entry) = &self.state else {
             return match action {
@@ -425,10 +516,10 @@ impl Session {
     fn show(&mut self, word: &str, language: &str) -> Vec<Effect> {
         let mut effects = Vec::new();
         if let Some(language) = languages::find(language)
-            && language != self.language
+            && Some(language) != self.language
         {
-            self.language = language;
-            effects.push(Effect::Remember(language));
+            self.language = Some(language);
+            effects.push(Effect::Remember(Some(language)));
         }
         effects.push(Effect::Type(word.to_string()));
         effects
@@ -475,10 +566,16 @@ impl Session {
             (State::NotFound, _) => (
                 Some(empty(
                     format!("No definition for {quoted}"),
-                    Some(format!(
-                        "Wiktionary has no {} entry for it. Check the spelling, or the language.",
-                        self.language.name
-                    )),
+                    Some(match self.language {
+                        Some(language) => format!(
+                            "Wiktionary has no {} entry for it. Check the spelling, or the language.",
+                            language.name
+                        ),
+                        None => format!(
+                            "Wiktionary has no entry for it in any of the {} languages. Check the spelling.",
+                            LANGUAGES.len()
+                        ),
+                    }),
                 )),
                 Vec::new(),
             ),
@@ -490,7 +587,7 @@ impl Session {
         };
 
         View::List(List {
-            placeholder: Some(format!("Look up a word in {}", self.language.name)),
+            placeholder: Some(format!("Look up a word in {}", self.language_name())),
             filtering: Filtering::Extension,
             scopes: vec![self.source_scope()],
             empty,
@@ -566,6 +663,12 @@ impl Session {
         sections
     }
 
+    /// The word language chosen, in words.
+    fn language_name(&self) -> &'static str {
+        self.language
+            .map_or("any language", |language| language.name)
+    }
+
     fn attribution_short(&self) -> &'static str {
         "English Wiktionary"
     }
@@ -577,7 +680,13 @@ impl Session {
             .iter()
             .enumerate()
             .map(|(p, part)| Section {
-                title: Some(capitalised(&part.name)),
+                // Detected, the language leads, so what was chosen is said.
+                title: Some(match (self.language, languages::find(&entry.language)) {
+                    (None, Some(language)) => {
+                        format!("{} \u{00b7} {}", language.name, capitalised(&part.name))
+                    }
+                    _ => capitalised(&part.name),
+                }),
                 subtitle: part.pronunciations.first().cloned(),
                 items: part
                     .senses
@@ -606,6 +715,12 @@ impl Session {
                                     "Add to Favourites"
                                 },
                             ));
+                            actions.extend(self.also.iter().take(MAX_ALSO).map(|language| {
+                                action(
+                                    &format!("{SHOW_IN}{}", language.code),
+                                    &format!("Show in {}", language.name),
+                                )
+                            }));
                             actions
                         } else {
                             Vec::new()
@@ -675,21 +790,30 @@ impl Session {
             markdown.push('\n');
         }
 
-        ItemDetail {
-            markdown,
-            metadata: vec![
-                MetadataRow {
-                    label: "Language".into(),
-                    value: self.language.name.into(),
-                    tone: Tone::Neutral,
-                },
-                MetadataRow {
-                    label: "Source".into(),
-                    value: self.attribution.into(),
-                    tone: Tone::Neutral,
-                },
-            ],
+        let language = languages::find(&entry.language)
+            .map_or_else(|| entry.language.clone(), |language| language.name.into());
+        let mut metadata = vec![MetadataRow {
+            label: "Language".into(),
+            value: match self.language {
+                None => format!("{language} (detected)"),
+                Some(_) => language,
+            },
+            tone: Tone::Neutral,
+        }];
+        if !self.also.is_empty() {
+            let names: Vec<&str> = self.also.iter().map(|language| language.name).collect();
+            metadata.push(MetadataRow {
+                label: "Also in".into(),
+                value: names.join(", "),
+                tone: Tone::Neutral,
+            });
         }
+        metadata.push(MetadataRow {
+            label: "Source".into(),
+            value: self.attribution.into(),
+            tone: Tone::Neutral,
+        });
+        ItemDetail { markdown, metadata }
     }
 
     fn failure(&self, failure: &Failure) -> Section {
@@ -715,7 +839,10 @@ impl Session {
                 subtitle: Some(subtitle),
                 icon: None,
                 accessories: vec![Accessory::Tag {
-                    text: self.language.name.into(),
+                    text: self
+                        .language
+                        .map_or("Detect", |language| language.name)
+                        .into(),
                     tone,
                 }],
                 keywords: Vec::new(),
@@ -732,6 +859,21 @@ fn action(id: &str, title: &str) -> Action {
         title: title.into(),
         shortcut: None,
     }
+}
+
+/// Order a detection's entries best first: the most senses, then a
+/// language in `preferred` (earlier is better), then English, then the
+/// source's order -- the sort is stable.
+fn rank(entries: &mut [Entry], preferred: &[String]) {
+    entries.sort_by_key(|entry| {
+        let senses = entry.senses().count();
+        let preference = preferred
+            .iter()
+            .position(|language| *language == entry.language)
+            .unwrap_or(usize::MAX);
+        let english = entry.language != "en";
+        (std::cmp::Reverse(senses), preference, english)
+    });
 }
 
 /// `"recent-2"` with prefix `"recent-"` is 2.
@@ -772,7 +914,7 @@ mod tests {
 
     fn session() -> Session {
         Session::new(
-            languages::english(),
+            Some(languages::english()),
             "en",
             "Wiktionary",
             store::State::default(),
@@ -821,7 +963,7 @@ mod tests {
         let generation = *generation;
         let requests = sends(&session.settle(generation));
         assert_eq!(requests.len(), 1);
-        list(&session.answer(generation, Ok(Some(display()))))
+        list(&session.answer(generation, Ok(vec![display()])))
     }
 
     #[test]
@@ -839,7 +981,7 @@ mod tests {
             [Request {
                 generation: *generation,
                 word: "display".into(),
-                language: languages::english(),
+                language: Some(languages::english()),
                 explained_in: "en",
             }]
         );
@@ -852,7 +994,7 @@ mod tests {
         let old = session.generation;
         typed(&mut session, "display");
         assert!(session.settle(old).is_empty());
-        assert!(session.answer(old, Ok(None)).is_empty());
+        assert!(session.answer(old, Ok(Vec::new())).is_empty());
     }
 
     /// A section per part of speech, a row per sense, the pane beside them.
@@ -953,7 +1095,7 @@ mod tests {
         let mut session = session();
         typed(&mut session, "qwzzx");
         let generation = session.generation;
-        let list = list(&session.answer(generation, Ok(None)));
+        let list = list(&session.answer(generation, Ok(Vec::new())));
         assert!(list.is_empty());
         assert!(!list.showing_detail);
         let empty = list.empty.unwrap();
@@ -1007,21 +1149,21 @@ mod tests {
         let mut session = session();
         typed(&mut session, "significado");
         let generation = session.generation;
-        session.answer(generation, Ok(None));
+        session.answer(generation, Ok(Vec::new()));
 
         let effects = chose(&mut session, "lang-es");
         let spanish = languages::find("es").unwrap();
-        assert!(effects.contains(&Effect::Remember(spanish)));
+        assert!(effects.contains(&Effect::Remember(Some(spanish))));
         let requests = sends(&effects);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].word, "significado");
-        assert_eq!(requests[0].language, spanish);
+        assert_eq!(requests[0].language, Some(spanish));
         assert_eq!(requests[0].explained_in, "en");
 
         let list = list(&effects);
         let from = &list.scopes[0];
         assert_eq!(from.current().unwrap().title, "Spanish");
-        assert_eq!(from.options.len(), LANGUAGES.len());
+        assert_eq!(from.options.len(), LANGUAGES.len() + 1);
         assert_eq!(
             list.placeholder.as_deref(),
             Some("Look up a word in Spanish")
@@ -1103,7 +1245,7 @@ mod tests {
     fn with_history_off_nothing_is_kept_and_what_was_is_dropped() {
         let mut kept = store::State::default();
         kept.record("old", "en");
-        let mut session = Session::new(languages::english(), "en", "Wiktionary", kept, false);
+        let mut session = Session::new(Some(languages::english()), "en", "Wiktionary", kept, false);
         assert!(session.saved.history.is_empty());
         found(&mut session, "display");
         assert!(session.closed().is_empty());
@@ -1130,7 +1272,7 @@ mod tests {
         );
 
         // A new view, from the file, offline.
-        let mut session = Session::new(languages::english(), "en", "Wiktionary", state, true);
+        let mut session = Session::new(Some(languages::english()), "en", "Wiktionary", state, true);
         let empty = list(&[Effect::Render(session.view())]);
         assert_eq!(empty.sections[0].title.as_deref(), Some("Favourites"));
         let favourite = empty.item(0).unwrap();
@@ -1154,7 +1296,7 @@ mod tests {
         let mut kept = store::State::default();
         kept.record("mostrar", "es");
         kept.record("display", "en");
-        let mut session = Session::new(languages::english(), "en", "Wiktionary", kept, true);
+        let mut session = Session::new(Some(languages::english()), "en", "Wiktionary", kept, true);
         let list = list(&typed(&mut session, " "));
         let recent = &list.sections[0];
         assert_eq!(recent.title.as_deref(), Some("Recent"));
@@ -1164,11 +1306,14 @@ mod tests {
         let spanish = languages::find("es").unwrap();
         assert_eq!(
             effects,
-            [Effect::Remember(spanish), Effect::Type("mostrar".into())]
+            [
+                Effect::Remember(Some(spanish)),
+                Effect::Type("mostrar".into())
+            ]
         );
         assert_eq!(sends(&typed(&mut session, "mostrar")).len(), 0);
         let requests = sends(&session.settle(session.generation));
-        assert_eq!(requests[0].language, spanish);
+        assert_eq!(requests[0].language, Some(spanish));
     }
 
     #[test]
@@ -1176,13 +1321,161 @@ mod tests {
         let mut kept = store::State::default();
         kept.record("a", "en");
         kept.record("b", "en");
-        let mut session = Session::new(languages::english(), "en", "Wiktionary", kept, true);
+        let mut session = Session::new(Some(languages::english()), "en", "Wiktionary", kept, true);
 
         let effects = act(&mut session, "recent-0", "forget");
         assert_eq!(saved(&effects).history.len(), 1);
         let effects = act(&mut session, "recent-0", "clear-history");
         assert!(saved(&effects).history.is_empty());
         assert!(list_after(effects).is_empty());
+    }
+
+    /// An entry with `senses` senses of one part of speech.
+    fn entry_in(language: &str, senses: usize) -> Entry {
+        Entry {
+            word: "hola".into(),
+            language: language.into(),
+            explained_in: "en".into(),
+            url: String::new(),
+            parts: vec![Part {
+                name: "interjection".into(),
+                senses: (0..senses)
+                    .map(|index| Sense {
+                        definition: format!("{language} sense {index}"),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn detecting(saved: store::State) -> Session {
+        Session::new(None, "en", "Wiktionary", saved, true)
+    }
+
+    /// Detected, typed and answered.
+    fn detected(session: &mut Session, entries: Vec<Entry>) -> List {
+        typed(session, "hola");
+        let generation = session.generation;
+        let requests = sends(&session.settle(generation));
+        assert_eq!(requests[0].language, None);
+        list(&session.answer(generation, Ok(entries)))
+    }
+
+    #[test]
+    fn detection_is_an_option_and_asks_every_language() {
+        let session = detecting(store::State::default());
+        let list = list(&[Effect::Render(session.view())]);
+        let from = &list.scopes[0];
+        assert_eq!(from.current().unwrap().title, "Detect language");
+        assert_eq!(from.options[0].id, "detect");
+        assert_eq!(
+            list.placeholder.as_deref(),
+            Some("Look up a word in any language")
+        );
+    }
+
+    /// The language with the most senses wins, and says so.
+    #[test]
+    fn detection_shows_the_language_with_the_most_senses() {
+        let mut session = detecting(store::State::default());
+        let list = detected(
+            &mut session,
+            vec![entry_in("en", 1), entry_in("es", 3), entry_in("pt", 2)],
+        );
+        assert_eq!(
+            list.sections[0].title.as_deref(),
+            Some("Spanish \u{00b7} Interjection")
+        );
+        let item = list.item(0).unwrap();
+        let detail = item.detail.as_ref().unwrap();
+        let value = |label: &str| {
+            detail
+                .metadata
+                .iter()
+                .find(|row| row.label == label)
+                .map(|row| row.value.clone())
+        };
+        assert_eq!(value("Language").as_deref(), Some("Spanish (detected)"));
+        assert_eq!(value("Also in").as_deref(), Some("Portuguese, English"));
+        let shows: Vec<&str> = item
+            .actions
+            .iter()
+            .filter(|action| action.id.starts_with("in-"))
+            .map(|action| action.title.as_str())
+            .collect();
+        assert_eq!(shows, ["Show in Portuguese", "Show in English"]);
+    }
+
+    /// A tie goes to a language the user uses, then to English.
+    #[test]
+    fn a_tie_goes_to_the_users_languages_then_english() {
+        let tied = || vec![entry_in("ca", 1), entry_in("en", 1), entry_in("es", 1)];
+
+        let mut session = detecting(store::State::default());
+        let list = detected(&mut session, tied());
+        assert!(
+            list.sections[0]
+                .title
+                .as_deref()
+                .unwrap()
+                .starts_with("English")
+        );
+
+        let mut saved = store::State::default();
+        saved.record("mostrar", "es");
+        let mut session = detecting(saved);
+        let list = detected(&mut session, tied());
+        assert!(
+            list.sections[0]
+                .title
+                .as_deref()
+                .unwrap()
+                .starts_with("Spanish")
+        );
+    }
+
+    /// Another language is shown from what the view has, and the next
+    /// opening still detects.
+    #[test]
+    fn showing_another_language_asks_nothing_and_is_not_remembered() {
+        let mut session = detecting(store::State::default());
+        detected(&mut session, vec![entry_in("es", 3), entry_in("pt", 2)]);
+
+        let effects = act(&mut session, "sense-0-0", "in-pt");
+        assert!(sends(&effects).is_empty());
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Remember(_))));
+        let list = list(&effects);
+        assert_eq!(list.item(0).unwrap().title, "pt sense 0");
+        assert_eq!(list.scopes[0].current().unwrap().title, "Portuguese");
+        // One language chosen: nothing else is offered.
+        assert!(
+            list.item(0)
+                .unwrap()
+                .actions
+                .iter()
+                .all(|a| !a.id.starts_with("in-"))
+        );
+
+        // Back to detection, from what the view already has.
+        let effects = chose(&mut session, "detect");
+        assert!(effects.contains(&Effect::Remember(None)));
+        assert!(sends(&effects).is_empty());
+        assert_eq!(list_after(effects).item(0).unwrap().title, "es sense 0");
+    }
+
+    #[test]
+    fn a_word_in_no_language_says_so() {
+        let mut session = detecting(store::State::default());
+        let list = detected(&mut session, Vec::new());
+        assert!(
+            list.empty
+                .unwrap()
+                .description
+                .unwrap()
+                .contains("any of the 58 languages")
+        );
     }
 
     /// A definition that opens with its labels does not repeat them.
@@ -1192,7 +1485,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let session = Session::new(
-            languages::find("es").unwrap(),
+            languages::find("es"),
             "en",
             "Wiktionary",
             store::State::default(),

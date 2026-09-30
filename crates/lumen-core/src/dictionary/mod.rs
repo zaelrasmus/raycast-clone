@@ -130,10 +130,13 @@ impl Entry {
 /// blocking client already in the binary (F6, step 3).
 pub trait Dictionary: Send + Sync {
     /// `word` in the language `language`, explained in `explained_in`, both
-    /// codes. `Ok(None)` when the source has no entry for it; a source that
-    /// cannot write in `explained_in` refuses with an error rather than
-    /// answering in another language.
-    fn define(&self, word: &str, language: &str, explained_in: &str) -> Result<Option<Entry>>;
+    /// codes: at most one entry, none when the source does not have it.
+    ///
+    /// With no language, *Detect*: an entry for every language in the table
+    /// that has the word, in the source's order; choosing among them is the
+    /// view's. A source that cannot write in `explained_in` refuses with an
+    /// error rather than answering in another language.
+    fn define(&self, word: &str, language: Option<&str>, explained_in: &str) -> Result<Vec<Entry>>;
 }
 
 /// Who to credit for the definitions, said in every pane: the source's

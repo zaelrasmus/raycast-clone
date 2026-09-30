@@ -117,7 +117,7 @@ once Lumen was measured well inside them (7.36).
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
 | **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
-| **F10** | Dictionary: a *Define* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Define* on English Wiktionary for 58 word languages, explained in English; Translate's alternatives; each offers the other; favourites and history. *Detect* for a word is still open. See F10 decisions |
+| **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
 
 ### F4 build order is not optional
 
@@ -1040,7 +1040,7 @@ The decisions:
   (`en.wiktionary.org/api/rest_v1/page/definition/{word}`) answers every
   language for a word in one request, but without pronunciations or
   forms. Until this is decided, *From* starts on English and has no
-  *Detect*.
+  *Detect*. *(Decided after slice 6: see below.)*
 - **The slices,** one acceptance criterion each:
   1. The vocabulary gains the detail pane, and the renderer draws it;
      every existing view looks and behaves as before.
@@ -1102,8 +1102,24 @@ What changed on the way, and what was learned:
 - **Favourites are among the answers from the start,** keyed by word, word
   language and explanation language, so choosing one asks nothing and
   works offline.
-- **Still open: *Detect*.** *From* starts on the language used last, or
-  English, and has no detection.
+- **Define became *Dictionary*.** Used, "Define" read as an odd verb for a
+  command; the root row, the placeholder and the cross-links say
+  *Dictionary* and *Look up*, and "define" stays a keyword. Code followed:
+  `ViewSource::Dictionary`, `providers::dictionary`.
+- ***Detect* is one request to the same source.** The service answers
+  `entries/all/{word}` with every language that has the word -- found by
+  trying it, not in its documentation -- so detecting needs no second
+  service and F7's rule holds. Only languages in the table count. The
+  hard part is choosing, because a word is rarely in one language:
+  `significado` is in 3, `gift` in 9, `hola` in 18, `no` in 90. The view
+  picks the language with the **most senses** (`display` is English with
+  11, `significado` Spanish with 6); a **tie** goes to a language in the
+  user's history or favourites, then to English. The choice is said -- the
+  section title leads with the language, the pane says *(detected)* and
+  *Also in* -- and the others are *Show in ...* in the action panel, from
+  what the view already has. Choosing a language in *From* still sets it
+  outright. *Detect* is where the view starts, and is remembered like any
+  other choice; *Show in ...* is not, so the next opening still detects.
 - **Measured.** With `scripts/measure-idle.ps1`, 60 s hidden, same machine:
   before slice 1, 0.002 % CPU, 72.9 MB working set, 87.2 MB private, 31
   threads, binary 17,104,384 bytes; after slice 6, 0.000 %, 73.8 MB,

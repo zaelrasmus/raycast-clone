@@ -12,13 +12,17 @@
 //! - **Lookups are case-sensitive.** `Display` has no entry; `display` does,
 //!   and a German noun is only found with its capital. So the word is asked
 //!   for as typed, and in lower case only when that finds nothing.
-//! - **A word the service does not have is not an error.** It is a `200`
-//!   with no entries, and is reported as `None`.
+//! - **A word the source does not have is not an error.** It is a `200`
+//!   with no entries, and is reported as no entry.
+//! - **`all` in place of a language answers every language at once** --
+//!   `significado` is Spanish, Galician and Portuguese -- which is what
+//!   *Detect* asks for: one request, to the source the user already uses,
+//!   rather than a detector elsewhere (F7's no-fallback rule).
 
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
-use super::{Dictionary, Entry, Form, Part, Sense};
+use super::{Dictionary, Entry, Form, Part, Sense, languages};
 
 const ENDPOINT: &str = "https://freedictionaryapi.com/api/v1/entries";
 
@@ -41,7 +45,9 @@ impl FreeDictionary {
         Self { client }
     }
 
-    fn fetch(&self, word: &str, language: &str) -> Result<Option<Entry>> {
+    /// Every entry the source has for `word` in `language`, or in every
+    /// language for `all`.
+    fn fetch(&self, word: &str, language: &str) -> Result<Vec<Entry>> {
         let url = url(word, language)?;
         // Without the URL: it carries the word, and errors reach the log.
         let response = self
@@ -57,7 +63,7 @@ impl FreeDictionary {
             );
         }
         if status == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         if !status.is_success() {
             bail!("FreeDictionaryAPI answered {status}");
@@ -66,26 +72,38 @@ impl FreeDictionary {
             .text()
             .map_err(reqwest::Error::without_url)
             .context("reading FreeDictionaryAPI's answer")?;
-        parse(&body, language)
+        parse_all(&body, language)
+    }
+
+    /// `fetch`, keeping the entries asked for: the one language, or every
+    /// language in the table.
+    fn fetch_kept(&self, word: &str, language: Option<&str>) -> Result<Vec<Entry>> {
+        let mut entries = self.fetch(word, language.unwrap_or(ALL))?;
+        entries.retain(|entry| match language {
+            Some(language) => entry.language == language,
+            None => languages::find(&entry.language).is_some(),
+        });
+        Ok(entries)
     }
 }
 
+/// The path segment that asks for every language.
+const ALL: &str = "all";
+
 impl Dictionary for FreeDictionary {
-    fn define(&self, word: &str, language: &str, explained_in: &str) -> Result<Option<Entry>> {
+    fn define(&self, word: &str, language: Option<&str>, explained_in: &str) -> Result<Vec<Entry>> {
         // English Wiktionary writes in English and nothing else. Answering in
         // English when another language was asked for would be a silent
         // fallback, which F7 rules out.
         if explained_in != "en" {
             bail!("FreeDictionaryAPI explains words in English only");
         }
-        if let Some(entry) = self.fetch(word, language)? {
-            return Ok(Some(entry));
-        }
+        let entries = self.fetch_kept(word, language)?;
         let lower = word.to_lowercase();
-        if lower != word {
-            return self.fetch(&lower, language);
+        if entries.is_empty() && lower != word {
+            return self.fetch_kept(&lower, language);
         }
-        Ok(None)
+        Ok(entries)
     }
 }
 
@@ -133,6 +151,8 @@ struct ApiEntry {
 #[derive(Deserialize)]
 struct ApiLanguage {
     #[serde(default)]
+    code: String,
+    #[serde(default)]
     name: String,
 }
 
@@ -170,10 +190,26 @@ impl From<ApiSense> for Sense {
     }
 }
 
-/// Read an answer. Entries of the same part of speech -- Wiktionary splits
-/// them by etymology, so `run` has two "verb" entries -- become one part,
-/// in the order the first appeared.
+/// Read an answer for one language: its entry, if it has one.
 pub fn parse(body: &str, language: &str) -> Result<Option<Entry>> {
+    Ok(parse_all(body, language)?
+        .into_iter()
+        .find(|entry| entry.language == language))
+}
+
+/// One language's parts as they are read, before they become an [`Entry`].
+struct Reading {
+    language: String,
+    name: String,
+    parts: Vec<Part>,
+}
+
+/// Read an answer: an entry per language, in the order the source lists
+/// them. Entries of the same part of speech -- Wiktionary splits them by
+/// etymology, so `run` has two "verb" entries -- become one part, in the
+/// order the first appeared. An entry that does not name its language is
+/// `asked`'s, the language in the request.
+pub fn parse_all(body: &str, asked: &str) -> Result<Vec<Entry>> {
     // An object, checked first: serde would read a struct from an array too,
     // and a broken answer read as "no entry" tells the user the word does
     // not exist.
@@ -185,12 +221,25 @@ pub fn parse(body: &str, language: &str) -> Result<Option<Entry>> {
     let answer: Answer = serde_json::from_value(value)
         .context("FreeDictionaryAPI's answer is not what it should be")?;
 
-    let mut parts: Vec<Part> = Vec::new();
-    let mut language_name = None;
+    let mut readings: Vec<Reading> = Vec::new();
     for entry in answer.entries {
-        if language_name.is_none() {
-            language_name = entry.language.map(|language| language.name);
-        }
+        let (code, language_name) = match entry.language {
+            Some(language) if !language.code.is_empty() => (language.code, language.name),
+            Some(language) => (asked.to_string(), language.name),
+            None => (asked.to_string(), String::new()),
+        };
+        let reading = match readings.iter().position(|reading| reading.language == code) {
+            Some(index) => &mut readings[index],
+            None => {
+                readings.push(Reading {
+                    language: code,
+                    name: language_name,
+                    parts: Vec::new(),
+                });
+                readings.last_mut().expect("just pushed")
+            }
+        };
+        let parts = &mut reading.parts;
         let name = entry.part_of_speech.trim().to_lowercase();
         let index = match parts.iter().position(|part| part.name == name) {
             Some(index) => index,
@@ -234,25 +283,30 @@ pub fn parse(body: &str, language: &str) -> Result<Option<Entry>> {
                 .filter(|sense| !sense.definition.is_empty()),
         );
     }
-    parts.retain(|part| !part.senses.is_empty());
-    if parts.is_empty() {
-        return Ok(None);
-    }
-
     // The page, at the word language's section: Wiktionary puts every
     // language on one page, English first.
-    let mut url = answer.source.map(|source| source.url).unwrap_or_default();
-    if let Some(name) = language_name.filter(|_| !url.is_empty()) {
-        url = format!("{url}#{}", name.replace(' ', "_"));
-    }
-
-    Ok(Some(Entry {
-        word: answer.word,
-        language: language.to_string(),
-        explained_in: "en".into(),
-        url,
-        parts,
-    }))
+    let page = answer.source.map(|source| source.url).unwrap_or_default();
+    Ok(readings
+        .into_iter()
+        .filter_map(|mut reading| {
+            reading.parts.retain(|part| !part.senses.is_empty());
+            if reading.parts.is_empty() {
+                return None;
+            }
+            let url = if page.is_empty() || reading.name.is_empty() {
+                page.clone()
+            } else {
+                format!("{page}#{}", reading.name.replace(' ', "_"))
+            };
+            Some(Entry {
+                word: answer.word.clone(),
+                language: reading.language,
+                explained_in: "en".into(),
+                url,
+                parts: reading.parts,
+            })
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -324,6 +378,32 @@ mod tests {
         assert_eq!(entry.parts[0].senses[1].definition, "To melt.");
     }
 
+    /// `all`: one entry per language, in the source's order.
+    #[test]
+    fn every_language_is_its_own_entry() {
+        let body = r#"{ "word": "significado", "entries": [
+            { "language": { "code": "es", "name": "Spanish" }, "partOfSpeech": "adjective",
+              "senses": [{ "definition": "significant" }] },
+            { "language": { "code": "gl", "name": "Galician" }, "partOfSpeech": "noun",
+              "senses": [{ "definition": "meaning" }] },
+            { "language": { "code": "es", "name": "Spanish" }, "partOfSpeech": "noun",
+              "senses": [{ "definition": "meaning" }] }
+        ], "source": { "url": "https://en.wiktionary.org/wiki/significado" } }"#;
+        let entries = parse_all(body, "all").unwrap();
+        let languages: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.language.as_str())
+            .collect();
+        assert_eq!(languages, ["es", "gl"]);
+        assert_eq!(entries[0].parts.len(), 2);
+        assert_eq!(
+            entries[1].url,
+            "https://en.wiktionary.org/wiki/significado#Galician"
+        );
+        assert_eq!(parse(body, "gl").unwrap().unwrap().parts[0].name, "noun");
+        assert_eq!(parse(body, "fr").unwrap(), None);
+    }
+
     #[test]
     fn a_word_the_source_does_not_have_is_none() {
         let body =
@@ -349,24 +429,36 @@ mod tests {
     #[ignore = "needs the network"]
     fn the_real_service_still_answers_in_this_shape() {
         let dictionary = crate::dictionary::dictionary().unwrap();
-        let entry = dictionary.define("Display", "en", "en").unwrap().unwrap();
-        assert_eq!(entry.word, "display");
-        let entry = dictionary
-            .define("significado", "es", "en")
-            .unwrap()
-            .unwrap();
+        let entries = dictionary.define("Display", Some("en"), "en").unwrap();
+        assert_eq!(entries[0].word, "display");
+        let entries = dictionary.define("significado", Some("es"), "en").unwrap();
         assert!(
-            entry
+            entries[0]
                 .senses()
                 .any(|(_, sense)| sense.definition.contains("significan"))
         );
-        assert!(dictionary.define("qwzzxvbq", "en", "en").unwrap().is_none());
+        assert!(
+            dictionary
+                .define("qwzzxvbq", Some("en"), "en")
+                .unwrap()
+                .is_empty()
+        );
+
+        // Every language in the table, and nothing outside it.
+        let entries = dictionary.define("significado", None, "en").unwrap();
+        let found: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.language.as_str())
+            .collect();
+        assert!(found.contains(&"es") && found.contains(&"pt"));
+        let entries = dictionary.define("Pferd", None, "en").unwrap();
+        assert!(entries.iter().all(|entry| entry.language != "bar"));
     }
 
     #[test]
     fn another_explanation_language_is_refused_not_answered_in_english() {
         let dictionary = crate::dictionary::dictionary().unwrap();
-        let error = dictionary.define("display", "en", "es").unwrap_err();
+        let error = dictionary.define("display", Some("en"), "es").unwrap_err();
         assert!(error.to_string().contains("English only"));
     }
 }

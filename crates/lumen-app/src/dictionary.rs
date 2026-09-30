@@ -39,7 +39,7 @@ enum Input {
     Settled(u64),
     Answered {
         generation: u64,
-        result: Result<Option<Entry>, Failure>,
+        result: Result<Vec<Entry>, Failure>,
     },
     /// Nothing has been sent since request number `.0`.
     Quiet(u64),
@@ -47,7 +47,8 @@ enum Input {
 
 type Client = Arc<Mutex<Option<Arc<dyn Dictionary>>>>;
 
-/// The word language chosen last, for the next time the view opens.
+/// The word language chosen last, for the next time the view opens; `None`
+/// is *Detect*, which is where it starts.
 ///
 /// In memory, as Translate keeps its languages: it lasts as long as the
 /// daemon, which is as long as anybody remembers having chosen it.
@@ -76,16 +77,18 @@ pub fn run(
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
 ) {
+    // From Translate, its source language, or *Detect* when it had none;
+    // otherwise whatever was chosen last.
     let (word, language) = match start {
         Some((word, language)) => (Some(word), language),
-        None => (None, None),
+        None => (None, *LAST.lock()),
     };
     // Read on the UI thread: a few kilobytes, once per opening, where a
     // view that showed no favourites and then some would move under the
     // user (I-10).
     let saved = store::State::load(&setup.file);
     let mut session = Session::new(
-        language.or(*LAST.lock()).unwrap_or_else(languages::english),
+        language,
         dictionary::explanation_language(),
         dictionary::attribution(),
         saved,
@@ -177,7 +180,7 @@ pub fn run(
                             .update(cx, |launcher, _window, cx| launcher.close(cx))
                             .ok();
                     }
-                    Effect::Remember(language) => *LAST.lock() = Some(language),
+                    Effect::Remember(language) => *LAST.lock() = language,
                     // Opening Translate drops this view's sink, which ends
                     // this loop on its next turn.
                     Effect::Translate(word) => {
@@ -266,7 +269,11 @@ fn send(request: Request, client: Client, tx: mpsc::UnboundedSender<Input>) {
         .spawn(move || {
             let result = dictionary_client(&client)
                 .and_then(|dictionary| {
-                    dictionary.define(&request.word, request.language.code, request.explained_in)
+                    dictionary.define(
+                        &request.word,
+                        request.language.map(|language| language.code),
+                        request.explained_in,
+                    )
                 })
                 .map_err(|error| {
                     // The error, never the word: what the user typed stays
