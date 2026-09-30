@@ -488,6 +488,18 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("ctrl-k", text_area::InsertLink, area),
         KeyBinding::new("ctrl-\\", text_area::ClearFormatting, area),
     ]);
+
+    // The placeholder list, while it is open. Bound after the editor's keys
+    // on purpose: GPUI prefers the later of two bindings at the same depth,
+    // and these share the editor's element.
+    let picker = Some(text_area::PICKER_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("up", text_area::PreviousPlaceholder, picker),
+        KeyBinding::new("down", text_area::NextPlaceholder, picker),
+        KeyBinding::new("enter", text_area::InsertPlaceholder, picker),
+        KeyBinding::new("tab", text_area::InsertPlaceholder, picker),
+        KeyBinding::new("escape", text_area::ClosePlaceholders, picker),
+    ]);
 }
 
 /// The shortcut sheet shown while Lumen itself is in front.

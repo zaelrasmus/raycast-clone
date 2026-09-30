@@ -18,19 +18,31 @@
 //! field's key context (I-14). What is its own is layout: the text wraps, so
 //! Up, Down, Home and End are about *visual* lines, which only the shaped
 //! text knows -- that is [`Drawn`].
+//!
+//! # The placeholder picker
+//!
+//! Typing `{`, or the toolbar's `{ }`, opens a list of placeholders at the
+//! caret ([`lumen_core::snippets::placeholders`]); what is typed after the
+//! `{` filters it, and choosing one replaces the `{` and the filter with its
+//! syntax. While it is open the field carries a second key context,
+//! [`PICKER_CONTEXT`], whose bindings are declared after this field's and so
+//! win the same keys: Up, Down, Enter, Tab and Escape go to the list and
+//! nowhere else (I-14).
 
 use std::ops::Range;
 
 use gpui::prelude::*;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UTF16Selection, UnderlineStyle,
-    Window, WrappedLine, actions, div, fill, point, px, relative, size,
+    EntityInputHandler, FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, KeyContext,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    ScrollHandle, SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UTF16Selection,
+    UnderlineStyle, Window, WrappedLine, actions, anchored, deferred, div, fill, point, px,
+    relative, size,
 };
 use lumen_core::layout;
 use lumen_core::snippets::markup::{self, Wrap};
+use lumen_core::snippets::placeholders::{self, Choice};
 use lumen_core::theme::Colors;
 
 use crate::edit::EditBuffer;
@@ -80,11 +92,24 @@ actions!(
         InsertLink,
         /// Take the Markdown markers out of the selection.
         ClearFormatting,
+        /// Open the list of placeholders at the caret.
+        ShowPlaceholders,
+        /// Highlight the placeholder above.
+        PreviousPlaceholder,
+        /// Highlight the placeholder below.
+        NextPlaceholder,
+        /// Insert the highlighted placeholder.
+        InsertPlaceholder,
+        /// Close the list, leaving what was typed.
+        ClosePlaceholders,
     ]
 );
 
 /// The key context the bindings apply in.
 pub const CONTEXT: &str = "TextArea";
+
+/// Also the field's context while the placeholder list is open.
+pub const PICKER_CONTEXT: &str = "PlaceholderPicker";
 
 /// How many edits undo remembers.
 const UNDO_DEPTH: usize = 200;
@@ -108,6 +133,16 @@ pub struct TextArea {
     /// How far the text is scrolled down.
     scroll: Pixels,
     dragging: bool,
+    picker: Option<Picker>,
+}
+
+/// The placeholder list, open.
+struct Picker {
+    /// Where its `{` is.
+    start: usize,
+    /// An index into what matches.
+    highlighted: usize,
+    scroll: ScrollHandle,
 }
 
 /// What the field tells its owner.
@@ -147,6 +182,7 @@ impl TextArea {
             drawn: None,
             scroll: px(0.0),
             dragging: false,
+            picker: None,
         }
     }
 
@@ -203,6 +239,7 @@ impl TextArea {
         let before = Snapshot::of(&self.buffer);
         apply(&mut self.buffer);
         self.goal_x = None;
+        self.sync_picker();
         if self.buffer.text() != before.text {
             self.history.record(before, kind);
             self.restyle();
@@ -215,6 +252,8 @@ impl TextArea {
     fn navigate(&mut self, cx: &mut Context<Self>, apply: impl FnOnce(&mut EditBuffer)) {
         apply(&mut self.buffer);
         self.goal_x = None;
+        // Moving away from what is being typed is choosing none of them.
+        self.picker = None;
         self.history.break_run();
         cx.notify();
     }
@@ -288,6 +327,211 @@ impl TextArea {
             buffer.replace(None, &plain);
             buffer.select(start..start + plain.len());
         });
+    }
+
+    /// What is typed after the picker's `{`, when the list should stay open.
+    fn picker_query(&self) -> Option<&str> {
+        let picker = self.picker.as_ref()?;
+        let text = self.buffer.text();
+        let caret = self.buffer.caret();
+        if self.buffer.has_selection()
+            || caret <= picker.start
+            || text.get(picker.start..picker.start + 1) != Some("{")
+        {
+            return None;
+        }
+        let query = text.get(picker.start + 1..caret)?;
+        // A space or a brace means it is text, not a search.
+        (!query.contains(|c: char| c.is_whitespace() || c == '{' || c == '}')).then_some(query)
+    }
+
+    fn choices(&self) -> Vec<&'static Choice> {
+        self.picker_query()
+            .map(placeholders::matching)
+            .unwrap_or_default()
+    }
+
+    /// Close the list when what it filters on is gone, or matches nothing.
+    fn sync_picker(&mut self) {
+        let count = self.choices().len();
+        match &mut self.picker {
+            Some(_) if count == 0 => self.picker = None,
+            Some(picker) => picker.highlighted = picker.highlighted.min(count - 1),
+            None => {}
+        }
+    }
+
+    /// Open the list on the `{` just before the caret.
+    fn open_picker(&mut self, cx: &mut Context<Self>) {
+        let caret = self.buffer.caret();
+        if caret == 0 || self.buffer.text().get(caret - 1..caret) != Some("{") {
+            return;
+        }
+        self.picker = Some(Picker {
+            start: caret - 1,
+            highlighted: 0,
+            scroll: ScrollHandle::new(),
+        });
+        cx.notify();
+    }
+
+    fn show_placeholders(&mut self, _: &ShowPlaceholders, _: &mut Window, cx: &mut Context<Self>) {
+        self.edit(EditKind::Other, cx, |buffer| buffer.replace(None, "{"));
+        self.open_picker(cx);
+    }
+
+    fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let choices = self.choices();
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        if choices.is_empty() {
+            return;
+        }
+        picker.highlighted =
+            (picker.highlighted as isize + delta).rem_euclid(choices.len() as isize) as usize;
+        picker
+            .scroll
+            .scroll_to_item(picker_row(&choices, picker.highlighted));
+        cx.notify();
+    }
+
+    fn previous_placeholder(
+        &mut self,
+        _: &PreviousPlaceholder,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_highlight(-1, cx);
+    }
+
+    fn next_placeholder(&mut self, _: &NextPlaceholder, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_highlight(1, cx);
+    }
+
+    fn insert_placeholder(
+        &mut self,
+        _: &InsertPlaceholder,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let highlighted = self.picker.as_ref().map_or(0, |picker| picker.highlighted);
+        self.insert_choice(highlighted, cx);
+    }
+
+    /// Replace the `{` and what was typed after it with the choice's syntax.
+    fn insert_choice(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(choice) = self.choices().get(index).copied() else {
+            self.picker = None;
+            return;
+        };
+        let Some(start) = self.picker.take().map(|picker| picker.start) else {
+            return;
+        };
+        let end = self.buffer.caret();
+        self.edit(EditKind::Other, cx, |buffer| {
+            buffer.replace(Some(start..end), choice.insert);
+            buffer.move_to(start + choice.caret);
+        });
+    }
+
+    fn close_placeholders(
+        &mut self,
+        _: &ClosePlaceholders,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker = None;
+        cx.notify();
+    }
+
+    /// The list, hung below the `{` -- or standing above it where there is
+    /// no room below, which the anchored element decides.
+    fn render_picker(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let picker = self.picker.as_ref()?;
+        let drawn = self.drawn.as_ref()?;
+        let choices = self.choices();
+        if choices.is_empty() {
+            return None;
+        }
+        let colors = &self.colors;
+        let at = drawn.origin + drawn.position(picker.start) + point(px(0.0), drawn.line_height);
+
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        let mut group = None;
+        for (index, choice) in choices.iter().enumerate() {
+            if group != Some(choice.group) {
+                if let Some(title) = choice.group.title() {
+                    rows.push(
+                        div()
+                            .h(px(layout::select::ROW_HEIGHT))
+                            .px(px(layout::select::PADDING))
+                            .flex()
+                            .items_center()
+                            .text_size(type_scale::footer())
+                            .text_color(color(colors.text_muted))
+                            .child(title)
+                            .into_any_element(),
+                    );
+                }
+                group = Some(choice.group);
+            }
+            let lit = index == picker.highlighted;
+            rows.push(
+                div()
+                    .id(("placeholder", index))
+                    .h(px(layout::select::ROW_HEIGHT))
+                    .flex_none()
+                    .px(px(layout::select::PADDING * 2.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(layout::select::ROW_RADIUS))
+                    .text_size(type_scale::subtitle())
+                    .text_color(color(if lit {
+                        colors.text_primary
+                    } else {
+                        colors.text_muted
+                    }))
+                    .when(lit, |row| row.bg(color(colors.selection_background)))
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        // Keep the text's focus: the choice goes into it.
+                        window.prevent_default();
+                    })
+                    .on_click(cx.listener(move |area, _, _, cx| area.insert_choice(index, cx)))
+                    .child(choice.title)
+                    .into_any_element(),
+            );
+        }
+
+        Some(
+            deferred(
+                anchored().position(at).child(
+                    div()
+                        .id("placeholder-picker")
+                        .occlude()
+                        .track_scroll(&picker.scroll)
+                        .overflow_y_scroll()
+                        .max_h(px(layout::select::MAX_HEIGHT))
+                        .w(px(layout::select::MENU_WIDTH))
+                        .p(px(layout::select::PADDING))
+                        .flex()
+                        .flex_col()
+                        .rounded(px(layout::settings::FIELD_RADIUS))
+                        .border_1()
+                        .border_color(color(colors.border_strong))
+                        .bg(color(colors.surface_elevated))
+                        .shadow_md()
+                        .on_mouse_down_out(cx.listener(|area, _, _, cx| {
+                            area.picker = None;
+                            cx.notify();
+                        }))
+                        .children(rows),
+                ),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
     }
 
     fn newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
@@ -507,6 +751,7 @@ impl TextArea {
             self.dragging = true;
         }
         self.goal_x = None;
+        self.picker = None;
         self.history.break_run();
         cx.notify();
     }
@@ -671,6 +916,9 @@ impl EntityInputHandler for TextArea {
     ) {
         let range = range.map(|range| self.buffer.range_from_utf16(&range));
         self.edit(EditKind::Typing, cx, |buffer| buffer.replace(range, text));
+        if text == "{" && self.picker.is_none() {
+            self.open_picker(cx);
+        }
     }
 
     fn replace_and_mark_text_in_range(
@@ -794,6 +1042,15 @@ impl Render for TextArea {
                 |t| t,
                 cx,
                 |a, window, cx| a.clear_formatting(&ClearFormatting, window, cx),
+            ))
+            // Placeholders are not formatting: apart, at the far end.
+            .child(div().flex_1())
+            .child(self.tool(
+                "placeholders",
+                "{ }",
+                |t| t,
+                cx,
+                |a, window, cx| a.show_placeholders(&ShowPlaceholders, window, cx),
             ));
 
         let text = div()
@@ -806,9 +1063,21 @@ impl Render for TextArea {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .child(TextBlock { area: cx.entity() });
 
+        let mut context = KeyContext::default();
+        context.add(CONTEXT);
+        if self.picker.is_some() {
+            context.add(PICKER_CONTEXT);
+        }
+        let picker = self.render_picker(cx);
+
         div()
-            .key_context(CONTEXT)
+            .key_context(context)
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::show_placeholders))
+            .on_action(cx.listener(Self::previous_placeholder))
+            .on_action(cx.listener(Self::next_placeholder))
+            .on_action(cx.listener(Self::insert_placeholder))
+            .on_action(cx.listener(Self::close_placeholders))
             .on_action(cx.listener(Self::move_left))
             .on_action(cx.listener(Self::move_right))
             .on_action(cx.listener(Self::select_left))
@@ -862,6 +1131,7 @@ impl Render for TextArea {
             .text_size(type_scale::title())
             .child(text)
             .when(self.markdown, |area| area.child(toolbar))
+            .children(picker)
     }
 }
 
@@ -1145,6 +1415,26 @@ impl Element for TextBlock {
     }
 }
 
+/// Which child of the list shows choice `index`: the choices, with a header
+/// before each group that has one.
+fn picker_row(choices: &[&Choice], index: usize) -> usize {
+    let mut row = 0;
+    let mut group = None;
+    for (at, choice) in choices.iter().enumerate() {
+        if group != Some(choice.group) {
+            if choice.group.title().is_some() {
+                row += 1;
+            }
+            group = Some(choice.group);
+        }
+        if at == index {
+            return row;
+        }
+        row += 1;
+    }
+    row
+}
+
 /// Text runs covering all of `text`: the Markdown styling, and the input
 /// method's uncommitted text underlined.
 fn runs(
@@ -1261,6 +1551,17 @@ mod tests {
         history.undo(snapshot("x"));
         history.record(snapshot(""), EditKind::Other);
         assert_eq!(history.redo(snapshot("y")), None);
+    }
+
+    #[test]
+    fn a_choice_is_found_past_the_group_headers() {
+        let all = placeholders::matching("");
+        // Six placeholders, then the Date & Time header, then Date.
+        assert_eq!(picker_row(&all, 0), 0);
+        assert_eq!(picker_row(&all, 5), 5);
+        assert_eq!(picker_row(&all, 6), 7);
+        // Filtered to dates alone, the header is the first row.
+        assert_eq!(picker_row(&placeholders::matching("date"), 0), 1);
     }
 
     #[test]
