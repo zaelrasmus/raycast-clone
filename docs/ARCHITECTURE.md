@@ -1364,6 +1364,51 @@ What changed on the way, and what was learned:
   `{cursor}` is text, and one more than 2,000 presses from the end leaves
   the caret at the end. In a snippet inserted with `{snippet}`, `{argument}`
   and `{cursor}` are text: only the snippet being pasted asks and places.
+- **The editor is one parse read three ways.** `snippets::markup` reads the
+  Markdown source into a small tree once; the editor's styling (markers
+  dimmed, content bold, italic, underlined, struck, code or link), the
+  plain text a terminal gets and the HTML a document gets are three walks of
+  that tree, so they cannot disagree about what is emphasis. `snake_case`,
+  `* bullet` and `a * b` are text, as in `crate::markdown`. The toolbar's
+  buttons wrap the selection in markers and take them off when pressed
+  again; they have keys too (`Ctrl+B`, `I`, `U`, `E`, `Ctrl+Shift+X`,
+  `Ctrl+K` for a link, `Ctrl+\` to clear), bound in the editor's own
+  context, which is deeper than the launcher's and so wins while it has
+  focus.
+- **The editor shares the single-line field's model, not its layout.**
+  `EditBuffer` never assumed one line, so moving, selecting, deleting and
+  the input method are the same code. What is new is layout: GPUI's wrapped
+  lines say where each character is (`position_for_index`) and which is
+  under a point (`closest_index_for_position`), which is enough for the
+  caret, the mouse, the input method's candidate window, and Up, Down, Home
+  and End by visual line -- no patch to the vendored GPUI. Undo is new too:
+  a run of typing is one step, and any other edit is a step of its own.
+  The styling is read when the text changes, not per frame.
+- **A plain-text snippet stays plain.** New snippets are Markdown. One
+  written for F3 opens without styling or toolbar and is saved as text,
+  because a command with a `*` in it is not emphasis.
+- **The form is Raycast's two columns,** a third kind of form in the
+  launcher beside the quicklink's and the timer preset's, so the title row,
+  the resize and `Esc` came with it. `Enter` in the editor is a new line,
+  so `Ctrl+Enter` saves, and the footer says so. After a save the launcher
+  opens *Search Snippets* with the snippet's name typed, so what was saved
+  is what is shown. Tags are one field, separated by commas.
+- **The file is written as `quicklinks.json` is:** a file that does not
+  parse is refused, unknown fields and entries are kept, and it is replaced
+  in one rename. Names and keywords are unique; `created` is kept and
+  `modified` stamped, to the second. *Edit*, *Duplicate* (named *copy*,
+  without the keyword, which would clash) and *Create* are in the view's
+  action panel, and *Delete* asks first, in the list's place, with the
+  snippet in the pane.
+- **A Markdown snippet pastes as HTML and as text.** The paste offers both
+  formats by delayed rendering, and either being read counts as the target
+  taking it; `HTML Format` carries its own byte offsets, tested. The plain
+  text has the markers taken out, and `{cursor}` is counted in it: the
+  caret's place is marked with a private-use character before the markers
+  go and found again after, so a cursor inside a span lands right. A copy
+  is the plain text.
+- **Toolbar buttons grow to their label.** Found on the first look: they
+  were fixed squares, and *Link* spilled onto its neighbours.
 - **A paste is never logged with its text.** `Paste`'s `Debug` prints the
   length only, because the daemon logs an event that failed with `{:?}`, and
   a snippet can be a password.

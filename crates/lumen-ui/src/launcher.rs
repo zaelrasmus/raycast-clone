@@ -36,6 +36,7 @@ use lumen_platform::Platform;
 
 use crate::icons::IconCache;
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
+use crate::snippet_form::{SnippetForm, SnippetFormEvent};
 use crate::styling::{color, metrics, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::timer_form::{TimerForm, TimerFormEvent};
@@ -186,6 +187,7 @@ struct FormState {
 enum FormKind {
     Quicklink(Entity<QuicklinkForm>),
     Timer(Entity<TimerForm>),
+    Snippet(Entity<SnippetForm>),
 }
 
 /// Where a view's events go.
@@ -768,6 +770,7 @@ impl Launcher {
                     form.update(cx, |form, cx| form.set_colors(colors, cx))
                 }
                 FormKind::Timer(form) => form.update(cx, |form, cx| form.set_colors(colors, cx)),
+                FormKind::Snippet(form) => form.update(cx, |form, cx| form.set_colors(colors, cx)),
             }
         }
         self.query_field
@@ -1045,7 +1048,7 @@ impl Launcher {
             }
             // The file and the clipboard are the daemon's (F11).
             lumen_core::ViewSource::Snippets => {
-                cx.emit(LauncherEvent::RunSnippets);
+                cx.emit(LauncherEvent::RunSnippets { query: None });
                 return;
             }
         };
@@ -2009,7 +2012,11 @@ impl Launcher {
             return;
         }
 
-        // So does the quicklink form.
+        // So do the forms.
+        if action == Action::CreateSnippet {
+            self.open_snippet_form(Default::default(), None, false, window, cx);
+            return;
+        }
         if action == Action::CreateQuicklink {
             self.open_form(None, window, cx);
             return;
@@ -2255,6 +2262,60 @@ impl Launcher {
         cx.notify();
     }
 
+    /// Show the snippet form in place of the list (F11): `snippet` to start
+    /// from, saving over the snippet called `replacing` when there is one.
+    /// `from_view` is whether it was opened from *Search Snippets*, which is
+    /// where leaving it without saving goes back to. Public for the daemon,
+    /// which opens it for *Edit*, *Duplicate* and *Create* in that view.
+    pub fn open_snippet_form(
+        &mut self,
+        snippet: lumen_core::snippets::Snippet,
+        replacing: Option<String>,
+        from_view: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous_height = self.content_height();
+        let title = if replacing.is_some() {
+            "Edit Snippet"
+        } else {
+            "Create Snippet"
+        };
+
+        let path = self.paths.snippets_file();
+        let colors = self.theme.colors.clone();
+        let form = cx.new(|cx| SnippetForm::new(path, snippet, replacing, colors, cx));
+        let events = cx.subscribe_in(&form, window, move |this, _, event, window, cx| {
+            // Back to the list either way; a save shows what was saved.
+            let query = match event {
+                SnippetFormEvent::Saved(name) => Some(name.clone()),
+                SnippetFormEvent::Cancelled if from_view => None,
+                SnippetFormEvent::Cancelled => {
+                    this.leave_form(None, window, cx);
+                    return;
+                }
+            };
+            this.leave_form(None, window, cx);
+            cx.emit(LauncherEvent::RunSnippets { query });
+        });
+        let height = form.read(cx).height();
+
+        self.action_panel = None;
+        self.argument = None;
+        self.clear_query_text(cx);
+        self.picker = None;
+        self.mode = Mode::Form(FormState {
+            form: FormKind::Snippet(form.clone()),
+            title,
+            height,
+            _events: events,
+            _resize: None,
+        });
+        form.read(cx).focus(window, cx);
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
     /// Back to the root list from the form.
     ///
     /// After a save the query is the new link's name, so the list shows it as
@@ -2457,8 +2518,11 @@ pub enum LauncherEvent {
     RunCurrency,
     /// The dictionary was chosen (F10).
     RunDictionary,
-    /// *Search Snippets* was chosen (F11).
-    RunSnippets,
+    /// *Search Snippets* was chosen (F11), or a snippet was saved: `query`
+    /// is put in the search field, so the saved snippet is what is shown.
+    RunSnippets {
+        query: Option<String>,
+    },
     /// A conversion was typed in the root list with no table of rates, or
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.
@@ -2552,6 +2616,7 @@ impl Render for Launcher {
             (None, Mode::Form(state)) => match &state.form {
                 FormKind::Quicklink(form) => form.clone().into_any_element(),
                 FormKind::Timer(form) => form.clone().into_any_element(),
+                FormKind::Snippet(form) => form.clone().into_any_element(),
             },
             (None, Mode::View(state)) => self.render_view(state),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
@@ -3002,7 +3067,19 @@ impl Launcher {
                 .first()
                 .map(|entry| entry.title.clone())
                 .unwrap_or_else(|| "Open".to_string()),
+            Mode::Form(FormState {
+                form: FormKind::Snippet(_),
+                ..
+            }) => "Save Snippet".to_string(),
             Mode::Form(_) => "Save".to_string(),
+        };
+        // Enter makes a new line in the snippet editor.
+        let save_keys = match &self.mode {
+            Mode::Form(FormState {
+                form: FormKind::Snippet(_),
+                ..
+            }) => "Ctrl+\u{23ce}",
+            _ => "\u{23ce}",
         };
 
         let count = match &self.mode {
@@ -3064,7 +3141,7 @@ impl Launcher {
                 div()
                     .flex()
                     .gap(metrics::icon_gap())
-                    .child(format!("{verb}  ⏎"))
+                    .child(format!("{verb}  {save_keys}"))
                     // Advertised only when there is a second action to reach.
                     // A hint for a panel that would open empty teaches the user
                     // that the hint lies.

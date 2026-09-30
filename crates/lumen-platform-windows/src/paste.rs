@@ -94,28 +94,37 @@ const MAX_CARET_BACK: usize = 2000;
 pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
     let target = HWND(window.0 as *mut c_void);
 
+    // The text always; the HTML beside it when there is some, which a
+    // document or a mail reads in preference.
+    let mut formats = vec![(u32::from(CF_UNICODETEXT.0), clipboard::utf16(&paste.text))];
+    if let Some(html) = &paste.html {
+        let format = clipboard::html_format();
+        if format != 0 {
+            formats.push((format, clipboard::cf_html(html)));
+        }
+    }
+
     if !wait_for_foreground(target) {
         // Typing into whatever is in front instead is the race 7.15 exists
         // to avoid, so nothing is typed; the text is not lost either.
-        clipboard::set_text(&paste.text)?;
+        clipboard::set_formats(&formats)?;
         bail!("the window did not come back to the front, so the snippet was copied instead");
     }
     wait_for_modifiers();
 
     if !paste.restore_clipboard {
-        clipboard::set_text(&paste.text)?;
+        clipboard::set_formats(&formats)?;
         return send_keys(paste.keys, paste.caret_back);
     }
 
     // A thread of its own: the window that owns the clipboard needs a message
     // loop, and the caller's thread is not one to borrow.
-    let text = paste.text.clone();
     let keys = paste.keys;
     let caret_back = paste.caret_back;
     let raw = window.0;
     std::thread::Builder::new()
         .name("lumen-paste".into())
-        .spawn(move || Owner::run(HWND(raw as *mut c_void), &text, keys, caret_back))
+        .spawn(move || Owner::run(HWND(raw as *mut c_void), formats, keys, caret_back))
         .context("starting the paste")?
         .join()
         .map_err(|_| anyhow!("the paste stopped unexpectedly"))?
@@ -227,7 +236,8 @@ struct Owner {
     /// processes, and the one that reads the clipboard is not the one that
     /// owns the window: the same program reading counts as the target.
     target_executable: Option<String>,
-    text: Vec<u8>,
+    /// What is offered: each format and its bytes.
+    formats: Vec<(u32, Vec<u8>)>,
     /// Everything that was on the clipboard, to put back.
     saved: Vec<(u32, Vec<u8>)>,
     exclude: u32,
@@ -238,13 +248,12 @@ struct Owner {
     /// text already supplied, which asks this window nothing, so its read
     /// cannot be seen; the paste most likely went through.
     read_by_other: bool,
-    /// The text is announced on the clipboard and not yet supplied. Only
-    /// then may this window write it: once it has been supplied, restored
-    /// over or given up on, writing it again would put the snippet back over
-    /// whatever is there now -- which is how a restored clipboard was first
-    /// found overwritten, by the `WM_RENDERALLFORMATS` sent as this window
-    /// closes.
-    owed: bool,
+    /// The formats announced on the clipboard and not yet supplied. Only
+    /// those may this window write: once supplied, restored over or given up
+    /// on, writing one again would put the snippet back over whatever is
+    /// there now -- which is how a restored clipboard was first found
+    /// overwritten, by the `WM_RENDERALLFORMATS` sent as this window closes.
+    owed: Vec<u32>,
     outcome: Option<Result<()>>,
 }
 
@@ -253,7 +262,12 @@ thread_local! {
 }
 
 impl Owner {
-    fn run(target: HWND, text: &str, keys: PasteKeys, caret_back: usize) -> Result<()> {
+    fn run(
+        target: HWND,
+        formats: Vec<(u32, Vec<u8>)>,
+        keys: PasteKeys,
+        caret_back: usize,
+    ) -> Result<()> {
         let hwnd = unsafe { create_window()? };
         let mut target_process = 0u32;
         unsafe { GetWindowThreadProcessId(target, Some(&mut target_process)) };
@@ -262,7 +276,7 @@ impl Owner {
             hwnd,
             target_process,
             target_executable: foreground::executable_of(target),
-            text: clipboard::utf16(text),
+            formats,
             saved: Vec::new(),
             exclude: unsafe {
                 RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"))
@@ -270,7 +284,7 @@ impl Owner {
             history: unsafe { RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory")) },
             read: false,
             read_by_other: false,
-            owed: false,
+            owed: Vec::new(),
             outcome: None,
         };
         OWNER.with(|cell| *cell.borrow_mut() = Some(owner));
@@ -307,10 +321,12 @@ impl Owner {
             // Delayed rendering: a null handle. The call returns null for it
             // too, which the binding reads as an error, so its result says
             // nothing and is not looked at.
-            let _ = SetClipboardData(CF_UNICODETEXT.0 as u32, None);
+            for (format, _) in &self.formats {
+                let _ = SetClipboardData(*format, None);
+            }
             self.mark()?;
         }
-        self.owed = true;
+        self.owed = self.formats.iter().map(|(format, _)| *format).collect();
         Ok(())
     }
 
@@ -332,18 +348,30 @@ impl Owner {
         Ok(())
     }
 
-    /// Somebody asked for the text: supply it, and note whether it was the
-    /// target. The reader has the clipboard open, so it is not opened here.
-    fn render(&mut self, format: u32) {
-        if format != u32::from(CF_UNICODETEXT.0) || !self.owed {
-            return;
-        }
-        self.owed = false;
-        match clipboard::global(&self.text) {
+    /// Put `format` on the clipboard now, if it is still owed. The clipboard
+    /// must be open.
+    fn supply(&mut self, format: u32) -> bool {
+        let Some(at) = self.owed.iter().position(|owed| *owed == format) else {
+            return false;
+        };
+        self.owed.remove(at);
+        let Some((_, bytes)) = self.formats.iter().find(|(offered, _)| *offered == format) else {
+            return false;
+        };
+        match clipboard::global(bytes) {
             Ok(global) => unsafe {
                 let _ = SetClipboardData(format, Some(HANDLE(global.0)));
             },
             Err(error) => log::warn!("could not supply the snippet: {error:#}"),
+        }
+        true
+    }
+
+    /// Somebody asked for a format: supply it, and note whether it was the
+    /// target. The reader has the clipboard open, so it is not opened here.
+    fn render(&mut self, format: u32) {
+        if !self.supply(format) {
+            return;
         }
 
         // `Err` is a null window: `OpenClipboard(NULL)`, which names nobody.
@@ -395,7 +423,7 @@ impl Owner {
         // `with_owner`.
         unsafe { EmptyClipboard() }.context("EmptyClipboard")?;
 
-        self.owed = false;
+        self.owed.clear();
         log::debug!("paste: putting back {} formats", self.saved.len());
         if self.saved.is_empty() {
             return Ok(());
@@ -417,21 +445,24 @@ impl Owner {
     /// Nobody took the paste: leave the text where it can be pasted by hand,
     /// supplied now, since this window is about to go.
     fn give_up(&mut self) -> Result<()> {
-        if !self.owed {
+        if self.owed.is_empty() {
             // Somebody else read it, so it is there already.
             return Ok(());
         }
-        self.owed = false;
         let _lock = ClipboardLock::acquire_for(self.hwnd)?;
         if unsafe { GetClipboardOwner() }.ok() != Some(self.hwnd) {
+            self.owed.clear();
             return Ok(());
         }
-        let global = clipboard::global(&self.text)?;
-        unsafe {
-            SetClipboardData(u32::from(CF_UNICODETEXT.0), Some(HANDLE(global.0)))
-                .context("SetClipboardData")?;
-        }
+        self.supply_all();
         Ok(())
+    }
+
+    /// Everything still owed, now. The clipboard must be open.
+    fn supply_all(&mut self) {
+        for format in self.owed.clone() {
+            self.supply(format);
+        }
     }
 
     fn finish(&mut self, outcome: Result<()>) {
@@ -569,7 +600,8 @@ extern "system" fn window_proc(
                 if let Ok(_lock) = ClipboardLock::acquire_for(owner.hwnd)
                     && unsafe { GetClipboardOwner() }.ok() == Some(owner.hwnd)
                 {
-                    owner.render(u32::from(CF_UNICODETEXT.0));
+                    // Supplied, not read: nobody is reading it.
+                    owner.supply_all();
                 }
             });
             LRESULT(0)

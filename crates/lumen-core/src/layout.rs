@@ -128,6 +128,42 @@ pub mod form {
     pub const CHECKBOX_GAP: f32 = 8.0;
 }
 
+/// The snippet editor (F11): a multi-line field with a formatting toolbar
+/// under the text.
+pub mod text_area {
+    /// Inside the border, around the text and the toolbar.
+    pub const PADDING: f32 = 10.0;
+    pub const RADIUS: f32 = 6.0;
+    pub const TOOLBAR_HEIGHT: f32 = 30.0;
+    /// One button: square for a letter, as wide as it must be for a word,
+    /// with this much either side of it.
+    pub const TOOL_SIZE: f32 = 24.0;
+    pub const TOOL_PADDING_X: f32 = 5.0;
+    pub const TOOL_GAP: f32 = 4.0;
+    pub const TOOL_RADIUS: f32 = 4.0;
+    /// The rule between groups of buttons.
+    pub const TOOL_DIVIDER_HEIGHT: f32 = 16.0;
+}
+
+/// The snippet form (F11): the editor on the left, name, keyword and tags
+/// on the right, as Raycast lays it out.
+pub mod snippet_form {
+    pub const PADDING_Y: f32 = 14.0;
+    pub const COLUMN_GAP: f32 = 20.0;
+    /// A label above its field.
+    pub const LABEL_HEIGHT: f32 = 22.0;
+    pub const EDITOR_HEIGHT: f32 = 200.0;
+    /// The line under the editor saying what placeholders are.
+    pub const HINT_HEIGHT: f32 = 38.0;
+    /// Between one labelled field and the next.
+    pub const GROUP_GAP: f32 = 12.0;
+    /// The editor's share of the width.
+    pub const EDITOR_SHARE: f32 = 0.52;
+
+    /// The whole form, which is also the region it takes over in the launcher.
+    pub const HEIGHT: f32 = PADDING_Y * 2.0 + LABEL_HEIGHT + EDITOR_HEIGHT + HINT_HEIGHT;
+}
+
 /// A dropdown's list of options (F6).
 pub mod select {
     pub const ROW_HEIGHT: f32 = 28.0;
@@ -380,6 +416,15 @@ pub mod settings {
         pub const HINT: f32 = 11.5;
     }
 }
+
+/// The snippet form's right column -- three labelled fields and the line
+/// that says why a save was refused -- fits beside the editor.
+const _: () = assert!(
+    3.0 * (snippet_form::LABEL_HEIGHT + settings::FIELD_HEIGHT)
+        + 2.0 * snippet_form::GROUP_GAP
+        + form::MESSAGE_HEIGHT
+        <= snippet_form::HEIGHT - 2.0 * snippet_form::PADDING_Y
+);
 
 /// A settings field has to fit inside the row that contains it.
 const _: () = assert!(settings::FIELD_HEIGHT < settings::ROW_HEIGHT);

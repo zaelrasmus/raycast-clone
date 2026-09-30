@@ -150,6 +150,9 @@ pub enum Action {
     ///
     /// The launcher's, like `OpenView`: the form takes the list's place.
     CreateQuicklink,
+    /// Show the form that saves a new snippet (F11). The launcher's, like
+    /// `CreateQuicklink`.
+    CreateSnippet,
     /// Show the timer preset form in place of the list (F8): empty to create
     /// one, filled in to save a timer as one, or editing the preset on disk
     /// called `replacing`. The launcher's, like `CreateQuicklink`.
@@ -225,7 +228,7 @@ impl Action {
             Action::OpenLink(_) => "Open",
             Action::ChooseBrowser(_) => "Open With\u{2026}",
             Action::AskArgument(_) => "Search",
-            Action::CreateQuicklink => "Create",
+            Action::CreateQuicklink | Action::CreateSnippet => "Create",
             Action::SaveAsQuicklink { .. } => "Save as Quicklink",
             Action::OpenTimerForm {
                 replacing: Some(_), ..
@@ -273,6 +276,7 @@ impl Action {
             | Action::ChooseBrowser(_)
             | Action::SaveAsQuicklink { .. }
             | Action::CreateQuicklink
+            | Action::CreateSnippet
             | Action::OpenTimerForm { .. }
             | Action::Timer(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")

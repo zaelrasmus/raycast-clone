@@ -972,8 +972,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunDictionary);
                 return;
             }
-            LauncherEvent::RunSnippets => {
-                let _ = commands.unbounded_send(Message::RunSnippets);
+            LauncherEvent::RunSnippets { query } => {
+                let _ = commands.unbounded_send(Message::RunSnippets {
+                    query: query.clone(),
+                });
                 return;
             }
             LauncherEvent::RefreshRates => {
@@ -1002,7 +1004,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunAlertSounds
                 | LauncherEvent::RunCurrency
                 | LauncherEvent::RunDictionary
-                | LauncherEvent::RunSnippets
+                | LauncherEvent::RunSnippets { .. }
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
@@ -1367,12 +1369,12 @@ fn handle(
             cx.update(move |cx| dictionary::run(platform, setup, translate, None, window, cx))
                 .context("reaching the app to open the dictionary")
         }
-        Message::RunSnippets => {
+        Message::RunSnippets { query } => {
             let platform = platform.clone();
             let path = surfaces.paths.snippets_file();
             let paste = config.snippets.paste;
             let window = surfaces.launcher;
-            cx.update(move |cx| snippets::run(platform, path, paste, window, cx))
+            cx.update(move |cx| snippets::run(platform, path, paste, query, window, cx))
                 .context("reaching the app to open the snippets")
         }
         Message::RefreshRates => {

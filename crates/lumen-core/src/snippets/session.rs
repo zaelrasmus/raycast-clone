@@ -45,6 +45,14 @@ pub const NEXT: &str = "next";
 pub const BACK: &str = "back";
 /// The item that takes what is typed as the answer.
 const ANSWER: &str = "answer";
+/// Open the form on the snippet, on a copy of it, or empty.
+pub const EDIT: &str = "edit";
+pub const DUPLICATE: &str = "duplicate";
+pub const CREATE: &str = "create";
+/// Ask before deleting, then delete or not.
+pub const DELETE: &str = "delete";
+pub const CONFIRM_DELETE: &str = "confirm-delete";
+pub const CANCEL: &str = "cancel";
 
 /// What the daemon is asked to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,12 +66,23 @@ pub enum Effect {
     Paste {
         text: String,
         answers: HashMap<String, String>,
+        format: Format,
     },
     /// The same, onto the clipboard.
     Copy {
         text: String,
         answers: HashMap<String, String>,
+        format: Format,
     },
+    /// Show the snippet form on `snippet`, saving over the snippet called
+    /// `replacing` when there is one, and as a new snippet otherwise.
+    OpenForm {
+        snippet: Box<Snippet>,
+        replacing: Option<String>,
+    },
+    /// Delete the snippet called this from the file, then read it again and
+    /// hand it to [`Session::reload`].
+    Delete(String),
 }
 
 /// A snippet's arguments being asked for.
@@ -93,6 +112,8 @@ pub struct Session {
     /// The words typed, in lower case.
     words: Vec<String>,
     asking: Option<Asking>,
+    /// The snippet whose deletion is being confirmed.
+    confirming: Option<usize>,
     /// `None` is every tag.
     tag: Option<String>,
     /// When the view opened, in the user's time zone: what *Today* means.
@@ -122,14 +143,30 @@ impl Session {
             query: String::new(),
             words: Vec::new(),
             asking: None,
+            confirming: None,
             tag: None,
             now,
         }
     }
 
+    /// The file again, after it was written: the search and the tag are
+    /// kept.
+    pub fn reload(&mut self, loaded: impl Into<Loaded>) -> Vec<Effect> {
+        let fresh = Session::new(loaded, self.now.clone());
+        self.snippets = fresh.snippets;
+        self.broken = fresh.broken;
+        self.error = fresh.error;
+        self.asking = None;
+        self.confirming = None;
+        vec![Effect::Render(self.view())]
+    }
+
     pub fn event(&mut self, event: Event) -> Vec<Effect> {
         if self.asking.is_some() {
             return self.asking_event(event);
+        }
+        if let Some(index) = self.confirming {
+            return self.confirming_event(index, event);
         }
         match event {
             Event::QueryChanged { query } => {
@@ -153,11 +190,6 @@ impl Session {
                 item: Some(item),
                 action,
             } => {
-                let copy = match action.as_str() {
-                    PASTE => false,
-                    COPY => true,
-                    _ => return Vec::new(),
-                };
                 let Some(index) = item
                     .parse::<usize>()
                     .ok()
@@ -165,11 +197,52 @@ impl Session {
                 else {
                     return Vec::new();
                 };
+                let copy = match action.as_str() {
+                    PASTE => false,
+                    COPY => true,
+                    EDIT => {
+                        let snippet = self.snippets[index].0.clone();
+                        let replacing = Some(snippet.name.trim().to_string());
+                        return vec![Effect::OpenForm {
+                            snippet: Box::new(snippet),
+                            replacing,
+                        }];
+                    }
+                    DUPLICATE => {
+                        let original = &self.snippets[index].0;
+                        let all: Vec<Snippet> =
+                            self.snippets.iter().map(|(s, _)| s.clone()).collect();
+                        let copy = Snippet {
+                            name: super::store::copy_name(&all, &original.name),
+                            // A copy's keyword would clash with the original's.
+                            keyword: None,
+                            created: None,
+                            modified: None,
+                            ..original.clone()
+                        };
+                        return vec![Effect::OpenForm {
+                            snippet: Box::new(copy),
+                            replacing: None,
+                        }];
+                    }
+                    CREATE => {
+                        return vec![Effect::OpenForm {
+                            snippet: Box::default(),
+                            replacing: None,
+                        }];
+                    }
+                    DELETE => {
+                        self.confirming = Some(index);
+                        return vec![Effect::SetQuery(String::new()), Effect::Render(self.view())];
+                    }
+                    _ => return Vec::new(),
+                };
                 let text = self.snippets[index].0.text.clone();
+                let format = self.snippets[index].0.format;
                 let template = Template::parse(&text);
                 let arguments = template.arguments();
                 if arguments.is_empty() {
-                    return vec![finish(text, HashMap::new(), copy)];
+                    return vec![finish(text, HashMap::new(), format, copy)];
                 }
                 self.asking = Some(Asking {
                     index,
@@ -184,6 +257,62 @@ impl Session {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn confirming_event(&mut self, index: usize, event: Event) -> Vec<Effect> {
+        let Event::ActionInvoked { action, .. } = event else {
+            // Nothing typed means anything while the question is up.
+            return Vec::new();
+        };
+        match action.as_str() {
+            CONFIRM_DELETE => {
+                self.confirming = None;
+                let name = self.snippets[index].0.name.trim().to_string();
+                vec![Effect::Delete(name)]
+            }
+            CANCEL => {
+                self.confirming = None;
+                vec![
+                    Effect::SetQuery(self.query.clone()),
+                    Effect::Render(self.view()),
+                ]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Two rows: delete, or keep. The pane shows what would go.
+    fn confirming_view(&self, index: usize) -> View {
+        let snippet = &self.snippets[index].0;
+        let row = |id: &str, title: &str| Item {
+            id: id.into(),
+            title: title.into(),
+            subtitle: None,
+            icon: Some(glyph()),
+            accessories: Vec::new(),
+            keywords: Vec::new(),
+            actions: vec![Action {
+                id: id.into(),
+                title: title.into(),
+                shortcut: None,
+            }],
+            detail: Some(self.detail(snippet)),
+        };
+        View::List(List {
+            placeholder: Some(String::new()),
+            filtering: Filtering::Extension,
+            scopes: Vec::new(),
+            empty: None,
+            showing_detail: true,
+            sections: vec![Section {
+                title: Some(format!("Delete \u{201c}{}\u{201d}?", snippet.name.trim())),
+                subtitle: Some("it is removed from snippets.json".into()),
+                items: vec![
+                    row(CONFIRM_DELETE, "Delete Snippet"),
+                    row(CANCEL, "Keep It"),
+                ],
+            }],
+        })
     }
 
     fn asking_event(&mut self, event: Event) -> Vec<Effect> {
@@ -229,8 +358,13 @@ impl Session {
                     return vec![Effect::SetQuery(String::new()), Effect::Render(self.view())];
                 }
                 let asking = self.asking.take().expect("asking, above");
-                let text = self.snippets[asking.index].0.text.clone();
-                vec![finish(text, asking.answers, asking.copy)]
+                let snippet = &self.snippets[asking.index].0;
+                vec![finish(
+                    snippet.text.clone(),
+                    asking.answers,
+                    snippet.format,
+                    asking.copy,
+                )]
             }
             _ => Vec::new(),
         }
@@ -357,6 +491,9 @@ impl Session {
         if let Some(asking) = &self.asking {
             return self.asking_view(asking);
         }
+        if let Some(index) = self.confirming {
+            return self.confirming_view(index);
+        }
         let today = self.now.date();
         let mut sections: Vec<Section> = Vec::new();
 
@@ -476,6 +613,26 @@ impl Session {
                     title: "Copy to Clipboard".into(),
                     shortcut: None,
                 },
+                Action {
+                    id: EDIT.into(),
+                    title: "Edit Snippet".into(),
+                    shortcut: None,
+                },
+                Action {
+                    id: DUPLICATE.into(),
+                    title: "Duplicate Snippet".into(),
+                    shortcut: None,
+                },
+                Action {
+                    id: CREATE.into(),
+                    title: "Create Snippet".into(),
+                    shortcut: None,
+                },
+                Action {
+                    id: DELETE.into(),
+                    title: "Delete Snippet".into(),
+                    shortcut: None,
+                },
             ],
             detail: Some(self.detail(snippet)),
         }
@@ -585,11 +742,19 @@ fn broken_item(broken: &Broken) -> Item {
 }
 
 /// The end of choosing a snippet: paste it, or copy it.
-fn finish(text: String, answers: HashMap<String, String>, copy: bool) -> Effect {
+fn finish(text: String, answers: HashMap<String, String>, format: Format, copy: bool) -> Effect {
     if copy {
-        Effect::Copy { text, answers }
+        Effect::Copy {
+            text,
+            answers,
+            format,
+        }
     } else {
-        Effect::Paste { text, answers }
+        Effect::Paste {
+            text,
+            answers,
+            format,
+        }
     }
 }
 
@@ -645,6 +810,7 @@ mod tests {
             created: None,
             modified: None,
             format: Format::Text,
+            extra: Default::default(),
         }
     }
 
@@ -816,7 +982,8 @@ mod tests {
             pasted,
             [Effect::Paste {
                 text: "new text".into(),
-                answers: HashMap::new()
+                answers: HashMap::new(),
+                format: Format::Text,
             }]
         );
 
@@ -828,7 +995,8 @@ mod tests {
             copied,
             [Effect::Copy {
                 text: "new text".into(),
-                answers: HashMap::new()
+                answers: HashMap::new(),
+                format: Format::Text,
             }]
         );
     }
@@ -836,7 +1004,7 @@ mod tests {
     #[test]
     fn an_unknown_item_or_action_does_nothing() {
         let mut session = Session::new(vec![snippet("A", "a")], now());
-        for (item, action) in [("9", PASTE), ("x", COPY), ("0", "delete")] {
+        for (item, action) in [("9", PASTE), ("x", COPY), ("0", "rename")] {
             let effects = session.event(Event::ActionInvoked {
                 item: Some(item.into()),
                 action: action.into(),
@@ -1033,6 +1201,7 @@ mod tests {
                     ("who".to_string(), "Ana".to_string()),
                     ("mood".to_string(), "happy".to_string())
                 ]),
+                format: Format::Text,
             }]
         );
     }
@@ -1063,8 +1232,72 @@ mod tests {
             [Effect::Copy {
                 text: "{argument default=x}".into(),
                 answers: HashMap::from([("#1".to_string(), "x".to_string())]),
+                format: Format::Text,
             }]
         );
+    }
+
+    #[test]
+    fn edit_duplicate_and_create_open_the_form() {
+        let mut session = Session::new(
+            vec![Snippet {
+                keyword: Some(";sig".into()),
+                created: Some("2026-01-01T00:00:00Z".into()),
+                ..snippet("Sig", "Best")
+            }],
+            now(),
+        );
+
+        let [Effect::OpenForm { snippet, replacing }] = &invoke(&mut session, "0", EDIT)[..] else {
+            panic!("expected the form");
+        };
+        assert_eq!(snippet.name, "Sig");
+        assert_eq!(replacing.as_deref(), Some("Sig"));
+
+        let [Effect::OpenForm { snippet, replacing }] = &invoke(&mut session, "0", DUPLICATE)[..]
+        else {
+            panic!("expected the form");
+        };
+        assert_eq!(snippet.name, "Sig copy");
+        assert_eq!(snippet.text, "Best");
+        assert_eq!(snippet.keyword, None);
+        assert_eq!(snippet.created, None);
+        assert_eq!(*replacing, None);
+
+        let [Effect::OpenForm { snippet, replacing }] = &invoke(&mut session, "0", CREATE)[..]
+        else {
+            panic!("expected the form");
+        };
+        assert_eq!(**snippet, Snippet::default());
+        assert_eq!(*replacing, None);
+    }
+
+    #[test]
+    fn delete_asks_first_and_reload_keeps_the_search() {
+        let mut session = Session::new(vec![snippet("Keep", "k"), snippet("Gone", "g")], now());
+        typed(&mut session, "g");
+        let id = first_item(&session).id;
+
+        invoke(&mut session, &id, DELETE);
+        let view = session.view();
+        assert_eq!(
+            list(&view).sections[0].title.as_deref(),
+            Some("Delete \u{201c}Gone\u{201d}?")
+        );
+        // Keeping it goes back to the list, the search put back.
+        let effects = invoke(&mut session, CANCEL, CANCEL);
+        assert_eq!(effects[0], Effect::SetQuery("g".into()));
+        assert_eq!(titles(&session), ["Gone"]);
+
+        invoke(&mut session, &id, DELETE);
+        let effects = invoke(&mut session, CONFIRM_DELETE, CONFIRM_DELETE);
+        assert_eq!(effects, [Effect::Delete("Gone".into())]);
+
+        // The daemon deleted it and read the file again.
+        session.reload(vec![snippet("Keep", "k")]);
+        assert!(titles(&session).is_empty());
+        typed(&mut session, "");
+        assert_eq!(titles(&session), ["Keep"]);
     }
 
     #[test]

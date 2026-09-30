@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    SetClipboardData,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
@@ -125,6 +125,50 @@ pub fn set_text(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Replace the clipboard with several formats of one thing at once (F11).
+pub fn set_formats(formats: &[(u32, Vec<u8>)]) -> Result<()> {
+    let _lock = ClipboardLock::acquire()?;
+    unsafe {
+        EmptyClipboard().context("EmptyClipboard")?;
+        for (format, bytes) in formats {
+            let global = global(bytes)?;
+            SetClipboardData(*format, Some(HANDLE(global.0))).context("SetClipboardData")?;
+        }
+    }
+    Ok(())
+}
+
+/// The registered id of `HTML Format`.
+pub fn html_format() -> u32 {
+    unsafe { RegisterClipboardFormatW(windows::core::w!("HTML Format")) }
+}
+
+/// An HTML fragment as `HTML Format` stores it: a header of byte offsets,
+/// then a document with the fragment between two comments, in UTF-8 and
+/// NUL-terminated.
+pub fn cf_html(fragment: &str) -> Vec<u8> {
+    const PREFIX: &str = "<html><body>\r\n<!--StartFragment-->";
+    const SUFFIX: &str = "<!--EndFragment-->\r\n</body></html>";
+    let header = |start_html: usize, end_html: usize, start: usize, end: usize| {
+        format!(
+            "Version:0.9\r\nStartHTML:{start_html:010}\r\nEndHTML:{end_html:010}\r\n\
+             StartFragment:{start:010}\r\nEndFragment:{end:010}\r\n"
+        )
+    };
+    // Every number is ten digits, so the header's length does not depend on
+    // them.
+    let start_html = header(0, 0, 0, 0).len();
+    let start = start_html + PREFIX.len();
+    let end = start + fragment.len();
+    let end_html = end + SUFFIX.len();
+    let mut out = header(start_html, end_html, start, end).into_bytes();
+    out.extend_from_slice(PREFIX.as_bytes());
+    out.extend_from_slice(fragment.as_bytes());
+    out.extend_from_slice(SUFFIX.as_bytes());
+    out.push(0);
+    out
+}
+
 /// Read a clipboard format whose contents are a single `DWORD`.
 ///
 /// Used for `CanIncludeInClipboardHistory`, which is a flag rather than a
@@ -147,5 +191,27 @@ pub fn dword(format: u32) -> Result<Option<u32>> {
         let value = *pointer;
         let _ = GlobalUnlock(global);
         Ok(Some(value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The offsets are where the parts are, in bytes of the UTF-8.
+    #[test]
+    fn html_format_offsets_point_at_the_fragment() {
+        let fragment = "<strong>h\u{e9}llo</strong>";
+        let bytes = cf_html(fragment);
+        assert_eq!(bytes.last(), Some(&0));
+        let text = std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap();
+        let number = |key: &str| -> usize {
+            let at = text.find(key).unwrap() + key.len();
+            text[at..at + 10].parse().unwrap()
+        };
+        let (start, end) = (number("StartFragment:"), number("EndFragment:"));
+        assert_eq!(&text[start..end], fragment);
+        assert!(text[number("StartHTML:")..].starts_with("<html>"));
+        assert_eq!(number("EndHTML:"), text.len());
     }
 }

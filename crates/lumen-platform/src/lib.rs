@@ -127,6 +127,9 @@ pub struct FocusOwner(pub u64);
 #[derive(Clone, PartialEq, Eq)]
 pub struct Paste {
     pub text: String,
+    /// The same text as an HTML fragment, for applications that read
+    /// formatted text; `None` for plain text only.
+    pub html: Option<String>,
     /// What the paste is typed with in the target.
     pub keys: PasteKeys,
     /// How many times to press Left once pasted, to leave the caret where
@@ -146,6 +149,13 @@ impl std::fmt::Debug for Paste {
             .field(
                 "text",
                 &format_args!("<{} characters>", self.text.chars().count()),
+            )
+            .field(
+                "html",
+                &self
+                    .html
+                    .as_ref()
+                    .map(|html| format!("<{} characters>", html.chars().count())),
             )
             .field("keys", &self.keys)
             .field("caret_back", &self.caret_back)
@@ -639,6 +649,7 @@ mod tests {
     fn a_paste_is_logged_without_its_text() {
         let paste = Paste {
             text: "hunter2".into(),
+            html: Some("<b>hunter2</b>".into()),
             keys: PasteKeys::CtrlV,
             caret_back: 0,
             restore_clipboard: true,

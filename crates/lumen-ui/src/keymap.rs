@@ -36,6 +36,7 @@ use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, To
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
 use crate::select::{CloseSelect, ConfirmSelect, SelectDown, SelectUp, ToggleSelect};
 use crate::settings::{CloseSettings, SaveSheet};
+use crate::text_area;
 use crate::text_field::{
     Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
     MoveRight, MoveToEnd, MoveToStart, MoveWordLeft, MoveWordRight, Paste, SelectAll, SelectLeft,
@@ -64,6 +65,12 @@ const FIELD_CONTEXT: &str = "TextField";
 /// -- the query is one short line, and the results are what gets navigated --
 /// while in a settings field they move the caret, as in any other field.
 const SEARCH_FIELD_CONTEXT: &str = "SearchField";
+
+/// The snippet form (F11).
+const SNIPPET_FORM_CONTEXT: &str = crate::snippet_form::CONTEXT;
+
+/// The snippet editor (F11).
+const TEXT_AREA_CONTEXT: &str = crate::text_area::CONTEXT;
 
 /// A quicklink form's key context, wherever it is shown.
 const FORM_CONTEXT: &str = crate::quicklink_form::CONTEXT;
@@ -358,6 +365,14 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("up", PreviousField, Some(PRESET_FORM_CONTEXT)),
         KeyBinding::new("enter", SubmitForm, Some(PRESET_FORM_CONTEXT)),
         KeyBinding::new("escape", CancelForm, Some(PRESET_FORM_CONTEXT)),
+        // The snippet form (F11): no Up and Down, which move through the
+        // editor's lines; Enter in the editor is a new line, so Ctrl+Enter
+        // saves from anywhere.
+        KeyBinding::new("tab", NextField, Some(SNIPPET_FORM_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousField, Some(SNIPPET_FORM_CONTEXT)),
+        KeyBinding::new("enter", SubmitForm, Some(SNIPPET_FORM_CONTEXT)),
+        KeyBinding::new("ctrl-enter", SubmitForm, Some(SNIPPET_FORM_CONTEXT)),
+        KeyBinding::new("escape", CancelForm, Some(SNIPPET_FORM_CONTEXT)),
         // Only on a checkbox: in a field, space is a character.
         KeyBinding::new("space", ToggleFallback, Some(TOGGLE_CONTEXT)),
     ]);
@@ -408,7 +423,7 @@ pub fn install(cx: &mut App) {
     // Text editing, identical in the launcher's query and in every settings
     // field. Each field has its own context, so backspace edits the field that
     // holds focus and nothing else (I-14).
-    for context in [FIELD_CONTEXT, SEARCH_FIELD_CONTEXT] {
+    for context in [FIELD_CONTEXT, SEARCH_FIELD_CONTEXT, TEXT_AREA_CONTEXT] {
         let context = Some(context);
         cx.bind_keys([
             KeyBinding::new("backspace", DeleteBackward, context),
@@ -438,6 +453,40 @@ pub fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("home", MoveToStart, Some(FIELD_CONTEXT)),
         KeyBinding::new("end", MoveToEnd, Some(FIELD_CONTEXT)),
+    ]);
+
+    // The snippet editor (F11): lines, undo and formatting, as in any editor.
+    // Deeper than the launcher's context, so Up, Down, Home, End and Enter
+    // move through the text rather than the list while it has focus; Escape
+    // and Tab are left to whatever holds it.
+    let area = Some(TEXT_AREA_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("up", text_area::MoveUp, area),
+        KeyBinding::new("down", text_area::MoveDown, area),
+        KeyBinding::new("shift-up", text_area::SelectLineUp, area),
+        KeyBinding::new("shift-down", text_area::SelectLineDown, area),
+        KeyBinding::new("home", text_area::MoveToLineStart, area),
+        KeyBinding::new("end", text_area::MoveToLineEnd, area),
+        KeyBinding::new("shift-home", text_area::SelectToLineStart, area),
+        KeyBinding::new("shift-end", text_area::SelectToLineEnd, area),
+        KeyBinding::new("ctrl-home", MoveToStart, area),
+        KeyBinding::new("ctrl-end", MoveToEnd, area),
+        KeyBinding::new("ctrl-shift-home", SelectToStart, area),
+        KeyBinding::new("ctrl-shift-end", SelectToEnd, area),
+        KeyBinding::new("enter", text_area::Newline, area),
+        KeyBinding::new("shift-enter", text_area::Newline, area),
+        KeyBinding::new("ctrl-z", text_area::Undo, area),
+        KeyBinding::new("ctrl-y", text_area::Redo, area),
+        KeyBinding::new("ctrl-shift-z", text_area::Redo, area),
+        KeyBinding::new("ctrl-b", text_area::ToggleStrong, area),
+        KeyBinding::new("ctrl-i", text_area::ToggleEmphasis, area),
+        KeyBinding::new("ctrl-u", text_area::ToggleUnderline, area),
+        KeyBinding::new("ctrl-shift-x", text_area::ToggleStrike, area),
+        KeyBinding::new("ctrl-e", text_area::ToggleCode, area),
+        // Every editor's link key. Taken from the action panel only while
+        // the text has focus.
+        KeyBinding::new("ctrl-k", text_area::InsertLink, area),
+        KeyBinding::new("ctrl-\\", text_area::ClearFormatting, area),
     ]);
 }
 

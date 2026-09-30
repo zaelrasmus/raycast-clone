@@ -81,8 +81,10 @@ pub enum Message {
     RunCurrency,
     /// Open the dictionary (F10).
     RunDictionary,
-    /// Open *Search Snippets* (F11).
-    RunSnippets,
+    /// Open *Search Snippets* (F11), with `query` in the search field.
+    RunSnippets {
+        query: Option<String>,
+    },
     /// Fetch exchange rates for a conversion typed at the root (F9).
     RefreshRates,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.

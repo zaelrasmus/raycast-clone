@@ -716,6 +716,16 @@ figures, not what a bank or card will charge.
 
 ### Snippets
 
+*Create Snippet* opens a form: the snippet on the left, in an editor that
+draws Markdown as you write it -- the markers dimmed, the text bold,
+italic, underlined (`++u++`), struck (`~~s~~`), code or a link -- with a
+toolbar under it; its name, keyword and tags on the right. `Ctrl+B`, `I`,
+`U`, `E`, `Ctrl+Shift+X` and `Ctrl+K` format the selection, `Ctrl+Z` undoes,
+and `Ctrl+Enter` saves. *Edit*, *Duplicate* and *Delete* are in *Search
+Snippets*' action panel (`Ctrl+K`). A Markdown snippet is pasted formatted
+where formatting is read (a document, a mail) and as plain text elsewhere;
+one written as plain text is pasted exactly as written.
+
 Snippets are kept in `%APPDATA%\Lumen\config\snippets.json`, and
 *Search Snippets* reads the file each time it opens:
 

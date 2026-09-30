@@ -15,7 +15,9 @@
 //! keyword -- needs every keystroke in every application. F11 writes down the
 //! way it could be done without a `WH_KEYBOARD_LL` hook, and defers it.
 
+pub mod markup;
 pub mod session;
+pub mod store;
 pub mod template;
 
 use std::path::Path;
@@ -84,7 +86,7 @@ pub enum PasteMode {
 pub const SCHEMA_VERSION: u32 = 2;
 
 /// One block of saved text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snippet {
     /// What appears in the list.
     pub name: String,
@@ -107,6 +109,10 @@ pub struct Snippet {
     pub modified: Option<String>,
     #[serde(default)]
     pub format: Format,
+    /// Fields this build does not know, kept so that saving from Lumen does
+    /// not strip what a newer one wrote (see [`store`]).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// How a snippet's text is read.
@@ -176,6 +182,11 @@ pub fn now() -> jiff::Zoned {
     jiff::Zoned::now()
 }
 
+/// This moment, for stamping a snippet that is saved.
+pub fn stamp() -> jiff::Timestamp {
+    jiff::Timestamp::now()
+}
+
 fn timestamp(text: Option<&str>) -> Option<jiff::Timestamp> {
     text?.trim().parse().ok()
 }
@@ -186,6 +197,8 @@ pub struct SnippetFile {
     pub schema_version: u32,
     #[serde(default)]
     pub snippets: Vec<Snippet>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The file as it is first read: each snippet still a JSON value, so one

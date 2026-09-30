@@ -415,7 +415,7 @@ impl TextField {
 }
 
 /// Convert a UTF-16 offset within `text` to a byte offset.
-fn utf16_to_byte(text: &str, offset: usize) -> usize {
+pub(crate) fn utf16_to_byte(text: &str, offset: usize) -> usize {
     let mut units = 0;
     for (index, character) in text.char_indices() {
         if units >= offset {

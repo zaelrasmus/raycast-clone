@@ -133,6 +133,8 @@ pub const MAX_ARGUMENTS: usize = 3;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Expanded {
     pub text: String,
+    /// Where `{cursor}` was, as a byte offset into `text`.
+    pub cursor: Option<usize>,
     /// How many times to press Left after pasting to reach `{cursor}`: one
     /// per grapheme, as the key moves.
     pub caret_back: usize,
@@ -352,6 +354,7 @@ impl Template {
         let caret_back = cursor.map_or(0, |at| out[at..].graphemes(true).count());
         Expanded {
             text: out,
+            cursor,
             caret_back,
         }
     }
