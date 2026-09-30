@@ -6,14 +6,18 @@
 //! Asyar -- and the plan is right that it is a subproject rather than a feature.
 //! Nothing here anticipates it beyond not getting in its way.
 
+use std::path::PathBuf;
+
 use anyhow::{Context as _, Result};
+use lumen_platform::ClipboardContent;
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
-use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
 /// Holds the clipboard open, and closes it however the body exits.
 ///
@@ -26,6 +30,18 @@ impl ClipboardLock {
     fn acquire() -> Result<Self> {
         unsafe { OpenClipboard(None) }.context("another application is holding the clipboard")?;
         Ok(Self)
+    }
+
+    /// Open it for reading, tried a few times, briefly, for the reason
+    /// [`content`] gives. Only for a thread of Lumen's own that may wait.
+    fn acquire_patiently() -> Result<Self> {
+        for _ in 0..10 {
+            if unsafe { OpenClipboard(None) }.is_ok() {
+                return Ok(Self);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        Self::acquire()
     }
 
     /// Open it for `owner`, which becomes the clipboard's owner on the next
@@ -83,7 +99,11 @@ impl Drop for ClipboardLock {
 
 pub fn text() -> Result<Option<String>> {
     let _lock = ClipboardLock::acquire()?;
+    unsafe { open_text() }
+}
 
+/// The text, with the clipboard already open.
+unsafe fn open_text() -> Result<Option<String>> {
     unsafe {
         if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_err() {
             return Ok(None);
@@ -123,6 +143,111 @@ pub fn set_text(value: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// What is on the clipboard, as clipboard history keeps it: files, or text
+/// (F12). `None` when it is neither.
+///
+/// Both are read in one opening, and the opening is retried: every monitor
+/// reads the clipboard the moment it changes -- Windows' own history among
+/// them, which makes the copying program render delayed formats while it
+/// holds the clipboard. Two openings, or one attempt, lost that race and the
+/// copy with it.
+pub fn content() -> Result<Option<ClipboardContent>> {
+    let _lock = ClipboardLock::acquire_patiently()?;
+    unsafe {
+        // Files first: a program that copies files may name them in text as
+        // well, and the files are what was copied.
+        if let Some(files) = open_files()? {
+            return Ok(Some(ClipboardContent::Files(files)));
+        }
+        Ok(open_text()?.map(ClipboardContent::Text))
+    }
+}
+
+/// The files, when a file manager put them there, with the clipboard
+/// already open.
+unsafe fn open_files() -> Result<Option<Vec<PathBuf>>> {
+    unsafe {
+        if IsClipboardFormatAvailable(u32::from(CF_HDROP.0)).is_err() {
+            return Ok(None);
+        }
+        let handle = GetClipboardData(u32::from(CF_HDROP.0)).context("GetClipboardData")?;
+        if handle.0.is_null() {
+            return Ok(None);
+        }
+        let drop = HDROP(handle.0);
+        let count = DragQueryFileW(drop, u32::MAX, None);
+        let mut files = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            // The length without the NUL, then a buffer with room for it.
+            let length = DragQueryFileW(drop, index, None) as usize;
+            let mut buffer = vec![0u16; length + 1];
+            let written = DragQueryFileW(drop, index, Some(&mut buffer)) as usize;
+            files.push(PathBuf::from(String::from_utf16_lossy(&buffer[..written])));
+        }
+        Ok((!files.is_empty()).then_some(files))
+    }
+}
+
+/// `files` as `CF_HDROP` stores them: a `DROPFILES` header, then each path
+/// in UTF-16 with its NUL, and a second NUL to end the list.
+pub(crate) fn hdrop(files: &[PathBuf]) -> Vec<u8> {
+    // pFiles (the header's size), pt.x, pt.y, fNC, fWide.
+    const HEADER: u32 = 20;
+    let mut bytes = Vec::new();
+    for field in [HEADER, 0, 0, 0, 1] {
+        bytes.extend_from_slice(&field.to_le_bytes());
+    }
+    for file in files {
+        for unit in file.to_string_lossy().encode_utf16().chain([0]) {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&[0, 0]);
+    bytes
+}
+
+/// The formats `content` is written as. Files are named in text as well, one
+/// path per line, for a target that takes no files: an editor pastes the
+/// paths, which is what somebody pasting a file into one wants.
+pub(crate) fn formats_of(content: &ClipboardContent) -> Vec<(u32, Vec<u8>)> {
+    match content {
+        ClipboardContent::Text(text) => vec![(u32::from(CF_UNICODETEXT.0), utf16(text))],
+        ClipboardContent::Files(files) => {
+            let names = files
+                .iter()
+                .map(|file| file.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            vec![
+                (u32::from(CF_HDROP.0), hdrop(files)),
+                (u32::from(CF_UNICODETEXT.0), utf16(&names)),
+            ]
+        }
+    }
+}
+
+/// The marker a clipboard monitor skips, Lumen's included (7.13).
+pub(crate) fn exclude_format() -> u32 {
+    unsafe {
+        RegisterClipboardFormatW(windows::core::w!(
+            "ExcludeClipboardContentFromMonitorProcessing"
+        ))
+    }
+}
+
+/// Replace the clipboard with text or files, marked not-for-history when
+/// asked (F12).
+pub fn set_content(content: &ClipboardContent, keep_out_of_history: bool) -> Result<()> {
+    let mut formats = formats_of(content);
+    if keep_out_of_history {
+        let exclude = exclude_format();
+        if exclude != 0 {
+            formats.push((exclude, vec![0]));
+        }
+    }
+    set_formats(&formats)
 }
 
 /// Replace the clipboard with several formats of one thing at once (F11).
@@ -199,6 +324,20 @@ mod tests {
     use super::*;
 
     /// The offsets are where the parts are, in bytes of the UTF-8.
+    #[test]
+    fn a_file_list_is_a_dropfiles_block() {
+        let bytes = hdrop(&[PathBuf::from(r"C:\a"), PathBuf::from("b")]);
+        // The header says where the list starts and that it is wide.
+        assert_eq!(&bytes[0..4], &20u32.to_le_bytes());
+        assert_eq!(&bytes[16..20], &1u32.to_le_bytes());
+        let units: Vec<u16> = bytes[20..]
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let expected: Vec<u16> = "C:\\a\0b\0\0".encode_utf16().collect();
+        assert_eq!(units, expected);
+    }
+
     #[test]
     fn html_format_offsets_point_at_the_fragment() {
         let fragment = "<strong>h\u{e9}llo</strong>";

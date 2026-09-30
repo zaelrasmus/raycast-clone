@@ -318,6 +318,15 @@ pub enum Icon {
     ///
     /// The cheap way to give rows identity without shipping images.
     Text { text: String },
+    /// A colour, filling the icon square: what a copied colour looks like
+    /// (F12). `#rrggbb` or `#rrggbbaa`; anything else draws nothing.
+    ///
+    /// The one colour in the vocabulary, and the one exception to I-5 and
+    /// AD-13: the colour is the *content* of the row, not a choice about how
+    /// the row looks, so there is no theme token it could come from. The
+    /// square's size, radius and border are still the theme's and the
+    /// layout's.
+    Swatch { color: String },
 }
 
 /// Something the user can do to a row or to the view.

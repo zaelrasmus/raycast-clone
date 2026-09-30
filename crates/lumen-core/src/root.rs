@@ -30,46 +30,36 @@ use crate::search::{Candidate, Search};
 /// unbounded list makes the sort the most expensive thing in the frame.
 pub const MAX_RESULTS: usize = 64;
 
-/// How many clipboard entries are held in the searchable snapshot.
-///
-/// Fewer than the history keeps. The database holds a month so that a command
-/// dedicated to browsing it has something to browse; the snapshot is what root
-/// search matches against, and reading a month of pastes into memory to answer
-/// a three-character query is not a trade worth making.
-pub const CLIPBOARD_ENTRIES: usize = 100;
-
 /// A secondary index: searched, but never browsed (7.21).
 ///
-/// Both of these are large, both change without the user doing anything to the
-/// launcher, and neither belongs in the root list. With an empty query the
-/// index is shown in frecency order, so entries with no usage history would
-/// sort alphabetically among the applications -- open the launcher, see what
-/// you copied last Tuesday, and a folder called `Archive`. So an aside is
-/// matched only when there is a query, and capped so that a common letter
-/// cannot fill the list with one kind of thing.
+/// Files are large, change without the user doing anything to the launcher,
+/// and do not belong in the root list. With an empty query the index is shown
+/// in frecency order, so entries with no usage history would sort
+/// alphabetically among the applications -- open the launcher, see a folder
+/// called `Archive`. So an aside is matched only when there is a query, and
+/// capped so that a common letter cannot fill the list with one kind of thing.
+///
+/// The clipboard was the other aside until F12 gave it a view of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Aside {
-    Clipboard,
     Files,
 }
 
 impl Aside {
-    pub const ALL: [Aside; 2] = [Aside::Clipboard, Aside::Files];
+    pub const ALL: [Aside; 1] = [Aside::Files];
 
     fn slot(self) -> usize {
         match self {
-            Aside::Clipboard => 0,
-            Aside::Files => 1,
+            Aside::Files => 0,
         }
     }
 
     /// How many of this aside's rows may appear in one set of results.
     ///
-    /// Eight is enough to find a recent paste or the file you were just
-    /// editing, and few enough that the list is still about applications.
+    /// Eight is enough to find the file you were just editing, and few enough that the list is still about applications.
     pub fn cap(self) -> usize {
         match self {
-            Aside::Clipboard | Aside::Files => 8,
+            Aside::Files => 8,
         }
     }
 
@@ -85,7 +75,7 @@ impl Aside {
     /// asides after applications, which would bury them permanently.
     pub fn weight(self) -> u32 {
         match self {
-            Aside::Clipboard | Aside::Files => 6,
+            Aside::Files => 6,
         }
     }
 }
@@ -131,7 +121,7 @@ pub struct RootSearch {
     /// as a bug.
     index: Arc<Vec<Candidate>>,
     /// In [`Aside::slot`] order.
-    asides: [Arc<Vec<Candidate>>; 2],
+    asides: [Arc<Vec<Candidate>>; 1],
     /// This query's provider answers.
     answers: Vec<Item>,
     /// The quicklinks, held here rather than among the providers because they

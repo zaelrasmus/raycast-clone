@@ -84,6 +84,15 @@ impl Color {
     }
 
     /// Pack as `0xAARRGGBB`, which is what GPUI's `rgba` helper consumes.
+    /// `#RRGGBB`, or `#RRGGBBAA` when it is not opaque.
+    pub fn hex(self) -> String {
+        if self.a == 255 {
+            format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+        } else {
+            format!("#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a)
+        }
+    }
+
     pub const fn to_argb(self) -> u32 {
         ((self.a as u32) << 24) | ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
     }
@@ -97,12 +106,7 @@ impl Color {
 
 impl Serialize for Color {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let value = if self.a == 255 {
-            format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
-        } else {
-            format!("#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a)
-        };
-        serializer.serialize_str(&value)
+        serializer.serialize_str(&self.hex())
     }
 }
 

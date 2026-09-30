@@ -480,7 +480,25 @@ fn render_icon(icon: Option<&Icon>, colors: &Colors) -> AnyElement {
             .text_color(color(colors.icon))
             .child(text.clone())
             .into_any_element(),
+        Some(Icon::Swatch { color: value }) => square
+            .child(swatch(value, px(layout::view::SWATCH_SIZE), colors))
+            .into_any_element(),
         None => square.into_any_element(),
+    }
+}
+
+/// A copied colour, drawn as itself (F12). The one colour that is data rather
+/// than a theme token: the I-5 exception `Icon::Swatch` documents. The
+/// border is the theme's, so a colour close to the background still shows
+/// where it ends. A value that does not parse draws nothing.
+fn swatch(value: &str, size: gpui::Pixels, colors: &Colors) -> gpui::Div {
+    let square = div().size(size).rounded(px(layout::view::SWATCH_RADIUS));
+    match lumen_core::theme::Color::parse(value) {
+        Ok(fill) => square
+            .bg(color(fill))
+            .border_1()
+            .border_color(color(colors.border_strong)),
+        Err(_) => square,
     }
 }
 
@@ -564,6 +582,9 @@ fn render_empty(empty: Option<&EmptyState>, theme: &Theme, height: gpui::Pixels)
                     .text_size(px(layout::view::EMPTY_ICON_SIZE))
                     .child(text.clone()),
             ),
+            Icon::Swatch { color: value } => {
+                slot.child(swatch(value, px(layout::view::EMPTY_ICON_SIZE), colors))
+            }
         })
         .child(
             div()

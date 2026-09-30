@@ -119,6 +119,7 @@ once Lumen was measured well inside them (7.36).
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
 | **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
+| **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Slice 1 in progress.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting. Images are slice 2. See F12 decisions |
 
 ### F4 build order is not optional
 
@@ -1432,6 +1433,82 @@ What changed on the way, and what was learned:
   length only, because the daemon logs an event that failed with `{:?}`, and
   a snippet can be a password.
 
+### F12 decisions
+
+Clipboard history exists since F3, matched in the root list as an aside
+(7.14). Raycast's *Clipboard History* was read as the target: a command that
+opens a view of its own, entries in sections by date, a *Type* filter, and
+the selected entry beside the list with where it came from and what it is.
+It keeps five kinds -- text, links, colours, files and images. F12 is that,
+in two slices: everything but images, then images.
+
+The decisions:
+
+- **Entries leave the root list.** A *Clipboard History* row takes their
+  place, as *Search Snippets* took snippets' (F11). The `Clipboard` aside is
+  gone; files are the only one left. The history is still refreshed by
+  nobody: the view reads it each time it opens, on the background executor,
+  so the recorder no longer tells the launcher anything.
+- **The view is *Search Snippets*' shape,** with nothing new in the
+  vocabulary but the swatch. Sections by when the entry was copied, with the
+  same periods (the helpers moved to `lumen_core::dates`); *All Types*, then
+  *Text*, *Links*, *Colors* and *Files* as a scope; the pane is the content
+  verbatim, then *Source*, *Type*, what the type has to say (*Characters*
+  and *Words*, *Hex*, a file count) and *Copied*. The session filters, for
+  snippets' reason: every word typed must appear in the entry.
+- **Only what the system distinguishes is stored.** Schema 2 adds a `kind`
+  column, `text` or `files`, and uniqueness moves to the pair, since a path
+  copied as text and as a file paste differently. A link or a colour is text
+  that reads as one, decided in `clipboard::kind` when the entry is read:
+  a rule improved later applies to the whole history, with no migration.
+  The rules are strict -- the whole entry, on one line, is a link or a
+  colour -- because a false positive puts a swatch on something that is not
+  one, and a false negative only costs a plainer row.
+- **Files are captured as `CF_HDROP`, before text.** A program that copies
+  files may name them in text too, and the files are what was copied. They
+  are stored as paths, one per line, and pass the privacy layer like text.
+  Pasting one offers `CF_HDROP` and the paths as text, so Explorer takes
+  the file and an editor takes its path.
+- **The clipboard is read once per change, patiently.** Found on the first
+  try-out: copies from Notepad stopped being recorded. Reading files and
+  then text opened the clipboard twice, and every monitor reads it the
+  moment it changes -- Windows' own history among them, which makes the
+  copying program render its delayed text while holding it. The second
+  opening lost that race and the copy was dropped without a word. Now
+  both are read in one opening, retried for up to 200 ms on the watcher's
+  own thread, and a read that still fails is logged.
+- **A colour is drawn as itself: the one exception to I-5.** `Icon::Swatch`
+  carries a colour that is the row's *content*, not a choice about how the
+  row looks, so no theme token could hold it. Its size and radius are
+  `layout::view::SWATCH_*`, and its border is the theme's, so a colour close
+  to the background still shows its edge. An unparseable value draws
+  nothing. No other colour enters the vocabulary through this door.
+- **`Enter` pastes, and the paste stays on the clipboard.** Raycast's
+  behaviour, and the reason to open the view at all. It is F11's paste, not
+  restored, and marked with `ExcludeClipboardContentFromMonitorProcessing`
+  so the recorder does not record it again with the target as its source;
+  the entry is moved to the top instead, keeping its own. *Copy to
+  Clipboard* does the same without the keystroke. `Platform::set_clipboard`
+  is the new method (I-9), and `Paste` gains `files` and
+  `keep_out_of_history`.
+- **The action panel is *Paste*, *Copy to Clipboard*, *Open* and *Delete
+  Entry*.** *Open in Browser* for a link, *Open File* for a single file.
+  Deleting one entry does not ask, as in Raycast: it is one paste, and it
+  is gone from a history that forgets on its own anyway. Clearing the whole
+  history is not offered yet.
+- **Measured, slice 1.** With `scripts/measure-idle.ps1`, 60 s hidden:
+  0.009 % CPU, 73.6 MB working set, 89.0 MB private, 31 threads -- F11's
+  numbers within noise, and no thread added: the watcher's was already
+  there. Binary 18,233,344 bytes, **+66 KB** over F11's close. Cold start,
+  five alternating runs each: F12 462 ms median, `main` 467 ms. Both are
+  over the 400 ms budget, so that breach predates F12 and is its own
+  problem, not this phase's.
+- **Images are slice 2.** PNG files beside the database, named by their
+  hash, with the hash in SQLite: a history of screenshots as BLOBs is a
+  database that grows by megabytes per copy and a WAL that rewrites them.
+  They need a picture in the vocabulary that loads off the UI thread, which
+  is slice 2's real work.
+
 ---
 
 ## 7. Deviations from the plan
@@ -1513,6 +1590,10 @@ are *two* token sources with different authors: colour and type family come from
 the theme file, which anyone may write; geometry comes from `lumen_core::layout`,
 which only the project may change. What I-5 forbids — a literal `px(38.)` buried
 in a render function — stays forbidden either way.
+
+One colour does not come from the theme: a copied colour's swatch in
+*Clipboard History* (F12), because the colour is the content being shown,
+not styling. It is confined to `Icon::Swatch`; see F12 decisions.
 
 ### 7.7 The window methods take a role rather than gaining overlay twins
 
@@ -1620,6 +1701,10 @@ side of the trade, and it is why the false-positive cases are tests rather than
 an afterthought.
 
 ### 7.14 Clipboard history is an index of its own, not a `Provider`
+
+*Superseded by F12:* the history is no longer matched in the root list at
+all; it has a view of its own. The reasoning below is why it never joined
+the index, and it still holds for files.
 
 Everything else in F3 fits the provider contract: a catalogue that joins the
 application index and is matched with it. The clipboard does not, for two

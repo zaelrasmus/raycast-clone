@@ -25,7 +25,7 @@ use gpui::{
     App, Application, Bounds, Entity, Render, Window, WindowBackgroundAppearance, WindowBounds,
     WindowKind, WindowOptions, point, px, size,
 };
-use lumen_core::clipboard::{History, Retention};
+use lumen_core::clipboard::{History, Payload, Retention};
 use lumen_core::sheets::{Sheet, SheetLibrary};
 use lumen_core::theme::Appearance;
 use lumen_core::{Builtin, Config, Paths, Theme};
@@ -35,6 +35,7 @@ use lumen_platform::{
 };
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
+mod clipboard;
 mod currency;
 mod dictionary;
 mod extensions;
@@ -978,6 +979,10 @@ fn subscribe_to_launcher(
                 });
                 return;
             }
+            LauncherEvent::RunClipboard => {
+                let _ = commands.unbounded_send(Message::RunClipboard);
+                return;
+            }
             LauncherEvent::RefreshRates => {
                 let _ = commands.unbounded_send(Message::RefreshRates);
                 return;
@@ -1005,6 +1010,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunCurrency
                 | LauncherEvent::RunDictionary
                 | LauncherEvent::RunSnippets { .. }
+                | LauncherEvent::RunClipboard
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
@@ -1377,6 +1383,12 @@ fn handle(
             cx.update(move |cx| snippets::run(platform, path, paste, query, window, cx))
                 .context("reaching the app to open the snippets")
         }
+        Message::RunClipboard => {
+            let platform = platform.clone();
+            let window = surfaces.launcher;
+            cx.update(move |cx| clipboard::run(platform, window, cx))
+                .context("reaching the app to open the clipboard history")
+        }
         Message::RefreshRates => {
             let config = config.currency.clone();
             let path = surfaces.paths.currency_file();
@@ -1711,11 +1723,11 @@ fn start_clipboard_history(
         }
     };
 
-    // The launcher reads the history when it builds its index, so it needs the
-    // same handle the recorder writes through.
+    // The view reads the history through the same handle the recorder
+    // writes through.
     window
-        .update(cx, |launcher, _window, cx| {
-            launcher.use_clipboard_history(history.clone(), cx);
+        .update(cx, |launcher, _window, _cx| {
+            launcher.use_clipboard_history(history.clone());
         })
         .ok();
 
@@ -1731,11 +1743,25 @@ fn start_clipboard_history(
         return;
     }
 
-    let window = *window;
-
     cx.spawn(async move |cx| {
         while let Some(event) = rx.next().await {
-            let verdict = lumen_core::clipboard::may_record(&event.text, event.source.as_deref());
+            // Files are kept as their paths, one per line (F12), and pass the
+            // same checks: a path can name a password manager's vault.
+            let (payload, text) = match event.content {
+                lumen_platform::ClipboardContent::Text(text) => (Payload::Text, text),
+                lumen_platform::ClipboardContent::Files(files) => (
+                    Payload::Files,
+                    files
+                        .iter()
+                        .map(|file| file.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(
+                            "
+",
+                        ),
+                ),
+            };
+            let verdict = lumen_core::clipboard::may_record(&text, event.source.as_deref());
 
             if let Err(reason) = verdict {
                 // Logged at debug and without the text, which is the entire
@@ -1748,29 +1774,17 @@ fn start_clipboard_history(
             // background thread rather than blocking whatever frame the UI
             // thread is in the middle of.
             let history = history.clone();
-            let recorded = cx
-                .background_executor()
+            cx.background_executor()
                 .spawn(async move {
-                    match history.lock().record(&event.text, event.source.as_deref()) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            log::warn!("could not record a clipboard entry: {error:#}");
-                            false
-                        }
+                    if let Err(error) =
+                        history
+                            .lock()
+                            .record(payload, &text, event.source.as_deref())
+                    {
+                        log::warn!("could not record a clipboard entry: {error:#}");
                     }
                 })
                 .await;
-
-            // The launcher matches against a snapshot, so it has to be told the
-            // snapshot is stale. Told here rather than at the moment the window
-            // opens, because this is the only place that knows the history
-            // changed, and copying is rare enough that re-reading a hundred
-            // rows each time costs less than a query nobody asked for.
-            if recorded {
-                window
-                    .update(cx, |launcher, _window, cx| launcher.refresh_clipboard(cx))
-                    .ok();
-            }
         }
     })
     .detach();

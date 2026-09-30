@@ -177,10 +177,18 @@ mod tests {
     }
 }
 
+/// What is on the clipboard, in the forms clipboard history keeps (F12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardContent {
+    Text(String),
+    /// Files, as a file manager copies them.
+    Files(Vec<std::path::PathBuf>),
+}
+
 /// A clipboard entry the system has just accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardEvent {
-    pub text: String,
+    pub content: ClipboardContent,
     /// The executable that was in the foreground when the copy happened,
     /// lowercased, or `None` when it could not be identified.
     ///

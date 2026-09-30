@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 
 use jiff::Zoned;
-use jiff::civil::Date;
 
 use super::template::{Argument, Template};
 use super::{Broken, Format, Loaded, Snippet};
@@ -501,10 +500,8 @@ impl Session {
             if !self.shown(snippet, haystack) {
                 continue;
             }
-            let when = snippet
-                .changed()
-                .map(|at| at.to_zoned(self.now.time_zone().clone()).date());
-            let title = period(when, today);
+            let when = snippet.changed().map(|at| crate::dates::day(at, &self.now));
+            let title = crate::dates::period(when, today);
             if sections.last().and_then(|section| section.title.as_deref()) != Some(title) {
                 sections.push(Section {
                     title: Some(title.into()),
@@ -653,10 +650,10 @@ impl Session {
         }
         metadata.push(row("Content Type", snippet.format.label()));
         if let Some(at) = snippet.modified_at() {
-            metadata.push(row("Modified", &self.moment(at)));
+            metadata.push(row("Modified", &crate::dates::moment(at, &self.now)));
         }
         if let Some(at) = snippet.created_at() {
-            metadata.push(row("Created", &self.moment(at)));
+            metadata.push(row("Created", &crate::dates::moment(at, &self.now)));
         }
 
         match snippet.format {
@@ -672,44 +669,6 @@ impl Session {
             },
         }
     }
-
-    /// *Today, 9:00 PM*, *Yesterday, 9:00 PM*, or *Sep 3, 2026, 9:00 PM*.
-    fn moment(&self, at: jiff::Timestamp) -> String {
-        let zoned = at.to_zoned(self.now.time_zone().clone());
-        let today = self.now.date();
-        let time = zoned.strftime("%-I:%M %p");
-        if zoned.date() == today {
-            format!("Today, {time}")
-        } else if Some(zoned.date()) == today.yesterday().ok() {
-            format!("Yesterday, {time}")
-        } else {
-            format!("{}, {time}", zoned.strftime("%b %-d, %Y"))
-        }
-    }
-}
-
-/// The section a date falls in, seen from `today`. A week starts on Monday;
-/// a date in the future is *Today*, since a clock that was ahead is the
-/// likely reason.
-fn period(when: Option<Date>, today: Date) -> &'static str {
-    let Some(when) = when else {
-        return "Earlier";
-    };
-    if when >= today {
-        return "Today";
-    }
-    if Some(when) == today.yesterday().ok() {
-        return "Yesterday";
-    }
-    let into_week = i64::from(today.weekday().to_monday_zero_offset());
-    let monday = today.checked_sub(jiff::Span::new().days(into_week)).ok();
-    if monday.is_some_and(|monday| when >= monday) {
-        return "This Week";
-    }
-    if when.year() == today.year() && when.month() == today.month() {
-        return "This Month";
-    }
-    "Earlier"
 }
 
 /// A row for a snippet that could not be read: what it is called, or where

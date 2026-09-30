@@ -29,9 +29,9 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ApplicationsSink, Browser, ClipboardSink, DateStyle, FocusOwner, ForegroundApp,
-    GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime, MonitorInfo,
-    Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
+    AppEntry, ApplicationsSink, Browser, ClipboardContent, ClipboardSink, DateStyle, FocusOwner,
+    ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime,
+    MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -180,6 +180,10 @@ impl Platform for LinuxPlatform {
 
     fn set_clipboard_text(&self, _text: &str) -> Result<()> {
         todo!("F5: wl_data_device")
+    }
+
+    fn set_clipboard(&self, _content: &ClipboardContent, _keep_out_of_history: bool) -> Result<()> {
+        todo!("F5: wl_data_device, text/uri-list for files")
     }
 
     fn window_application(&self, _window: FocusOwner) -> Result<Option<ForegroundApp>> {

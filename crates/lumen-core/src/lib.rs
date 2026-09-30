@@ -15,6 +15,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod currency;
+pub mod dates;
 pub mod dictionary;
 pub mod extension;
 pub mod frecency;

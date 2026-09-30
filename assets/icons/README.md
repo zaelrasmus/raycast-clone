@@ -1,6 +1,6 @@
 # The icon set
 
-Twelve glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
+Thirteen glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
 
 ## The grid
 
@@ -39,6 +39,7 @@ are further from the centre and there is no shading to soften them.
 | `script.svg` | A tier-T1 script command |
 | `snippet.svg` | A saved block of text |
 | `clipboard.svg` | Clipboard history |
+| `text.svg` | Copied text, in *Clipboard History* (F12) |
 | `window.svg` | A window layout |
 | `file.svg` | A file |
 | `link.svg` | A quicklink |

@@ -142,7 +142,8 @@ extern "system" fn window_proc(
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
-/// Read the new clipboard contents, if it is text and may be recorded.
+/// Read the new clipboard contents, if it is files or text and may be
+/// recorded.
 ///
 /// This runs on the watcher thread's own message loop, not on a system input
 /// callback, so reading the clipboard here is legitimate -- I-15 governs input
@@ -162,10 +163,16 @@ fn handle_update() {
         return;
     }
 
-    let Ok(Some(text)) = clipboard::text() else {
-        // Not text: an image, a file list, or something that vanished between
-        // the notification and the read. Both are ordinary.
-        return;
+    let content = match clipboard::content() {
+        Ok(Some(content)) => content,
+        // Neither files nor text: an image, or something that vanished
+        // between the notification and the read. Both are ordinary.
+        Ok(None) => return,
+        // Said, because a copy lost here is otherwise lost without a trace.
+        Err(error) => {
+            log::debug!("could not read a clipboard change: {error:#}");
+            return;
+        }
     };
 
     // Captured now, because the foreground application is the one that did the
@@ -177,7 +184,7 @@ fn handle_update() {
 
     STATE.with(|state| {
         if let Some(state) = state.borrow().as_ref() {
-            state.sink.emit(ClipboardEvent { text, source });
+            state.sink.emit(ClipboardEvent { content, source });
         }
     });
 }

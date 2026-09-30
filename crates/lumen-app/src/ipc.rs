@@ -85,6 +85,8 @@ pub enum Message {
     RunSnippets {
         query: Option<String>,
     },
+    /// Open *Clipboard History* (F12).
+    RunClipboard,
     /// Fetch exchange rates for a conversion typed at the root (F9).
     RefreshRates,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.

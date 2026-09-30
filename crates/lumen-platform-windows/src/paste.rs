@@ -44,7 +44,7 @@ use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use lumen_platform::{FocusOwner, Paste, PasteKeys};
+use lumen_platform::{ClipboardContent, FocusOwner, Paste, PasteKeys};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{
     EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardFormatNameW,
@@ -94,9 +94,20 @@ const MAX_CARET_BACK: usize = 2000;
 pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
     let target = HWND(window.0 as *mut c_void);
 
-    // The text always; the HTML beside it when there is some, which a
-    // document or a mail reads in preference.
-    let mut formats = vec![(u32::from(CF_UNICODETEXT.0), clipboard::utf16(&paste.text))];
+    // The text always, or the files and their names (F12); the HTML beside
+    // it when there is some, which a document or a mail reads in preference.
+    let mut formats = if paste.files.is_empty() {
+        vec![(u32::from(CF_UNICODETEXT.0), clipboard::utf16(&paste.text))]
+    } else {
+        clipboard::formats_of(&ClipboardContent::Files(paste.files.clone()))
+    };
+    // Only for a paste that stays: a restored one is marked by its owner.
+    if paste.keep_out_of_history && !paste.restore_clipboard {
+        let exclude = clipboard::exclude_format();
+        if exclude != 0 {
+            formats.push((exclude, vec![0]));
+        }
+    }
     if let Some(html) = &paste.html {
         let format = clipboard::html_format();
         if format != 0 {

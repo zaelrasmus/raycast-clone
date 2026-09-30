@@ -207,6 +207,11 @@ pub mod view {
     pub const TAG_PADDING_Y: f32 = 2.0;
     pub const TAG_RADIUS: f32 = 4.0;
 
+    /// A colour's swatch in the icon square (F12): smaller than the square,
+    /// so it sits with the glyphs beside it rather than filling past them.
+    pub const SWATCH_SIZE: f32 = 18.0;
+    pub const SWATCH_RADIUS: f32 = 5.0;
+
     /// The empty state, centred where the list would be.
     pub const EMPTY_ICON_SIZE: f32 = 32.0;
     pub const EMPTY_GAP: f32 = 8.0;

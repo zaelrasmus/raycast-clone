@@ -100,6 +100,8 @@ pub fn run(
                             keys: lumen_platform::PasteKeys::default(),
                             caret_back,
                             restore_clipboard: paste == PasteMode::Restore,
+                            files: Vec::new(),
+                            keep_out_of_history: false,
                         };
                         window
                             .update(cx, |launcher, _window, cx| launcher.paste(paste, cx))

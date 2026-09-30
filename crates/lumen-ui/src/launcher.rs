@@ -27,7 +27,7 @@ use gpui::{
     ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::providers::QuicklinkProvider;
-use lumen_core::root::{Aside, CLIPBOARD_ENTRIES, Hit};
+use lumen_core::root::{Aside, Hit};
 use lumen_core::theme::Appearance;
 use lumen_core::{
     Action, Candidate, Config, Frecency, Item, Paths, Providers, RootSearch, Theme, layout,
@@ -402,65 +402,23 @@ impl Launcher {
         launcher
     }
 
-    /// Give the launcher the clipboard history to read from.
+    /// Give the launcher the clipboard history, for the view and for
+    /// `{clipboard offset=1}` in a snippet. Entries are no longer matched in
+    /// the root list (F12).
     pub fn use_clipboard_history(
         &mut self,
         history: Arc<parking_lot::Mutex<lumen_core::clipboard::History>>,
-        cx: &mut Context<Self>,
     ) {
         self.clipboard = Some(history);
-        self.refresh_clipboard(cx);
     }
 
-    /// The clipboard history, for `{clipboard offset=1}` in a snippet (F11).
-    /// `None` when it is off or could not be opened.
+    /// The clipboard history, for *Clipboard History* (F12) and
+    /// `{clipboard offset=1}` in a snippet (F11). `None` when it is off or
+    /// could not be opened.
     pub fn clipboard_history(
         &self,
     ) -> Option<Arc<parking_lot::Mutex<lumen_core::clipboard::History>>> {
         self.clipboard.clone()
-    }
-
-    /// Re-read the clipboard snapshot.
-    ///
-    /// Called by the daemon after it records an entry, rather than on a timer
-    /// or when the window opens: the recorder is the only thing that knows the
-    /// history changed, copying is rare, and doing the work then means the
-    /// snapshot is already correct by the time anybody searches it.
-    ///
-    /// The read is a hundred short rows from an indexed table, but it is still
-    /// disk I/O and matching runs inside the frame budget, so it happens on a
-    /// background task exactly like the application index.
-    pub fn refresh_clipboard(&mut self, cx: &mut Context<Self>) {
-        let Some(history) = self.clipboard.clone() else {
-            return;
-        };
-
-        cx.spawn(async move |this, cx| {
-            let candidates = cx
-                .background_executor()
-                .spawn(async move {
-                    let entries =
-                        history
-                            .lock()
-                            .recent(CLIPBOARD_ENTRIES)
-                            .unwrap_or_else(|error| {
-                                log::warn!("could not read the clipboard history: {error:#}");
-                                Vec::new()
-                            });
-
-                    lumen_core::providers::clipboard::items(entries)
-                        .into_iter()
-                        .map(Candidate::new)
-                        .collect::<Vec<_>>()
-                })
-                .await;
-
-            this.update(cx, |this, cx| {
-                this.set_aside(Aside::Clipboard, candidates, cx);
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// Re-read the files under the configured roots.
@@ -911,8 +869,8 @@ impl Launcher {
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
         // A form has no list to rank. Asides still land while it is open --
-        // the clipboard is recorded whatever the launcher shows -- and the
-        // root list is ranked when the form is left.
+        // files are indexed whatever the launcher shows -- and the root list
+        // is ranked when the form is left.
         if matches!(self.mode, Mode::Form(_)) {
             return;
         }
@@ -1049,6 +1007,11 @@ impl Launcher {
             // The file and the clipboard are the daemon's (F11).
             lumen_core::ViewSource::Snippets => {
                 cx.emit(LauncherEvent::RunSnippets { query: None });
+                return;
+            }
+            // The database and the clipboard are the daemon's (F12).
+            lumen_core::ViewSource::Clipboard => {
+                cx.emit(LauncherEvent::RunClipboard);
                 return;
             }
         };
@@ -2523,6 +2486,8 @@ pub enum LauncherEvent {
     RunSnippets {
         query: Option<String>,
     },
+    /// *Clipboard History* was chosen (F12).
+    RunClipboard,
     /// A conversion was typed in the root list with no table of rates, or
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.

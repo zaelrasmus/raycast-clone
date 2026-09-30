@@ -20,8 +20,8 @@ pub mod tiling;
 pub mod tray;
 
 pub use events::{
-    ApplicationsSink, ClipboardEvent, ClipboardSink, GestureEvent, GestureSink, HoldPhase, Hotkey,
-    Modifier, Modifiers,
+    ApplicationsSink, ClipboardContent, ClipboardEvent, ClipboardSink, GestureEvent, GestureSink,
+    HoldPhase, Hotkey, Modifier, Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
 pub use tiling::WindowLayout;
@@ -139,6 +139,14 @@ pub struct Paste {
     /// text, and keep the text out of clipboard history. `false` leaves the
     /// text on the clipboard, like any copy.
     pub restore_clipboard: bool,
+    /// Files to paste instead of the text, which then only names them for
+    /// a target that takes no files (F12). Empty for a text paste.
+    pub files: Vec<PathBuf>,
+    /// Keep the paste out of clipboard history even though it stays on the
+    /// clipboard: it came from the history, which moves the entry itself
+    /// rather than recording it again with the target as its source (F12).
+    /// A restored paste is kept out whatever this says.
+    pub keep_out_of_history: bool,
 }
 
 /// Without the text: a snippet can be a password or an address, and an event
@@ -160,6 +168,8 @@ impl std::fmt::Debug for Paste {
             .field("keys", &self.keys)
             .field("caret_back", &self.caret_back)
             .field("restore_clipboard", &self.restore_clipboard)
+            .field("files", &self.files.len())
+            .field("keep_out_of_history", &self.keep_out_of_history)
             .finish()
     }
 }
@@ -544,6 +554,14 @@ pub trait Platform: Send + Sync {
     /// Replace the system clipboard contents with `text`.
     fn set_clipboard_text(&self, text: &str) -> Result<()>;
 
+    /// Replace the system clipboard contents with text or files (F12).
+    ///
+    /// `keep_out_of_history` marks the write the way a password manager
+    /// does, so clipboard history does not record it: an entry copied back
+    /// out of the history is moved there by the caller, with the source it
+    /// had.
+    fn set_clipboard(&self, content: &ClipboardContent, keep_out_of_history: bool) -> Result<()>;
+
     /// The browsers installed for this user, in no particular order (F6).
     ///
     /// Read from the system each time rather than cached: it is asked when a
@@ -653,6 +671,8 @@ mod tests {
             keys: PasteKeys::CtrlV,
             caret_back: 0,
             restore_clipboard: true,
+            files: Vec::new(),
+            keep_out_of_history: false,
         };
         let logged = format!("{paste:?}");
         assert!(!logged.contains("hunter2"));

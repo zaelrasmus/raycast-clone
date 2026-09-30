@@ -36,6 +36,7 @@ pub mod web;
 
 pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;
+pub use clipboard::ClipboardProvider;
 pub use commands::CommandsProvider;
 pub use currency::CurrencyProvider;
 pub use dictionary::DictionaryProvider;
@@ -106,6 +107,7 @@ impl Providers {
         providers.register(Box::new(CurrencyProvider));
         providers.register(Box::new(DictionaryProvider));
         providers.register(Box::new(SnippetsProvider));
+        providers.register(Box::new(ClipboardProvider));
         providers
     }
 
@@ -222,7 +224,7 @@ mod tests {
         assert!(!items.is_empty());
         assert!(items.iter().all(|item| matches!(
             item.kind,
-            Kind::Command | Kind::Window | Kind::Timer | Kind::Currency
+            Kind::Command | Kind::Window | Kind::Timer | Kind::Currency | Kind::Clipboard
         )));
     }
 

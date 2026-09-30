@@ -22,12 +22,47 @@ use rusqlite::{Connection, OptionalExtension, params};
 ///
 /// Stored in SQLite's own `user_version`, so migrating is a comparison rather
 /// than a table of its own.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
+
+/// What an entry holds, as it was put on the clipboard (F12).
+///
+/// Only what the system distinguishes is stored. A link or a colour is text
+/// that reads as one, which is a question [`super::kind`] answers each time the
+/// entry is read: a rule improved later then applies to the whole history, and
+/// nothing has to be migrated to benefit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Payload {
+    #[default]
+    Text,
+    /// A list of files, as Explorer copies them. `text` is the paths, one per
+    /// line: a Windows path cannot contain a line break.
+    Files,
+}
+
+impl Payload {
+    fn column(self) -> &'static str {
+        match self {
+            Payload::Text => "text",
+            Payload::Files => "files",
+        }
+    }
+
+    /// Unknown values read as text rather than failing the whole history: a
+    /// row written by a later version is still something that was copied.
+    fn from_column(value: &str) -> Self {
+        match value {
+            "files" => Payload::Files,
+            _ => Payload::Text,
+        }
+    }
+}
 
 /// One recorded clipboard entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub id: i64,
+    pub payload: Payload,
+    /// The text, or for [`Payload::Files`] the paths, one per line.
     pub text: String,
     /// Seconds since the Unix epoch.
     pub copied_at: i64,
@@ -36,6 +71,14 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// The files, for [`Payload::Files`]; empty for text.
+    pub fn files(&self) -> Vec<std::path::PathBuf> {
+        match self.payload {
+            Payload::Files => self.text.lines().map(Into::into).collect(),
+            Payload::Text => Vec::new(),
+        }
+    }
+
     /// A single-line preview for the result list.
     ///
     /// Clipboard contents are often long and often multi-line; a row is one
@@ -159,6 +202,19 @@ impl History {
                 .context("creating the clipboard schema")?;
         }
 
+        if version < 2 {
+            // Files join text (F12). The same path copied as text and as a
+            // file are two different things to paste, so uniqueness is on
+            // the pair.
+            self.connection
+                .execute_batch(
+                    "ALTER TABLE entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';
+                     DROP INDEX entries_text;
+                     CREATE UNIQUE INDEX entries_content ON entries (kind, text);",
+                )
+                .context("adding files to the clipboard schema")?;
+        }
+
         self.connection
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .context("recording the schema version")?;
@@ -171,21 +227,21 @@ impl History {
     /// The caller is responsible for the privacy checks: this stores what it is
     /// given. Keeping the decision and the storage apart is what makes the
     /// decision testable without a database.
-    pub fn record(&self, text: &str, source: Option<&str>) -> Result<()> {
+    pub fn record(&self, payload: Payload, text: &str, source: Option<&str>) -> Result<()> {
         self.connection
             .execute(
-                "INSERT INTO entries (text, copied_at, source, sequence)
+                "INSERT INTO entries (kind, text, copied_at, source, sequence)
                  VALUES (
-                     ?1, ?2, ?3,
+                     ?4, ?1, ?2, ?3,
                      COALESCE((SELECT MAX(sequence) FROM entries), 0) + 1
                  )
-                 ON CONFLICT (text) DO UPDATE SET
+                 ON CONFLICT (kind, text) DO UPDATE SET
                      copied_at = excluded.copied_at,
                      source    = excluded.source,
                      -- Re-copying moves an entry back to the top rather than
                      -- leaving it where it was.
                      sequence  = excluded.sequence",
-                params![text, now(), source],
+                params![text, now(), source, payload.column()],
             )
             .context("recording a clipboard entry")?;
 
@@ -195,21 +251,14 @@ impl History {
     /// The most recent entries, newest first.
     pub fn recent(&self, limit: usize) -> Result<Vec<Entry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, text, copied_at, source
+            "SELECT id, kind, text, copied_at, source
              FROM entries
              ORDER BY sequence DESC
              LIMIT ?1",
         )?;
 
         let entries = statement
-            .query_map(params![limit as i64], |row| {
-                Ok(Entry {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    copied_at: row.get(2)?,
-                    source: row.get(3)?,
-                })
-            })?
+            .query_map(params![limit as i64], read_entry)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         Ok(entries)
@@ -232,6 +281,29 @@ impl History {
         self.connection
             .execute("DELETE FROM entries", [])
             .context("clearing the clipboard history")?;
+        Ok(())
+    }
+
+    /// Forget one entry. Not an error when it is already gone.
+    pub fn delete(&self, id: i64) -> Result<()> {
+        self.connection
+            .execute("DELETE FROM entries WHERE id = ?1", params![id])
+            .context("deleting a clipboard entry")?;
+        Ok(())
+    }
+
+    /// Put an entry back at the top, as if it had just been copied: pasting
+    /// something from the history is using it again (F12).
+    pub fn touch(&self, id: i64) -> Result<()> {
+        self.connection
+            .execute(
+                "UPDATE entries SET
+                     copied_at = ?2,
+                     sequence  = COALESCE((SELECT MAX(sequence) FROM entries), 0) + 1
+                 WHERE id = ?1",
+                params![id, now()],
+            )
+            .context("moving a clipboard entry to the top")?;
         Ok(())
     }
 
@@ -263,21 +335,25 @@ impl History {
         let entry = self
             .connection
             .query_row(
-                "SELECT id, text, copied_at, source FROM entries WHERE id = ?1",
+                "SELECT id, kind, text, copied_at, source FROM entries WHERE id = ?1",
                 params![id],
-                |row| {
-                    Ok(Entry {
-                        id: row.get(0)?,
-                        text: row.get(1)?,
-                        copied_at: row.get(2)?,
-                        source: row.get(3)?,
-                    })
-                },
+                read_entry,
             )
             .optional()?;
 
         Ok(entry)
     }
+}
+
+fn read_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
+    let kind: String = row.get(1)?;
+    Ok(Entry {
+        id: row.get(0)?,
+        payload: Payload::from_column(&kind),
+        text: row.get(2)?,
+        copied_at: row.get(3)?,
+        source: row.get(4)?,
+    })
 }
 
 fn now() -> i64 {
@@ -298,8 +374,10 @@ mod tests {
     #[test]
     fn records_and_returns_entries_newest_first() {
         let history = history();
-        history.record("first", Some("code.exe")).unwrap();
-        history.record("second", None).unwrap();
+        history
+            .record(Payload::Text, "first", Some("code.exe"))
+            .unwrap();
+        history.record(Payload::Text, "second", None).unwrap();
 
         let recent = history.recent(10).unwrap();
         assert_eq!(recent.len(), 2);
@@ -312,9 +390,9 @@ mod tests {
     #[test]
     fn recording_the_same_text_twice_moves_it_rather_than_duplicating_it() {
         let history = history();
-        history.record("repeated", None).unwrap();
-        history.record("other", None).unwrap();
-        history.record("repeated", None).unwrap();
+        history.record(Payload::Text, "repeated", None).unwrap();
+        history.record(Payload::Text, "other", None).unwrap();
+        history.record(Payload::Text, "repeated", None).unwrap();
 
         assert_eq!(history.len().unwrap(), 2);
         // ...and it comes back to the top.
@@ -330,7 +408,9 @@ mod tests {
         .unwrap();
 
         for index in 0..10 {
-            history.record(&format!("entry {index}"), None).unwrap();
+            history
+                .record(Payload::Text, &format!("entry {index}"), None)
+                .unwrap();
         }
 
         assert_eq!(history.len().unwrap(), 3);
@@ -340,7 +420,7 @@ mod tests {
     #[test]
     fn entries_can_be_looked_up_and_cleared() {
         let history = history();
-        history.record("findable", None).unwrap();
+        history.record(Payload::Text, "findable", None).unwrap();
 
         let id = history.recent(1).unwrap()[0].id;
         assert_eq!(history.get(id).unwrap().unwrap().text, "findable");
@@ -359,6 +439,7 @@ mod tests {
     fn a_preview_is_one_line_and_bounded() {
         let entry = Entry {
             id: 1,
+            payload: Payload::Text,
             text: "first line\nsecond line".into(),
             copied_at: 0,
             source: None,
@@ -367,6 +448,7 @@ mod tests {
 
         let long = Entry {
             id: 2,
+            payload: Payload::Text,
             text: "x".repeat(100),
             copied_at: 0,
             source: None,
@@ -380,6 +462,7 @@ mod tests {
     fn a_short_single_line_preview_is_not_marked() {
         let entry = Entry {
             id: 1,
+            payload: Payload::Text,
             text: "short".into(),
             copied_at: 0,
             source: None,
@@ -397,7 +480,7 @@ mod tests {
 
         {
             let history = History::open(&path, Retention::default()).unwrap();
-            history.record("persisted", None).unwrap();
+            history.record(Payload::Text, "persisted", None).unwrap();
         }
 
         let reopened = History::open(&path, Retention::default()).unwrap();
@@ -428,6 +511,85 @@ mod tests {
         };
         assert!(error.to_string().contains("newer version"), "{error}");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same path copied as text and as a file are two entries: one pastes
+    /// the words, the other the file.
+    #[test]
+    fn files_and_text_with_the_same_content_are_kept_apart() {
+        let history = history();
+        history.record(Payload::Text, r"C:\a.txt", None).unwrap();
+        history.record(Payload::Files, r"C:\a.txt", None).unwrap();
+
+        let recent = history.recent(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].payload, Payload::Files);
+        assert_eq!(
+            recent[0].files(),
+            vec![std::path::PathBuf::from(r"C:\a.txt")]
+        );
+        assert!(recent[1].files().is_empty());
+    }
+
+    #[test]
+    fn an_entry_can_be_deleted_and_moved_back_to_the_top() {
+        let history = history();
+        history.record(Payload::Text, "old", None).unwrap();
+        history.record(Payload::Text, "gone", None).unwrap();
+        history.record(Payload::Text, "new", None).unwrap();
+
+        let recent = history.recent(10).unwrap();
+        history.delete(recent[1].id).unwrap();
+        history.touch(recent[2].id).unwrap();
+
+        let texts: Vec<String> = history
+            .recent(10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert_eq!(texts, ["old", "new"]);
+        // Already gone is not an error.
+        history.delete(recent[1].id).unwrap();
+    }
+
+    /// A history written by F3 opens, keeps its rows as text, and dedupes
+    /// under the new index.
+    #[test]
+    fn a_version_one_history_is_migrated() {
+        let dir = std::env::temp_dir().join(format!("lumen-clip-v1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clipboard.sqlite3");
+
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE entries (
+                         id INTEGER PRIMARY KEY, text TEXT NOT NULL,
+                         copied_at INTEGER NOT NULL, source TEXT,
+                         sequence INTEGER NOT NULL
+                     );
+                     CREATE UNIQUE INDEX entries_text ON entries (text);
+                     CREATE INDEX entries_sequence ON entries (sequence DESC);
+                     INSERT INTO entries VALUES (1, 'kept', 0, 'code.exe', 1);
+                     PRAGMA user_version = 1;",
+                )
+                .unwrap();
+        }
+
+        let history = History::open(&path, Retention::default()).unwrap();
+        let recent = history.recent(10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].payload, Payload::Text);
+        assert_eq!(recent[0].source.as_deref(), Some("code.exe"));
+
+        history.record(Payload::Text, "kept", None).unwrap();
+        assert_eq!(history.len().unwrap(), 1);
+
+        drop(history);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

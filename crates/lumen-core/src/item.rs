@@ -209,6 +209,8 @@ pub enum ViewSource {
     Dictionary,
     /// *Search Snippets* (F11).
     Snippets,
+    /// *Clipboard History* (F12).
+    Clipboard,
 }
 
 impl Action {

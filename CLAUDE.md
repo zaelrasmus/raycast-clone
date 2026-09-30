@@ -14,7 +14,7 @@ Not negotiated case by case.
 | I-2  | `lumen-platform-linux` always compiles, even if its methods are `todo!()`. **Paused:** the Linux cross-check is not run, locally or in CI, until F5 resumes (ARCHITECTURE 7.38). |
 | I-3  | Root search never waits on an extension process. No exceptions and no "short" timeouts. |
 | I-4  | The window is created once when the daemon starts and from then on is only shown or hidden. Never destroyed. |
-| I-5  | No colour, spacing, radius or type size appears literally in UI code. Everything comes from a token module: colour and type family from the theme file, geometry from `lumen_core::layout`. |
+| I-5  | No colour, spacing, radius or type size appears literally in UI code. Everything comes from a token module: colour and type family from the theme file, geometry from `lumen_core::layout`. One exception: `Icon::Swatch` draws a copied colour, which is content, not styling (F12). |
 | I-6  | The `gpui` version is pinned exactly in `Cargo.toml`. Never `*`, never a range. Updating is a deliberate commit with its own verification. |
 | I-7  | Every capability an extension needs is requested over host RPC. The subprocess does not reach resources directly even where the system would allow it. |
 | I-8  | The performance budgets below are measured in CI. A regression breaks the build. |

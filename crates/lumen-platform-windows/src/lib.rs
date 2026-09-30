@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ApplicationsSink, Browser, ClipboardSink, DateStyle, FocusOwner, ForegroundApp,
-    GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime, MonitorInfo,
-    Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
+    AppEntry, ApplicationsSink, Browser, ClipboardContent, ClipboardSink, DateStyle, FocusOwner,
+    ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime,
+    MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -238,6 +238,10 @@ impl Platform for WindowsPlatform {
 
     fn set_clipboard_text(&self, text: &str) -> Result<()> {
         clipboard::set_text(text)
+    }
+
+    fn set_clipboard(&self, content: &ClipboardContent, keep_out_of_history: bool) -> Result<()> {
+        clipboard::set_content(content, keep_out_of_history)
     }
 
     fn installed_browsers(&self) -> Result<Vec<Browser>> {
