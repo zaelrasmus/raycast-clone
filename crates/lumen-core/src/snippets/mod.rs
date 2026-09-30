@@ -61,7 +61,9 @@ pub enum Format {
     /// a command with a `*` in it, written for F3, is not emphasis.
     #[default]
     Text,
-    /// Markdown, pasted as HTML and as text with the markers taken out.
+    /// Markdown. To be pasted as HTML and as text with the markers taken
+    /// out (F11, slice 6); until then it is shown as Markdown in the pane and
+    /// pasted as written.
     Markdown,
     /// A format from a later Lumen, read as text rather than refusing the
     /// file (I-12's reasoning, for data).
@@ -130,38 +132,118 @@ pub struct SnippetFile {
     pub snippets: Vec<Snippet>,
 }
 
-/// Read the snippets file.
-///
-/// A missing file is the normal case and not an error. A malformed one is
-/// reported and then ignored, for the same reason a malformed config is: the
-/// launcher is summoned by a keystroke with no terminal attached, and refusing
-/// to work because of a stray comma would look like a crash.
-pub fn load(path: &Path) -> Vec<Snippet> {
-    let Ok(source) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
+/// The file as it is first read: each snippet still a JSON value, so one
+/// mistyped field costs that snippet and not the file.
+#[derive(Deserialize)]
+struct LooseFile {
+    schema_version: u32,
+    #[serde(default)]
+    snippets: Vec<serde_json::Value>,
+}
 
-    match serde_json::from_str::<SnippetFile>(&source) {
-        Ok(file) => {
-            if file.schema_version > SCHEMA_VERSION {
-                log::warn!(
-                    "{} declares schema version {} but this build understands {SCHEMA_VERSION}",
-                    path.display(),
-                    file.schema_version
-                );
-            }
-            file.snippets
-                .into_iter()
-                // A snippet with no text has nothing to paste, and one with no
-                // name has nothing to find it by.
-                .filter(|snippet| !snippet.text.is_empty() && !snippet.name.trim().is_empty())
-                .collect()
-        }
-        Err(error) => {
-            log::error!("{} is not valid: {error}", path.display());
-            Vec::new()
+/// What reading the file found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Loaded {
+    pub snippets: Vec<Snippet>,
+    /// Entries that are in the file but could not be read.
+    pub broken: Vec<Broken>,
+    /// Why the file as a whole could not be read. A missing file is not
+    /// this: it is the normal case, and simply has no snippets.
+    pub error: Option<String>,
+}
+
+/// A snippet in the file that could not be read, said in the view rather
+/// than lost: a hand edit that dropped a snippet without a word is one the
+/// user goes looking for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Broken {
+    /// Its name, when that much could be read.
+    pub name: Option<String>,
+    /// Where it is in the file, from 1.
+    pub position: usize,
+    pub reason: String,
+}
+
+impl From<Vec<Snippet>> for Loaded {
+    fn from(snippets: Vec<Snippet>) -> Self {
+        Self {
+            snippets,
+            ..Default::default()
         }
     }
+}
+
+/// Read the snippets file.
+///
+/// Nothing here fails: the launcher is summoned by a keystroke with no
+/// terminal attached, so what went wrong is carried to the view, which says
+/// it, and logged.
+pub fn load(path: &Path) -> Loaded {
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Loaded::default(),
+        Err(error) => {
+            log::error!("could not read {}: {error}", path.display());
+            return Loaded {
+                error: Some(format!("could not be read: {error}")),
+                ..Default::default()
+            };
+        }
+    };
+    let loaded = parse(&source);
+    if let Some(error) = &loaded.error {
+        log::error!("{} is not valid: {error}", path.display());
+    }
+    for broken in &loaded.broken {
+        log::warn!(
+            "{}: skipped snippet {}: {}",
+            path.display(),
+            broken.position,
+            broken.reason
+        );
+    }
+    loaded
+}
+
+fn parse(source: &str) -> Loaded {
+    let file = match serde_json::from_str::<LooseFile>(source) {
+        Ok(file) => file,
+        Err(error) => {
+            return Loaded {
+                error: Some(error.to_string()),
+                ..Default::default()
+            };
+        }
+    };
+    if file.schema_version > SCHEMA_VERSION {
+        log::warn!(
+            "snippets.json declares schema version {} but this build understands {SCHEMA_VERSION}",
+            file.schema_version
+        );
+    }
+
+    let mut loaded = Loaded::default();
+    for (index, value) in file.snippets.into_iter().enumerate() {
+        let name = value
+            .get("name")
+            .and_then(|name| name.as_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(String::from);
+        match serde_json::from_value::<Snippet>(value) {
+            // A snippet with no text has nothing to paste, and one with no
+            // name has nothing to find it by. Left out quietly, as F3 did:
+            // an empty entry is a snippet not yet written, not a mistake.
+            Ok(snippet) if snippet.text.is_empty() || snippet.name.trim().is_empty() => {}
+            Ok(snippet) => loaded.snippets.push(snippet),
+            Err(error) => loaded.broken.push(Broken {
+                name,
+                position: index + 1,
+                reason: error.to_string(),
+            }),
+        }
+    }
+    loaded
 }
 
 /// Write the example file if none exists.
@@ -204,9 +286,10 @@ mod tests {
             }"#,
         );
 
-        let snippets = load(&path);
-        assert_eq!(snippets.len(), 1);
-        assert_eq!(snippets[0].name, "Good");
+        let loaded = load(&path);
+        assert_eq!(loaded.snippets.len(), 1);
+        assert_eq!(loaded.snippets[0].name, "Good");
+        assert!(loaded.broken.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -260,14 +343,41 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_not_an_error() {
-        assert!(load(Path::new("no/such/snippets.json")).is_empty());
+        assert_eq!(load(Path::new("no/such/snippets.json")), Loaded::default());
     }
 
     #[test]
-    fn a_malformed_file_yields_nothing_rather_than_failing() {
+    fn a_malformed_file_yields_nothing_and_says_why() {
         let (dir, path) = temp_file("bad", "{ not json");
-        assert!(load(&path).is_empty());
+        let loaded = load(&path);
+        assert!(loaded.snippets.is_empty());
+        assert!(loaded.error.unwrap().contains("line 1"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tag written as a word rather than a list costs that snippet, not
+    /// the file, and is named so it can be found.
+    #[test]
+    fn a_mistyped_field_costs_its_snippet_alone() {
+        let loaded = parse(
+            r#"{
+                "schema_version": 2,
+                "snippets": [
+                    { "name": "Good", "text": "yes" },
+                    { "name": "Tagged wrong", "text": "t", "tags": "work" },
+                    { "text": 5 }
+                ]
+            }"#,
+        );
+
+        assert_eq!(loaded.error, None);
+        assert_eq!(loaded.snippets.len(), 1);
+        assert_eq!(loaded.broken.len(), 2);
+        assert_eq!(loaded.broken[0].name.as_deref(), Some("Tagged wrong"));
+        assert_eq!(loaded.broken[0].position, 2);
+        assert!(loaded.broken[0].reason.contains("expected a sequence"));
+        assert_eq!(loaded.broken[1].name, None);
+        assert_eq!(loaded.broken[1].position, 3);
     }
 
     /// The shipped example is parsed at build time by this test, so a malformed

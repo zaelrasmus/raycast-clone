@@ -14,7 +14,7 @@
 use jiff::Zoned;
 use jiff::civil::Date;
 
-use super::{Format, Snippet};
+use super::{Broken, Format, Loaded, Snippet};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Icon, Item, ItemDetail, List, MetadataRow,
     Scope, ScopeOption, Section, Tone, View,
@@ -39,6 +39,10 @@ pub enum Effect {
 pub struct Session {
     /// Newest first, each with what it is matched against, in lower case.
     snippets: Vec<(Snippet, String)>,
+    /// What could not be read, said at the end of the list.
+    broken: Vec<Broken>,
+    /// Why the file could not be read at all, said instead of the list.
+    error: Option<String>,
     /// The words typed, in lower case.
     words: Vec<String>,
     /// `None` is every tag.
@@ -48,7 +52,12 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(mut snippets: Vec<Snippet>, now: Zoned) -> Self {
+    pub fn new(loaded: impl Into<Loaded>, now: Zoned) -> Self {
+        let Loaded {
+            mut snippets,
+            broken,
+            error,
+        } = loaded.into();
         // Stable, so snippets with the same date, or none, keep the file's
         // order; those with none go last.
         snippets.sort_by_key(|snippet| std::cmp::Reverse(snippet.changed()));
@@ -60,6 +69,8 @@ impl Session {
                     (snippet, haystack)
                 })
                 .collect(),
+            broken,
+            error,
             words: Vec::new(),
             tag: None,
             now,
@@ -136,7 +147,23 @@ impl Session {
             sections.last_mut().expect("pushed above").items.push(item);
         }
 
-        let empty = if self.snippets.is_empty() {
+        // Last, and not filtered: a snippet that cannot be read is found by
+        // looking, not by searching for what it might have said.
+        if !self.broken.is_empty() {
+            sections.push(Section {
+                title: Some("Could not read".into()),
+                subtitle: Some("fix these in snippets.json".into()),
+                items: self.broken.iter().map(broken_item).collect(),
+            });
+        }
+
+        let empty = if let Some(error) = &self.error {
+            EmptyState {
+                title: "snippets.json has a mistake in it".into(),
+                description: Some(error.clone()),
+                icon: Some(glyph()),
+            }
+        } else if self.snippets.is_empty() {
             EmptyState {
                 title: "No snippets yet".into(),
                 description: Some("Snippets are kept in snippets.json, in Lumen's folder".into()),
@@ -287,6 +314,35 @@ fn period(when: Option<Date>, today: Date) -> &'static str {
         return "This Month";
     }
     "Earlier"
+}
+
+/// A row for a snippet that could not be read: what it is called, or where
+/// it is, and why. It has no actions, since there is nothing to paste.
+fn broken_item(broken: &Broken) -> Item {
+    Item {
+        id: format!("broken:{}", broken.position),
+        title: broken
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("Snippet {}", broken.position)),
+        subtitle: Some(broken.reason.clone()),
+        icon: Some(Icon::Glyph {
+            name: "snippet".into(),
+        }),
+        accessories: Vec::new(),
+        keywords: Vec::new(),
+        actions: Vec::new(),
+        detail: Some(ItemDetail {
+            markdown: String::new(),
+            text: Some(format!(
+                "Snippet {} in snippets.json could not be read:
+
+{}",
+                broken.position, broken.reason
+            )),
+            metadata: Vec::new(),
+        }),
+    }
 }
 
 /// Everything a word typed may be found in, in lower case.
@@ -602,6 +658,47 @@ mod tests {
             list(&some.view()).empty.as_ref().unwrap().title,
             "No matching snippets"
         );
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_says_so_instead_of_seeming_empty() {
+        let session = Session::new(
+            Loaded {
+                error: Some("expected `,` at line 4 column 5".into()),
+                ..Default::default()
+            },
+            now(),
+        );
+        let view = session.view();
+        let empty = list(&view).empty.as_ref().unwrap();
+        assert_eq!(empty.title, "snippets.json has a mistake in it");
+        assert_eq!(
+            empty.description.as_deref(),
+            Some("expected `,` at line 4 column 5")
+        );
+    }
+
+    #[test]
+    fn snippets_that_could_not_be_read_are_listed_last_whatever_is_typed() {
+        let mut session = Session::new(
+            Loaded {
+                snippets: vec![snippet("Good", "yes")],
+                broken: vec![Broken {
+                    name: Some("Tagged wrong".into()),
+                    position: 2,
+                    reason: "invalid type: string \"work\", expected a sequence".into(),
+                }],
+                error: None,
+            },
+            now(),
+        );
+        typed(&mut session, "zzz");
+
+        let view = session.view();
+        let last = list(&view).sections.last().unwrap();
+        assert_eq!(last.title.as_deref(), Some("Could not read"));
+        assert_eq!(last.items[0].title, "Tagged wrong");
+        assert!(last.items[0].actions.is_empty());
     }
 
     #[test]
