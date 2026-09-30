@@ -55,8 +55,8 @@ use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_LWIN,
-    VK_MENU, VK_RWIN, VK_SHIFT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_LEFT,
+    VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
@@ -88,6 +88,9 @@ const GRACE_TIMER: usize = 2;
 /// `Ctrl+V` on the virtual key, not on the character.
 const VK_V: VIRTUAL_KEY = VIRTUAL_KEY(0x56);
 
+/// The most Left presses a `{cursor}` is worth.
+const MAX_CARET_BACK: usize = 2000;
+
 pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
     let target = HWND(window.0 as *mut c_void);
 
@@ -101,17 +104,18 @@ pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
 
     if !paste.restore_clipboard {
         clipboard::set_text(&paste.text)?;
-        return send_keys(paste.keys);
+        return send_keys(paste.keys, paste.caret_back);
     }
 
     // A thread of its own: the window that owns the clipboard needs a message
     // loop, and the caller's thread is not one to borrow.
     let text = paste.text.clone();
     let keys = paste.keys;
+    let caret_back = paste.caret_back;
     let raw = window.0;
     std::thread::Builder::new()
         .name("lumen-paste".into())
-        .spawn(move || Owner::run(HWND(raw as *mut c_void), &text, keys))
+        .spawn(move || Owner::run(HWND(raw as *mut c_void), &text, keys, caret_back))
         .context("starting the paste")?
         .join()
         .map_err(|_| anyhow!("the paste stopped unexpectedly"))?
@@ -163,9 +167,13 @@ fn wait_for_modifiers() {
     }
 }
 
-/// Type the keystroke that pastes: the modifiers down, the key down and up,
-/// the modifiers up in reverse.
-fn send_keys(keys: PasteKeys) -> Result<()> {
+/// Type the keystroke that pastes -- the modifiers down, the key down and up,
+/// the modifiers up in reverse -- then Left `caret_back` times.
+///
+/// One call, so nothing typed by anyone else falls between the paste and the
+/// caret's move: the target reads the clipboard while it handles the paste,
+/// before it takes the first Left from its queue.
+fn send_keys(keys: PasteKeys, caret_back: usize) -> Result<()> {
     let key = |vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -190,6 +198,14 @@ fn send_keys(keys: PasteKeys) -> Result<()> {
     inputs.push(key(main, main_flags));
     inputs.push(key(main, main_flags | KEYEVENTF_KEYUP));
     inputs.extend(modifiers.iter().rev().map(|vk| key(*vk, KEYEVENTF_KEYUP)));
+    // Past this, the caret is left at the end: a `{cursor}` that far from it
+    // is more keystrokes than moving it is worth.
+    if caret_back <= MAX_CARET_BACK {
+        for _ in 0..caret_back {
+            inputs.push(key(VK_LEFT, KEYEVENTF_EXTENDEDKEY));
+            inputs.push(key(VK_LEFT, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP));
+        }
+    }
 
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
@@ -237,7 +253,7 @@ thread_local! {
 }
 
 impl Owner {
-    fn run(target: HWND, text: &str, keys: PasteKeys) -> Result<()> {
+    fn run(target: HWND, text: &str, keys: PasteKeys, caret_back: usize) -> Result<()> {
         let hwnd = unsafe { create_window()? };
         let mut target_process = 0u32;
         unsafe { GetWindowThreadProcessId(target, Some(&mut target_process)) };
@@ -261,7 +277,7 @@ impl Owner {
 
         let offered = with_owner(|owner| owner.offer()).unwrap_or(Ok(()));
         let result = offered.and_then(|()| {
-            send_keys(keys)?;
+            send_keys(keys, caret_back)?;
             unsafe { SetTimer(Some(hwnd), READ_TIMER, READ_WAIT.as_millis() as u32, None) };
             pump();
             with_owner(|owner| owner.outcome.take())

@@ -764,6 +764,8 @@ syntax:
 | `{uuid}` | A new random UUID |
 | `{snippet name="Signature"}` | Another snippet, one level deep |
 | `{calculator expression="12*7"}` | `84` |
+| `{argument name="tone" default="happy" options="happy, sad"}` | Asked for before pasting, one at a time in the search field; `options` makes it a choice, `default` makes it optional. The same name is asked once. Three at most |
+| `{cursor}` | Where the caret is left after pasting |
 
 After any of them, modifiers in order: `{clipboard | trim | uppercase}`, with
 `uppercase`, `lowercase`, `trim`, `percent-encode`, `json-stringify`,

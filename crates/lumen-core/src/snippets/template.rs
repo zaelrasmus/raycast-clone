@@ -4,6 +4,10 @@
 //! two unchanged: `{clipboard}`, `{date offset="+1d" format="yyyy-MM-dd"}`,
 //! `{snippet name="Signature"}`, each with `| modifiers` after it.
 //!
+//! `{argument}` is asked for before the paste, one at a time, by the view
+//! (slice 4), and the answers come back to [`Template::expand`] by
+//! [`Argument::key`]. `{cursor}` is where the caret is left afterwards.
+//!
 //! # What is not a placeholder is text
 //!
 //! Anything in braces that is not a valid placeholder -- an unknown name, an
@@ -19,9 +23,12 @@
 //! the snippet is pasted, so the rules here are tested without a clipboard or
 //! a clock.
 
+use std::collections::HashMap;
+
 use jiff::{Span, Zoned};
 use lumen_platform::{DateStyle, LocalTime};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::providers::calculator;
 
@@ -76,6 +83,59 @@ enum Kind {
     Uuid,
     Snippet { name: String },
     Calculator { expression: String },
+    Argument(Argument),
+    Cursor,
+}
+
+/// A value asked for before the paste (slice 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Argument {
+    /// What the answer is filed under: the name, or `#1`, `#2` for the
+    /// unnamed, each of which is an argument of its own.
+    pub key: String,
+    pub name: Option<String>,
+    /// Makes it optional: what an empty answer becomes.
+    pub default: Option<String>,
+    /// A choice among these, when there are any.
+    pub options: Vec<String>,
+}
+
+impl Argument {
+    /// What the user is asked for.
+    pub fn label(&self) -> String {
+        match &self.name {
+            Some(name) => name.clone(),
+            None => format!("Argument {}", self.key.trim_start_matches('#')),
+        }
+    }
+
+    /// The answer for what was typed: the default for nothing, and for a
+    /// choice, the option typed. `None` is no answer yet.
+    pub fn resolve(&self, typed: &str) -> Option<String> {
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return self.default.clone();
+        }
+        if self.options.is_empty() {
+            return Some(typed.to_string());
+        }
+        self.options
+            .iter()
+            .find(|option| option.eq_ignore_ascii_case(typed))
+            .cloned()
+    }
+}
+
+/// The most arguments a snippet asks for, as Raycast allows.
+pub const MAX_ARGUMENTS: usize = 3;
+
+/// A snippet's text filled in, and where to leave the caret.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Expanded {
+    pub text: String,
+    /// How many times to press Left after pasting to reach `{cursor}`: one
+    /// per grapheme, as the key moves.
+    pub caret_back: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +197,94 @@ const PATTERN_LETTERS: &str = "yMLdEahHkKmsSZ";
 
 impl Template {
     pub fn parse(text: &str) -> Self {
+        let mut template = Self::parse_placeholders(text);
+        template.limit();
+        template
+    }
+
+    /// Unnamed arguments numbered, and Raycast's limits applied: arguments
+    /// past the third, and every `{cursor}` past the first, are text.
+    fn limit(&mut self) {
+        let mut unnamed = 0;
+        let mut keys: Vec<String> = Vec::new();
+        let mut cursor = false;
+        for part in &mut self.parts {
+            let Part::Placeholder(placeholder) = part else {
+                continue;
+            };
+            let keep = match &mut placeholder.kind {
+                Kind::Argument(argument) => {
+                    if argument.name.is_none() {
+                        unnamed += 1;
+                        argument.key = format!("#{unnamed}");
+                    }
+                    if keys.contains(&argument.key) {
+                        true
+                    } else if keys.len() < MAX_ARGUMENTS {
+                        keys.push(argument.key.clone());
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Kind::Cursor => !std::mem::replace(&mut cursor, true),
+                _ => true,
+            };
+            if !keep {
+                *part = Part::Text(placeholder.source.clone());
+            }
+        }
+    }
+
+    /// The arguments to ask for, in order, each once. The first occurrence
+    /// of a name says what its default and options are.
+    pub fn arguments(&self) -> Vec<Argument> {
+        let mut arguments: Vec<Argument> = Vec::new();
+        for part in &self.parts {
+            if let Part::Placeholder(Placeholder {
+                kind: Kind::Argument(argument),
+                ..
+            }) = part
+                && !arguments.iter().any(|seen| seen.key == argument.key)
+            {
+                arguments.push(argument.clone());
+            }
+        }
+        arguments
+    }
+
+    /// The text with the answers filled in and every other placeholder as
+    /// written, for the pane while the arguments are asked for: the
+    /// clipboard and the time are read when the snippet is pasted, not while
+    /// it is filled in. An argument not answered yet shows as its label in
+    /// braces, and `{cursor}` as nothing.
+    pub fn preview(&self, answers: &HashMap<String, String>) -> String {
+        let mut out = String::new();
+        for part in &self.parts {
+            match part {
+                Part::Text(text) => out.push_str(text),
+                Part::Placeholder(Placeholder {
+                    kind: Kind::Argument(argument),
+                    modifiers,
+                    ..
+                }) => match answers.get(&argument.key) {
+                    Some(answer) => out.push_str(&modify(modifiers, answer.clone())),
+                    None => {
+                        out.push('{');
+                        out.push_str(&argument.label());
+                        out.push('}');
+                    }
+                },
+                Part::Placeholder(Placeholder {
+                    kind: Kind::Cursor, ..
+                }) => {}
+                Part::Placeholder(placeholder) => out.push_str(&placeholder.source),
+            }
+        }
+        out
+    }
+
+    fn parse_placeholders(text: &str) -> Self {
         let mut parts = Vec::new();
         let mut plain = String::new();
         let mut rest = text;
@@ -189,30 +337,84 @@ impl Template {
     }
 
     /// The text with every placeholder filled in, `now` being the moment of
-    /// the paste in the user's time zone.
-    pub fn expand(&self, now: &Zoned, sources: &dyn Sources) -> String {
-        self.expand_at(now, sources, true)
+    /// the paste in the user's time zone and `answers` the arguments' by
+    /// [`Argument::key`]. An argument with no answer is its default, or
+    /// nothing.
+    pub fn expand(
+        &self,
+        now: &Zoned,
+        sources: &dyn Sources,
+        answers: &HashMap<String, String>,
+    ) -> Expanded {
+        let mut out = String::new();
+        let mut cursor = None;
+        self.expand_into(&mut out, &mut cursor, now, sources, answers, true);
+        let caret_back = cursor.map_or(0, |at| out[at..].graphemes(true).count());
+        Expanded {
+            text: out,
+            caret_back,
+        }
     }
 
-    fn expand_at(&self, now: &Zoned, sources: &dyn Sources, snippets: bool) -> String {
-        let mut out = String::new();
+    /// `outer` is the snippet being pasted. Only it places the caret and asks
+    /// for arguments; in a snippet it inserts, those are text.
+    fn expand_into(
+        &self,
+        out: &mut String,
+        cursor: &mut Option<usize>,
+        now: &Zoned,
+        sources: &dyn Sources,
+        answers: &HashMap<String, String>,
+        outer: bool,
+    ) {
         for part in &self.parts {
-            match part {
-                Part::Text(text) => out.push_str(text),
-                Part::Placeholder(placeholder) => match placeholder.value(now, sources, snippets) {
-                    Some(value) => out.push_str(&placeholder.modify(value)),
+            let placeholder = match part {
+                Part::Text(text) => {
+                    out.push_str(text);
+                    continue;
+                }
+                Part::Placeholder(placeholder) => placeholder,
+            };
+            match &placeholder.kind {
+                Kind::Cursor if outer => *cursor = Some(out.len()),
+                Kind::Argument(argument) if outer => {
+                    let answer = answers
+                        .get(&argument.key)
+                        .cloned()
+                        .or_else(|| argument.default.clone())
+                        .unwrap_or_default();
+                    out.push_str(&modify(&placeholder.modifiers, answer));
+                }
+                // One level only: a snippet that refers to others cannot be
+                // inserted, which is Raycast's rule and what keeps two
+                // snippets that name each other from never ending.
+                Kind::Snippet { name } if outer => {
+                    let inner = sources
+                        .snippet(name)
+                        .map(|text| Template::parse(&text))
+                        .filter(|inner| !inner.refers_to_snippets());
+                    match inner {
+                        Some(inner) => {
+                            let mut text = String::new();
+                            inner.expand_into(&mut text, &mut None, now, sources, answers, false);
+                            out.push_str(&modify(&placeholder.modifiers, text));
+                        }
+                        None => out.push_str(&placeholder.source),
+                    }
+                }
+                _ => match placeholder.value(now, sources) {
+                    Some(value) => out.push_str(&modify(&placeholder.modifiers, value)),
                     None => out.push_str(&placeholder.source),
                 },
             }
         }
-        out
     }
 }
 
 impl Placeholder {
     /// What the placeholder stands for, before modifiers; `None` leaves it
     /// as written.
-    fn value(&self, now: &Zoned, sources: &dyn Sources, snippets: bool) -> Option<String> {
+    fn value(&self, now: &Zoned, sources: &dyn Sources) -> Option<String> {
         match &self.kind {
             // Nothing copied is nothing inserted, as Raycast removes it.
             Kind::Clipboard { offset } => Some(sources.clipboard(*offset).unwrap_or_default()),
@@ -221,40 +423,32 @@ impl Placeholder {
                 calculator::amount(expression).map(calculator::format_number)
             }
             Kind::Date(spec) => spec.write(now, sources),
-            // One level only: a snippet that refers to others cannot be
-            // inserted, which is Raycast's rule and what keeps two snippets
-            // that name each other from never ending.
-            Kind::Snippet { name } => {
-                if !snippets {
-                    return None;
-                }
-                let inner = Template::parse(&sources.snippet(name)?);
-                if inner.refers_to_snippets() {
-                    return None;
-                }
-                Some(inner.expand_at(now, sources, false))
-            }
+            // Filled in by `Template::expand_into`, which knows the answers
+            // and how deep it is; reaching here means inside an inserted
+            // snippet, where they stay as written.
+            Kind::Snippet { .. } | Kind::Argument(_) | Kind::Cursor => None,
         }
     }
+}
 
-    fn modify(&self, mut value: String) -> String {
-        for modifier in &self.modifiers {
-            value = match modifier {
-                Modifier::Uppercase => value.to_uppercase(),
-                Modifier::Lowercase => value.to_lowercase(),
-                Modifier::Trim => value.trim().to_string(),
-                Modifier::PercentEncode => utf8_percent_encode(&value, COMPONENT).to_string(),
-                Modifier::JsonStringify => serde_json::to_string(&value).unwrap_or(value),
-                Modifier::Raw => value,
-                // What is not arithmetic is left as it was: the clipboard
-                // holding a word is not a reason to paste nothing.
-                Modifier::Calculate => calculator::amount(&value)
-                    .map(calculator::format_number)
-                    .unwrap_or(value),
-            };
-        }
-        value
+/// `value` through `modifiers`, in order.
+fn modify(modifiers: &[Modifier], mut value: String) -> String {
+    for modifier in modifiers {
+        value = match modifier {
+            Modifier::Uppercase => value.to_uppercase(),
+            Modifier::Lowercase => value.to_lowercase(),
+            Modifier::Trim => value.trim().to_string(),
+            Modifier::PercentEncode => utf8_percent_encode(&value, COMPONENT).to_string(),
+            Modifier::JsonStringify => serde_json::to_string(&value).unwrap_or(value),
+            Modifier::Raw => value,
+            // What is not arithmetic is left as it was: the clipboard
+            // holding a word is not a reason to paste nothing.
+            Modifier::Calculate => calculator::amount(&value)
+                .map(calculator::format_number)
+                .unwrap_or(value),
+        };
     }
+    value
 }
 
 impl DateSpec {
@@ -350,6 +544,33 @@ fn placeholder(source: &str) -> Option<Placeholder> {
             },
         },
         "uuid" if parameters.is_empty() => Kind::Uuid,
+        // Where the caret goes is not a value, so there is nothing to modify.
+        "cursor" if parameters.is_empty() && modifiers.is_empty() => Kind::Cursor,
+        "argument" if only(&["name", "default", "options"]) => {
+            let name = match get("name") {
+                Some(name) if name.trim().is_empty() => return None,
+                name => name.map(|name| name.trim().to_string()),
+            };
+            let options: Vec<String> = get("options")
+                .map(|options| {
+                    options
+                        .split(',')
+                        .map(|option| option.trim().to_string())
+                        .filter(|option| !option.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if get("options").is_some() && options.is_empty() {
+                return None;
+            }
+            Kind::Argument(Argument {
+                // The unnamed are numbered by `Template::limit`.
+                key: name.clone().unwrap_or_default(),
+                name,
+                default: get("default").map(str::to_string),
+                options,
+            })
+        }
         "snippet" if only(&["name"]) => Kind::Snippet {
             name: get("name")
                 .filter(|name| !name.trim().is_empty())?
@@ -616,7 +837,6 @@ fn write_field(letter: char, count: usize, when: &Zoned) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     struct Fake {
         clipboard: Vec<&'static str>,
@@ -679,7 +899,9 @@ mod tests {
     }
 
     fn expand(text: &str) -> String {
-        Template::parse(text).expand(&now(), &Fake::default())
+        Template::parse(text)
+            .expand(&now(), &Fake::default(), &HashMap::new())
+            .text
     }
 
     #[test]
@@ -725,7 +947,11 @@ mod tests {
             clipboard: vec!["  Foo \"Bar\" "],
             ..Default::default()
         };
-        let run = |text: &str| Template::parse(text).expand(&now(), &fake);
+        let run = |text: &str| {
+            Template::parse(text)
+                .expand(&now(), &fake, &HashMap::new())
+                .text
+        };
 
         assert_eq!(run("{clipboard | trim | uppercase}"), "FOO \"BAR\"");
         assert_eq!(run("{clipboard|trim|lowercase}"), "foo \"bar\"");
@@ -754,7 +980,11 @@ mod tests {
             clipboard: vec!["19.99*3", "a word"],
             ..Default::default()
         };
-        let run = |text: &str| Template::parse(text).expand(&now(), &fake);
+        let run = |text: &str| {
+            Template::parse(text)
+                .expand(&now(), &fake, &HashMap::new())
+                .text
+        };
         assert_eq!(run("{clipboard | calculate}"), "59.97");
         // A value that is not arithmetic is left as it was.
         assert_eq!(run("{clipboard offset=1 | calculate}"), "a word");
@@ -851,6 +1081,136 @@ mod tests {
     #[test]
     fn a_quoted_value_may_hold_braces_and_pipes() {
         assert_eq!(expand("{date format=\"'{'yyyy'}' | 'x'\"}"), "{2026} | x");
+    }
+
+    fn answers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    fn fill(text: &str, pairs: &[(&str, &str)]) -> Expanded {
+        Template::parse(text).expand(&now(), &Fake::default(), &answers(pairs))
+    }
+
+    #[test]
+    fn arguments_are_asked_for_once_each_in_order() {
+        let template = Template::parse(
+            "{argument name=\"tone\" options=\"happy, sad\"} {argument} \
+             {argument name=tone} {argument default=\"x\"}",
+        );
+        let arguments = template.arguments();
+        let keys: Vec<&str> = arguments.iter().map(|a| a.key.as_str()).collect();
+        assert_eq!(keys, ["tone", "#1", "#2"]);
+        assert_eq!(arguments[0].options, ["happy", "sad"]);
+        assert_eq!(arguments[0].label(), "tone");
+        assert_eq!(arguments[1].label(), "Argument 1");
+        assert_eq!(arguments[2].default.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn a_fourth_argument_and_a_second_cursor_are_text() {
+        let text = "{argument name=a}{argument name=b}{argument name=c}{argument name=d}";
+        assert_eq!(Template::parse(text).arguments().len(), MAX_ARGUMENTS);
+        assert_eq!(
+            fill(text, &[("a", "1"), ("b", "2"), ("c", "3")]).text,
+            "123{argument name=d}"
+        );
+
+        let expanded = fill("a{cursor}b{cursor}c", &[]);
+        assert_eq!(expanded.text, "ab{cursor}c");
+        assert_eq!(expanded.caret_back, "b{cursor}c".len());
+    }
+
+    #[test]
+    fn answers_fill_every_use_of_a_name_and_take_modifiers() {
+        let text = "Dear {argument name=who}, {argument name=who | uppercase}!";
+        assert_eq!(fill(text, &[("who", "Ana")]).text, "Dear Ana, ANA!");
+    }
+
+    #[test]
+    fn an_unanswered_argument_is_its_default_or_nothing() {
+        assert_eq!(
+            fill("[{argument default=\"skiing\"}][{argument}]", &[]).text,
+            "[skiing][]"
+        );
+    }
+
+    #[test]
+    fn what_is_typed_resolves_to_an_answer() {
+        let template = Template::parse(
+            "{argument name=a default=\"d\"}{argument name=b options=\"Yes, No\"}{argument name=c}",
+        );
+        let arguments = template.arguments();
+        assert_eq!(arguments[0].resolve("  ").as_deref(), Some("d"));
+        assert_eq!(arguments[0].resolve(" typed ").as_deref(), Some("typed"));
+        // A choice must be one of the options, and is spelled as listed.
+        assert_eq!(arguments[1].resolve("yes").as_deref(), Some("Yes"));
+        assert_eq!(arguments[1].resolve("maybe"), None);
+        // Required: nothing typed is no answer.
+        assert_eq!(arguments[2].resolve(""), None);
+    }
+
+    #[test]
+    fn invalid_arguments_are_text() {
+        for text in [
+            "{argument name=\"\"}",
+            "{argument options=\" , \"}",
+            "{argument size=3}",
+            "{cursor | uppercase}",
+            "{cursor at=1}",
+        ] {
+            assert_eq!(fill(text, &[]).text, text, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_preview_fills_answers_and_leaves_the_rest() {
+        let template =
+            Template::parse("Hi {argument name=who}, {argument name=mood} {date}{cursor}.");
+        assert_eq!(
+            template.preview(&answers(&[("who", "Ana")])),
+            "Hi Ana, {mood} {date}."
+        );
+    }
+
+    /// The caret is moved back in graphemes, as Left moves: an emoji made of
+    /// several code points is one step, and so is a line break.
+    #[test]
+    fn the_cursor_is_counted_in_graphemes_from_the_end() {
+        assert_eq!(fill("no cursor", &[]).caret_back, 0);
+        assert_eq!(fill("end{cursor}", &[]).caret_back, 0);
+        let expanded = fill("<b>{cursor}</b>", &[]);
+        assert_eq!(expanded.text, "<b></b>");
+        assert_eq!(expanded.caret_back, 4);
+        assert_eq!(
+            fill(
+                "a{cursor}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\nz",
+                &[]
+            )
+            .caret_back,
+            3
+        );
+        assert_eq!(fill("a{cursor}\r\nz", &[]).caret_back, 2);
+        // Counted after everything is filled in.
+        assert_eq!(
+            fill("{cursor}{argument name=x}", &[("x", "abc")]).caret_back,
+            3
+        );
+    }
+
+    #[test]
+    fn an_inserted_snippet_asks_for_nothing_and_places_no_caret() {
+        let fake = Fake {
+            snippets: HashMap::from([("inner", "[{argument name=x}{cursor}]")]),
+            ..Default::default()
+        };
+        let template = Template::parse("{snippet name=inner}!");
+        assert!(template.arguments().is_empty());
+        let expanded = template.expand(&now(), &fake, &answers(&[("x", "1")]));
+        assert_eq!(expanded.text, "[{argument name=x}{cursor}]!");
+        assert_eq!(expanded.caret_back, 0);
     }
 
     #[test]

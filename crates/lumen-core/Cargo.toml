@@ -35,6 +35,9 @@ resvg = "0.45"
 # from the system, and `tzdb-bundle-platform` bundles the database where the
 # system has none to read, which is Windows.
 jiff = { version = "=0.2.35", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform"] }
+# Where `{cursor}` leaves the caret is counted in graphemes, as the Left key
+# moves (F11). Already in the build through nucleo-matcher.
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }

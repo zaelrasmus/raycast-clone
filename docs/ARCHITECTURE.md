@@ -1339,6 +1339,31 @@ What changed on the way, and what was learned:
   evaluate what another placeholder produced -- `{clipboard | calculate}` --
   with the launcher's own calculator. A value that is not arithmetic is left
   as it was.
+- **Arguments are asked for one at a time, not side by side.** The design
+  said a pill per argument with `Tab` between them, which is Raycast's
+  look; that is a new multi-field component in the search bar, with its own
+  focus, selection and input method handling. Instead `Enter` on a snippet
+  with arguments empties the search field and makes it the first answer:
+  the placeholder names the argument (and its default), a choice's
+  `options` are the list, filtered as typed, and the pane shows the snippet
+  filled in so far -- other placeholders as written, since the clipboard
+  and the time are read at the paste, not before. `Enter` moves on, and on
+  the last pastes; a required argument left empty, or a choice not among
+  the options, does not advance. *Back to Snippets* in the action panel
+  returns to the list with the search as it was; `Esc` clears the answer,
+  then leaves the view, as in any view. It is all in the session, over the
+  view, the field and the pane that were already there. Raycast's rules
+  hold: three arguments at most, a name shared by several placeholders is
+  asked once, an unnamed one is an argument of its own, and `options` were
+  added, which the design had missed.
+- **`{cursor}` is Left, counted in graphemes.** After the paste keystroke,
+  in the same `SendInput` call, Left once per grapheme after the cursor --
+  an emoji of several code points is one press, a line break is one --
+  which is how editors move. The target reads the clipboard while handling
+  the paste, before the first Left reaches it, so the order holds. A second
+  `{cursor}` is text, and one more than 2,000 presses from the end leaves
+  the caret at the end. In a snippet inserted with `{snippet}`, `{argument}`
+  and `{cursor}` are text: only the snippet being pasted asks and places.
 - **A paste is never logged with its text.** `Paste`'s `Debug` prints the
   length only, because the daemon logs an event that failed with `{:?}`, and
   a snippet can be a password.

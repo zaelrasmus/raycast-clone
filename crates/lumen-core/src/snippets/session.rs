@@ -10,10 +10,22 @@
 //! query -- and host filtering keeps the view's order rather than the score's
 //! (7.30), so the loose matches would not even sink. So the list asks to filter
 //! itself, and a snippet is kept when every word typed appears in it.
+//!
+//! # Arguments are asked for one at a time
+//!
+//! A snippet with `{argument}` placeholders is not pasted on `Enter`: the
+//! search field is emptied and becomes the first argument's answer, with its
+//! options as the list if it has any, and the pane showing the snippet filled
+//! in so far. `Enter` moves to the next, and on the last pastes. The view, the
+//! field and the pane are the ones already there; Raycast's side-by-side
+//! fields would be a new component in the search bar.
+
+use std::collections::HashMap;
 
 use jiff::Zoned;
 use jiff::civil::Date;
 
+use super::template::{Argument, Template};
 use super::{Broken, Format, Loaded, Snippet};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Icon, Item, ItemDetail, List, MetadataRow,
@@ -27,16 +39,46 @@ const ALL_TAGS: &str = "";
 /// What `Enter` does.
 pub const PASTE: &str = "paste";
 pub const COPY: &str = "copy";
+/// While arguments are asked for: take what is typed, or the option chosen.
+pub const NEXT: &str = "next";
+/// While arguments are asked for: back to the list.
+pub const BACK: &str = "back";
+/// The item that takes what is typed as the answer.
+const ANSWER: &str = "answer";
 
 /// What the daemon is asked to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Draw this.
     Render(View),
-    /// Close the launcher and paste this into the window it was opened over.
-    Paste(String),
-    /// Put this on the clipboard and close the launcher.
-    Copy(String),
+    /// Put this in the search field, as if typed.
+    SetQuery(String),
+    /// Fill in `text`'s placeholders with `answers` for its arguments, close
+    /// the launcher and paste it into the window it was opened over.
+    Paste {
+        text: String,
+        answers: HashMap<String, String>,
+    },
+    /// The same, onto the clipboard.
+    Copy {
+        text: String,
+        answers: HashMap<String, String>,
+    },
+}
+
+/// A snippet's arguments being asked for.
+struct Asking {
+    /// Which snippet, by its place in the list.
+    index: usize,
+    template: Template,
+    arguments: Vec<Argument>,
+    answers: HashMap<String, String>,
+    /// The argument being asked for now.
+    step: usize,
+    /// What is typed in the field, which is the answer being written.
+    typed: String,
+    /// Whether the end of it is a copy rather than a paste.
+    copy: bool,
 }
 
 pub struct Session {
@@ -46,8 +88,11 @@ pub struct Session {
     broken: Vec<Broken>,
     /// Why the file could not be read at all, said instead of the list.
     error: Option<String>,
+    /// The search, as typed, to put back when arguments are left.
+    query: String,
     /// The words typed, in lower case.
     words: Vec<String>,
+    asking: Option<Asking>,
     /// `None` is every tag.
     tag: Option<String>,
     /// When the view opened, in the user's time zone: what *Today* means.
@@ -74,16 +119,22 @@ impl Session {
                 .collect(),
             broken,
             error,
+            query: String::new(),
             words: Vec::new(),
+            asking: None,
             tag: None,
             now,
         }
     }
 
     pub fn event(&mut self, event: Event) -> Vec<Effect> {
+        if self.asking.is_some() {
+            return self.asking_event(event);
+        }
         match event {
             Event::QueryChanged { query } => {
                 let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+                self.query = query;
                 if words == self.words {
                     return Vec::new();
                 }
@@ -102,23 +153,192 @@ impl Session {
                 item: Some(item),
                 action,
             } => {
-                let Some(text) = self.snippet(&item).map(|snippet| snippet.text.clone()) else {
+                let copy = match action.as_str() {
+                    PASTE => false,
+                    COPY => true,
+                    _ => return Vec::new(),
+                };
+                let Some(index) = item
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|i| *i < self.snippets.len())
+                else {
                     return Vec::new();
                 };
-                match action.as_str() {
-                    PASTE => vec![Effect::Paste(text)],
-                    COPY => vec![Effect::Copy(text)],
-                    _ => Vec::new(),
+                let text = self.snippets[index].0.text.clone();
+                let template = Template::parse(&text);
+                let arguments = template.arguments();
+                if arguments.is_empty() {
+                    return vec![finish(text, HashMap::new(), copy)];
                 }
+                self.asking = Some(Asking {
+                    index,
+                    template,
+                    arguments,
+                    answers: HashMap::new(),
+                    step: 0,
+                    typed: String::new(),
+                    copy,
+                });
+                vec![Effect::SetQuery(String::new()), Effect::Render(self.view())]
             }
             _ => Vec::new(),
         }
     }
 
-    /// The snippet an item's id names: its place in the sorted list.
-    fn snippet(&self, id: &str) -> Option<&Snippet> {
-        let index: usize = id.parse().ok()?;
-        self.snippets.get(index).map(|(snippet, _)| snippet)
+    fn asking_event(&mut self, event: Event) -> Vec<Effect> {
+        let Some(asking) = self.asking.as_mut() else {
+            return Vec::new();
+        };
+        match event {
+            Event::QueryChanged { query } => {
+                if query == asking.typed {
+                    return Vec::new();
+                }
+                asking.typed = query;
+                vec![Effect::Render(self.view())]
+            }
+            Event::ActionInvoked { action, .. } if action == BACK => {
+                self.asking = None;
+                vec![
+                    Effect::SetQuery(self.query.clone()),
+                    Effect::Render(self.view()),
+                ]
+            }
+            Event::ActionInvoked {
+                item: Some(item),
+                action,
+            } if action == NEXT => {
+                let argument = &asking.arguments[asking.step];
+                let answer = match item.strip_prefix("option:") {
+                    Some(option) => option
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|option| argument.options.get(option).cloned()),
+                    None => argument.resolve(&asking.typed),
+                };
+                // A required argument with nothing typed, or a choice that is
+                // not one of the options, is not an answer yet.
+                let Some(answer) = answer else {
+                    return Vec::new();
+                };
+                asking.answers.insert(argument.key.clone(), answer);
+                asking.step += 1;
+                asking.typed.clear();
+                if asking.step < asking.arguments.len() {
+                    return vec![Effect::SetQuery(String::new()), Effect::Render(self.view())];
+                }
+                let asking = self.asking.take().expect("asking, above");
+                let text = self.snippets[asking.index].0.text.clone();
+                vec![finish(text, asking.answers, asking.copy)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The field is the answer to the argument asked for now; the list is
+    /// that answer, or the options it may be; the pane is the snippet filled
+    /// in so far.
+    fn asking_view(&self, asking: &Asking) -> View {
+        let snippet = &self.snippets[asking.index].0;
+        let argument = &asking.arguments[asking.step];
+        let last = asking.step + 1 == asking.arguments.len();
+        let verb = match (last, asking.copy) {
+            (false, _) => "Next",
+            (true, false) => "Paste",
+            (true, true) => "Copy to Clipboard",
+        };
+        let actions = vec![
+            Action {
+                id: NEXT.into(),
+                title: verb.into(),
+                shortcut: None,
+            },
+            Action {
+                id: BACK.into(),
+                title: "Back to Snippets".into(),
+                shortcut: None,
+            },
+        ];
+        // What the pane shows if `answer` is given for this argument.
+        let preview = |answer: Option<&str>| {
+            let mut answers = asking.answers.clone();
+            if let Some(answer) = answer {
+                answers.insert(argument.key.clone(), answer.to_string());
+            }
+            let text = asking.template.preview(&answers);
+            match snippet.format {
+                Format::Markdown => ItemDetail {
+                    markdown: text,
+                    text: None,
+                    metadata: Vec::new(),
+                },
+                Format::Text | Format::Unknown => ItemDetail {
+                    markdown: String::new(),
+                    text: Some(text),
+                    metadata: Vec::new(),
+                },
+            }
+        };
+
+        let items: Vec<Item> = if argument.options.is_empty() {
+            let answer = argument.resolve(&asking.typed);
+            let (title, subtitle) = match (&answer, asking.typed.trim().is_empty()) {
+                (Some(answer), true) => (answer.clone(), Some("the default".to_string())),
+                (Some(answer), false) => (answer.clone(), None),
+                (None, _) => (format!("Type the {}", argument.label()), None),
+            };
+            vec![Item {
+                id: ANSWER.into(),
+                title,
+                subtitle,
+                icon: Some(glyph()),
+                accessories: Vec::new(),
+                keywords: Vec::new(),
+                actions: actions.clone(),
+                detail: Some(preview(answer.as_deref())),
+            }]
+        } else {
+            let typed = asking.typed.trim().to_lowercase();
+            argument
+                .options
+                .iter()
+                .enumerate()
+                .filter(|(_, option)| option.to_lowercase().contains(&typed))
+                .map(|(index, option)| Item {
+                    id: format!("option:{index}"),
+                    title: option.clone(),
+                    subtitle: (argument.default.as_deref() == Some(option.as_str()))
+                        .then(|| "the default".to_string()),
+                    icon: Some(glyph()),
+                    accessories: Vec::new(),
+                    keywords: Vec::new(),
+                    actions: actions.clone(),
+                    detail: Some(preview(Some(option))),
+                })
+                .collect()
+        };
+
+        let placeholder = match &argument.default {
+            Some(default) => format!("{} ({default})", argument.label()),
+            None => argument.label(),
+        };
+        View::List(List {
+            placeholder: Some(placeholder),
+            filtering: Filtering::Extension,
+            scopes: Vec::new(),
+            empty: Some(EmptyState {
+                title: format!("No {} matches", argument.label()),
+                description: Some(argument.options.join(", ")),
+                icon: Some(glyph()),
+            }),
+            showing_detail: true,
+            sections: vec![Section {
+                title: Some(snippet.name.trim().to_string()),
+                subtitle: Some(format!("{} of {}", asking.step + 1, asking.arguments.len())),
+                items,
+            }],
+        })
     }
 
     fn shown(&self, snippet: &Snippet, haystack: &str) -> bool {
@@ -134,6 +354,9 @@ impl Session {
     }
 
     pub fn view(&self) -> View {
+        if let Some(asking) = &self.asking {
+            return self.asking_view(asking);
+        }
         let today = self.now.date();
         let mut sections: Vec<Section> = Vec::new();
 
@@ -361,6 +584,15 @@ fn broken_item(broken: &Broken) -> Item {
     }
 }
 
+/// The end of choosing a snippet: paste it, or copy it.
+fn finish(text: String, answers: HashMap<String, String>, copy: bool) -> Effect {
+    if copy {
+        Effect::Copy { text, answers }
+    } else {
+        Effect::Paste { text, answers }
+    }
+}
+
 /// Everything a word typed may be found in, in lower case.
 fn haystack(snippet: &Snippet) -> String {
     let mut haystack = snippet.name.to_lowercase();
@@ -580,13 +812,25 @@ mod tests {
             item: Some(id.clone()),
             action: PASTE.into(),
         });
-        assert_eq!(pasted, [Effect::Paste("new text".into())]);
+        assert_eq!(
+            pasted,
+            [Effect::Paste {
+                text: "new text".into(),
+                answers: HashMap::new()
+            }]
+        );
 
         let copied = session.event(Event::ActionInvoked {
             item: Some(id),
             action: COPY.into(),
         });
-        assert_eq!(copied, [Effect::Copy("new text".into())]);
+        assert_eq!(
+            copied,
+            [Effect::Copy {
+                text: "new text".into(),
+                answers: HashMap::new()
+            }]
+        );
     }
 
     #[test]
@@ -723,6 +967,104 @@ mod tests {
         assert_eq!(last.title.as_deref(), Some("Could not read"));
         assert_eq!(last.items[0].title, "Tagged wrong");
         assert!(last.items[0].actions.is_empty());
+    }
+
+    fn invoke(session: &mut Session, item: &str, action: &str) -> Vec<Effect> {
+        session.event(Event::ActionInvoked {
+            item: Some(item.into()),
+            action: action.into(),
+        })
+    }
+
+    fn first_item(session: &Session) -> Item {
+        list(&session.view()).item(0).unwrap().clone()
+    }
+
+    fn asking_session() -> Session {
+        Session::new(
+            vec![snippet(
+                "Reply",
+                "Dear {argument name=who}, I am {argument name=mood options=\"happy, sad\" default=sad}.{cursor}",
+            )],
+            now(),
+        )
+    }
+
+    #[test]
+    fn a_snippet_with_arguments_asks_for_them_one_at_a_time() {
+        let mut session = asking_session();
+        typed(&mut session, "reply");
+
+        let effects = invoke(&mut session, "0", PASTE);
+        assert_eq!(effects[0], Effect::SetQuery(String::new()));
+        let view = session.view();
+        let asked = list(&view);
+        assert_eq!(asked.placeholder.as_deref(), Some("who"));
+        assert_eq!(asked.sections[0].subtitle.as_deref(), Some("1 of 2"));
+        // The field is the answer; nothing typed yet, and none by default.
+        assert_eq!(first_item(&session).title, "Type the who");
+        assert!(invoke(&mut session, ANSWER, NEXT).is_empty());
+
+        typed(&mut session, "Ana");
+        let item = first_item(&session);
+        assert_eq!(item.title, "Ana");
+        assert_eq!(
+            item.detail.unwrap().text.as_deref(),
+            Some("Dear Ana, I am {mood}.")
+        );
+
+        let effects = invoke(&mut session, ANSWER, NEXT);
+        assert_eq!(effects[0], Effect::SetQuery(String::new()));
+        // The second is a choice: its options are the list, filtered as typed.
+        let view = session.view();
+        assert_eq!(list(&view).placeholder.as_deref(), Some("mood (sad)"));
+        assert_eq!(list(&view).len(), 2);
+        typed(&mut session, "HAP");
+        let item = first_item(&session);
+        assert_eq!(item.title, "happy");
+        assert_eq!(item.actions[0].title, "Paste");
+
+        let effects = invoke(&mut session, &item.id, NEXT);
+        assert_eq!(
+            effects,
+            [Effect::Paste {
+                text: session.snippets[0].0.text.clone(),
+                answers: HashMap::from([
+                    ("who".to_string(), "Ana".to_string()),
+                    ("mood".to_string(), "happy".to_string())
+                ]),
+            }]
+        );
+    }
+
+    #[test]
+    fn back_returns_to_the_list_with_the_search_as_it_was() {
+        let mut session = asking_session();
+        typed(&mut session, "reply");
+        invoke(&mut session, "0", PASTE);
+        typed(&mut session, "half an answer");
+
+        let effects = invoke(&mut session, ANSWER, BACK);
+        assert_eq!(effects[0], Effect::SetQuery("reply".into()));
+        assert_eq!(titles(&session), ["Reply"]);
+        // The search field was put back, which the host reports as typed.
+        typed(&mut session, "reply");
+        assert_eq!(titles(&session), ["Reply"]);
+    }
+
+    #[test]
+    fn copy_asks_too_and_ends_in_a_copy() {
+        let mut session = Session::new(vec![snippet("One", "{argument default=x}")], now());
+        invoke(&mut session, "0", COPY);
+        // Enter with nothing typed takes the default.
+        let effects = invoke(&mut session, ANSWER, NEXT);
+        assert_eq!(
+            effects,
+            [Effect::Copy {
+                text: "{argument default=x}".into(),
+                answers: HashMap::from([("#1".to_string(), "x".to_string())]),
+            }]
+        );
     }
 
     #[test]

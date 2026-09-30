@@ -11,13 +11,14 @@
 //! pasted or copied: reading the clipboard and asking Windows for a date are
 //! system calls, and the rules for them are `template`'s, in core.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
 use lumen_core::clipboard::History;
-use lumen_core::snippets::template::{Sources, Template};
+use lumen_core::snippets::template::{Expanded, Sources, Template};
 use lumen_core::snippets::{self, PasteMode, Snippet, session::Effect, session::Session};
 use lumen_core::view::Event;
 use lumen_platform::{DateStyle, LocalTime, Platform};
@@ -68,21 +69,30 @@ pub fn run(
                             .update(cx, |launcher, _window, cx| launcher.show_view(view, cx))
                             .ok();
                     }
-                    Effect::Paste(text) => {
-                        let text = expand(cx, &platform, &all, &history, text).await;
+                    Effect::SetQuery(query) => {
+                        window
+                            .update(cx, |launcher, _window, cx| launcher.set_query(query, cx))
+                            .ok();
+                    }
+                    Effect::Paste { text, answers } => {
+                        let expanded = expand(cx, &platform, &all, &history, text, answers).await;
                         // The keys are the daemon's to choose, once it knows
                         // which program the window belongs to.
                         let paste = lumen_platform::Paste {
-                            text,
+                            text: expanded.text,
                             keys: lumen_platform::PasteKeys::default(),
+                            caret_back: expanded.caret_back,
                             restore_clipboard: paste == PasteMode::Restore,
                         };
                         window
                             .update(cx, |launcher, _window, cx| launcher.paste(paste, cx))
                             .ok();
                     }
-                    Effect::Copy(text) => {
-                        let text = expand(cx, &platform, &all, &history, text).await;
+                    Effect::Copy { text, answers } => {
+                        // A copy has no caret to place.
+                        let text = expand(cx, &platform, &all, &history, text, answers)
+                            .await
+                            .text;
                         if let Err(error) = platform.set_clipboard_text(&text) {
                             log::error!("could not copy the snippet: {error:#}");
                             continue;
@@ -111,10 +121,14 @@ async fn expand(
     all: &Arc<Vec<Snippet>>,
     history: &Option<Arc<Mutex<History>>>,
     text: String,
-) -> String {
+    answers: HashMap<String, String>,
+) -> Expanded {
     let template = Template::parse(&text);
     if !template.has_placeholders() {
-        return text;
+        return Expanded {
+            text,
+            caret_back: 0,
+        };
     }
     let sources = Live {
         platform: platform.clone(),
@@ -122,7 +136,7 @@ async fn expand(
         history: history.clone(),
     };
     cx.background_executor()
-        .spawn(async move { template.expand(&snippets::now(), &sources) })
+        .spawn(async move { template.expand(&snippets::now(), &sources, &answers) })
         .await
 }
 

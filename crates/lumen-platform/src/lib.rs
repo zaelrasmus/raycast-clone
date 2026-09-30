@@ -129,6 +129,9 @@ pub struct Paste {
     pub text: String,
     /// What the paste is typed with in the target.
     pub keys: PasteKeys,
+    /// How many times to press Left once pasted, to leave the caret where
+    /// the snippet's `{cursor}` was. Zero leaves it at the end.
+    pub caret_back: usize,
     /// Put back what was on the clipboard once the window has read the
     /// text, and keep the text out of clipboard history. `false` leaves the
     /// text on the clipboard, like any copy.
@@ -145,6 +148,7 @@ impl std::fmt::Debug for Paste {
                 &format_args!("<{} characters>", self.text.chars().count()),
             )
             .field("keys", &self.keys)
+            .field("caret_back", &self.caret_back)
             .field("restore_clipboard", &self.restore_clipboard)
             .finish()
     }
@@ -636,6 +640,7 @@ mod tests {
         let paste = Paste {
             text: "hunter2".into(),
             keys: PasteKeys::CtrlV,
+            caret_back: 0,
             restore_clipboard: true,
         };
         let logged = format!("{paste:?}");
