@@ -24,7 +24,8 @@ use crate::view::{
 pub const TAG_SCOPE: &str = "tag";
 /// The option that shows every snippet. Empty, because a tag never is.
 const ALL_TAGS: &str = "";
-/// The one action of slice 1.
+/// What `Enter` does.
+pub const PASTE: &str = "paste";
 pub const COPY: &str = "copy";
 
 /// What the daemon is asked to do.
@@ -32,6 +33,8 @@ pub const COPY: &str = "copy";
 pub enum Effect {
     /// Draw this.
     Render(View),
+    /// Close the launcher and paste this into the window it was opened over.
+    Paste(String),
     /// Put this on the clipboard and close the launcher.
     Copy(String),
 }
@@ -98,10 +101,16 @@ impl Session {
             Event::ActionInvoked {
                 item: Some(item),
                 action,
-            } if action == COPY => self
-                .snippet(&item)
-                .map(|snippet| vec![Effect::Copy(snippet.text.clone())])
-                .unwrap_or_default(),
+            } => {
+                let Some(text) = self.snippet(&item).map(|snippet| snippet.text.clone()) else {
+                    return Vec::new();
+                };
+                match action.as_str() {
+                    PASTE => vec![Effect::Paste(text)],
+                    COPY => vec![Effect::Copy(text)],
+                    _ => Vec::new(),
+                }
+            }
             _ => Vec::new(),
         }
     }
@@ -233,11 +242,18 @@ impl Session {
                 .into_iter()
                 .collect(),
             keywords: Vec::new(),
-            actions: vec![Action {
-                id: COPY.into(),
-                title: "Copy".into(),
-                shortcut: None,
-            }],
+            actions: vec![
+                Action {
+                    id: PASTE.into(),
+                    title: "Paste".into(),
+                    shortcut: None,
+                },
+                Action {
+                    id: COPY.into(),
+                    title: "Copy to Clipboard".into(),
+                    shortcut: None,
+                },
+            ],
             detail: Some(self.detail(snippet)),
         }
     }
@@ -544,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_copies_the_snippet_it_was_pressed_on() {
+    fn enter_pastes_the_snippet_it_was_pressed_on_and_the_panel_copies_it() {
         let mut session = Session::new(
             vec![
                 dated("Old", "2026-01-01T00:00:00Z"),
@@ -555,20 +571,28 @@ mod tests {
             ],
             now(),
         );
-        let id = list(&session.view()).item(0).unwrap().id.clone();
+        let view = session.view();
+        let item = list(&view).item(0).unwrap();
+        assert_eq!(item.actions[0].id, PASTE);
+        let id = item.id.clone();
 
-        let effects = session.event(Event::ActionInvoked {
+        let pasted = session.event(Event::ActionInvoked {
+            item: Some(id.clone()),
+            action: PASTE.into(),
+        });
+        assert_eq!(pasted, [Effect::Paste("new text".into())]);
+
+        let copied = session.event(Event::ActionInvoked {
             item: Some(id),
             action: COPY.into(),
         });
-
-        assert_eq!(effects, [Effect::Copy("new text".into())]);
+        assert_eq!(copied, [Effect::Copy("new text".into())]);
     }
 
     #[test]
     fn an_unknown_item_or_action_does_nothing() {
         let mut session = Session::new(vec![snippet("A", "a")], now());
-        for (item, action) in [("9", COPY), ("x", COPY), ("0", "delete")] {
+        for (item, action) in [("9", PASTE), ("x", COPY), ("0", "delete")] {
             let effects = session.event(Event::ActionInvoked {
                 item: Some(item.into()),
                 action: action.into(),

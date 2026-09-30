@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
-use lumen_core::snippets::{self, session::Effect, session::Session};
+use lumen_core::snippets::{self, PasteMode, session::Effect, session::Session};
 use lumen_core::view::Event;
 use lumen_platform::Platform;
 use lumen_ui::{Launcher, ViewSink};
@@ -21,6 +21,7 @@ use lumen_ui::{Launcher, ViewSink};
 pub fn run(
     platform: Arc<dyn Platform>,
     path: PathBuf,
+    paste: PasteMode,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut gpui::App,
 ) {
@@ -50,6 +51,18 @@ pub fn run(
                     Effect::Render(view) => {
                         window
                             .update(cx, |launcher, _window, cx| launcher.show_view(view, cx))
+                            .ok();
+                    }
+                    Effect::Paste(text) => {
+                        // The keys are the daemon's to choose, once it knows
+                        // which program the window belongs to.
+                        let paste = lumen_platform::Paste {
+                            text,
+                            keys: lumen_platform::PasteKeys::default(),
+                            restore_clipboard: paste == PasteMode::Restore,
+                        };
+                        window
+                            .update(cx, |launcher, _window, cx| launcher.paste(paste, cx))
                             .ok();
                     }
                     Effect::Copy(text) => {

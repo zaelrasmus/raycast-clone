@@ -37,25 +37,28 @@ use windows::core::BOOL;
 const FRAME_HOST: &str = "applicationframehost.exe";
 
 pub fn current() -> Result<Option<ForegroundApp>> {
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() {
-            // Briefly true while the desktop switches. Not an error.
-            return Ok(None);
-        }
+    let hwnd = unsafe { GetForegroundWindow() };
+    // Null is briefly true while the desktop switches. Not an error.
+    Ok(of(hwnd))
+}
 
-        let title = window_title(hwnd);
-        let mut executable = executable_of(hwnd);
-
-        if executable.as_deref() == Some(FRAME_HOST) {
-            // The frame host owns the window but not the application. Descend.
-            if let Some(real) = packaged_child(hwnd) {
-                executable = real;
-            }
-        }
-
-        Ok(Some(ForegroundApp { executable, title }))
+/// The application that owns `hwnd`, whether or not it is in front (F11).
+pub fn of(hwnd: HWND) -> Option<ForegroundApp> {
+    if hwnd.0.is_null() {
+        return None;
     }
+
+    let title = window_title(hwnd);
+    let mut executable = executable_of(hwnd);
+
+    if executable.as_deref() == Some(FRAME_HOST) {
+        // The frame host owns the window but not the application. Descend.
+        if let Some(real) = packaged_child(hwnd) {
+            executable = real;
+        }
+    }
+
+    Some(ForegroundApp { executable, title })
 }
 
 fn window_title(hwnd: HWND) -> String {
@@ -73,7 +76,7 @@ fn window_title(hwnd: HWND) -> String {
 }
 
 /// The lowercased file name of the process owning `hwnd`.
-fn executable_of(hwnd: HWND) -> Option<String> {
+pub(crate) fn executable_of(hwnd: HWND) -> Option<String> {
     unsafe {
         let mut process_id = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut process_id));

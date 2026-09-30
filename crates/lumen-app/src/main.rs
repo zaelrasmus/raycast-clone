@@ -992,6 +992,9 @@ fn subscribe_to_launcher(
                 LauncherEvent::Dismissed => hide(&platform, &shell),
                 LauncherEvent::Resized(height) => resize(&platform, &config, &shell, height),
                 LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
+                LauncherEvent::Paste(ref paste) => {
+                    paste_into(&platform, &config, &shell, paste.clone())
+                }
                 // Handled above, before this task was spawned.
                 LauncherEvent::RunExtension { .. }
                 | LauncherEvent::RunTranslate { .. }
@@ -1367,8 +1370,9 @@ fn handle(
         Message::RunSnippets => {
             let platform = platform.clone();
             let path = surfaces.paths.snippets_file();
+            let paste = config.snippets.paste;
             let window = surfaces.launcher;
-            cx.update(move |cx| snippets::run(platform, path, window, cx))
+            cx.update(move |cx| snippets::run(platform, path, paste, window, cx))
                 .context("reaching the app to open the snippets")
         }
         Message::RefreshRates => {
@@ -1599,6 +1603,53 @@ fn arrange(
     };
 
     platform.arrange_window(target, layout)
+}
+
+/// Hide, then paste into the window the launcher was opened over (F11).
+///
+/// Arranging's shape (7.15): the handle is taken before hiding consumes it.
+/// The paste itself waits for the window to read the clipboard, which can
+/// take a second or two, so it runs on a thread of its own and says so if it
+/// fails -- by then the launcher is gone and there is nowhere else to say it.
+fn paste_into(
+    platform: &Arc<dyn Platform>,
+    config: &Config,
+    shell: &Rc<RefCell<Shell>>,
+    mut paste: lumen_platform::Paste,
+) -> Result<()> {
+    let target = shell.borrow().restore_to;
+    hide(platform, shell)?;
+
+    let Some(target) = target else {
+        // Opened from the desktop: there is no window to paste into, so the
+        // snippet is copied, which is the most a paste could have done.
+        log::info!("no window to paste into; copied the snippet instead");
+        return platform.set_clipboard_text(&paste.text);
+    };
+
+    let platform = platform.clone();
+    let snippets = config.snippets.clone();
+    std::thread::Builder::new()
+        .name("lumen-paste-request".into())
+        .spawn(move || {
+            // Which program it is decides the keystroke: some terminals pass
+            // `Ctrl+V` on rather than pasting. Asked here, off the UI thread.
+            let executable = platform
+                .window_application(target)
+                .ok()
+                .flatten()
+                .and_then(|app| app.executable);
+            paste.keys = snippets.keys_for(executable.as_deref());
+            log::debug!("pasting into {executable:?} with {:?}", paste.keys);
+            if let Err(error) = platform.paste(target, &paste) {
+                log::warn!("could not paste: {error:#}");
+                if let Err(error) = platform.notify("Couldn't paste", &format!("{error:#}")) {
+                    log::warn!("could not say so: {error:#}");
+                }
+            }
+        })
+        .context("starting the paste")?;
+    Ok(())
 }
 
 fn resize(

@@ -1277,6 +1277,16 @@ impl Launcher {
         cx.emit(LauncherEvent::Dismissed);
     }
 
+    /// Close and paste `paste` into the window the launcher was opened over
+    /// (F11).
+    ///
+    /// In place of the dismissal, as arranging is: the daemon hides, which
+    /// hands the foreground back, and keeps the handle that hiding would
+    /// otherwise consume, to paste into.
+    pub fn paste(&mut self, paste: lumen_platform::Paste, cx: &mut Context<Self>) {
+        cx.emit(LauncherEvent::Paste(paste));
+    }
+
     /// A table of exchange rates the daemon fetched or read (F9), for the
     /// root list's conversions.
     pub fn set_rates(
@@ -2461,6 +2471,8 @@ pub enum LauncherEvent {
     /// also *replaces* `Dismissed` rather than following it, because hiding
     /// takes that handle and the arrangement still needs it.
     ArrangeWindow(lumen_platform::WindowLayout),
+    /// Hide, then paste into the window the launcher was opened over (F11).
+    Paste(lumen_platform::Paste),
     /// The content changed size, so the window should be resized to hug it.
     ///
     /// A height rather than a row count, because the launcher has two kinds of

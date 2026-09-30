@@ -1268,6 +1268,51 @@ The decisions:
   The idle baseline and the binary size are measured before slice 1, and
   again after 6.
 
+What changed on the way, and what was learned:
+
+- **A snippet that cannot be read is said, not dropped.** Found by review
+  of slice 1: with more fields, one mistyped by hand (`"tags": "work"`)
+  failed the whole file, and a file that failed looked like *No snippets
+  yet*. The file is now read one snippet at a time; one that fails is
+  listed under *Could not read* with serde's reason, and a file that does
+  not parse shows its error as the empty state.
+- **The moment to restore is when the target reads, found by delayed
+  rendering.** A window of Lumen's owns the clipboard and announces the
+  snippet without supplying it; Windows asks that window for it
+  (`WM_RENDERFORMAT`) when somebody reads it, and the window that has the
+  clipboard open then is the reader. The clipboard is put back 250 ms after
+  the target's read, for the other formats an editor asks for in turn.
+  Everything that was on it is kept as bytes, except GDI handles (the DIB
+  beside a bitmap is kept, and the bitmap comes back from it) and OLE's own
+  formats, which point into the process that copied. Measured on this
+  machine: Notepad and a terminal read within the same second the key is
+  sent, and the clipboard came back.
+- **The restore was first undone by Lumen itself.** Found by logging each
+  step, after a manual test said the old clipboard did not come back: the
+  restore ran, and then the window, closing, received `WM_RENDERALLFORMATS`
+  and wrote the snippet again. It now supplies the text only while it is
+  still owed.
+- **The reader is the target's program, not its process.** In an Electron
+  application the window belongs to one process and a different one reads
+  the clipboard (`Chrome_MessageWindow`), so the read went unseen and the
+  restore waited for the two-second fallback. A reader running the same
+  executable as the target counts. When something else entirely reads first,
+  the target's read cannot be seen -- the text is already supplied, and
+  reading it asks nothing -- so the clipboard is restored on the fallback
+  without an error. Only when nothing reads at all is the paste reported as
+  dropped, which is what a window running as administrator does (UIPI
+  discards the keystrokes silently); the snippet is then left on the
+  clipboard.
+- **Not every program pastes on `Ctrl+V`.** Some terminals pass it on to the
+  program running in them; the one this was tested in pastes on
+  `Ctrl+Shift+V`. `snippets.paste-keys` names the keystroke by executable,
+  over a short built-in list (WezTerm, Alacritty, mintty), and `trait
+  Platform` gained `window_application` to say which program owns the
+  captured window, off the UI thread.
+- **A paste is never logged with its text.** `Paste`'s `Debug` prints the
+  length only, because the daemon logs an event that failed with `{:?}`, and
+  a snippet can be a password.
+
 ---
 
 ## 7. Deviations from the plan

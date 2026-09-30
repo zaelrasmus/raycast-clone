@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ApplicationsSink, Browser, ClipboardSink, FocusOwner, ForegroundApp, GestureSink,
-    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
-    TraySink, WindowLayout, WindowRole,
+    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Paste, Platform, Rect,
+    TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -31,6 +31,7 @@ mod foreground;
 mod icons;
 mod input;
 mod monitor;
+mod paste;
 mod scripts;
 mod sound;
 mod tray;
@@ -139,6 +140,10 @@ impl Platform for WindowsPlatform {
         foreground::current()
     }
 
+    fn window_application(&self, window: FocusOwner) -> Result<Option<ForegroundApp>> {
+        Ok(foreground::of(HWND(window.0 as *mut std::ffi::c_void)))
+    }
+
     fn start_gesture_listener(
         &self,
         hotkey: Hotkey,
@@ -194,6 +199,10 @@ impl Platform for WindowsPlatform {
 
     fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()> {
         arrange::arrange(window, layout)
+    }
+
+    fn paste(&self, window: FocusOwner, paste: &Paste) -> Result<()> {
+        paste::paste(window, paste)
     }
 
     fn spawn_extension(

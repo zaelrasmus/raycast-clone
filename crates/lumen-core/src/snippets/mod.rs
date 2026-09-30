@@ -19,7 +19,62 @@ pub mod session;
 
 use std::path::Path;
 
+use lumen_platform::PasteKeys;
 use serde::{Deserialize, Serialize};
+
+/// The `snippets` section of `config.json` (F11).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct SnippetsConfig {
+    pub paste: PasteMode,
+    /// The keystroke that pastes, by program: `{ "noctty.exe":
+    /// "ctrl+shift+v" }`. Over [`BUILTIN_PASTE_KEYS`]; everything else is
+    /// `Ctrl+V`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub paste_keys: std::collections::BTreeMap<String, PasteKeys>,
+}
+
+/// Terminals whose default bindings do not paste on `Ctrl+V` but pass it on
+/// to the program running in them, from each one's own documentation of its
+/// defaults. A user's `paste-keys` entry for the same program wins.
+pub const BUILTIN_PASTE_KEYS: &[(&str, PasteKeys)] = &[
+    ("wezterm-gui.exe", PasteKeys::CtrlShiftV),
+    ("alacritty.exe", PasteKeys::CtrlShiftV),
+    ("mintty.exe", PasteKeys::ShiftInsert),
+];
+
+impl SnippetsConfig {
+    /// The keystroke that pastes into `executable`, the lowercased file name
+    /// the platform reports -- compared without case, as sheets are.
+    pub fn keys_for(&self, executable: Option<&str>) -> PasteKeys {
+        let Some(executable) = executable else {
+            return PasteKeys::default();
+        };
+        self.paste_keys
+            .iter()
+            .find(|(name, _)| name.trim().eq_ignore_ascii_case(executable))
+            .map(|(_, keys)| *keys)
+            .or_else(|| {
+                BUILTIN_PASTE_KEYS
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(executable))
+                    .map(|(_, keys)| *keys)
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// What a paste leaves on the clipboard.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PasteMode {
+    /// Put back what was there, and keep the snippet out of clipboard
+    /// history: a paste is not a copy the user made.
+    #[default]
+    Restore,
+    /// Leave the snippet, which enters the history like any copy.
+    Keep,
+}
 
 /// The schema version this build writes and understands.
 ///
@@ -339,6 +394,40 @@ mod tests {
         .unwrap();
         assert_eq!(snippet.keyword(), None);
         assert_eq!(snippet.tags().collect::<Vec<_>>(), ["work"]);
+    }
+
+    /// Restoring is the default; keeping is asked for by name.
+    #[test]
+    fn a_paste_puts_the_clipboard_back_unless_told_to_keep() {
+        assert_eq!(SnippetsConfig::default().paste, PasteMode::Restore);
+        let config: crate::Config =
+            serde_json::from_str(r#"{ "snippets": { "paste": "keep" } }"#).unwrap();
+        assert_eq!(config.snippets.paste, PasteMode::Keep);
+    }
+
+    #[test]
+    fn the_paste_keystroke_is_ctrl_v_unless_the_program_is_named() {
+        let config: crate::Config = serde_json::from_str(
+            r#"{ "snippets": { "paste-keys": {
+                "Noctty.exe": "ctrl+shift+v",
+                "wezterm-gui.exe": "shift+insert"
+            } } }"#,
+        )
+        .unwrap();
+        let snippets = &config.snippets;
+
+        assert_eq!(snippets.keys_for(Some("noctty.exe")), PasteKeys::CtrlShiftV);
+        // The user's entry wins over the built-in one.
+        assert_eq!(
+            snippets.keys_for(Some("wezterm-gui.exe")),
+            PasteKeys::ShiftInsert
+        );
+        assert_eq!(
+            snippets.keys_for(Some("mintty.exe")),
+            PasteKeys::ShiftInsert
+        );
+        assert_eq!(snippets.keys_for(Some("notepad.exe")), PasteKeys::CtrlV);
+        assert_eq!(snippets.keys_for(None), PasteKeys::CtrlV);
     }
 
     #[test]

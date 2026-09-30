@@ -14,6 +14,7 @@ use crate::clipboard::Retention;
 use crate::currency::CurrencyConfig;
 use crate::dictionary::DictionaryConfig;
 use crate::providers::files::{self, FileLimits};
+use crate::snippets::SnippetsConfig;
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
 
@@ -41,6 +42,8 @@ pub struct Config {
     pub currency: CurrencyConfig,
     /// Definitions (F10): whether history is kept.
     pub dictionary: DictionaryConfig,
+    /// Snippets (F11): whether a paste puts the clipboard back.
+    pub snippets: SnippetsConfig,
 }
 
 /// File search (F3).
@@ -164,6 +167,7 @@ impl Default for Config {
             timers: TimersConfig::default(),
             currency: CurrencyConfig::default(),
             dictionary: DictionaryConfig::default(),
+            snippets: SnippetsConfig::default(),
         }
     }
 }

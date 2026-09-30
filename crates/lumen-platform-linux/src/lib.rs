@@ -30,8 +30,8 @@
 use anyhow::Result;
 use lumen_platform::{
     AppEntry, ApplicationsSink, Browser, ClipboardSink, FocusOwner, ForegroundApp, GestureSink,
-    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Platform, Rect, TrayInfo,
-    TraySink, WindowLayout, WindowRole,
+    Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, MonitorInfo, Paste, Platform, Rect,
+    TrayInfo, TraySink, WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -180,6 +180,16 @@ impl Platform for LinuxPlatform {
 
     fn set_clipboard_text(&self, _text: &str) -> Result<()> {
         todo!("F5: wl_data_device")
+    }
+
+    fn window_application(&self, _window: FocusOwner) -> Result<Option<ForegroundApp>> {
+        todo!("F5: Hyprland's `clients` over its IPC socket, by window address")
+    }
+
+    fn paste(&self, _window: FocusOwner, _paste: &Paste) -> Result<()> {
+        todo!(
+            "F5: wl_data_device for the text, and a virtual keyboard (zwp_virtual_keyboard_v1) for Ctrl+V"
+        )
     }
 
     fn installed_browsers(&self) -> Result<Vec<Browser>> {

@@ -119,6 +119,54 @@ pub struct ForegroundApp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FocusOwner(pub u64);
 
+/// Text to paste into another application (F11).
+///
+/// A struct rather than arguments, so that what a paste carries can grow --
+/// a caret to move back, an HTML form of the text -- without the method's
+/// signature changing under both implementations each time.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Paste {
+    pub text: String,
+    /// What the paste is typed with in the target.
+    pub keys: PasteKeys,
+    /// Put back what was on the clipboard once the window has read the
+    /// text, and keep the text out of clipboard history. `false` leaves the
+    /// text on the clipboard, like any copy.
+    pub restore_clipboard: bool,
+}
+
+/// Without the text: a snippet can be a password or an address, and an event
+/// that is logged when it fails must not carry it into the log (7.13).
+impl std::fmt::Debug for Paste {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Paste")
+            .field(
+                "text",
+                &format_args!("<{} characters>", self.text.chars().count()),
+            )
+            .field("keys", &self.keys)
+            .field("restore_clipboard", &self.restore_clipboard)
+            .finish()
+    }
+}
+
+/// The keystroke that pastes, which is not the same everywhere (F11).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum PasteKeys {
+    /// Nearly every program.
+    #[default]
+    #[serde(rename = "ctrl+v")]
+    CtrlV,
+    /// Terminals that send `Ctrl+V` on to the program running in them.
+    #[serde(rename = "ctrl+shift+v")]
+    CtrlShiftV,
+    /// The oldest convention, which every edit control and console honours.
+    #[serde(rename = "shift+insert")]
+    ShiftInsert,
+}
+
 /// Where an application's icon can be found. Resolving it to pixels is the
 /// platform's job, because the mechanism differs entirely between
 /// `IShellItemImageFactory` and the XDG icon theme specification.
@@ -294,6 +342,14 @@ pub trait Platform: Send + Sync {
     /// all, which is briefly true during a desktop switch.
     fn foreground_application(&self) -> Result<Option<ForegroundApp>>;
 
+    /// The application that owns `window` (F11), found the same way as
+    /// [`Platform::foreground_application`] -- packaged applications
+    /// included -- for a window that need not be in front.
+    ///
+    /// What a paste is typed with depends on it: most programs paste on
+    /// `Ctrl+V`, some terminals only on `Ctrl+Shift+V`.
+    fn window_application(&self, window: FocusOwner) -> Result<Option<ForegroundApp>>;
+
     /// Begin delivering global gesture events to `sink`: `hotkey` as
     /// [`GestureEvent::Invoke`] and its hold, and `timers`, when there is one,
     /// as [`GestureEvent::Timers`] (F8).
@@ -372,6 +428,19 @@ pub trait Platform: Send + Sync {
     /// at a higher integrity level than ours, in which case Windows refuses
     /// silently and there is nothing to be done about it from here.
     fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()>;
+
+    /// Paste text into a window that is not ours (F11).
+    ///
+    /// `window` is the foreground owner captured before the launcher
+    /// appeared, for [`Platform::arrange_window`]'s reason, and the launcher
+    /// has already handed the foreground back to it. Nothing is typed until
+    /// that window is in front: a paste into whatever happens to be there
+    /// instead is the race 7.15 exists to avoid.
+    ///
+    /// Blocking: with [`Paste::restore_clipboard`] it returns only once the
+    /// clipboard has been put back, which is when the window has read the
+    /// text or has been given up on. Call it on a thread of its own.
+    fn paste(&self, window: FocusOwner, paste: &Paste) -> Result<()>;
 
     /// Start a long-lived extension process with its input and output piped
     /// (F4, step 3).
@@ -519,6 +588,18 @@ mod tests {
     }
 
     /// No guessing: an unknown browser is offered no private window at all.
+    #[test]
+    fn a_paste_is_logged_without_its_text() {
+        let paste = Paste {
+            text: "hunter2".into(),
+            keys: PasteKeys::CtrlV,
+            restore_clipboard: true,
+        };
+        let logged = format!("{paste:?}");
+        assert!(!logged.contains("hunter2"));
+        assert!(logged.contains("<7 characters>"));
+    }
+
     #[test]
     fn a_browser_without_a_known_flag_gets_none() {
         assert_eq!(

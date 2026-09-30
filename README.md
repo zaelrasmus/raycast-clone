@@ -41,7 +41,8 @@ an aesthetic worth looking at fifty times a day.
   copy. It stays quiet for anything that is not arithmetic, including `7-zip`.
 - **Snippets.** Blocks of text you paste often, in *Search Snippets*: found by
   name, keyword, tag or what they say, filtered by tag, grouped by when they
-  last changed, shown in full beside the list, and copied with `Enter`.
+  last changed, shown in full beside the list, and pasted with `Enter` into
+  the application you were in -- your clipboard put back afterwards.
 - **Clipboard history.** Everything you copy is kept for thirty days and found
   by searching its text, with the application you copied it from shown beside
   it. Entries that look like credentials are *never written down* -- not
@@ -165,7 +166,7 @@ Listed because a README that implies more than exists is worse than no README.
 - **Windows at a higher integrity level cannot be arranged.** A layout applied
   to an elevated window does nothing, and Windows reports no error for it to
   report back.
-- **No text expansion.** Snippets are copied from the launcher. Expanding them
+- **No text expansion.** Snippets are pasted from the launcher. Expanding them
   as you type anywhere is deferred: F11 writes down a way to do it without a
   global keyboard hook, which is the one mechanism this project deliberately
   avoids (see R-13).
@@ -712,6 +713,48 @@ schedule. Offline, the last table keeps converting and the header says how
 old it is; with no table at all, a row says **No internet connection** and
 `Enter` tries again. Rates are for reference: they are one publisher's daily
 figures, not what a bank or card will charge.
+
+### Snippets
+
+Snippets are kept in `%APPDATA%\Lumen\config\snippets.json`, and
+*Search Snippets* reads the file each time it opens:
+
+```json
+{
+  "schema_version": 2,
+  "snippets": [
+    {
+      "name": "Email signature",
+      "text": "Best,\n\nYour Name",
+      "keyword": ";sig",
+      "tags": ["email"]
+    }
+  ]
+}
+```
+
+A snippet that cannot be read is listed under **Could not read**, with the
+reason; a file that does not parse says so instead of showing an empty list.
+
+`Enter` pastes into the window the launcher was opened over; `Ctrl+K` offers
+**Copy to Clipboard** instead. Opened from the desktop, with no window to paste
+into, the snippet is copied. The `snippets` section of `config.json`:
+
+```json
+"snippets": {
+  "paste": "restore",
+  "paste-keys": { "noctty.exe": "ctrl+shift+v" }
+}
+```
+
+| field | meaning |
+| ----- | ------- |
+| `paste` | `"restore"` (default) puts back what was on the clipboard as soon as the application has read the snippet, and keeps the snippet out of clipboard history, Lumen's and Windows'. `"keep"` leaves the snippet on the clipboard, like any copy. |
+| `paste-keys` | The keystroke that pastes, by program: `"ctrl+v"` (everything not named), `"ctrl+shift+v"` or `"shift+insert"`. For terminals that pass `Ctrl+V` on to the program running in them. WezTerm, Alacritty and mintty are known already; an entry here wins. |
+
+A window running as administrator cannot be typed into by Lumen -- Windows
+discards the keystrokes without a word -- so the snippet is left on the
+clipboard, and a notification says to paste it by hand.
 
 ---
 
