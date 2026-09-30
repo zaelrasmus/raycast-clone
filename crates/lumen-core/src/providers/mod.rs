@@ -42,7 +42,7 @@ pub use dictionary::DictionaryProvider;
 pub use extensions::ExtensionProvider;
 pub use quicklinks::{Quicklink, QuicklinkProvider};
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
-pub use snippets::{Snippet, SnippetProvider};
+pub use snippets::SnippetsProvider;
 pub use timers::{TimerPresetsProvider, TimersProvider};
 pub use translate::TranslateProvider;
 
@@ -105,6 +105,7 @@ impl Providers {
         providers.register(Box::new(TimersProvider));
         providers.register(Box::new(CurrencyProvider));
         providers.register(Box::new(DictionaryProvider));
+        providers.register(Box::new(SnippetsProvider));
         providers
     }
 

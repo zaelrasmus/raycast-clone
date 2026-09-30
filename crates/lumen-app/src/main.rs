@@ -39,6 +39,7 @@ mod currency;
 mod dictionary;
 mod extensions;
 mod ipc;
+mod snippets;
 mod timers;
 mod timing;
 mod translate;
@@ -172,7 +173,7 @@ fn run_daemon() -> Result<()> {
     lumen_core::install_builtin_sheets(&paths.sheets_dir())?;
     lumen_core::install_example_script(&paths.scripts_dir())?;
     lumen_core::install_example_extensions(&paths.extensions_dir())?;
-    lumen_core::providers::snippets::install_example(&paths.snippets_file())?;
+    lumen_core::snippets::install_example(&paths.snippets_file())?;
     lumen_core::providers::quicklinks::install_example(&paths.quicklinks_file())?;
     Config::write_default(&paths.config_file())?;
 
@@ -971,6 +972,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunDictionary);
                 return;
             }
+            LauncherEvent::RunSnippets => {
+                let _ = commands.unbounded_send(Message::RunSnippets);
+                return;
+            }
             LauncherEvent::RefreshRates => {
                 let _ = commands.unbounded_send(Message::RefreshRates);
                 return;
@@ -994,6 +999,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunAlertSounds
                 | LauncherEvent::RunCurrency
                 | LauncherEvent::RunDictionary
+                | LauncherEvent::RunSnippets
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
@@ -1357,6 +1363,13 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| dictionary::run(platform, setup, translate, None, window, cx))
                 .context("reaching the app to open the dictionary")
+        }
+        Message::RunSnippets => {
+            let platform = platform.clone();
+            let path = surfaces.paths.snippets_file();
+            let window = surfaces.launcher;
+            cx.update(move |cx| snippets::run(platform, path, window, cx))
+                .context("reaching the app to open the snippets")
         }
         Message::RefreshRates => {
             let config = config.currency.clone();

@@ -39,8 +39,9 @@ an aesthetic worth looking at fifty times a day.
   application you were just using.
 - **Inline calculator.** Type `12*7` and the answer is the first row, ready to
   copy. It stays quiet for anything that is not arithmetic, including `7-zip`.
-- **Snippets.** Blocks of text you paste often, searchable and copied with
-  `Enter`.
+- **Snippets.** Blocks of text you paste often, in *Search Snippets*: found by
+  name, keyword, tag or what they say, filtered by tag, grouped by when they
+  last changed, shown in full beside the list, and copied with `Enter`.
 - **Clipboard history.** Everything you copy is kept for thirty days and found
   by searching its text, with the application you copied it from shown beside
   it. Entries that look like credentials are *never written down* -- not
@@ -165,8 +166,9 @@ Listed because a README that implies more than exists is worse than no README.
   to an elevated window does nothing, and Windows reports no error for it to
   report back.
 - **No text expansion.** Snippets are copied from the launcher. Expanding them
-  as you type anywhere would need a global keyboard hook, which is the one
-  mechanism this project deliberately avoids (see R-13).
+  as you type anywhere is deferred: F11 writes down a way to do it without a
+  global keyboard hook, which is the one mechanism this project deliberately
+  avoids (see R-13).
 - **Browsers and Electron apps report their container.** A sheet keyed on
   `chrome.exe` covers every tab, because the window does not say what is open
   inside it. Key those on the window title instead. Packaged apps *are* resolved

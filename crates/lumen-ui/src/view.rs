@@ -220,13 +220,26 @@ fn render_pane(detail: Option<&ItemDetail>, theme: &Theme, height: gpui::Pixels)
         .py(px(layout::view::DETAIL_PADDING_Y))
         .overflow_y_scroll()
         .when_some(detail, |pane, detail| {
-            pane.child(render_body(&detail.markdown, &detail.metadata, colors))
+            pane.child(render_body(
+                &detail.markdown,
+                detail.text.as_deref(),
+                &detail.metadata,
+                colors,
+            ))
         })
         .into_any_element()
 }
 
 /// A detail's body and its metadata, stacked.
-fn render_body(source: &str, metadata: &[MetadataRow], colors: &Colors) -> AnyElement {
+///
+/// `text` is drawn as written after the Markdown (F11): the text system lays
+/// out each line break as a line, and nothing in it is read as a marker.
+fn render_body(
+    source: &str,
+    text: Option<&str>,
+    metadata: &[MetadataRow],
+    colors: &Colors,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -236,6 +249,14 @@ fn render_body(source: &str, metadata: &[MetadataRow], colors: &Colors) -> AnyEl
                 .iter()
                 .map(|block| render_block(block, colors)),
         )
+        .when_some(text, |body, text| {
+            body.child(
+                div()
+                    .text_size(type_scale::title())
+                    .text_color(color(colors.text_primary))
+                    .child(text.to_string()),
+            )
+        })
         .when(!metadata.is_empty(), |body| {
             body.child(
                 div()
@@ -591,6 +612,7 @@ pub fn render_detail(detail: &Detail, theme: &Theme, height: gpui::Pixels) -> An
         .overflow_y_scroll()
         .child(render_body(
             &detail.markdown,
+            None,
             &detail.metadata,
             &theme.colors,
         ))

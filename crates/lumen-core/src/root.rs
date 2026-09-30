@@ -477,7 +477,6 @@ pub fn build_index(
 
     let catalogue = catalogue(
         &paths.scripts_dir(),
-        &paths.snippets_file(),
         quicklinks,
         &paths.extensions_dir(),
         presets,
@@ -494,7 +493,6 @@ pub fn build_index(
 /// Every provider's catalogue, from the folders the user edits.
 fn catalogue(
     scripts_dir: &Path,
-    snippets_file: &Path,
     quicklinks: &[providers::Quicklink],
     extensions_dir: &Path,
     presets: Vec<crate::translate::Preset>,
@@ -509,12 +507,6 @@ fn catalogue(
         log::info!("indexed {} script commands", scripts.len());
     }
     providers.register(Box::new(providers::ScriptProvider::new(scripts)));
-
-    let snippets = providers::snippets::load(snippets_file);
-    if !snippets.is_empty() {
-        log::info!("indexed {} snippets", snippets.len());
-    }
-    providers.register(Box::new(providers::SnippetProvider::new(snippets)));
 
     if !quicklinks.is_empty() {
         log::info!("indexed {} quicklinks", quicklinks.len());

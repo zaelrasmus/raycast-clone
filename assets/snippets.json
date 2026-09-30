@@ -1,20 +1,24 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "snippets": [
     {
       "name": "Shrug",
       "text": "¯\\_(ツ)_/¯",
-      "keywords": ["shrug", "emoji"]
+      "keyword": ";shrug",
+      "keywords": ["emoji"],
+      "tags": ["fun"]
     },
     {
       "name": "MIT licence header",
       "text": "SPDX-License-Identifier: MIT\nCopyright (c) 2026",
-      "keywords": ["licence", "license", "spdx", "header"]
+      "keywords": ["licence", "license", "spdx"],
+      "tags": ["code"]
     },
     {
       "name": "Example: your email signature",
       "text": "Best,\n\nYour Name\nyou@example.com",
-      "keywords": ["signature", "email", "sign-off"]
+      "keyword": ";sig",
+      "tags": ["email"]
     }
   ]
 }

@@ -813,7 +813,11 @@ impl Session {
             value: self.attribution.into(),
             tone: Tone::Neutral,
         });
-        ItemDetail { markdown, metadata }
+        ItemDetail {
+            markdown,
+            text: None,
+            metadata,
+        }
     }
 
     fn failure(&self, failure: &Failure) -> Section {

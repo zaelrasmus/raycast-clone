@@ -1035,6 +1035,11 @@ impl Launcher {
                 cx.emit(LauncherEvent::RunDictionary);
                 return;
             }
+            // The file and the clipboard are the daemon's (F11).
+            lumen_core::ViewSource::Snippets => {
+                cx.emit(LauncherEvent::RunSnippets);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -2434,6 +2439,8 @@ pub enum LauncherEvent {
     RunCurrency,
     /// The dictionary was chosen (F10).
     RunDictionary,
+    /// *Search Snippets* was chosen (F11).
+    RunSnippets,
     /// A conversion was typed in the root list with no table of rates, or
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.

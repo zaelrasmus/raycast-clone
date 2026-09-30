@@ -1154,7 +1154,17 @@ The decisions:
   modified -- *Today*, *Yesterday*, *This Week*, *This Month*, *Earlier* --
   newest first, and a snippet with no dates, written by hand, is *Earlier*.
   The text is matched as well as the name, so a snippet is found by what it
-  says.
+  says -- and so the view filters itself rather than asking the host. The
+  host's matcher is fuzzy, and fuzzy against a paragraph matches nearly any
+  short query; host filtering keeps the view's order rather than the
+  score's (7.30), so the loose matches would not even sink. A snippet is
+  kept when every word typed appears in its name, keyword, keywords, tags or
+  text.
+- **The pane gains a verbatim body.** `ItemDetail::text`, drawn after the
+  Markdown with every line break kept and nothing read as a marker. The
+  restricted Markdown joins a paragraph's lines and has no escapes, so a
+  signature would be one line and `a * b` would be emphasis; a vocabulary
+  addition was the smaller change than escaping text to have it unescaped.
 - **Tags are a scope,** *All Tags* and then every tag in use, sorted: the
   F7 pill, searchable as F9 made it. A tag is a word; a snippet has any
   number of them.

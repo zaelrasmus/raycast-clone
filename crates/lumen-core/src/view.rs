@@ -254,6 +254,14 @@ pub struct Item {
 pub struct ItemDetail {
     /// The body, in the same restricted Markdown as [`Detail::markdown`].
     pub markdown: String,
+    /// Text shown exactly as written, after the Markdown (F11): each line
+    /// break kept and nothing read as a marker.
+    ///
+    /// A snippet is the case: `a * b` is a command, not emphasis, and a
+    /// signature's lines are lines, where Markdown would join them into one
+    /// paragraph. The subset has no escapes and no hard breaks, and adding
+    /// both would still leave the view escaping text to have it unescaped.
+    pub text: Option<String>,
     /// Labelled values shown under the body.
     pub metadata: Vec<MetadataRow>,
 }
@@ -486,6 +494,7 @@ mod tests {
                 items: vec![Item {
                     detail: Some(ItemDetail {
                         markdown: "# Fix the seam\n\nThe pane *follows*.".into(),
+                        text: None,
                         metadata: vec![MetadataRow {
                             label: "Opened".into(),
                             value: "2 days ago".into(),

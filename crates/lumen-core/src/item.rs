@@ -204,6 +204,8 @@ pub enum ViewSource {
     Currency,
     /// The dictionary (F10).
     Dictionary,
+    /// *Search Snippets* (F11).
+    Snippets,
 }
 
 impl Action {
