@@ -671,6 +671,7 @@ fn open_settings(
         .map(|entry| (entry.sheet.clone(), entry.path.clone()))
         .collect::<Vec<_>>();
 
+    let history = clipboard_history(surfaces, cx);
     window
         .update(cx, |settings, window, cx| {
             settings.load(entries, cx);
@@ -681,6 +682,7 @@ fn open_settings(
             settings.reload_translation(cx);
             settings.reload_timers(cx);
             settings.reload_currency(cx);
+            settings.reload_clipboard(history, cx);
             settings.focus(window, cx);
         })
         .ok();
@@ -1190,6 +1192,19 @@ async fn next_change(changes: &mut mpsc::UnboundedReceiver<()>, cx: &gpui::Async
     true
 }
 
+/// The clipboard history, from the launcher that holds it. `None` when it is
+/// off or could not be opened.
+fn clipboard_history(
+    surfaces: &Surfaces,
+    cx: &mut gpui::AsyncApp,
+) -> Option<Arc<parking_lot::Mutex<History>>> {
+    surfaces
+        .launcher
+        .update(cx, |launcher, _window, _cx| launcher.clipboard_history())
+        .ok()
+        .flatten()
+}
+
 /// Re-read config.json and apply what can be applied without a restart.
 ///
 /// Position, size, row count, theme and file search take effect at once --
@@ -1225,13 +1240,16 @@ fn reload_config(
     // The translation and timers pages follow the file whoever changed it,
     // the page itself included. Before the check below: a change the running config
     // already holds is still one the page may not have read.
+    let history = clipboard_history(surfaces, cx);
     let settings = *surfaces.settings.borrow();
     if let Some(settings) = settings {
+        let history = history.clone();
         settings
             .update(cx, |settings, _window, cx| {
                 settings.reload_translation(cx);
                 settings.reload_timers(cx);
                 settings.reload_currency(cx);
+                settings.reload_clipboard(history, cx);
             })
             .ok();
     }
@@ -1243,6 +1261,21 @@ fn reload_config(
     surfaces.timers.configure(&applied.timers, cx);
     *surfaces.config.borrow_mut() = applied.clone();
     log::info!("reloaded the configuration");
+
+    // How much history is kept applies at once (F12), lowering it included:
+    // the settings page says so before the limit is saved.
+    if applied.clipboard.retention != older.clipboard.retention
+        && let Some(history) = history
+    {
+        let retention = applied.clipboard.retention;
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(error) = history.lock().set_retention(retention) {
+                    log::warn!("could not apply the clipboard limit: {error:#}");
+                }
+            })
+            .detach();
+    }
 
     if applied.theme != older.theme {
         let _ = surfaces.reload_theme.unbounded_send(());

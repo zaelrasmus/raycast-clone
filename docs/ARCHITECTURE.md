@@ -119,7 +119,7 @@ once Lumen was measured well inside them (7.36).
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
 | **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
-| **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane. *Clear History* is not built. See F12 decisions |
+| **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 
 ### F4 build order is not optional
 
@@ -1572,6 +1572,18 @@ The decisions:
   now reads 100 ms after the last change, as Ditto does, and names the
   source at the change. Measured with .NET copies: 9 of 18 failed before,
   1 of 36 after, 0 of 18 without the daemon. Reduced, not proven gone.
+- **A *Clipboard History* page in settings: the limit, and clearing.**
+  The limit is `clipboard.retention.max-entries`, written through the
+  `section` writer like every other page, from 1 to 2000 -- the view reads
+  the whole history when it opens, so the cap is the view's, and a hand
+  edit past it is clamped. It now applies live: of the `clipboard` section
+  only `enabled` waits for a restart, because only it decides whether the
+  listener starts. Lowering the limit deletes the oldest entries past it at
+  once, which the page says before it is saved. *Clear History* is not a
+  setting and is not in the file: it counts what would go, then a dialog
+  says it -- the entries, the pictures and their size on disk, that it
+  cannot be undone, that the clipboard itself is untouched and recording
+  goes on -- and only Enter on it clears.
 - **Measured, slice 2.** 60 s hidden: 0.004 % CPU, 73.8 MB working set,
   87.6 MB private, 31 threads -- slice 1's numbers within noise. Binary
   19,451,392 bytes, **+1.2 MB** over slice 1: PNG encoding, resizing and

@@ -16,9 +16,9 @@ use lumen_platform::{ClipboardContent, ClipboardImage, LaunchMode, LaunchTarget,
 use lumen_ui::{Launcher, ViewSink};
 use parking_lot::Mutex;
 
-/// The most entries the view reads. Above the retention default, so the view
-/// is the whole history unless the user asked to keep more than this.
-const LOADED: usize = 1000;
+/// The most entries the view reads: as many as the history may keep, so the
+/// view is always the whole of it.
+const LOADED: usize = lumen_core::clipboard::MAX_ENTRIES_LIMIT;
 
 pub fn run(platform: Arc<dyn Platform>, window: gpui::WindowHandle<Launcher>, cx: &mut gpui::App) {
     let (view_tx, mut events) = mpsc::unbounded::<Event>();

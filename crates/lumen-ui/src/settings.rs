@@ -37,6 +37,7 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
+use crate::clipboard_page::ClipboardPage;
 use crate::currency_page::CurrencyPage;
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
@@ -52,15 +53,17 @@ enum Page {
     Translation,
     Timers,
     Currency,
+    Clipboard,
 }
 
 impl Page {
-    const ALL: [Page; 5] = [
+    const ALL: [Page; 6] = [
         Page::Sheets,
         Page::Quicklinks,
         Page::Translation,
         Page::Timers,
         Page::Currency,
+        Page::Clipboard,
     ];
 
     fn label(self) -> &'static str {
@@ -70,6 +73,7 @@ impl Page {
             Page::Translation => "Translation",
             Page::Timers => "Timers",
             Page::Currency => "Currency",
+            Page::Clipboard => "Clipboard History",
         }
     }
 
@@ -80,6 +84,7 @@ impl Page {
             Page::Translation => "The service and your presets, in config.json",
             Page::Timers => "Quick durations and your presets, in config.json",
             Page::Currency => "Where exchange rates come from, in config.json",
+            Page::Clipboard => "How much is kept, in config.json, and clearing it",
         }
     }
 }
@@ -226,6 +231,7 @@ pub struct Settings {
     translation: Entity<TranslatePage>,
     timers: Entity<TimersPage>,
     currency: Entity<CurrencyPage>,
+    clipboard: Entity<ClipboardPage>,
 }
 
 impl Settings {
@@ -264,6 +270,13 @@ impl Settings {
         };
         cx.observe(&currency, |_, _, cx| cx.notify()).detach();
 
+        let clipboard = {
+            let colors = theme.colors.clone();
+            let config_file = config_file.clone();
+            cx.new(|cx| ClipboardPage::new(config_file, colors, cx))
+        };
+        cx.observe(&clipboard, |_, _, cx| cx.notify()).detach();
+
         let timers = {
             let colors = theme.colors.clone();
             cx.new(|cx| TimersPage::new(config_file, colors, cx))
@@ -288,6 +301,7 @@ impl Settings {
             translation,
             timers,
             currency,
+            clipboard,
         }
     }
 
@@ -305,6 +319,19 @@ impl Settings {
     /// Re-read the currency section of `config.json`, for the same reasons.
     pub fn reload_currency(&mut self, cx: &mut Context<Self>) {
         self.currency.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Re-read the clipboard section of `config.json`, for the same reasons,
+    /// with the history to clear (F12).
+    pub fn reload_clipboard(
+        &mut self,
+        history: Option<std::sync::Arc<parking_lot::Mutex<lumen_core::clipboard::History>>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.clipboard.update(cx, |page, cx| {
+            page.use_history(history);
+            page.reload(cx);
+        });
     }
 
     /// Re-read `quicklinks.json`: on open, and whenever the file changes.
@@ -382,6 +409,8 @@ impl Settings {
         self.timers
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.currency
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.clipboard
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
         cx.notify();
@@ -394,6 +423,7 @@ impl Settings {
             Page::Translation => self.translation.read(cx).focus(window, cx),
             Page::Timers => self.timers.read(cx).focus(window, cx),
             Page::Currency => self.currency.read(cx).focus(window, cx),
+            Page::Clipboard => self.clipboard.read(cx).focus(window, cx),
         }
     }
 
@@ -461,6 +491,10 @@ impl Settings {
         }
         if self.page == Page::Currency {
             self.currency.update(cx, |page, cx| page.save(cx));
+            return;
+        }
+        if self.page == Page::Clipboard {
+            self.clipboard.update(cx, |page, cx| page.save(cx));
             return;
         }
         let Some(sheet) = self.compose(cx) else {
@@ -784,12 +818,19 @@ impl Render for Settings {
                 .overflow_hidden()
                 .child(self.currency.clone())
                 .into_any_element(),
+            Page::Clipboard => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.clipboard.clone())
+                .into_any_element(),
         };
         let dialog = match self.page {
             Page::Translation => self
                 .translation
                 .update(cx, |page, cx| page.render_dialog(cx)),
             Page::Timers => self.timers.update(cx, |page, cx| page.render_dialog(cx)),
+            Page::Clipboard => self.clipboard.update(cx, |page, cx| page.render_dialog(cx)),
             _ => self
                 .quicklinks
                 .update(cx, |page, cx| page.render_dialog(cx)),
@@ -1137,6 +1178,7 @@ impl Settings {
             Page::Translation => (self.translation.read(cx).status(), false),
             Page::Timers => (self.timers.read(cx).status(cx), false),
             Page::Currency => (self.currency.read(cx).status(), false),
+            Page::Clipboard => (self.clipboard.read(cx).status(), false),
         };
 
         div()

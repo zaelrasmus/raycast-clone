@@ -116,6 +116,11 @@ impl Entry {
     }
 }
 
+/// The most entries the history may be asked to keep (F12). The view reads
+/// the whole history when it opens, and past this that read, and the list
+/// built from it, stop being small.
+pub const MAX_ENTRIES_LIMIT: usize = 2000;
+
 /// How much history is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -124,6 +129,17 @@ pub struct Retention {
     pub max_entries: usize,
     /// Entries older than this are dropped.
     pub max_age_days: u32,
+}
+
+impl Retention {
+    /// At least one entry and at most [`MAX_ENTRIES_LIMIT`], whatever the
+    /// file says: a hand edit of a billion must not make the view read one.
+    pub fn clamped(self) -> Self {
+        Self {
+            max_entries: self.max_entries.clamp(1, MAX_ENTRIES_LIMIT),
+            ..self
+        }
+    }
 }
 
 impl Default for Retention {
@@ -135,6 +151,15 @@ impl Default for Retention {
             max_age_days: 30,
         }
     }
+}
+
+/// What the history holds, counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Summary {
+    pub entries: usize,
+    pub images: usize,
+    /// The pictures' size on disk.
+    pub image_bytes: u64,
 }
 
 /// The history database.
@@ -165,7 +190,7 @@ impl History {
 
         let mut history = Self {
             connection,
-            retention,
+            retention: retention.clamped(),
             images: Some(path.with_file_name("clipboard-images")),
         };
         history.migrate()?;
@@ -296,6 +321,33 @@ impl History {
             bytes: stored.bytes,
         };
         self.insert(Payload::Image, &stored.hash, Some(info), origin, source)
+    }
+
+    /// Keep this much from now on, dropping at once what it no longer covers
+    /// (F12): lowering the limit in settings is expected to take effect.
+    pub fn set_retention(&mut self, retention: Retention) -> Result<()> {
+        self.retention = retention.clamped();
+        self.prune()
+    }
+
+    /// How much there is, for the confirmation before clearing it.
+    pub fn summary(&self) -> Result<Summary> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*),
+                        COUNT(*) FILTER (WHERE kind = 'image'),
+                        COALESCE(SUM(bytes) FILTER (WHERE kind = 'image'), 0)
+                 FROM entries",
+                [],
+                |row| {
+                    Ok(Summary {
+                        entries: row.get::<_, i64>(0)? as usize,
+                        images: row.get::<_, i64>(1)? as usize,
+                        image_bytes: row.get::<_, i64>(2)?.max(0) as u64,
+                    })
+                },
+            )
+            .context("counting the clipboard history")
     }
 
     /// Where pictures are kept, `None` in memory.
@@ -805,5 +857,50 @@ mod tests {
 
         drop(history);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lower_limit_takes_effect_at_once_and_a_huge_one_is_capped() {
+        let mut history = history();
+        for index in 0..10 {
+            history
+                .record(Payload::Text, &format!("entry {index}"), None)
+                .unwrap();
+        }
+        history
+            .set_retention(Retention {
+                max_entries: 4,
+                ..Retention::default()
+            })
+            .unwrap();
+        assert_eq!(history.len().unwrap(), 4);
+        assert_eq!(history.recent(1).unwrap()[0].text, "entry 9");
+
+        let huge = Retention {
+            max_entries: usize::MAX,
+            ..Retention::default()
+        };
+        assert_eq!(huge.clamped().max_entries, MAX_ENTRIES_LIMIT);
+    }
+
+    #[test]
+    fn the_summary_counts_entries_and_pictures() {
+        let history = history();
+        history.record(Payload::Text, "a", None).unwrap();
+        let picture = super::super::images::Stored {
+            hash: "ab".repeat(32),
+            width: 1,
+            height: 1,
+            bytes: 1234,
+        };
+        history.record_image(&picture, None, None).unwrap();
+        assert_eq!(
+            history.summary().unwrap(),
+            Summary {
+                entries: 2,
+                images: 1,
+                image_bytes: 1234
+            }
+        );
     }
 }

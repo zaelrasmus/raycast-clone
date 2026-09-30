@@ -212,7 +212,8 @@ impl Config {
     /// Everything else is applied live. These three are the exceptions because
     /// each is wired into something created once: the hotkey is registered
     /// with the system, the backdrop is applied to the window when it is made,
-    /// and the clipboard listener is either started or not. Named in the
+    /// and the clipboard listener is either started or not. How much history
+    /// is kept is not among them (F12): the history applies it at once. Named in the
     /// config's own spelling, so the log can say exactly which edit is waiting.
     pub fn restart_required(&self, newer: &Self) -> Vec<&'static str> {
         let mut pending = Vec::new();
@@ -222,8 +223,8 @@ impl Config {
         if self.backdrop != newer.backdrop {
             pending.push("backdrop");
         }
-        if self.clipboard != newer.clipboard {
-            pending.push("clipboard");
+        if self.clipboard.enabled != newer.clipboard.enabled {
+            pending.push("clipboard.enabled");
         }
         if self.timers.hotkey != newer.timers.hotkey {
             pending.push("timers.hotkey");
@@ -242,7 +243,10 @@ impl Config {
         let mut merged = Self {
             hotkey: self.hotkey.clone(),
             backdrop: self.backdrop,
-            clipboard: self.clipboard,
+            clipboard: ClipboardConfig {
+                enabled: self.clipboard.enabled,
+                ..newer.clipboard
+            },
             ..newer.clone()
         };
         merged.timers.hotkey = self.timers.hotkey.clone();
@@ -416,7 +420,26 @@ mod tests {
         after.hotkey.key = "K".into();
         after.clipboard.enabled = false;
 
-        assert_eq!(before.restart_required(&after), vec!["hotkey", "clipboard"]);
+        assert_eq!(
+            before.restart_required(&after),
+            vec!["hotkey", "clipboard.enabled"]
+        );
+    }
+
+    /// How much history is kept applies at once (F12); switching it off
+    /// still waits, since the listener is started or not.
+    #[test]
+    fn the_clipboard_limit_applies_live_and_the_switch_waits() {
+        let before = Config::default();
+        let mut after = before.clone();
+        after.clipboard.retention.max_entries = 50;
+        assert!(before.restart_required(&after).is_empty());
+        let applied = before.merge_live(&after);
+        assert_eq!(applied.clipboard.retention.max_entries, 50);
+
+        after.clipboard.enabled = false;
+        let applied = before.merge_live(&after);
+        assert!(applied.clipboard.enabled);
     }
 
     /// The running daemon keeps the hotkey it registered, so the next reload

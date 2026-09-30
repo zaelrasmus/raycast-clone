@@ -9,8 +9,9 @@ pub mod images;
 pub mod kind;
 pub mod privacy;
 pub mod session;
+pub mod settings;
 pub mod store;
 
 pub use kind::{Filter, Kind, kind};
 pub use privacy::{Rejected, may_record, may_record_image};
-pub use store::{Entry, History, ImageInfo, Payload, Retention};
+pub use store::{Entry, History, ImageInfo, MAX_ENTRIES_LIMIT, Payload, Retention, Summary};
