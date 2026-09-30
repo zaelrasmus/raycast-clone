@@ -74,13 +74,13 @@ type Client = Arc<Mutex<Option<Arc<dyn Translator>>>>;
 /// Open the translate view on `preset`, or on the languages used last, with
 /// `text` already typed when it comes from Define (F10).
 ///
-/// `browser` is only passed on, for when Translate opens Define in turn.
+/// `define` is only passed on, for when Translate opens Define in turn.
 pub fn run(
     platform: Arc<dyn Platform>,
     config: TranslateConfig,
     preset: Option<String>,
     text: Option<String>,
-    browser: Option<String>,
+    define: crate::define::Setup,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
 ) {
@@ -192,17 +192,10 @@ pub fn run(
                     Effect::Define { word, language } => {
                         let platform = platform.clone();
                         let translate = (*config).clone();
-                        let browser = browser.clone();
+                        let setup = define.clone();
                         let start = (word, language.and_then(dictionary_languages::find));
                         cx.update(|cx| {
-                            crate::define::run(
-                                platform,
-                                browser,
-                                translate,
-                                Some(start),
-                                window,
-                                cx,
-                            )
+                            crate::define::run(platform, setup, translate, Some(start), window, cx)
                         })
                         .ok();
                     }

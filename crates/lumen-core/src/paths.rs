@@ -99,6 +99,11 @@ impl Paths {
         self.data_dir.join("currency.json")
     }
 
+    /// Favourite words and the words looked at (F10).
+    pub fn dictionary_file(&self) -> PathBuf {
+        self.data_dir.join("dictionary.json")
+    }
+
     pub fn ensure_exists(&self) -> Result<()> {
         for dir in [
             &self.config_dir,

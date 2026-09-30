@@ -20,6 +20,7 @@
 pub mod free;
 pub mod languages;
 pub mod session;
+pub mod store;
 
 use std::time::Duration;
 
@@ -27,6 +28,21 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 pub use crate::net::{Failure, failure};
+
+/// The `dictionary` section of `config.json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct DictionaryConfig {
+    /// Keep the words looked at, and show them when nothing is typed. Off
+    /// clears what was kept: a record nobody can see is one nobody can erase.
+    pub history: bool,
+}
+
+impl Default for DictionaryConfig {
+    fn default() -> Self {
+        Self { history: true }
+    }
+}
 
 /// The most text looked up, in characters. A word or a short phrase; a
 /// paragraph pasted into the field is not sent.

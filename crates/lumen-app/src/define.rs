@@ -7,14 +7,17 @@
 //! word looked up in the morning leaves no connection pool in a daemon that
 //! then idles all day.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
-use gpui::App;
+use gpui::{App, AppContext as _};
 use lumen_core::dictionary::session::{Effect, Request, Session};
-use lumen_core::dictionary::{self, Dictionary, Entry, Failure, languages};
+use lumen_core::dictionary::{
+    self, Dictionary, DictionaryConfig, Entry, Failure, languages, store,
+};
 use lumen_core::providers::quicklinks::{OpenLink, Template};
 use lumen_core::translate::TranslateConfig;
 use lumen_core::view::Event;
@@ -50,15 +53,24 @@ type Client = Arc<Mutex<Option<Arc<dyn Dictionary>>>>;
 /// daemon, which is as long as anybody remembers having chosen it.
 static LAST: Mutex<Option<&'static languages::Language>> = Mutex::new(None);
 
+/// What Define needs from the configuration, carried by Translate too so
+/// either can open the other (F10).
+#[derive(Clone)]
+pub struct Setup {
+    /// The preferred browser, for *Open in Wiktionary*.
+    pub browser: Option<String>,
+    pub dictionary: DictionaryConfig,
+    /// `dictionary.json`: favourites and history.
+    pub file: PathBuf,
+}
+
 /// Open the Define view, on a word and its language when it comes from
 /// Translate (F10).
 ///
-/// `browser` is the preferred one from the configuration, for *Open in
-/// Wiktionary*; `translate` is only passed on, for when Define opens
-/// Translate in turn.
+/// `translate` is only passed on, for when Define opens Translate in turn.
 pub fn run(
     platform: Arc<dyn Platform>,
-    browser: Option<String>,
+    setup: Setup,
     translate: TranslateConfig,
     start: Option<(String, Option<&'static languages::Language>)>,
     window: gpui::WindowHandle<Launcher>,
@@ -68,11 +80,18 @@ pub fn run(
         Some((word, language)) => (Some(word), language),
         None => (None, None),
     };
+    // Read on the UI thread: a few kilobytes, once per opening, where a
+    // view that showed no favourites and then some would move under the
+    // user (I-10).
+    let saved = store::State::load(&setup.file);
     let mut session = Session::new(
         language.or(*LAST.lock()).unwrap_or_else(languages::english),
         dictionary::explanation_language(),
         dictionary::attribution(),
+        saved,
+        setup.dictionary.history,
     );
+    let browser = setup.browser.clone();
 
     let (view_tx, view_rx) = mpsc::unbounded::<Event>();
     let (tx, rx) = mpsc::unbounded::<Input>();
@@ -99,10 +118,15 @@ pub fn run(
         let client: Client = Arc::default();
         let mut sent: u64 = 0;
 
+        let mut closing = false;
         while let Some(input) = inputs.next().await {
             let effects = match input {
                 Input::View(event) => session.event(event),
-                Input::Closed => break,
+                // The word left on screen goes into history; then stop.
+                Input::Closed => {
+                    closing = true;
+                    session.closed()
+                }
                 Input::Settled(generation) => session.settle(generation),
                 Input::Answered { generation, result } => session.answer(generation, result),
                 Input::Quiet(count) => {
@@ -114,6 +138,10 @@ pub fn run(
             };
 
             for effect in effects {
+                // Only the file is written once the view has gone.
+                if closing && !matches!(effect, Effect::Save(_)) {
+                    continue;
+                }
                 match effect {
                     Effect::Render(view) => {
                         window
@@ -155,19 +183,33 @@ pub fn run(
                     Effect::Translate(word) => {
                         let platform = platform.clone();
                         let translate = translate.clone();
-                        let browser = browser.clone();
+                        let setup = setup.clone();
                         cx.update(|cx| {
                             crate::translate::run(
                                 platform,
                                 translate,
                                 None,
                                 Some(word),
-                                browser,
+                                setup,
                                 window,
                                 cx,
                             )
                         })
                         .ok();
+                    }
+                    Effect::Type(word) => {
+                        window
+                            .update(cx, |launcher, _window, cx| launcher.set_query(word, cx))
+                            .ok();
+                    }
+                    Effect::Save(state) => {
+                        let file = setup.file.clone();
+                        cx.background_spawn(async move {
+                            if let Err(error) = state.save(&file) {
+                                log::warn!("could not save favourites and history: {error:#}");
+                            }
+                        })
+                        .detach();
                     }
                     Effect::Open(url) => {
                         window
@@ -176,6 +218,9 @@ pub fn run(
                         open(platform.clone(), url, browser.clone());
                     }
                 }
+            }
+            if closing {
+                break;
             }
         }
     })

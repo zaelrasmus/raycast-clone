@@ -1319,10 +1319,10 @@ fn handle(
         }
         Message::RunTranslate { preset } => {
             let platform = platform.clone();
-            let browser = config.preferred_browser.clone();
+            let setup = define_setup(config, &surfaces.paths);
             let config = config.translate.clone();
             let window = surfaces.launcher;
-            cx.update(move |cx| translate::run(platform, config, preset, None, browser, window, cx))
+            cx.update(move |cx| translate::run(platform, config, preset, None, setup, window, cx))
                 .context("reaching the app to open the translator")
         }
         Message::RunTimers => {
@@ -1352,10 +1352,10 @@ fn handle(
         }
         Message::RunDefine => {
             let platform = platform.clone();
-            let browser = config.preferred_browser.clone();
+            let setup = define_setup(config, &surfaces.paths);
             let translate = config.translate.clone();
             let window = surfaces.launcher;
-            cx.update(move |cx| define::run(platform, browser, translate, None, window, cx))
+            cx.update(move |cx| define::run(platform, setup, translate, None, window, cx))
                 .context("reaching the app to open the dictionary")
         }
         Message::RefreshRates => {
@@ -1507,6 +1507,15 @@ fn show(
     shell.monitor = Some(monitor);
 
     Ok(())
+}
+
+/// What Define needs from the configuration (F10), for either view to open it.
+fn define_setup(config: &Config, paths: &Paths) -> define::Setup {
+    define::Setup {
+        browser: config.preferred_browser.clone(),
+        dictionary: config.dictionary.clone(),
+        file: paths.dictionary_file(),
+    }
 }
 
 fn hide(platform: &Arc<dyn Platform>, shell: &Rc<RefCell<Shell>>) -> Result<()> {

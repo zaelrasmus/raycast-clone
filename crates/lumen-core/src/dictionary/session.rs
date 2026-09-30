@@ -19,10 +19,19 @@
 //! row per sense with its first example, and the sense in full beside it.
 //! While the next word is looked up the previous one stays on screen without
 //! its actions, so `Enter` cannot copy a definition that is about to change.
+//!
+//! # Favourites and history
+//!
+//! What an empty search shows. A favourite keeps its whole entry and is put
+//! among the answers when the view opens, so it opens with no request. A word
+//! goes into history when it is *used* -- copied, opened, translated, saved,
+//! or left on screen when the view closes -- not whenever a lookup answers,
+//! which would fill history with `dis` and `disp` on the way to `display`.
 
 use std::collections::HashMap;
 
 use super::languages::{self, LANGUAGES, Language};
+use super::store;
 use super::{Entry, Failure, Part, Sense};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Icon, Item, ItemDetail, List, MetadataRow,
@@ -47,6 +56,11 @@ pub enum Effect {
     Remember(&'static Language),
     /// Open Translate on this word (F10).
     Translate(String),
+    /// Put this in the search field, as if typed: a favourite or a recent
+    /// word was chosen.
+    Type(String),
+    /// Write favourites and history to `dictionary.json`.
+    Save(store::State),
 }
 
 /// One lookup to make.
@@ -83,8 +97,12 @@ pub struct Session {
     query: String,
     generation: u64,
     state: State,
-    /// Every answer this view has had.
+    /// Every answer this view has had, favourites included.
     answers: HashMap<Key, Option<Entry>>,
+    /// Favourites and history, as `dictionary.json` holds them.
+    saved: store::State,
+    /// Whether history is kept (`dictionary.history`).
+    keeping_history: bool,
 }
 
 // Ids. Opaque to the host; only this file reads them back.
@@ -95,16 +113,44 @@ const TRANSLATE: &str = "translate";
 const RETRY: &str = "retry";
 const SENSE: &str = "sense-";
 const FAILURE: &str = "failure";
+const FAVOURITE: &str = "favourite";
+const FAVOURITE_ROW: &str = "favourite-";
+const RECENT_ROW: &str = "recent-";
+const SHOW: &str = "show";
+const UNFAVOURITE: &str = "unfavourite";
+const FORGET: &str = "forget";
+const CLEAR_HISTORY: &str = "clear-history";
 /// The word language's scope, and the prefix of its options.
 const FROM: &str = "from";
 const LANGUAGE: &str = "lang-";
 
 impl Session {
+    /// A session looking words up in `language`, explained in
+    /// `explained_in`, with what `dictionary.json` holds.
+    ///
+    /// With history off, what it held is dropped, and the next save writes
+    /// that: turning history off clears it.
     pub fn new(
         language: &'static Language,
         explained_in: &'static str,
         attribution: &'static str,
+        mut saved: store::State,
+        keeping_history: bool,
     ) -> Self {
+        if !keeping_history {
+            saved.history.clear();
+        }
+        let mut answers = HashMap::new();
+        for entry in &saved.favourites {
+            if let Some(language) = languages::find(&entry.language)
+                && entry.explained_in == explained_in
+            {
+                answers.insert(
+                    (entry.word.clone(), language.code, explained_in),
+                    Some(entry.clone()),
+                );
+            }
+        }
         Self {
             language,
             explained_in,
@@ -112,8 +158,32 @@ impl Session {
             query: String::new(),
             generation: 0,
             state: State::Idle,
-            answers: HashMap::new(),
+            answers,
+            saved,
+            keeping_history,
         }
+    }
+
+    /// The view is gone: a word left on screen counts as looked at.
+    pub fn closed(&mut self) -> Vec<Effect> {
+        self.record()
+    }
+
+    /// Put the word on screen into history, if it is kept; save if that
+    /// changed anything.
+    fn record(&mut self) -> Vec<Effect> {
+        let State::Found(entry) = &self.state else {
+            return Vec::new();
+        };
+        if !self.keeping_history {
+            return Vec::new();
+        }
+        let before = self.saved.history.clone();
+        self.saved.record(&entry.word, &entry.language);
+        if self.saved.history == before {
+            return Vec::new();
+        }
+        vec![Effect::Save(self.saved.clone())]
     }
 
     fn word(&self) -> Option<&str> {
@@ -140,7 +210,8 @@ impl Session {
             }
             Event::ActionInvoked { item, action } => self.act(item.as_deref(), &action),
             Event::ScopeChanged { scope, option } => self.choose(&scope, &option),
-            Event::SelectionChanged { .. } | Event::Dismissed => Vec::new(),
+            Event::Dismissed => self.closed(),
+            Event::SelectionChanged { .. } => Vec::new(),
         }
     }
 
@@ -270,22 +341,97 @@ impl Session {
     }
 
     fn act(&mut self, item: Option<&str>, action: &str) -> Vec<Effect> {
+        if let Some(effects) = self.act_on_saved(item, action) {
+            return effects;
+        }
         let State::Found(entry) = &self.state else {
             return match action {
                 RETRY => self.restart(true),
                 _ => Vec::new(),
             };
         };
-        match action {
+        let entry = entry.clone();
+        let done = match action {
             COPY => item
-                .and_then(|item| sense(entry, item))
-                .map(|(_, sense)| vec![Effect::Copy(sense.definition.clone())])
-                .unwrap_or_default(),
-            COPY_WORD => vec![Effect::Copy(entry.word.clone())],
-            OPEN if !entry.url.is_empty() => vec![Effect::Open(entry.url.clone())],
-            TRANSLATE => vec![Effect::Translate(entry.word.clone())],
-            _ => Vec::new(),
+                .and_then(|item| sense(&entry, item))
+                .map(|(_, sense)| Effect::Copy(sense.definition.clone())),
+            COPY_WORD => Some(Effect::Copy(entry.word.clone())),
+            OPEN if !entry.url.is_empty() => Some(Effect::Open(entry.url.clone())),
+            TRANSLATE => Some(Effect::Translate(entry.word.clone())),
+            FAVOURITE => {
+                self.saved.toggle_favourite(&entry);
+                let mut effects = self.record();
+                // `record` saves only when history changed; a favourite
+                // always has something to write.
+                effects.retain(|effect| !matches!(effect, Effect::Save(_)));
+                effects.push(Effect::Save(self.saved.clone()));
+                effects.push(Effect::Render(self.view()));
+                return effects;
+            }
+            _ => None,
+        };
+        let Some(done) = done else {
+            return Vec::new();
+        };
+        let mut effects = self.record();
+        effects.push(done);
+        effects
+    }
+
+    /// An action on a favourite's or a recent word's row, when nothing is
+    /// typed. `None` when the row is neither.
+    fn act_on_saved(&mut self, item: Option<&str>, action: &str) -> Option<Vec<Effect>> {
+        let item = item?;
+        if let Some(index) = index(item, FAVOURITE_ROW) {
+            let entry = self.saved.favourites.get(index)?.clone();
+            return Some(match action {
+                SHOW => self.show(&entry.word, &entry.language),
+                UNFAVOURITE => {
+                    self.saved.favourites.remove(index);
+                    vec![
+                        Effect::Save(self.saved.clone()),
+                        Effect::Render(self.view()),
+                    ]
+                }
+                _ => Vec::new(),
+            });
         }
+        if let Some(index) = index(item, RECENT_ROW) {
+            let recent = self.saved.history.get(index)?.clone();
+            return Some(match action {
+                SHOW => self.show(&recent.word, &recent.language),
+                FORGET => {
+                    self.saved.history.remove(index);
+                    vec![
+                        Effect::Save(self.saved.clone()),
+                        Effect::Render(self.view()),
+                    ]
+                }
+                CLEAR_HISTORY => {
+                    self.saved.history.clear();
+                    vec![
+                        Effect::Save(self.saved.clone()),
+                        Effect::Render(self.view()),
+                    ]
+                }
+                _ => Vec::new(),
+            });
+        }
+        None
+    }
+
+    /// Look a saved word up again: its language, then the word, typed. A
+    /// favourite is among the answers already and needs no request.
+    fn show(&mut self, word: &str, language: &str) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if let Some(language) = languages::find(language)
+            && language != self.language
+        {
+            self.language = language;
+            effects.push(Effect::Remember(language));
+        }
+        effects.push(Effect::Type(word.to_string()));
+        effects
     }
 
     /// What the view should show now.
@@ -314,7 +460,7 @@ impl Session {
                         self.attribution_short()
                     )),
                 )),
-                Vec::new(),
+                self.saved_sections(),
             ),
             (State::TooLong, _) => (
                 Some(empty(
@@ -353,6 +499,73 @@ impl Session {
         })
     }
 
+    /// *Favourites*, then *Recent*: what an empty search shows.
+    fn saved_sections(&self) -> Vec<Section> {
+        let language_name = |code: &str| -> String {
+            languages::find(code).map_or_else(|| code.to_string(), |language| language.name.into())
+        };
+        let mut sections = Vec::new();
+        if !self.saved.favourites.is_empty() {
+            sections.push(Section {
+                title: Some("Favourites".into()),
+                subtitle: None,
+                items: self
+                    .saved
+                    .favourites
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| Item {
+                        id: format!("{FAVOURITE_ROW}{index}"),
+                        title: entry.word.clone(),
+                        subtitle: entry
+                            .senses()
+                            .next()
+                            .map(|(_, sense)| one_line(&sense.definition)),
+                        icon: None,
+                        accessories: vec![Accessory::Text {
+                            text: language_name(&entry.language),
+                        }],
+                        keywords: Vec::new(),
+                        actions: vec![
+                            action(SHOW, "Show Definition"),
+                            action(UNFAVOURITE, "Remove from Favourites"),
+                        ],
+                        detail: None,
+                    })
+                    .collect(),
+            });
+        }
+        if self.keeping_history && !self.saved.history.is_empty() {
+            sections.push(Section {
+                title: Some("Recent".into()),
+                subtitle: None,
+                items: self
+                    .saved
+                    .history
+                    .iter()
+                    .enumerate()
+                    .map(|(index, recent)| Item {
+                        id: format!("{RECENT_ROW}{index}"),
+                        title: recent.word.clone(),
+                        subtitle: None,
+                        icon: None,
+                        accessories: vec![Accessory::Text {
+                            text: language_name(&recent.language),
+                        }],
+                        keywords: Vec::new(),
+                        actions: vec![
+                            action(SHOW, "Look Up"),
+                            action(FORGET, "Remove from History"),
+                            action(CLEAR_HISTORY, "Clear History"),
+                        ],
+                        detail: None,
+                    })
+                    .collect(),
+            });
+        }
+        sections
+    }
+
     fn attribution_short(&self) -> &'static str {
         "English Wiktionary"
     }
@@ -384,6 +597,14 @@ impl Session {
                             actions.push(action(
                                 TRANSLATE,
                                 &format!("Translate \u{201c}{}\u{201d}", entry.word),
+                            ));
+                            actions.push(action(
+                                FAVOURITE,
+                                if self.saved.is_favourite(&entry.word, &entry.language) {
+                                    "Remove from Favourites"
+                                } else {
+                                    "Add to Favourites"
+                                },
                             ));
                             actions
                         } else {
@@ -512,6 +733,11 @@ fn action(id: &str, title: &str) -> Action {
     }
 }
 
+/// `"recent-2"` with prefix `"recent-"` is 2.
+fn index(id: &str, prefix: &str) -> Option<usize> {
+    id.strip_prefix(prefix)?.parse().ok()
+}
+
 /// The sense a row's id names.
 fn sense<'a>(entry: &'a Entry, item: &str) -> Option<(&'a Part, &'a Sense)> {
     let (p, s) = item.strip_prefix(SENSE)?.split_once('-')?;
@@ -544,7 +770,13 @@ mod tests {
     }
 
     fn session() -> Session {
-        Session::new(languages::english(), "en", "Wiktionary")
+        Session::new(
+            languages::english(),
+            "en",
+            "Wiktionary",
+            store::State::default(),
+            true,
+        )
     }
 
     fn typed(session: &mut Session, text: &str) -> Vec<Effect> {
@@ -665,16 +897,18 @@ mod tests {
                 "Copy Definition",
                 "Copy \u{201c}display\u{201d}",
                 "Open in Wiktionary",
-                "Translate \u{201c}display\u{201d}"
+                "Translate \u{201c}display\u{201d}",
+                "Add to Favourites"
             ]
         );
+
+        // The first use also records the word; see the history tests.
+        let effects = act(&mut session, &item.id, &item.actions[0].id);
+        assert_eq!(effects.last(), Some(&Effect::Copy(item.title.clone())));
         assert_eq!(
             act(&mut session, &item.id, "translate"),
             [Effect::Translate("display".into())]
         );
-
-        let effects = act(&mut session, &item.id, &item.actions[0].id);
-        assert_eq!(effects, [Effect::Copy(item.title.clone())]);
         assert_eq!(
             act(&mut session, &item.id, "copy-word"),
             [Effect::Copy("display".into())]
@@ -829,13 +1063,140 @@ mod tests {
         assert!(other.is_empty());
     }
 
+    fn saved(effects: &[Effect]) -> store::State {
+        effects
+            .iter()
+            .rev()
+            .find_map(|effect| match effect {
+                Effect::Save(state) => Some(state.clone()),
+                _ => None,
+            })
+            .expect("a save")
+    }
+
+    /// A lookup that answers is not history; using it is.
+    #[test]
+    fn a_word_goes_into_history_when_it_is_used() {
+        let mut session = session();
+        let list = found(&mut session, "display");
+        assert!(session.saved.history.is_empty());
+
+        let effects = act(&mut session, &list.item(0).unwrap().id, "copy");
+        assert_eq!(saved(&effects).history[0].word, "display");
+        assert!(matches!(effects.last(), Some(Effect::Copy(_))));
+
+        // Used again, nothing changes and nothing is written.
+        let effects = act(&mut session, &list.item(0).unwrap().id, "copy-word");
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Save(_))));
+    }
+
+    #[test]
+    fn a_word_left_on_screen_counts_as_looked_at() {
+        let mut session = session();
+        found(&mut session, "display");
+        let effects = session.event(Event::Dismissed);
+        assert_eq!(saved(&effects).history[0].word, "display");
+    }
+
+    #[test]
+    fn with_history_off_nothing_is_kept_and_what_was_is_dropped() {
+        let mut kept = store::State::default();
+        kept.record("old", "en");
+        let mut session = Session::new(languages::english(), "en", "Wiktionary", kept, false);
+        assert!(session.saved.history.is_empty());
+        found(&mut session, "display");
+        assert!(session.closed().is_empty());
+    }
+
+    /// A favourite keeps the whole entry, and opens with no request.
+    #[test]
+    fn a_favourite_opens_from_what_was_saved() {
+        let mut session = session();
+        let shown = found(&mut session, "display");
+        let item = shown.item(0).unwrap();
+        assert!(item.actions.iter().any(|a| a.title == "Add to Favourites"));
+        let effects = act(&mut session, &item.id, "favourite");
+        let state = saved(&effects);
+        assert_eq!(state.favourites[0].word, "display");
+        assert!(!state.favourites[0].parts.is_empty());
+        assert!(
+            list_after(effects)
+                .item(0)
+                .unwrap()
+                .actions
+                .iter()
+                .any(|a| a.title == "Remove from Favourites")
+        );
+
+        // A new view, from the file, offline.
+        let mut session = Session::new(languages::english(), "en", "Wiktionary", state, true);
+        let empty = list(&[Effect::Render(session.view())]);
+        assert_eq!(empty.sections[0].title.as_deref(), Some("Favourites"));
+        let favourite = empty.item(0).unwrap();
+        assert_eq!(favourite.title, "display");
+        assert_eq!(favourite.subtitle.as_deref(), Some("A show or spectacle."));
+
+        let effects = act(&mut session, &favourite.id, "show");
+        assert_eq!(effects, [Effect::Type("display".into())]);
+        let effects = typed(&mut session, "display");
+        assert!(sends(&effects).is_empty());
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Wait { .. })));
+        assert_eq!(
+            list_after(effects).item(0).unwrap().title,
+            "A show or spectacle."
+        );
+    }
+
+    /// A recent word in another language switches to it, then is typed.
+    #[test]
+    fn a_recent_word_is_looked_up_in_its_language() {
+        let mut kept = store::State::default();
+        kept.record("mostrar", "es");
+        kept.record("display", "en");
+        let mut session = Session::new(languages::english(), "en", "Wiktionary", kept, true);
+        let list = list(&typed(&mut session, " "));
+        let recent = &list.sections[0];
+        assert_eq!(recent.title.as_deref(), Some("Recent"));
+        assert_eq!(recent.items[1].title, "mostrar");
+
+        let effects = act(&mut session, &recent.items[1].id, "show");
+        let spanish = languages::find("es").unwrap();
+        assert_eq!(
+            effects,
+            [Effect::Remember(spanish), Effect::Type("mostrar".into())]
+        );
+        assert_eq!(sends(&typed(&mut session, "mostrar")).len(), 0);
+        let requests = sends(&session.settle(session.generation));
+        assert_eq!(requests[0].language, spanish);
+    }
+
+    #[test]
+    fn history_can_be_trimmed_and_cleared() {
+        let mut kept = store::State::default();
+        kept.record("a", "en");
+        kept.record("b", "en");
+        let mut session = Session::new(languages::english(), "en", "Wiktionary", kept, true);
+
+        let effects = act(&mut session, "recent-0", "forget");
+        assert_eq!(saved(&effects).history.len(), 1);
+        let effects = act(&mut session, "recent-0", "clear-history");
+        assert!(saved(&effects).history.is_empty());
+        assert!(list_after(effects).is_empty());
+    }
+
     /// A definition that opens with its labels does not repeat them.
     #[test]
     fn labels_are_said_once() {
         let mostrar = free::parse(include_str!("fixtures/mostrar.json"), "es")
             .unwrap()
             .unwrap();
-        let session = Session::new(languages::find("es").unwrap(), "en", "Wiktionary");
+        let session = Session::new(
+            languages::find("es").unwrap(),
+            "en",
+            "Wiktionary",
+            store::State::default(),
+            true,
+        );
         let (part, sense) = (&mostrar.parts[0], &mostrar.parts[0].senses[0]);
         let markdown = session.detail(&mostrar, part, sense).markdown;
         assert!(markdown.contains("(transitive) to show"));

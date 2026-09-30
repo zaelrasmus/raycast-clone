@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clipboard::Retention;
 use crate::currency::CurrencyConfig;
+use crate::dictionary::DictionaryConfig;
 use crate::providers::files::{self, FileLimits};
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
@@ -38,6 +39,8 @@ pub struct Config {
     pub timers: TimersConfig,
     /// Currency (F9): which service asks for rates, and its key.
     pub currency: CurrencyConfig,
+    /// Definitions (F10): whether history is kept.
+    pub dictionary: DictionaryConfig,
 }
 
 /// File search (F3).
@@ -160,6 +163,7 @@ impl Default for Config {
             translate: TranslateConfig::default(),
             timers: TimersConfig::default(),
             currency: CurrencyConfig::default(),
+            dictionary: DictionaryConfig::default(),
         }
     }
 }
