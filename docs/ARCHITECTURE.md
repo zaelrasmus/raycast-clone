@@ -118,6 +118,7 @@ once Lumen was measured well inside them (7.36).
 | **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
+| **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **In progress.** Expansion is deferred. See F11 decisions |
 
 ### F4 build order is not optional
 
@@ -1126,6 +1127,136 @@ What changed on the way, and what was learned:
   88.5 MB, 31 threads, binary 17,334,784 bytes (**+225 KB**). No new
   dependency: the client is the one Translate already uses, built on first
   use and dropped thirty seconds after the last lookup.
+
+### F11 decisions
+
+Snippets exist since F3: `snippets.json`, a name, a text and keywords,
+matched in the root list and copied on `Enter`. Raycast's snippets were read
+again as the target -- *Search Snippets* and *Create Snippet* -- and they do
+five things Lumen's do not: they **paste** into the application the user was
+in, they carry **tags** and a **keyword**, they show the selected snippet
+**beside the list** with its dates, they fill in **dynamic placeholders**
+(`{clipboard}`, `{date}`, `{cursor}`, `{argument}`...), and they are written
+in an **editor with formatting**. F11 is those five, and not a sixth.
+
+The decisions:
+
+- **Snippets leave the root list.** Two catalogue rows take their place,
+  *Search Snippets* and, with the form, *Create Snippet*. A hundred snippets
+  matched beside the applications is 7.14's problem again: the root list
+  answers "open something", and a snippet is something you search for in its
+  own view. The `SnippetProvider` survives as what says a snippet row looks
+  like, as the clipboard's did.
+- **Search Snippets is a list with the detail pane,** the vocabulary F10
+  built, and nothing new in it. A row is the name, with the keyword as a
+  neutral tag beside it; the pane is the text, then *Name*, *Keyword*,
+  *Tags*, *Content Type*, *Modified* and *Created*. Sections are by date
+  modified -- *Today*, *Yesterday*, *This Week*, *This Month*, *Earlier* --
+  newest first, and a snippet with no dates, written by hand, is *Earlier*.
+  The text is matched as well as the name, so a snippet is found by what it
+  says.
+- **Tags are a scope,** *All Tags* and then every tag in use, sorted: the
+  F7 pill, searchable as F9 made it. A tag is a word; a snippet has any
+  number of them.
+- **The file gains fields, schema 2.** `keyword`, `tags`, `created`,
+  `modified` and `format`. Dates are RFC 3339 strings, because the file is
+  one people edit and `2026-09-29T21:00:19Z` is readable where a count of
+  seconds is not. A version-1 file loads unchanged, every new field
+  optional (I-12's reasoning, for data). The file stays the source of truth
+  and is written the way F6 writes `quicklinks.json`: refused when it does
+  not parse, unknown fields kept, replaced in one rename.
+- **One keyword, and the keywords stay.** `keyword` is Raycast's field: one
+  word, unique across snippets, shown on the row and reserved for expansion.
+  `keywords` is F3's list, matched and never shown. They answer different
+  questions, and a file written for F3 must not change meaning.
+- **`Enter` pastes.** Copying is the second action. Pasting is a new method
+  on `trait Platform` (I-9): put the snippet on the clipboard, send `Ctrl+V`
+  to the window captured before the launcher appeared -- never "the
+  foreground", for 7.15's reason -- and put back what was there. The Linux
+  implementation is a stub, as the rest of F5 is.
+- **The clipboard is put back by default.** `snippets.paste` in
+  `config.json` is `restore` or `keep`. With `restore`, the snippet is
+  marked with `ExcludeClipboardContentFromMonitorProcessing`, which 7.13
+  already honours, so it never reaches the history; everything that was on
+  the clipboard is restored, not only its text. When to restore is the hard
+  part: the target reads the clipboard whenever it gets round to handling
+  the keystroke, and restoring before that pastes the old contents. How
+  that moment is detected is slice 2's to find out and to write down here.
+  With `keep`, the snippet stays and enters the history like any copy.
+- **The text is Markdown, drawn as Markdown source.** The editor's text is
+  the file's text: the toolbar wraps the selection in `**`, `_`, `~~`, `++`
+  or `[...](...)`, and the editor styles what it shows from a parse, the
+  markers kept visible and dimmed. Because the text on screen *is* the
+  source, the cursor, the selection, undo and the input method work on one
+  string with nothing to map. A true rich-text editor -- a document model,
+  selections across styled spans, HTML read back from a paste -- was the
+  alternative, and is several phases of work for the markers not showing.
+  Hiding them while the cursor is elsewhere (Typora's live preview) can be
+  built on this later; it cannot be built on a rich-text model's ruins.
+- **A pasted Markdown snippet carries both forms.** The clipboard gets HTML
+  for the applications that read it (a mail, a document) and the text with
+  the markers taken out for those that do not (a terminal). `format` says
+  which snippets are Markdown: the form writes `markdown`, and a snippet
+  without the field is `text` and is pasted exactly as written, since a
+  command with a `*` in it written for F3 is not emphasis. Underline is not
+  Markdown; `++underline++` is the common extension and is what is used.
+- **Placeholders are parsed at load,** as F6's templates are, so a typo is
+  reported against the snippet that has it. The engine is in `core` and
+  pure: the clipboard and the time are arguments. The set is Raycast's that
+  can be kept honestly: `{clipboard}` and `{clipboard offset=N}` from the
+  history, `{date}`, `{time}`, `{datetime}` and `{day}` with `format` and
+  `offset`, `{uuid}`, `{cursor}`, `{argument name=... default=...}`,
+  `{snippet name=...}`, and the modifiers `uppercase`, `lowercase`, `trim`,
+  `percent-encode` and `json-stringify`. A literal brace is `{{`.
+- **Local time comes from `jiff`.** It is already in the build (F9) without
+  time zones; `{date}` and the pane's *Today, 9:00 PM* need the user's.
+  `jiff`'s own system time zone, with the database bundled on Windows,
+  rather than a `trait Platform` method, because a UTC offset from the
+  platform is wrong across a change to daylight saving time, which is
+  exactly what `offset=+7d` crosses. What it costs in binary size is
+  measured, not assumed.
+- **Arguments are asked for in the search field,** as F6 asks for a
+  quicklink's query: a pill per argument, three at most, `Tab` between them,
+  and nothing is pasted until `Enter`.
+- **`{cursor}` moves the caret back** after the paste, by sending `Left`
+  once per character after it. Characters as the target counts them, which
+  is a grapheme almost everywhere and a line break as one; where it is
+  wrong the snippet is still pasted whole, and nothing is lost but the
+  caret's place.
+- **Left out.** `{selection}`: reading the selected text means sending
+  `Ctrl+C` to someone else's application and hoping. An icon per snippet:
+  the icon set is eight files on one grid (7.23), and a snippet is not a
+  ninth kind of thing. Images and files in snippets.
+- **Expansion is deferred, and the door is written down.** Typing a keyword
+  anywhere and having it replaced needs every keystroke in every
+  application, which this project has refused to take with a
+  `WH_KEYBOARD_LL` hook (R-13). There is a way that does not contradict it:
+  the Raw Input sink already registered for the hold gesture (7.1) sees
+  every key without a hook and without the timeout that silently removes
+  one. It cannot suppress a key, and expansion does not need to: it types
+  `Backspace` over the keyword and pastes. The costs are real -- Raw Input
+  reports keys, not characters, so layouts, dead keys and input methods are
+  the work; matching must fit I-15, so a fixed ring buffer and no
+  allocation; and it is still a program reading every key -- and they are a
+  phase of their own, after this one is polished. Until then `keyword` is
+  matched and shown, and the paste covers the need.
+- **The slices,** one acceptance criterion each:
+  1. Schema 2 read, and *Search Snippets* opens a list with the pane, date
+     sections and the tag scope; `Enter` copies. Snippets are no longer in
+     the root list.
+  2. `Enter` pastes into the application the launcher was opened over, and
+     `snippets.paste` decides whether the clipboard is put back.
+  3. Placeholders: the clipboard, dates and times in local time, `{uuid}`,
+     `{snippet}` and the modifiers.
+  4. `{argument}` in the search field, and `{cursor}`.
+  5. A multi-line text area, drawing Markdown source styled, with the
+     toolbar. Emoji are checked in it, drawn in colour and typed with
+     `Win+.`.
+  6. *Create Snippet*, and *Edit*, *Duplicate* and *Delete* from the view,
+     in the form from Raycast's two columns; a Markdown snippet pastes HTML.
+
+  The idle baseline and the binary size are measured before slice 1, and
+  again after 6.
 
 ---
 
