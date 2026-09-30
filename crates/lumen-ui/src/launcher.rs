@@ -2381,6 +2381,22 @@ impl Launcher {
     /// The field does not report this back, so callers re-rank themselves when
     /// they need to -- most of them are changing mode at the same moment and
     /// re-rank once for both.
+    /// Put `text` in the search field of the open view, as if typed (F10).
+    ///
+    /// For one built-in view opening another on the same word -- *Define
+    /// "display"* from Translate. The daemon calls it, never a view: an
+    /// extension that could write the field could type over the user.
+    pub fn set_query(&mut self, text: String, cx: &mut Context<Self>) {
+        if !matches!(self.mode, Mode::View(_)) || self.picker.is_some() {
+            return;
+        }
+        self.query.clone_from(&text);
+        self.query_field
+            .update(cx, |field, cx| field.set_text(text, cx));
+        self.rerank(cx);
+        cx.notify();
+    }
+
     fn clear_query_text(&mut self, cx: &mut Context<Self>) {
         self.query.clear();
         self.query_field

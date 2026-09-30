@@ -29,6 +29,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::App;
+use lumen_core::dictionary::languages as dictionary_languages;
 use lumen_core::translate::session::{Effect, Languages, Request, Session};
 use lumen_core::translate::{self, Failure, TranslateConfig, Translation, Translator};
 use lumen_core::view::Event;
@@ -70,11 +71,16 @@ enum Input {
 /// The client, shared by the request threads and dropped when quiet.
 type Client = Arc<Mutex<Option<Arc<dyn Translator>>>>;
 
-/// Open the translate view on `preset`, or on the languages used last.
+/// Open the translate view on `preset`, or on the languages used last, with
+/// `text` already typed when it comes from Define (F10).
+///
+/// `browser` is only passed on, for when Translate opens Define in turn.
 pub fn run(
     platform: Arc<dyn Platform>,
     config: TranslateConfig,
     preset: Option<String>,
+    text: Option<String>,
+    browser: Option<String>,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
 ) {
@@ -115,6 +121,9 @@ pub fn run(
         .update(cx, |launcher, _window, cx| {
             launcher.begin_view(sink, cx);
             launcher.show_view(first, cx);
+            if let Some(text) = text {
+                launcher.set_query(text, cx);
+            }
         })
         .ok();
 
@@ -178,6 +187,25 @@ pub fn run(
                             .ok();
                     }
                     Effect::Remember(languages) => *LAST.lock() = Some(languages),
+                    // Opening Define drops this view's sink, which ends
+                    // this loop on its next turn.
+                    Effect::Define { word, language } => {
+                        let platform = platform.clone();
+                        let translate = (*config).clone();
+                        let browser = browser.clone();
+                        let start = (word, language.and_then(dictionary_languages::find));
+                        cx.update(|cx| {
+                            crate::define::run(
+                                platform,
+                                browser,
+                                translate,
+                                Some(start),
+                                window,
+                                cx,
+                            )
+                        })
+                        .ok();
+                    }
                 }
             }
         }

@@ -45,6 +45,8 @@ pub enum Effect {
     Open(String),
     /// This word language was chosen; open with it next time.
     Remember(&'static Language),
+    /// Open Translate on this word (F10).
+    Translate(String),
 }
 
 /// One lookup to make.
@@ -89,6 +91,7 @@ pub struct Session {
 const COPY: &str = "copy";
 const COPY_WORD: &str = "copy-word";
 const OPEN: &str = "open";
+const TRANSLATE: &str = "translate";
 const RETRY: &str = "retry";
 const SENSE: &str = "sense-";
 const FAILURE: &str = "failure";
@@ -280,6 +283,7 @@ impl Session {
                 .unwrap_or_default(),
             COPY_WORD => vec![Effect::Copy(entry.word.clone())],
             OPEN if !entry.url.is_empty() => vec![Effect::Open(entry.url.clone())],
+            TRANSLATE => vec![Effect::Translate(entry.word.clone())],
             _ => Vec::new(),
         }
     }
@@ -375,6 +379,12 @@ impl Session {
                             if !entry.url.is_empty() {
                                 actions.push(action(OPEN, "Open in Wiktionary"));
                             }
+                            // How it is said, one key away from what it
+                            // means (F10).
+                            actions.push(action(
+                                TRANSLATE,
+                                &format!("Translate \u{201c}{}\u{201d}", entry.word),
+                            ));
                             actions
                         } else {
                             Vec::new()
@@ -654,8 +664,13 @@ mod tests {
             [
                 "Copy Definition",
                 "Copy \u{201c}display\u{201d}",
-                "Open in Wiktionary"
+                "Open in Wiktionary",
+                "Translate \u{201c}display\u{201d}"
             ]
+        );
+        assert_eq!(
+            act(&mut session, &item.id, "translate"),
+            [Effect::Translate("display".into())]
         );
 
         let effects = act(&mut session, &item.id, &item.actions[0].id);

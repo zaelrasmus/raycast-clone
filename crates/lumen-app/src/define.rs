@@ -16,6 +16,7 @@ use gpui::App;
 use lumen_core::dictionary::session::{Effect, Request, Session};
 use lumen_core::dictionary::{self, Dictionary, Entry, Failure, languages};
 use lumen_core::providers::quicklinks::{OpenLink, Template};
+use lumen_core::translate::TranslateConfig;
 use lumen_core::view::Event;
 use lumen_platform::Platform;
 use lumen_ui::{Launcher, ViewSink};
@@ -49,18 +50,26 @@ type Client = Arc<Mutex<Option<Arc<dyn Dictionary>>>>;
 /// daemon, which is as long as anybody remembers having chosen it.
 static LAST: Mutex<Option<&'static languages::Language>> = Mutex::new(None);
 
-/// Open the Define view.
+/// Open the Define view, on a word and its language when it comes from
+/// Translate (F10).
 ///
 /// `browser` is the preferred one from the configuration, for *Open in
-/// Wiktionary*.
+/// Wiktionary*; `translate` is only passed on, for when Define opens
+/// Translate in turn.
 pub fn run(
     platform: Arc<dyn Platform>,
     browser: Option<String>,
+    translate: TranslateConfig,
+    start: Option<(String, Option<&'static languages::Language>)>,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
 ) {
+    let (word, language) = match start {
+        Some((word, language)) => (Some(word), language),
+        None => (None, None),
+    };
     let mut session = Session::new(
-        LAST.lock().unwrap_or_else(languages::english),
+        language.or(*LAST.lock()).unwrap_or_else(languages::english),
         dictionary::explanation_language(),
         dictionary::attribution(),
     );
@@ -80,6 +89,9 @@ pub fn run(
         .update(cx, |launcher, _window, cx| {
             launcher.begin_view(sink, cx);
             launcher.show_view(first, cx);
+            if let Some(word) = word {
+                launcher.set_query(word, cx);
+            }
         })
         .ok();
 
@@ -138,6 +150,25 @@ pub fn run(
                             .ok();
                     }
                     Effect::Remember(language) => *LAST.lock() = Some(language),
+                    // Opening Translate drops this view's sink, which ends
+                    // this loop on its next turn.
+                    Effect::Translate(word) => {
+                        let platform = platform.clone();
+                        let translate = translate.clone();
+                        let browser = browser.clone();
+                        cx.update(|cx| {
+                            crate::translate::run(
+                                platform,
+                                translate,
+                                None,
+                                Some(word),
+                                browser,
+                                window,
+                                cx,
+                            )
+                        })
+                        .ok();
+                    }
                     Effect::Open(url) => {
                         window
                             .update(cx, |launcher, _window, cx| launcher.close(cx))

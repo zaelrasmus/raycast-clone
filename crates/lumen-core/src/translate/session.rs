@@ -51,6 +51,12 @@ pub enum Effect {
     Copy(String),
     /// These languages were chosen; open with them next time.
     Remember(Languages),
+    /// Open Define on this word (F10), in the source language when it is
+    /// known -- by code.
+    Define {
+        word: String,
+        language: Option<&'static str>,
+    },
 }
 
 /// A direction: a source, or detection, and the targets.
@@ -120,6 +126,7 @@ const TARGET: &str = "target-";
 const ALTERNATIVE: &str = "alternative-";
 const COPY_TERM: &str = "copy-term";
 const COPY_TERMS: &str = "copy-terms";
+const DEFINE: &str = "define";
 /// The scopes, and the prefixes of their options.
 const FROM: &str = "from";
 const TO: &str = "to";
@@ -359,6 +366,14 @@ impl Session {
                 vec![Effect::Copy(all.join("\n"))]
             }
             RETRY => self.restart(true),
+            DEFINE => vec![Effect::Define {
+                word: self.text().to_string(),
+                language: self
+                    .languages
+                    .from
+                    .or(self.detected)
+                    .map(|language| language.code),
+            }],
             _ => Vec::new(),
         }
     }
@@ -585,6 +600,13 @@ impl Session {
                 ];
                 if self.rows.len() > 1 {
                     actions.push(action(COPY_ALL, "Copy All Translations"));
+                }
+                // What it means, one key away from how it is said (F10).
+                if super::is_one_word(self.text()) {
+                    actions.push(action(
+                        DEFINE,
+                        &format!("Define \u{201c}{}\u{201d}", self.text()),
+                    ));
                 }
                 actions
             }
@@ -1100,6 +1122,51 @@ mod tests {
             action: "copy-terms".into(),
         });
         assert_eq!(effects, [Effect::Copy("show, display".into())]);
+    }
+
+    /// F10: one word can be defined, in the language it was typed in.
+    #[test]
+    fn a_word_can_be_defined_in_its_source_language() {
+        let mut session = session();
+        typed(&mut session, "mostrar");
+        let generation = session.generation;
+        let list = list(&session.answer(generation, 0, done("show")));
+        let define = list
+            .item(0)
+            .unwrap()
+            .actions
+            .iter()
+            .find(|action| action.id == "define")
+            .expect("a Define action")
+            .clone();
+        assert_eq!(define.title, "Define \u{201c}mostrar\u{201d}");
+
+        let effects = session.event(Event::ActionInvoked {
+            item: Some("target-0".into()),
+            action: define.id,
+        });
+        assert_eq!(
+            effects,
+            [Effect::Define {
+                word: "mostrar".into(),
+                language: Some("es"),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_sentence_is_not_offered_to_define() {
+        let mut session = session();
+        typed(&mut session, "hola amigo");
+        let generation = session.generation;
+        let list = list(&session.answer(generation, 0, done("hello friend")));
+        assert!(
+            list.item(0)
+                .unwrap()
+                .actions
+                .iter()
+                .all(|action| action.id != "define")
+        );
     }
 
     /// Kept while the same word is asked again, gone under a sentence.
