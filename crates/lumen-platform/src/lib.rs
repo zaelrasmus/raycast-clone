@@ -20,8 +20,8 @@ pub mod tiling;
 pub mod tray;
 
 pub use events::{
-    ApplicationsSink, ClipboardContent, ClipboardEvent, ClipboardSink, GestureEvent, GestureSink,
-    HoldPhase, Hotkey, Modifier, Modifiers,
+    ApplicationsSink, ClipboardContent, ClipboardEvent, ClipboardImage, ClipboardSink,
+    GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier, Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
 pub use tiling::WindowLayout;
@@ -142,6 +142,9 @@ pub struct Paste {
     /// Files to paste instead of the text, which then only names them for
     /// a target that takes no files (F12). Empty for a text paste.
     pub files: Vec<PathBuf>,
+    /// A picture to paste instead of the text (F12). `None` for a text or a
+    /// file paste.
+    pub image: Option<ClipboardImage>,
     /// Keep the paste out of clipboard history even though it stays on the
     /// clipboard: it came from the history, which moves the entry itself
     /// rather than recording it again with the target as its source (F12).
@@ -169,6 +172,7 @@ impl std::fmt::Debug for Paste {
             .field("caret_back", &self.caret_back)
             .field("restore_clipboard", &self.restore_clipboard)
             .field("files", &self.files.len())
+            .field("image", &self.image)
             .field("keep_out_of_history", &self.keep_out_of_history)
             .finish()
     }
@@ -672,6 +676,7 @@ mod tests {
             caret_back: 0,
             restore_clipboard: true,
             files: Vec::new(),
+            image: None,
             keep_out_of_history: false,
         };
         let logged = format!("{paste:?}");

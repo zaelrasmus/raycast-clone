@@ -255,6 +255,9 @@ pub struct Launcher {
     config: Config,
     theme: Theme,
     icons: IconCache,
+    /// Pictures the host wrote, for *Clipboard History*'s images (F12).
+    /// Emptied whenever the launcher hides.
+    images: crate::images::ImageCache,
 
     /// What the root list is ranked from, and how (AD-03: the policy is in
     /// `core`, and this view only draws its hits).
@@ -374,6 +377,7 @@ impl Launcher {
             config,
             theme,
             icons,
+            images: crate::images::ImageCache::new(),
             root,
             fetching_icons: false,
             rates_asked: false,
@@ -400,6 +404,14 @@ impl Launcher {
         launcher.start_indexing(cx);
         launcher.refresh_files(cx);
         launcher
+    }
+
+    /// Forget every picture drawn, and free its texture (F12).
+    ///
+    /// Called by the daemon when the launcher hides: a screenshot's pixels
+    /// are worth their memory only while somebody is looking at them.
+    pub fn release_images(&mut self, cx: &mut Context<Self>) {
+        self.images.release(cx);
     }
 
     /// Give the launcher the clipboard history, for the view and for
@@ -1511,6 +1523,7 @@ impl Launcher {
     fn leave_view(&mut self, cx: &mut Context<Self>) {
         // Told before the mode changes, or there is nothing left to tell.
         self.tell_extension(lumen_core::view::Event::Dismissed);
+        self.images.release(cx);
 
         let previous_height = self.content_height();
         self.picker = None;
@@ -2583,7 +2596,7 @@ impl Render for Launcher {
                 FormKind::Timer(form) => form.clone().into_any_element(),
                 FormKind::Snippet(form) => form.clone().into_any_element(),
             },
-            (None, Mode::View(state)) => self.render_view(state),
+            (None, Mode::View(state)) => self.render_view(state, cx),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
         };
 
@@ -2846,7 +2859,7 @@ impl Launcher {
     /// The launcher owns the search field and the footer; the renderer owns
     /// everything between them. That split is the one an extension will see:
     /// it supplies rows, and the chrome around them is never its to change.
-    fn render_view(&self, state: &ViewState) -> gpui::AnyElement {
+    fn render_view(&self, state: &ViewState, cx: &mut gpui::App) -> gpui::AnyElement {
         let height = gpui::px(
             self.content_height()
                 - lumen_core::layout::SEARCH_HEIGHT
@@ -2874,6 +2887,8 @@ impl Launcher {
                 state.selected,
                 &self.theme,
                 height,
+                &self.images,
+                cx,
             ),
             lumen_core::view::View::Detail(detail) => {
                 crate::view::render_detail(detail, &self.theme, height)

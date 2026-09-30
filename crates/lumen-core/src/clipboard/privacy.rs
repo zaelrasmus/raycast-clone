@@ -109,6 +109,17 @@ pub fn may_record(text: &str, source: Option<&str>) -> Result<(), Rejected> {
     Ok(())
 }
 
+/// Decide whether a copied picture may be recorded (F12).
+///
+/// Only the source is checked: a picture has no text to recognise a secret
+/// in. A password manager's screenshot of a vault is still its business.
+pub fn may_record_image(source: Option<&str>) -> Result<(), Rejected> {
+    match source {
+        Some(source) if is_denylisted(source) => Err(Rejected::DeniedApplication),
+        _ => Ok(()),
+    }
+}
+
 /// Whether `executable` is a password manager.
 pub fn is_denylisted(executable: &str) -> bool {
     DENYLISTED_APPS
@@ -232,6 +243,16 @@ mod tests {
         // Refusing to record everything copied from any elevated window would
         // quietly break the feature.
         assert_eq!(may_record("ordinary text", None), Ok(()));
+    }
+
+    #[test]
+    fn a_picture_is_refused_only_for_where_it_came_from() {
+        assert_eq!(may_record_image(Some("snippingtool.exe")), Ok(()));
+        assert_eq!(may_record_image(None), Ok(()));
+        assert_eq!(
+            may_record_image(Some("KeePassXC.exe")),
+            Err(Rejected::DeniedApplication)
+        );
     }
 
     #[test]

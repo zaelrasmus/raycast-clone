@@ -38,6 +38,9 @@ jiff = { version = "=0.2.35", default-features = false, features = ["std", "tz-s
 # Where `{cursor}` leaves the caret is counted in graphemes, as the Left key
 # moves (F11). Already in the build through nucleo-matcher.
 unicode-segmentation = "1.13"
+# Copied images are named by the hash of their pixels (F12), so the same
+# screenshot copied twice is one file. Already in the build through gpui.
+sha2 = "0.10"
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }

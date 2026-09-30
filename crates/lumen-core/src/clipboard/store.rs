@@ -12,7 +12,7 @@
 //! deletion, deduplication and ordering -- which is a database whether or not
 //! it is spelled like one.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
@@ -22,7 +22,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 ///
 /// Stored in SQLite's own `user_version`, so migrating is a comparison rather
 /// than a table of its own.
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 4;
 
 /// What an entry holds, as it was put on the clipboard (F12).
 ///
@@ -37,6 +37,9 @@ pub enum Payload {
     /// A list of files, as Explorer copies them. `text` is the paths, one per
     /// line: a Windows path cannot contain a line break.
     Files,
+    /// A picture. `text` is its hash, which names its files in
+    /// [`History::images_dir`] (see [`super::images`]).
+    Image,
 }
 
 impl Payload {
@@ -44,6 +47,7 @@ impl Payload {
         match self {
             Payload::Text => "text",
             Payload::Files => "files",
+            Payload::Image => "image",
         }
     }
 
@@ -52,6 +56,7 @@ impl Payload {
     fn from_column(value: &str) -> Self {
         match value {
             "files" => Payload::Files,
+            "image" => Payload::Image,
             _ => Payload::Text,
         }
     }
@@ -62,12 +67,26 @@ impl Payload {
 pub struct Entry {
     pub id: i64,
     pub payload: Payload,
-    /// The text, or for [`Payload::Files`] the paths, one per line.
+    /// The text, for [`Payload::Files`] the paths, one per line, and for
+    /// [`Payload::Image`] the picture's hash.
     pub text: String,
     /// Seconds since the Unix epoch.
     pub copied_at: i64,
     /// The executable that was in the foreground, if it could be identified.
     pub source: Option<String>,
+    /// What a picture is, for [`Payload::Image`].
+    pub image: Option<ImageInfo>,
+    /// Where a picture lives online, when it was copied from a page.
+    pub origin: Option<String>,
+}
+
+/// A recorded picture's size, kept so the view need not open the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageInfo {
+    pub width: u32,
+    pub height: u32,
+    /// The PNG's size on disk.
+    pub bytes: u64,
 }
 
 impl Entry {
@@ -75,7 +94,7 @@ impl Entry {
     pub fn files(&self) -> Vec<std::path::PathBuf> {
         match self.payload {
             Payload::Files => self.text.lines().map(Into::into).collect(),
-            Payload::Text => Vec::new(),
+            Payload::Text | Payload::Image => Vec::new(),
         }
     }
 
@@ -122,6 +141,9 @@ impl Default for Retention {
 pub struct History {
     connection: Connection,
     retention: Retention,
+    /// Where pictures are kept: beside the database, in a folder of its own.
+    /// `None` in memory, where there are no files to keep.
+    images: Option<PathBuf>,
 }
 
 impl History {
@@ -144,8 +166,11 @@ impl History {
         let mut history = Self {
             connection,
             retention,
+            images: Some(path.with_file_name("clipboard-images")),
         };
         history.migrate()?;
+        // Whatever a crash left behind between a picture and its row.
+        history.sweep();
         Ok(history)
     }
 
@@ -154,6 +179,7 @@ impl History {
         let mut history = Self {
             connection: Connection::open_in_memory()?,
             retention,
+            images: None,
         };
         history.migrate()?;
         Ok(history)
@@ -215,6 +241,25 @@ impl History {
                 .context("adding files to the clipboard schema")?;
         }
 
+        if version < 3 {
+            // Pictures join them (F12, slice 2), with their size, so the view
+            // can say it without opening the file.
+            self.connection
+                .execute_batch(
+                    "ALTER TABLE entries ADD COLUMN width  INTEGER;
+                     ALTER TABLE entries ADD COLUMN height INTEGER;
+                     ALTER TABLE entries ADD COLUMN bytes  INTEGER;",
+                )
+                .context("adding pictures to the clipboard schema")?;
+        }
+
+        if version < 4 {
+            // Where a picture copied from a page lives online, for *Copy URL*.
+            self.connection
+                .execute_batch("ALTER TABLE entries ADD COLUMN origin TEXT;")
+                .context("adding picture addresses to the clipboard schema")?;
+        }
+
         self.connection
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .context("recording the schema version")?;
@@ -228,20 +273,71 @@ impl History {
     /// given. Keeping the decision and the storage apart is what makes the
     /// decision testable without a database.
     pub fn record(&self, payload: Payload, text: &str, source: Option<&str>) -> Result<()> {
+        self.insert(payload, text, None, None, source)
+    }
+
+    /// Record a picture already written by [`super::images::store`] into
+    /// [`History::images_dir`].
+    ///
+    /// Written by the caller, outside this, because encoding a screenshot
+    /// takes long enough that holding the history's lock through it would
+    /// stall the view reading it.
+    ///
+    /// `origin` is where it lives online, already past the privacy checks.
+    pub fn record_image(
+        &self,
+        stored: &super::images::Stored,
+        origin: Option<&str>,
+        source: Option<&str>,
+    ) -> Result<()> {
+        let info = ImageInfo {
+            width: stored.width,
+            height: stored.height,
+            bytes: stored.bytes,
+        };
+        self.insert(Payload::Image, &stored.hash, Some(info), origin, source)
+    }
+
+    /// Where pictures are kept, `None` in memory.
+    pub fn images_dir(&self) -> Option<&Path> {
+        self.images.as_deref()
+    }
+
+    fn insert(
+        &self,
+        payload: Payload,
+        text: &str,
+        image: Option<ImageInfo>,
+        origin: Option<&str>,
+        source: Option<&str>,
+    ) -> Result<()> {
         self.connection
             .execute(
-                "INSERT INTO entries (kind, text, copied_at, source, sequence)
+                "INSERT INTO entries
+                     (kind, text, copied_at, source, width, height, bytes, origin, sequence)
                  VALUES (
-                     ?4, ?1, ?2, ?3,
+                     ?4, ?1, ?2, ?3, ?5, ?6, ?7, ?8,
                      COALESCE((SELECT MAX(sequence) FROM entries), 0) + 1
                  )
                  ON CONFLICT (kind, text) DO UPDATE SET
                      copied_at = excluded.copied_at,
                      source    = excluded.source,
+                     -- The same picture copied again from a page keeps an
+                     -- address it was copied with before.
+                     origin    = COALESCE(excluded.origin, origin),
                      -- Re-copying moves an entry back to the top rather than
                      -- leaving it where it was.
                      sequence  = excluded.sequence",
-                params![text, now(), source, payload.column()],
+                params![
+                    text,
+                    now(),
+                    source,
+                    payload.column(),
+                    image.map(|image| image.width),
+                    image.map(|image| image.height),
+                    image.map(|image| image.bytes as i64),
+                    origin,
+                ],
             )
             .context("recording a clipboard entry")?;
 
@@ -251,7 +347,7 @@ impl History {
     /// The most recent entries, newest first.
     pub fn recent(&self, limit: usize) -> Result<Vec<Entry>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, kind, text, copied_at, source
+            "SELECT id, kind, text, copied_at, source, width, height, bytes, origin
              FROM entries
              ORDER BY sequence DESC
              LIMIT ?1",
@@ -281,6 +377,7 @@ impl History {
         self.connection
             .execute("DELETE FROM entries", [])
             .context("clearing the clipboard history")?;
+        self.sweep();
         Ok(())
     }
 
@@ -289,6 +386,7 @@ impl History {
         self.connection
             .execute("DELETE FROM entries WHERE id = ?1", params![id])
             .context("deleting a clipboard entry")?;
+        self.sweep();
         Ok(())
     }
 
@@ -311,13 +409,15 @@ impl History {
     fn prune(&self) -> Result<()> {
         let cutoff = now() - i64::from(self.retention.max_age_days) * 24 * 60 * 60;
 
-        self.connection
+        let mut removed = self
+            .connection
             .execute("DELETE FROM entries WHERE copied_at < ?1", params![cutoff])
             .context("pruning old clipboard entries")?;
 
         // Keeping the newest N: everything outside the most recent window goes,
         // expressed as a subquery so it is one statement and one transaction.
-        self.connection
+        removed += self
+            .connection
             .execute(
                 "DELETE FROM entries
                  WHERE id NOT IN (
@@ -327,7 +427,42 @@ impl History {
             )
             .context("trimming the clipboard history")?;
 
+        if removed > 0 {
+            self.sweep();
+        }
         Ok(())
+    }
+
+    /// Remove the pictures no row names any more.
+    ///
+    /// One pass, whichever way the rows went -- pruned, deleted, cleared --
+    /// rather than a file per row. Failing loses nothing but disk space, which
+    /// the next sweep recovers, so it is logged rather than returned: a copy
+    /// must not fail to record because an old screenshot would not go.
+    fn sweep(&self) {
+        let Some(dir) = &self.images else {
+            return;
+        };
+        let keep = self
+            .connection
+            .prepare("SELECT text FROM entries WHERE kind = 'image'")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            });
+        let keep = match keep {
+            Ok(keep) => keep,
+            Err(error) => {
+                log::warn!("could not list the clipboard's pictures: {error:#}");
+                return;
+            }
+        };
+        match super::images::sweep(dir, &keep) {
+            Ok(0) => {}
+            Ok(removed) => log::debug!("removed {removed} clipboard picture files"),
+            Err(error) => log::warn!("could not remove old clipboard pictures: {error:#}"),
+        }
     }
 
     /// Look one entry up by id, for the copy-back action.
@@ -335,7 +470,8 @@ impl History {
         let entry = self
             .connection
             .query_row(
-                "SELECT id, kind, text, copied_at, source FROM entries WHERE id = ?1",
+                "SELECT id, kind, text, copied_at, source, width, height, bytes, origin
+                 FROM entries WHERE id = ?1",
                 params![id],
                 read_entry,
             )
@@ -353,6 +489,19 @@ fn read_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         text: row.get(2)?,
         copied_at: row.get(3)?,
         source: row.get(4)?,
+        image: match (
+            row.get::<_, Option<u32>>(5)?,
+            row.get::<_, Option<u32>>(6)?,
+            row.get::<_, Option<i64>>(7)?,
+        ) {
+            (Some(width), Some(height), Some(bytes)) => Some(ImageInfo {
+                width,
+                height,
+                bytes: bytes.max(0) as u64,
+            }),
+            _ => None,
+        },
+        origin: row.get(8)?,
     })
 }
 
@@ -443,6 +592,8 @@ mod tests {
             text: "first line\nsecond line".into(),
             copied_at: 0,
             source: None,
+            image: None,
+            origin: None,
         };
         assert_eq!(entry.preview(40), "first line…");
 
@@ -452,6 +603,8 @@ mod tests {
             text: "x".repeat(100),
             copied_at: 0,
             source: None,
+            image: None,
+            origin: None,
         };
         let preview = long.preview(10);
         assert_eq!(preview.chars().count(), 11, "ten characters plus the mark");
@@ -466,6 +619,8 @@ mod tests {
             text: "short".into(),
             copied_at: 0,
             source: None,
+            image: None,
+            origin: None,
         };
         assert_eq!(entry.preview(40), "short");
     }
@@ -588,6 +743,65 @@ mod tests {
 
         history.record(Payload::Text, "kept", None).unwrap();
         assert_eq!(history.len().unwrap(), 1);
+
+        drop(history);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deleting or pruning an entry removes its picture, and only its.
+    #[test]
+    fn a_picture_leaves_with_its_row() {
+        let dir = std::env::temp_dir().join(format!("lumen-clip-img-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = History::open(&dir.join("clipboard.sqlite3"), Retention::default()).unwrap();
+        let images = history.images_dir().unwrap().to_path_buf();
+
+        let picture = |seed: u8| lumen_platform::ClipboardImage {
+            width: 2,
+            height: 2,
+            rgba: vec![seed; 16],
+            png: None,
+        };
+        let kept = super::super::images::store(&images, &picture(1)).unwrap();
+        let gone = super::super::images::store(&images, &picture(2)).unwrap();
+        history
+            .record_image(&kept, None, Some("snippingtool.exe"))
+            .unwrap();
+        history
+            .record_image(&gone, Some("https://example.com/a.png"), None)
+            .unwrap();
+
+        let recent = history.recent(10).unwrap();
+        assert_eq!(recent[0].payload, Payload::Image);
+        assert_eq!(
+            recent[0].image,
+            Some(ImageInfo {
+                width: 2,
+                height: 2,
+                bytes: gone.bytes
+            })
+        );
+        assert_eq!(
+            recent[0].origin.as_deref(),
+            Some("https://example.com/a.png")
+        );
+
+        // Old enough to be swept, as they would be a minute later.
+        let old = SystemTime::now() - std::time::Duration::from_secs(3600);
+        for file in std::fs::read_dir(&images).unwrap().flatten() {
+            std::fs::File::options()
+                .write(true)
+                .open(file.path())
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        history.delete(recent[0].id).unwrap();
+
+        use super::super::images::{original, thumbnail};
+        assert!(!original(&images, &gone.hash).exists());
+        assert!(!thumbnail(&images, &gone.hash).exists());
+        assert!(original(&images, &kept.hash).exists());
 
         drop(history);
         let _ = std::fs::remove_dir_all(&dir);

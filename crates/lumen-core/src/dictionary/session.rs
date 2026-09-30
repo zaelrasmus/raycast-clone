@@ -816,6 +816,7 @@ impl Session {
         ItemDetail {
             markdown,
             text: None,
+            image: None,
             metadata,
         }
     }

@@ -18,6 +18,7 @@ use crate::theme::Color;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Text,
+    Image,
     Link,
     Color(Color),
     Files,
@@ -25,11 +26,18 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in the order the *Type* filter lists them.
-    pub const FILTERS: [Filter; 4] = [Filter::Text, Filter::Link, Filter::Color, Filter::Files];
+    pub const FILTERS: [Filter; 5] = [
+        Filter::Text,
+        Filter::Image,
+        Filter::Link,
+        Filter::Color,
+        Filter::Files,
+    ];
 
     pub fn filter(self) -> Filter {
         match self {
             Kind::Text => Filter::Text,
+            Kind::Image => Filter::Image,
             Kind::Link => Filter::Link,
             Kind::Color(_) => Filter::Color,
             Kind::Files => Filter::Files,
@@ -41,6 +49,7 @@ impl Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
     Text,
+    Image,
     Link,
     Color,
     Files,
@@ -51,6 +60,7 @@ impl Filter {
     pub fn id(self) -> &'static str {
         match self {
             Filter::Text => "text",
+            Filter::Image => "image",
             Filter::Link => "link",
             Filter::Color => "color",
             Filter::Files => "files",
@@ -61,6 +71,7 @@ impl Filter {
     pub fn label(self) -> &'static str {
         match self {
             Filter::Text => "Text",
+            Filter::Image => "Images",
             Filter::Link => "Links",
             Filter::Color => "Colors",
             Filter::Files => "Files",
@@ -71,6 +82,7 @@ impl Filter {
     pub fn name(self) -> &'static str {
         match self {
             Filter::Text => "Text",
+            Filter::Image => "Image",
             Filter::Link => "Link",
             Filter::Color => "Color",
             Filter::Files => "File",
@@ -86,6 +98,7 @@ impl Filter {
 pub fn kind(entry: &Entry) -> Kind {
     match entry.payload {
         Payload::Files => Kind::Files,
+        Payload::Image => Kind::Image,
         Payload::Text => classify(&entry.text),
     }
 }
@@ -311,6 +324,8 @@ mod tests {
             text: "https://example.com".into(),
             copied_at: 0,
             source: None,
+            image: None,
+            origin: None,
         };
         assert_eq!(kind(&entry), Kind::Files);
     }

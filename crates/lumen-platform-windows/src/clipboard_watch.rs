@@ -22,6 +22,19 @@
 //! what the plan means by "respect for the 'do not include in history'
 //! clipboard flags on Windows". Missing one of them means silently recording a
 //! password, so all three are checked and any of them is enough to decline.
+//!
+//! # Reading waits for the clipboard to settle (F12)
+//!
+//! Not on the notification: [`SETTLE`] after the last one. A program using
+//! OLE's clipboard -- every .NET program, among others -- copies in two
+//! steps: it announces its formats, which is what notifies this window, and
+//! then flushes them, opening the clipboard again to put the data behind the
+//! announcement. Reading at the notification asks that program to render a
+//! format while it is busy retrying to open the clipboard this window holds;
+//! neither moves until .NET gives up, about a second later, and the *copy*
+//! fails in the other program. Measured: four .NET copies in six failed with
+//! the daemon running, none without it. Clipboard managers that read at once
+//! have the same failure; Ditto's answer is this delay.
 
 use anyhow::{Context as _, Result};
 use lumen_platform::{ClipboardEvent, ClipboardSink};
@@ -31,12 +44,19 @@ use windows::Win32::System::DataExchange::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, HWND_MESSAGE, MSG,
-    RegisterClassW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, HWND_MESSAGE, KillTimer, MSG,
+    RegisterClassW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE,
+    WM_TIMER, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
 use crate::{clipboard, foreground};
+
+/// How long the clipboard must be left alone before it is read. Long enough
+/// for a program to finish flushing what it announced, short enough that the
+/// entry is there before anybody could open the launcher to look for it.
+const SETTLE: u32 = 100;
+const SETTLE_TIMER: usize = 1;
 
 /// Per-thread state, reached from the window procedure.
 struct WatcherState {
@@ -45,6 +65,9 @@ struct WatcherState {
     ignore: u32,
     exclude_from_monitors: u32,
     history_flag: u32,
+    /// The program in front when the clipboard last changed, kept until it
+    /// is read: by then the user may have moved on to another.
+    pending_source: Option<Option<String>>,
 }
 
 thread_local! {
@@ -110,6 +133,7 @@ fn run(sink: ClipboardSink) -> Result<impl FnOnce()> {
                     "ExcludeClipboardContentFromMonitorProcessing"
                 )),
                 history_flag: RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory")),
+                pending_source: None,
             });
         });
 
@@ -136,7 +160,34 @@ extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_CLIPBOARDUPDATE {
-        handle_update();
+        // Who copied is captured now; what they copied, once it settles.
+        // Another change before then restarts the wait and names its own
+        // source.
+        let source = foreground::current()
+            .ok()
+            .flatten()
+            .and_then(|app| app.executable);
+        STATE.with(|state| {
+            if let Some(state) = state.borrow_mut().as_mut() {
+                state.pending_source = Some(source);
+            }
+        });
+        unsafe { SetTimer(Some(hwnd), SETTLE_TIMER, SETTLE, None) };
+        return LRESULT(0);
+    }
+    if message == WM_TIMER && wparam.0 == SETTLE_TIMER {
+        unsafe {
+            let _ = KillTimer(Some(hwnd), SETTLE_TIMER);
+        }
+        let source = STATE.with(|state| {
+            state
+                .borrow_mut()
+                .as_mut()
+                .and_then(|state| state.pending_source.take())
+        });
+        if let Some(source) = source {
+            handle_update(source);
+        }
         return LRESULT(0);
     }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -149,7 +200,7 @@ extern "system" fn window_proc(
 /// callback, so reading the clipboard here is legitimate -- I-15 governs input
 /// callbacks specifically, and opening the clipboard from one would be exactly
 /// the kind of blocking work it forbids. Nothing here touches UI state.
-fn handle_update() {
+fn handle_update(source: Option<String>) {
     let excluded = STATE.with(|state| {
         let state = state.borrow();
         let Some(state) = state.as_ref() else {
@@ -163,8 +214,8 @@ fn handle_update() {
         return;
     }
 
-    let content = match clipboard::content() {
-        Ok(Some(content)) => content,
+    let (content, html) = match clipboard::content() {
+        Ok(Some(captured)) => captured,
         // Neither files nor text: an image, or something that vanished
         // between the notification and the read. Both are ordinary.
         Ok(None) => return,
@@ -175,16 +226,13 @@ fn handle_update() {
         }
     };
 
-    // Captured now, because the foreground application is the one that did the
-    // copying, and by the time the daemon sees this event it may not be.
-    let source = foreground::current()
-        .ok()
-        .flatten()
-        .and_then(|app| app.executable);
-
     STATE.with(|state| {
         if let Some(state) = state.borrow().as_ref() {
-            state.sink.emit(ClipboardEvent { content, source });
+            state.sink.emit(ClipboardEvent {
+                content,
+                source,
+                html,
+            });
         }
     });
 }

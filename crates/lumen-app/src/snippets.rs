@@ -101,6 +101,7 @@ pub fn run(
                             caret_back,
                             restore_clipboard: paste == PasteMode::Restore,
                             files: Vec::new(),
+                            image: None,
                             keep_out_of_history: false,
                         };
                         window

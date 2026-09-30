@@ -33,8 +33,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, FontStyle, FontWeight, HighlightStyle, ListAlignment, ListState, SharedString,
-    Styled, StyledText, div, list, px, relative, svg,
+    AnyElement, App, FontStyle, FontWeight, HighlightStyle, ListAlignment, ListState, SharedString,
+    Styled, StyledText, div, img, list, px, relative, svg,
 };
 use lumen_core::layout;
 use lumen_core::markdown::{self, Block, Span};
@@ -43,6 +43,7 @@ use lumen_core::view::{
     Accessory, Detail, EmptyState, Icon, Item, ItemDetail, List, MAX_ACCESSORIES, MetadataRow, Tone,
 };
 
+use crate::images::{Fit, ImageCache, PREVIEW_PX};
 use crate::styling::{color, metrics, type_scale};
 
 /// One line of a rendered list, after sections have been flattened.
@@ -143,6 +144,7 @@ pub fn reveal(rows: &[Row], top: (usize, f32), row: usize, viewport: f32) -> (us
 /// `selected` is an index into the flat item order, not into `rows`: the
 /// selection moves between items and steps over headers, because a header is
 /// not something you can choose.
+#[allow(clippy::too_many_arguments)]
 pub fn render_list(
     source: &List,
     rows: &[Row],
@@ -150,6 +152,8 @@ pub fn render_list(
     selected: usize,
     theme: &Theme,
     height: gpui::Pixels,
+    images: &ImageCache,
+    cx: &mut App,
 ) -> AnyElement {
     if source.is_empty() {
         return render_empty(source.empty.as_ref(), theme, height);
@@ -167,15 +171,16 @@ pub fn render_list(
         .then(|| items.get(selected).and_then(|item| item.detail.clone()));
     let rows = rows.to_vec();
     let colors = theme.colors.clone();
+    let row_images = images.clone();
 
     let list = div().h(height).py(metrics::list_padding()).child(
-        list(state.clone(), move |index, _window, _cx| {
+        list(state.clone(), move |index, _window, cx| {
             match rows.get(index) {
                 Some(Row::Section(title, subtitle)) => {
                     render_section(title.clone(), subtitle.clone(), &colors)
                 }
                 Some(Row::Item(item)) => match items.get(*item) {
-                    Some(entry) => render_item(entry, *item == selected, &colors),
+                    Some(entry) => render_item(entry, *item == selected, &colors, &row_images, cx),
                     None => div().into_any_element(),
                 },
                 None => div().into_any_element(),
@@ -198,7 +203,7 @@ pub fn render_list(
             list.w(relative(layout::view::DETAIL_LIST_SHARE))
                 .flex_none(),
         )
-        .child(render_pane(detail.as_ref(), theme, height))
+        .child(render_pane(detail.as_ref(), theme, height, images, cx))
         .into_any_element()
 }
 
@@ -206,8 +211,34 @@ pub fn render_list(
 ///
 /// It scrolls with the wheel when the body is longer than the window; the
 /// keys stay the list's, so arrowing moves between items as it always does.
-fn render_pane(detail: Option<&ItemDetail>, theme: &Theme, height: gpui::Pixels) -> AnyElement {
+fn render_pane(
+    detail: Option<&ItemDetail>,
+    theme: &Theme,
+    height: gpui::Pixels,
+    images: &ImageCache,
+    cx: &mut App,
+) -> AnyElement {
     let colors = &theme.colors;
+    // The picture, when there is one, above the body (F12). Its height is
+    // absolute: `img` takes the picture's aspect ratio, and with a relative
+    // height it keeps the width and lets the height follow -- a tall picture
+    // then runs down the pane, under the metadata. Clipped as well, so no
+    // shape of picture can leave its box.
+    let picture = detail
+        .and_then(|detail| detail.image.as_deref())
+        .map(|path| {
+            let height = px(layout::view::DETAIL_IMAGE_HEIGHT);
+            div()
+                .w_full()
+                .h(height)
+                .flex_none()
+                .overflow_hidden()
+                .mb(px(layout::view::DETAIL_BLOCK_GAP))
+                .when_some(
+                    images.get(path, PREVIEW_PX, Fit::Within, cx),
+                    |slot, image| slot.child(img(image).w_full().h(height)),
+                )
+        });
 
     div()
         .id("detail-pane")
@@ -219,6 +250,7 @@ fn render_pane(detail: Option<&ItemDetail>, theme: &Theme, height: gpui::Pixels)
         .px(metrics::gutter())
         .py(px(layout::view::DETAIL_PADDING_Y))
         .overflow_y_scroll()
+        .children(picture)
         .when_some(detail, |pane, detail| {
             pane.child(render_body(
                 &detail.markdown,
@@ -394,7 +426,13 @@ fn render_section(
 /// height whether or not there is a subtitle, an icon square that exists before
 /// the icon does, and the accessories in a column that cannot be pushed around
 /// by the text beside them (I-10).
-fn render_item(item: &Item, selected: bool, colors: &Colors) -> AnyElement {
+fn render_item(
+    item: &Item,
+    selected: bool,
+    colors: &Colors,
+    images: &ImageCache,
+    cx: &mut App,
+) -> AnyElement {
     div()
         .h(metrics::row_height())
         .w_full()
@@ -412,7 +450,7 @@ fn render_item(item: &Item, selected: bool, colors: &Colors) -> AnyElement {
         .when(!selected, |row| {
             row.border_1().border_color(gpui::transparent_black())
         })
-        .child(render_icon(item.icon.as_ref(), colors))
+        .child(render_icon(item.icon.as_ref(), colors, images, cx))
         .child(
             div()
                 .flex()
@@ -455,7 +493,12 @@ fn render_item(item: &Item, selected: bool, colors: &Colors) -> AnyElement {
         .into_any_element()
 }
 
-fn render_icon(icon: Option<&Icon>, colors: &Colors) -> AnyElement {
+fn render_icon(
+    icon: Option<&Icon>,
+    colors: &Colors,
+    images: &ImageCache,
+    cx: &mut App,
+) -> AnyElement {
     let square = div()
         .size(metrics::icon_size())
         .flex_none()
@@ -482,6 +525,20 @@ fn render_icon(icon: Option<&Icon>, colors: &Colors) -> AnyElement {
             .into_any_element(),
         Some(Icon::Swatch { color: value }) => square
             .child(swatch(value, px(layout::view::SWATCH_SIZE), colors))
+            .into_any_element(),
+        // The square stays empty while the thumbnail loads, like an
+        // application's icon (I-10).
+        Some(Icon::Image { path }) => square
+            .when_some(
+                images.get(path, layout::ICON_RESOLUTION, Fit::Square, cx),
+                |square, image| {
+                    square.child(
+                        img(image)
+                            .size(metrics::icon_size())
+                            .rounded(px(layout::view::THUMBNAIL_RADIUS)),
+                    )
+                },
+            )
             .into_any_element(),
         None => square.into_any_element(),
     }
@@ -585,6 +642,8 @@ fn render_empty(empty: Option<&EmptyState>, theme: &Theme, height: gpui::Pixels)
             Icon::Swatch { color: value } => {
                 slot.child(swatch(value, px(layout::view::EMPTY_ICON_SIZE), colors))
             }
+            // No empty state is a picture; a host view that tried gets none.
+            Icon::Image { .. } => slot,
         })
         .child(
             div()

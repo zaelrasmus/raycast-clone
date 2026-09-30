@@ -404,11 +404,13 @@ impl Session {
                 Format::Markdown => ItemDetail {
                     markdown: text,
                     text: None,
+                    image: None,
                     metadata: Vec::new(),
                 },
                 Format::Text | Format::Unknown => ItemDetail {
                     markdown: String::new(),
                     text: Some(text),
+                    image: None,
                     metadata: Vec::new(),
                 },
             }
@@ -660,11 +662,13 @@ impl Session {
             Format::Markdown => ItemDetail {
                 markdown: snippet.text.clone(),
                 text: None,
+                image: None,
                 metadata,
             },
             Format::Text | Format::Unknown => ItemDetail {
                 markdown: String::new(),
                 text: Some(snippet.text.clone()),
+                image: None,
                 metadata,
             },
         }
@@ -695,6 +699,7 @@ fn broken_item(broken: &Broken) -> Item {
 {}",
                 broken.position, broken.reason
             )),
+            image: None,
             metadata: Vec::new(),
         }),
     }

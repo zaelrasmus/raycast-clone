@@ -51,7 +51,6 @@ use windows::Win32::System::DataExchange::{
     GetClipboardOwner, GetOpenClipboardWindow, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
@@ -96,10 +95,12 @@ pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
 
     // The text always, or the files and their names (F12); the HTML beside
     // it when there is some, which a document or a mail reads in preference.
-    let mut formats = if paste.files.is_empty() {
-        vec![(u32::from(CF_UNICODETEXT.0), clipboard::utf16(&paste.text))]
-    } else {
+    let mut formats = if let Some(image) = &paste.image {
+        clipboard::formats_of(&ClipboardContent::Image(image.clone()))
+    } else if !paste.files.is_empty() {
         clipboard::formats_of(&ClipboardContent::Files(paste.files.clone()))
+    } else {
+        vec![(u32::from(CF_UNICODETEXT.0), clipboard::utf16(&paste.text))]
     };
     // Only for a paste that stays: a restored one is marked by its owner.
     if paste.keep_out_of_history && !paste.restore_clipboard {
@@ -520,7 +521,7 @@ unsafe fn saved_formats() -> Vec<(u32, Vec<u8>)> {
         let Ok(handle) = (unsafe { GetClipboardData(format) }) else {
             continue;
         };
-        if let Some(bytes) = unsafe { bytes_of(HGLOBAL(handle.0)) } {
+        if let Some(bytes) = unsafe { clipboard::bytes_of(HGLOBAL(handle.0)) } {
             saved.push((format, bytes));
         }
     }
@@ -535,22 +536,6 @@ fn is_ole(format: u32) -> bool {
     let length = unsafe { GetClipboardFormatNameW(format, &mut name) };
     let name = String::from_utf16_lossy(&name[..length.max(0) as usize]);
     matches!(name.as_str(), "DataObject" | "Ole Private Data")
-}
-
-unsafe fn bytes_of(global: HGLOBAL) -> Option<Vec<u8>> {
-    unsafe {
-        let size = GlobalSize(global);
-        if size == 0 {
-            return None;
-        }
-        let pointer = GlobalLock(global) as *const u8;
-        if pointer.is_null() {
-            return None;
-        }
-        let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
-        let _ = GlobalUnlock(global);
-        Some(bytes)
-    }
 }
 
 unsafe fn create_window() -> Result<HWND> {

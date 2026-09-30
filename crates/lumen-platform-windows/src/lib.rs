@@ -28,6 +28,7 @@ mod clipboard;
 mod clipboard_watch;
 mod com;
 mod date;
+mod dib;
 mod foreground;
 mod icons;
 mod input;

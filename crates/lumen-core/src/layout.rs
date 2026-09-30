@@ -212,6 +212,15 @@ pub mod view {
     pub const SWATCH_SIZE: f32 = 18.0;
     pub const SWATCH_RADIUS: f32 = 5.0;
 
+    /// The picture at the top of the pane (F12), fitted inside and centred.
+    /// A fixed height, so the metadata under it does not move when a picture
+    /// of another shape is selected, or when it finishes loading (I-10).
+    pub const DETAIL_IMAGE_HEIGHT: f32 = 220.0;
+
+    /// A picture's thumbnail in the icon square (F12): cropped to fill it,
+    /// with the corners the swatch has.
+    pub const THUMBNAIL_RADIUS: f32 = SWATCH_RADIUS;
+
     /// The empty state, centred where the list would be.
     pub const EMPTY_ICON_SIZE: f32 = 32.0;
     pub const EMPTY_GAP: f32 = 8.0;

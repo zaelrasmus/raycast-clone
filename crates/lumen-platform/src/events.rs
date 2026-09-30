@@ -183,6 +183,32 @@ pub enum ClipboardContent {
     Text(String),
     /// Files, as a file manager copies them.
     Files(Vec<std::path::PathBuf>),
+    Image(ClipboardImage),
+}
+
+/// A copied picture, as straight RGBA8, `width * height * 4` bytes, top row
+/// first -- the same layout as [`crate::IconImage`], whatever the platform
+/// keeps it as.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClipboardImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// The same picture as PNG, when there is one to hand: offered beside
+    /// the pixels on a write, since a browser or an office program reads it
+    /// in preference and keeps the transparency. Never read on capture.
+    pub png: Option<Vec<u8>>,
+}
+
+/// Without the pixels: a screenshot is tens of megabytes of them.
+impl fmt::Debug for ClipboardImage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClipboardImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("png", &self.png.as_ref().map(Vec::len))
+            .finish()
+    }
 }
 
 /// A clipboard entry the system has just accepted.
@@ -196,6 +222,10 @@ pub struct ClipboardEvent {
     /// by the time the daemon processes the event the user has usually moved
     /// on -- and the privacy layer's denylist is keyed on exactly this.
     pub source: Option<String>,
+    /// The HTML copied beside a picture, when there was some (F12): how a
+    /// browser says where the picture lives online. `None` for text and
+    /// files, and for pictures from anything that is not a page.
+    pub html: Option<String>,
 }
 
 /// Where clipboard events are delivered.

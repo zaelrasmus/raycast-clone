@@ -15,8 +15,10 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     RegisterClipboardFormatW, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
-use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows::Win32::System::Memory::{
+    GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
+};
+use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
 /// Holds the clipboard open, and closes it however the body exits.
@@ -145,23 +147,92 @@ pub fn set_text(value: &str) -> Result<()> {
     Ok(())
 }
 
-/// What is on the clipboard, as clipboard history keeps it: files, or text
-/// (F12). `None` when it is neither.
+/// What is on the clipboard, as clipboard history keeps it: files, text or a
+/// picture, in that order (F12). `None` when it is none of them.
+///
+/// Text before a picture: an office program copies a paragraph as text and
+/// as a picture of it, and what was copied is the text.
 ///
 /// Both are read in one opening, and the opening is retried: every monitor
 /// reads the clipboard the moment it changes -- Windows' own history among
 /// them, which makes the copying program render delayed formats while it
 /// holds the clipboard. Two openings, or one attempt, lost that race and the
 /// copy with it.
-pub fn content() -> Result<Option<ClipboardContent>> {
-    let _lock = ClipboardLock::acquire_patiently()?;
-    unsafe {
-        // Files first: a program that copies files may name them in text as
-        // well, and the files are what was copied.
-        if let Some(files) = open_files()? {
-            return Ok(Some(ClipboardContent::Files(files)));
+pub fn content() -> Result<Option<(ClipboardContent, Option<String>)>> {
+    let (bitmap, html) = {
+        let _lock = ClipboardLock::acquire_patiently()?;
+        unsafe {
+            // Files first: a program that copies files may name them in text
+            // as well, and the files are what was copied.
+            if let Some(files) = open_files()? {
+                return Ok(Some((ClipboardContent::Files(files), None)));
+            }
+            if let Some(text) = open_text()? {
+                return Ok(Some((ClipboardContent::Text(text), None)));
+            }
+            let Some(bitmap) = open_bitmap() else {
+                return Ok(None);
+            };
+            (bitmap, open_html())
         }
-        Ok(open_text()?.map(ClipboardContent::Text))
+    };
+    // Decoded with the clipboard closed: a screenshot is millions of pixels,
+    // and every other program waits while it is open.
+    let image = crate::dib::decode(&bitmap)?;
+    Ok(Some((ClipboardContent::Image(image), html)))
+}
+
+/// The `HTML Format` beside a picture, as text, with the clipboard already
+/// open. UTF-8, header and all; `lumen_core` reads the address out of it.
+unsafe fn open_html() -> Option<String> {
+    unsafe {
+        let format = html_format();
+        if format == 0 || IsClipboardFormatAvailable(format).is_err() {
+            return None;
+        }
+        let handle = GetClipboardData(format).ok()?;
+        if handle.0.is_null() {
+            return None;
+        }
+        let mut bytes = bytes_of(HGLOBAL(handle.0))?;
+        // The block is NUL-terminated, and often padded past it.
+        if let Some(end) = bytes.iter().position(|byte| *byte == 0) {
+            bytes.truncate(end);
+        }
+        String::from_utf8(bytes).ok()
+    }
+}
+
+/// The picture's bytes, as a DIB, with the clipboard already open. V5 when
+/// there is one, for its transparency; Windows makes either from the other.
+unsafe fn open_bitmap() -> Option<Vec<u8>> {
+    unsafe {
+        let format = [CF_DIBV5, CF_DIB]
+            .into_iter()
+            .map(|format| u32::from(format.0))
+            .find(|format| IsClipboardFormatAvailable(*format).is_ok())?;
+        let handle = GetClipboardData(format).ok()?;
+        if handle.0.is_null() {
+            return None;
+        }
+        bytes_of(HGLOBAL(handle.0))
+    }
+}
+
+/// A copy of a clipboard block's bytes. The clipboard must be open.
+pub(crate) unsafe fn bytes_of(global: HGLOBAL) -> Option<Vec<u8>> {
+    unsafe {
+        let size = GlobalSize(global);
+        if size == 0 {
+            return None;
+        }
+        let pointer = GlobalLock(global) as *const u8;
+        if pointer.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
+        let _ = GlobalUnlock(global);
+        Some(bytes)
     }
 }
 
@@ -225,7 +296,23 @@ pub(crate) fn formats_of(content: &ClipboardContent) -> Vec<(u32, Vec<u8>)> {
                 (u32::from(CF_UNICODETEXT.0), utf16(&names)),
             ]
         }
+        // The pixels for everyone, and the PNG beside them for the programs
+        // that prefer it -- a browser, an office program -- when there is one.
+        ClipboardContent::Image(image) => {
+            let mut formats = vec![(u32::from(CF_DIBV5.0), crate::dib::encode_v5(image))];
+            let png = png_format();
+            if let (Some(bytes), true) = (&image.png, png != 0) {
+                formats.push((png, bytes.clone()));
+            }
+            formats
+        }
     }
+}
+
+/// The registered id of `PNG`, the format browsers and office programs read
+/// a picture from in preference.
+fn png_format() -> u32 {
+    unsafe { RegisterClipboardFormatW(windows::core::w!("PNG")) }
 }
 
 /// The marker a clipboard monitor skips, Lumen's included (7.13).

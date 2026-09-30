@@ -119,7 +119,7 @@ once Lumen was measured well inside them (7.36).
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
 | **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
-| **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Slice 1 in progress.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting. Images are slice 2. See F12 decisions |
+| **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane. *Clear History* is not built. See F12 decisions |
 
 ### F4 build order is not optional
 
@@ -1503,11 +1503,82 @@ The decisions:
   five alternating runs each: F12 462 ms median, `main` 467 ms. Both are
   over the 400 ms budget, so that breach predates F12 and is its own
   problem, not this phase's.
-- **Images are slice 2.** PNG files beside the database, named by their
-  hash, with the hash in SQLite: a history of screenshots as BLOBs is a
+- **Images are kept as files, named by the hash of their pixels.** Schema
+  3 adds `width`, `height` and `bytes`; the row's `text` is the hash, and
+  `clipboard-images/` beside the database holds `<hash>.png` and a
+  thumbnail at the icon resolution. A history of screenshots as BLOBs is a
   database that grows by megabytes per copy and a WAL that rewrites them.
-  They need a picture in the vocabulary that loads off the UI thread, which
-  is slice 2's real work.
+  The hash is of the pixels, not of the PNG, so one picture copied from two
+  programs is one entry, and uniqueness is the existing `(kind, text)`.
+  Files are removed by a sweep after rows go -- pruned, deleted or cleared
+  -- rather than per row: one pass is right however they went, and it also
+  collects what a crash between a file and its row left. A file younger
+  than a minute is never swept, since its row may be about to be written.
+- **A picture is read after files and text.** An office program copies a
+  paragraph as text and as a picture of it; the text is what was copied.
+  `CF_DIBV5` when there is one, for its transparency, else `CF_DIB`, copied
+  out while the clipboard is open and decoded after it is closed. The DIB
+  parser is pure and tested: 24 and 32 bits, `BI_RGB` and `BI_BITFIELDS`,
+  both row orders, the masks some programs repeat after a V5 header, and a
+  32-bit alpha that is zero everywhere read as opaque. A palette or 16-bit
+  picture is refused rather than guessed at. Pictures past 40 megapixels
+  are not recorded. Only the source is checked for privacy: a picture has
+  no text to recognise a secret in.
+- **Encoding happens off the UI thread and outside the lock.** The
+  recorder writes the PNG and the thumbnail on the background executor,
+  then takes the history's lock only to insert the row, so the view is
+  never stalled behind a screenshot being compressed. Pasting one writes
+  `CF_DIBV5` and the stored PNG as `PNG`, which a browser or an office
+  program reads in preference; Windows makes `CF_DIB` and `CF_BITMAP` from
+  the V5 for everybody else.
+- **A picture in the vocabulary is the host's alone.** `Icon::Image` and
+  `ItemDetail::image` are paths, and both are `#[serde(skip)]`: a view an
+  extension sends cannot carry one, so the host never reads a file because
+  an extension named it (I-7), and a test says so. The icon square and a
+  fixed-height box at the top of the pane are reserved while it loads
+  (I-10).
+- **Pictures are drawn from a bounded cache that is emptied on hide.** The
+  icon cache keeps everything forever, which is right for a few hundred
+  small icons and wrong for screenshots. `ImageCache` decodes off the UI
+  thread -- thumbnails at the icon resolution, the pane's picture fitted
+  within 1024 pixels -- keeps 24 MB of decoded pixels, evicts the least
+  recently drawn past that, and frees each evicted texture from GPUI's
+  atlas with `drop_image`. The launcher empties it when it hides and when a
+  view is left, deferred to when no window is being drawn, so a picture is
+  never held while nobody is looking (the idle budget).
+- **A picture can be pasted as where it lives.** Asked for on the first
+  try-out, by someone whose terminal reads a picture by its path. The
+  original path is rarely on the clipboard: a screenshot is only pixels,
+  and a file copied in Explorer is already a *File* entry that pastes its
+  path. A browser, though, puts HTML beside the picture, and its `<img src>`
+  -- resolved against `SourceURL` when relative, `http` and `https` only --
+  is where the picture lives. Schema 4 keeps it as `origin`, when it passes
+  the same secret checks as text. *Paste URL* and *Copy URL* offer it, and
+  a picture without one offers *Paste File Path* and *Copy File Path*, to
+  Lumen's copy. `Enter` still pastes the picture: text beside the picture on
+  every paste would have a chat program paste the path instead.
+- **A picture is fitted by absolute height, and a thumbnail is its centre.**
+  Found on the first try-out. GPUI's `img` takes the picture's aspect
+  ratio, and with `size_full` it kept the pane's width and let the height
+  follow: a tall screenshot ran down the pane under the metadata. The box
+  now has an absolute height and clips. A row's thumbnail is the picture's
+  centre square, cropped when it is decoded, because a tall picture fitted
+  whole in the icon square was a sliver.
+- **The recorder waits for the clipboard to settle.** Found while testing
+  slice 2, and older than it: a .NET program's copy failed, in *that*
+  program, while the daemon ran. OLE copies in two steps -- announce, then
+  flush -- and reading at the announcement asked the program to render
+  while it was retrying to open the clipboard the watcher held. The watcher
+  now reads 100 ms after the last change, as Ditto does, and names the
+  source at the change. Measured with .NET copies: 9 of 18 failed before,
+  1 of 36 after, 0 of 18 without the daemon. Reduced, not proven gone.
+- **Measured, slice 2.** 60 s hidden: 0.004 % CPU, 73.8 MB working set,
+  87.6 MB private, 31 threads -- slice 1's numbers within noise. Binary
+  19,451,392 bytes, **+1.2 MB** over slice 1: PNG encoding, resizing and
+  SHA-256 are now linked in. Still half the installed-size budget, but it
+  is the largest step of any phase and is written down as one. The script
+  measures a launcher that was never opened, so it does not show what the
+  emptied cache saves after a session with pictures; that was not measured.
 
 ---
 

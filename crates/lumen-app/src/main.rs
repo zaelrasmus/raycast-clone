@@ -14,6 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -920,7 +921,13 @@ fn subscribe_to_launcher(
         return;
     };
 
-    cx.subscribe(&entity, move |_entity: Entity<Launcher>, event, cx| {
+    cx.subscribe(&entity, move |entity: Entity<Launcher>, event, cx| {
+        // The launcher is about to hide: the pictures it drew go with it
+        // (F12), so none of them is held while nobody is looking.
+        if matches!(event, LauncherEvent::Dismissed | LauncherEvent::Paste(_)) {
+            entity.update(cx, |launcher, cx| launcher.release_images(cx));
+        }
+
         // Focus refused something (F8): the timers say why, in the launcher.
         if let LauncherEvent::Blocked { what, action } = event {
             let timers = timers.clone();
@@ -1745,23 +1752,25 @@ fn start_clipboard_history(
 
     cx.spawn(async move |cx| {
         while let Some(event) = rx.next().await {
-            // Files are kept as their paths, one per line (F12), and pass the
-            // same checks: a path can name a password manager's vault.
+            let source = event.source;
             let (payload, text) = match event.content {
                 lumen_platform::ClipboardContent::Text(text) => (Payload::Text, text),
+                // Files are kept as their paths, one per line (F12), and pass
+                // the same checks: a path can name a password manager's vault.
                 lumen_platform::ClipboardContent::Files(files) => (
                     Payload::Files,
                     files
                         .iter()
                         .map(|file| file.to_string_lossy())
                         .collect::<Vec<_>>()
-                        .join(
-                            "
-",
-                        ),
+                        .join("\n"),
                 ),
+                lumen_platform::ClipboardContent::Image(image) => {
+                    record_image(cx, &history, image, event.html, source).await;
+                    continue;
+                }
             };
-            let verdict = lumen_core::clipboard::may_record(&text, event.source.as_deref());
+            let verdict = lumen_core::clipboard::may_record(&text, source.as_deref());
 
             if let Err(reason) = verdict {
                 // Logged at debug and without the text, which is the entire
@@ -1776,11 +1785,7 @@ fn start_clipboard_history(
             let history = history.clone();
             cx.background_executor()
                 .spawn(async move {
-                    if let Err(error) =
-                        history
-                            .lock()
-                            .record(payload, &text, event.source.as_deref())
-                    {
+                    if let Err(error) = history.lock().record(payload, &text, source.as_deref()) {
                         log::warn!("could not record a clipboard entry: {error:#}");
                     }
                 })
@@ -1788,4 +1793,52 @@ fn start_clipboard_history(
         }
     })
     .detach();
+}
+
+/// Record a copied picture (F12): its files first, then its row.
+///
+/// Encoding a screenshot as PNG takes a while, so it happens on the
+/// background executor and outside the history's lock -- the view reading the
+/// history must not wait on it. The pixels are dropped as soon as they are
+/// written.
+async fn record_image(
+    cx: &mut gpui::AsyncApp,
+    history: &Arc<parking_lot::Mutex<History>>,
+    image: lumen_platform::ClipboardImage,
+    html: Option<String>,
+    source: Option<String>,
+) {
+    if let Err(reason) = lumen_core::clipboard::may_record_image(source.as_deref()) {
+        log::debug!("clipboard picture not recorded: {reason:?}");
+        return;
+    }
+    // Where it lives online, kept only if it would be kept as text: an
+    // address can carry a token as well as any other copy.
+    let origin = html
+        .as_deref()
+        .and_then(lumen_core::clipboard::images::origin)
+        .filter(|origin| lumen_core::clipboard::may_record(origin, None).is_ok());
+    let history = history.clone();
+    cx.background_executor()
+        .spawn(async move {
+            let Some(dir) = history.lock().images_dir().map(Path::to_path_buf) else {
+                return;
+            };
+            let stored = match lumen_core::clipboard::images::store(&dir, &image) {
+                Ok(stored) => stored,
+                Err(error) => {
+                    log::debug!("clipboard picture not recorded: {error:#}");
+                    return;
+                }
+            };
+            drop(image);
+            if let Err(error) =
+                history
+                    .lock()
+                    .record_image(&stored, origin.as_deref(), source.as_deref())
+            {
+                log::warn!("could not record a clipboard picture: {error:#}");
+            }
+        })
+        .await;
 }

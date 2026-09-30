@@ -18,6 +18,7 @@ pub mod duration_input;
 pub mod edit;
 pub mod fonts;
 pub mod icons;
+pub mod images;
 pub mod keymap;
 pub mod launcher;
 pub mod overlay;

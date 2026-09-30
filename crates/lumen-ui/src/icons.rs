@@ -136,7 +136,7 @@ impl IconCache {
 /// rather than in `trait Platform`: encoding the renderer's memory layout into
 /// the OS boundary would couple the two layers AD-03 exists to separate, and it
 /// runs once per icon rather than once per frame.
-fn to_render_image(icon: IconImage) -> RenderImage {
+pub(crate) fn to_render_image(icon: IconImage) -> RenderImage {
     let mut pixels = icon.rgba;
 
     for pixel in pixels.chunks_exact_mut(4) {

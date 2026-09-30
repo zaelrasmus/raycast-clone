@@ -9,8 +9,11 @@
 //! paragraph matches nearly any short query. An entry is kept when every word
 //! typed appears in it.
 
+use std::path::{Path, PathBuf};
+
 use jiff::{Timestamp, Zoned};
 
+use super::images;
 use super::kind::{Filter, Kind, kind};
 use super::store::Entry;
 use crate::view::{
@@ -27,6 +30,10 @@ pub const PASTE: &str = "paste";
 pub const COPY: &str = "copy";
 pub const OPEN: &str = "open";
 pub const DELETE: &str = "delete";
+/// A picture's address instead of the picture (F12): where it lives online,
+/// or Lumen's copy of it, for a program that reads a path -- a terminal.
+pub const PASTE_ADDRESS: &str = "paste-address";
+pub const COPY_ADDRESS: &str = "copy-address";
 
 /// How much of an entry is shown in a row.
 const PREVIEW_LIMIT: usize = 80;
@@ -46,6 +53,10 @@ pub enum Effect {
     /// Forget the entry with this id, then read the history again and hand
     /// it to [`Session::reload`].
     Delete(i64),
+    /// Paste this text in the entry's place, then move the entry to the top.
+    PasteText { id: i64, text: String },
+    /// Put this text on the clipboard, then move the entry to the top.
+    CopyText { id: i64, text: String },
 }
 
 pub struct Session {
@@ -59,6 +70,8 @@ pub struct Session {
     filter: Option<Filter>,
     /// When the view opened, in the user's time zone: what *Today* means.
     now: Zoned,
+    /// Where the pictures are, to name their files in the rows and the pane.
+    images: Option<PathBuf>,
 }
 
 impl Session {
@@ -73,7 +86,12 @@ impl Session {
                 .into_iter()
                 .map(|entry| {
                     let kind = kind(&entry);
-                    let haystack = entry.text.to_lowercase();
+                    // A picture's text is its hash, and a hash contains
+                    // every short query sooner or later.
+                    let haystack = match kind {
+                        Kind::Image => "image".to_string(),
+                        _ => entry.text.to_lowercase(),
+                    };
                     (entry, kind, haystack)
                 })
                 .collect(),
@@ -81,7 +99,14 @@ impl Session {
             words: Vec::new(),
             filter: None,
             now,
+            images: None,
         }
+    }
+
+    /// Where the pictures are kept, from [`super::History::images_dir`].
+    pub fn with_images(mut self, dir: Option<PathBuf>) -> Self {
+        self.images = dir;
+        self
     }
 
     /// The history again, after an entry went: the search and the type are
@@ -125,8 +150,23 @@ impl Session {
                 match action.as_str() {
                     PASTE => vec![Effect::Paste(entry.clone())],
                     COPY => vec![Effect::Copy(entry.clone())],
-                    OPEN => opens(entry, *kind).map(Effect::Open).into_iter().collect(),
+                    OPEN => self
+                        .opens(entry, *kind)
+                        .map(Effect::Open)
+                        .into_iter()
+                        .collect(),
                     DELETE => vec![Effect::Delete(entry.id)],
+                    PASTE_ADDRESS | COPY_ADDRESS => {
+                        let Some(text) = self.address(entry) else {
+                            return Vec::new();
+                        };
+                        let id = entry.id;
+                        if action == PASTE_ADDRESS {
+                            vec![Effect::PasteText { id, text }]
+                        } else {
+                            vec![Effect::CopyText { id, text }]
+                        }
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -225,6 +265,16 @@ impl Session {
         ];
         match kind {
             Kind::Link => actions.push(action(OPEN, "Open in Browser", None)),
+            Kind::Image if self.images.is_some() => {
+                // The address a terminal can read, after the picture itself.
+                let (paste, copy) = match entry.origin {
+                    Some(_) => ("Paste URL", "Copy URL"),
+                    None => ("Paste File Path", "Copy File Path"),
+                };
+                actions.push(action(PASTE_ADDRESS, paste, None));
+                actions.push(action(COPY_ADDRESS, copy, None));
+                actions.push(action(OPEN, "Open Image", None));
+            }
             Kind::Files if entry.files().len() == 1 => {
                 actions.push(action(OPEN, "Open File", None));
             }
@@ -236,7 +286,7 @@ impl Session {
             id: entry.id.to_string(),
             title: title(entry, kind),
             subtitle: None,
-            icon: Some(icon(kind)),
+            icon: Some(self.icon(entry, kind)),
             accessories: Vec::new(),
             keywords: Vec::new(),
             actions,
@@ -265,6 +315,18 @@ impl Session {
                 ));
             }
             Kind::Color(color) => metadata.push(row("Hex", &color.hex())),
+            Kind::Image => {
+                if let Some(image) = entry.image {
+                    metadata.push(row(
+                        "Dimensions",
+                        &format!("{}\u{d7}{}", image.width, image.height),
+                    ));
+                    metadata.push(row("Size", &images::size_label(image.bytes)));
+                }
+                if let Some(origin) = &entry.origin {
+                    metadata.push(row("URL", origin));
+                }
+            }
             Kind::Files if files.len() > 1 => {
                 metadata.push(row("Count", &files.len().to_string()));
             }
@@ -274,29 +336,74 @@ impl Session {
             metadata.push(row("Copied", &crate::dates::moment(at, &self.now)));
         }
 
+        // A picture is shown, not its hash.
+        let (text, image) = match kind {
+            Kind::Image => (None, self.picture(entry, images::original)),
+            _ => (Some(entry.text.clone()), None),
+        };
         ItemDetail {
             markdown: String::new(),
-            text: Some(entry.text.clone()),
+            text,
+            image,
             metadata,
         }
     }
-}
 
-/// What *Open* opens, when there is one thing to open.
-fn opens(entry: &Entry, kind: Kind) -> Option<String> {
-    match kind {
-        Kind::Link => super::kind::link(&entry.text),
-        Kind::Files => match entry.files().as_slice() {
-            [file] => Some(file.to_string_lossy().into_owned()),
-            _ => None,
-        },
-        Kind::Text | Kind::Color(_) => None,
+    /// What *Open* opens, when there is one thing to open.
+    fn opens(&self, entry: &Entry, kind: Kind) -> Option<String> {
+        match kind {
+            Kind::Link => super::kind::link(&entry.text),
+            Kind::Files => match entry.files().as_slice() {
+                [file] => Some(file.to_string_lossy().into_owned()),
+                _ => None,
+            },
+            Kind::Image => self
+                .picture(entry, images::original)
+                .map(|path| path.to_string_lossy().into_owned()),
+            Kind::Text | Kind::Color(_) => None,
+        }
+    }
+
+    fn icon(&self, entry: &Entry, kind: Kind) -> Icon {
+        match kind {
+            Kind::Text => glyph("text"),
+            Kind::Link => glyph("link"),
+            Kind::Files => glyph("file"),
+            Kind::Color(color) => Icon::Swatch { color: color.hex() },
+            Kind::Image => match self.picture(entry, images::thumbnail) {
+                Some(path) => Icon::Image { path },
+                None => glyph("image"),
+            },
+        }
+    }
+
+    /// Where a picture is, as text: online when it was copied from a page,
+    /// and otherwise Lumen's copy -- a screenshot has no other.
+    fn address(&self, entry: &Entry) -> Option<String> {
+        if entry.payload != super::Payload::Image {
+            return None;
+        }
+        entry.origin.clone().or_else(|| {
+            self.picture(entry, images::original)
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+    }
+
+    /// One of a picture's files, when the view knows where they are.
+    fn picture(&self, entry: &Entry, file: fn(&Path, &str) -> PathBuf) -> Option<PathBuf> {
+        self.images.as_deref().map(|dir| file(dir, &entry.text))
     }
 }
 
 /// A file's name rather than its path, which is mostly the same folders
 /// over and over; several files are the first and a count.
 fn title(entry: &Entry, kind: Kind) -> String {
+    if kind == Kind::Image {
+        return match entry.image {
+            Some(image) => format!("Image ({}\u{d7}{})", image.width, image.height),
+            None => "Image".into(),
+        };
+    }
     if kind != Kind::Files {
         return entry.preview(PREVIEW_LIMIT);
     }
@@ -310,15 +417,6 @@ fn title(entry: &Entry, kind: Kind) -> String {
         [] => entry.preview(PREVIEW_LIMIT),
         [file] => name(file),
         [file, rest @ ..] => format!("{} and {} more", name(file), rest.len()),
-    }
-}
-
-fn icon(kind: Kind) -> Icon {
-    match kind {
-        Kind::Text => glyph("text"),
-        Kind::Link => glyph("link"),
-        Kind::Files => glyph("file"),
-        Kind::Color(color) => Icon::Swatch { color: color.hex() },
     }
 }
 
@@ -380,6 +478,8 @@ mod tests {
             text: text.into(),
             copied_at: at(copied_at),
             source: Some("Code.exe".into()),
+            image: None,
+            origin: None,
         }
     }
 
@@ -587,5 +687,123 @@ mod tests {
         let view = session.view();
         let empty = list(&view).empty.clone().unwrap();
         assert_eq!(empty.description.as_deref(), Some("disk full"));
+    }
+
+    fn picture(id: i64) -> Entry {
+        Entry {
+            payload: crate::clipboard::Payload::Image,
+            text: "ab".repeat(32),
+            image: Some(crate::clipboard::ImageInfo {
+                width: 937,
+                height: 593,
+                bytes: 54_321,
+            }),
+            ..entry(id, "", "2026-09-30T20:00:00-04:00")
+        }
+    }
+
+    /// Raycast's row and pane: the size in the title, the picture itself,
+    /// its dimensions and its size on disk.
+    #[test]
+    fn a_picture_is_shown_by_its_thumbnail_and_described_by_its_size() {
+        let dir = PathBuf::from("C:\\images");
+        let mut session = session(vec![picture(1)]).with_images(Some(dir.clone()));
+        let hash = "ab".repeat(32);
+
+        let view = session.view();
+        let item = list(&view).items().next().unwrap();
+        assert_eq!(item.title, "Image (937\u{d7}593)");
+        assert_eq!(
+            item.icon,
+            Some(Icon::Image {
+                path: images::thumbnail(&dir, &hash)
+            })
+        );
+        let detail = item.detail.as_ref().unwrap();
+        assert_eq!(detail.image, Some(images::original(&dir, &hash)));
+        assert_eq!(detail.text, None, "the hash is not shown");
+        let rows: Vec<(&str, &str)> = detail
+            .metadata
+            .iter()
+            .map(|row| (row.label.as_str(), row.value.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Source", "Code"),
+                ("Type", "Image"),
+                ("Dimensions", "937\u{d7}593"),
+                ("Size", "54 kB"),
+                ("Copied", "Today, 8:00 PM"),
+            ]
+        );
+
+        assert_eq!(
+            invoke(&mut session, 1, OPEN),
+            [Effect::Open(
+                images::original(&dir, &hash).to_string_lossy().into_owned()
+            )]
+        );
+    }
+
+    /// Typing a letter must not find every picture through its hash.
+    #[test]
+    fn a_picture_is_found_as_an_image_not_by_its_hash() {
+        let mut session = session(vec![
+            picture(2),
+            entry(1, "hello", "2026-09-30T20:00:00-04:00"),
+        ]);
+        session.event(Event::QueryChanged { query: "ab".into() });
+        assert!(titles(&session).is_empty());
+        session.event(Event::QueryChanged {
+            query: "image".into(),
+        });
+        assert_eq!(titles(&session), ["Image (937\u{d7}593)"]);
+
+        session.event(Event::QueryChanged { query: "".into() });
+        session.event(Event::ScopeChanged {
+            scope: TYPE_SCOPE.into(),
+            option: "image".into(),
+        });
+        assert_eq!(titles(&session).len(), 1);
+    }
+
+    /// A terminal reads a picture by its path: the page's address when it
+    /// came from one, and Lumen's copy when it did not.
+    #[test]
+    fn a_picture_can_be_pasted_as_where_it_lives() {
+        let dir = PathBuf::from("C:\\images");
+        let hash = "ab".repeat(32);
+        let online = Entry {
+            origin: Some("https://example.com/cat.png".into()),
+            ..picture(2)
+        };
+        let mut session = session(vec![online, picture(1)]).with_images(Some(dir.clone()));
+
+        let view = session.view();
+        let titles: Vec<Vec<String>> = list(&view)
+            .items()
+            .map(|item| item.actions.iter().map(|a| a.title.clone()).collect())
+            .collect();
+        assert!(titles[0].contains(&"Copy URL".to_string()));
+        assert!(titles[1].contains(&"Copy File Path".to_string()));
+        assert_eq!(titles[1][0], "Paste", "Enter still pastes the picture");
+
+        assert_eq!(
+            invoke(&mut session, 2, PASTE_ADDRESS),
+            [Effect::PasteText {
+                id: 2,
+                text: "https://example.com/cat.png".into()
+            }]
+        );
+        assert_eq!(
+            invoke(&mut session, 1, COPY_ADDRESS),
+            [Effect::CopyText {
+                id: 1,
+                text: images::original(&dir, &hash).to_string_lossy().into_owned()
+            }]
+        );
+        // Text has no address to give.
+        assert!(invoke(&mut session, 99, COPY_ADDRESS).is_empty());
     }
 }

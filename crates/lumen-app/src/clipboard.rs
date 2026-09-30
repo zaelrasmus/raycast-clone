@@ -10,9 +10,9 @@ use std::sync::Arc;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use lumen_core::clipboard::session::{Effect, Session};
-use lumen_core::clipboard::{Entry, History, Payload};
+use lumen_core::clipboard::{Entry, History, Payload, images};
 use lumen_core::view::Event;
-use lumen_platform::{ClipboardContent, LaunchMode, LaunchTarget, Platform};
+use lumen_platform::{ClipboardContent, ClipboardImage, LaunchMode, LaunchTarget, Platform};
 use lumen_ui::{Launcher, ViewSink};
 use parking_lot::Mutex;
 
@@ -42,7 +42,10 @@ pub fn run(platform: Arc<dyn Platform>, window: gpui::WindowHandle<Launcher>, cx
                 .spawn(async move {
                     // Here rather than on the UI thread: the first call reads
                     // the system's time zone.
-                    Session::new(read(&history), lumen_core::snippets::now())
+                    let dir = history
+                        .as_ref()
+                        .and_then(|history| history.lock().images_dir().map(Into::into));
+                    Session::new(read(&history), lumen_core::snippets::now()).with_images(dir)
                 })
                 .await
         };
@@ -58,9 +61,13 @@ pub fn run(platform: Arc<dyn Platform>, window: gpui::WindowHandle<Launcher>, cx
                             .ok();
                     }
                     Effect::Paste(entry) => {
-                        let (text, files) = match entry.payload {
-                            Payload::Text => (entry.text.clone(), Vec::new()),
-                            Payload::Files => (entry.text.clone(), entry.files()),
+                        let (text, files, image) = match entry.payload {
+                            Payload::Text => (entry.text.clone(), Vec::new(), None),
+                            Payload::Files => (entry.text.clone(), entry.files(), None),
+                            Payload::Image => match picture(cx, &history, &entry).await {
+                                Some(image) => (String::new(), Vec::new(), Some(image)),
+                                None => continue,
+                            },
                         };
                         // Left on the clipboard, as a paste from history is
                         // in Raycast, and kept out of the history: the entry
@@ -72,6 +79,7 @@ pub fn run(platform: Arc<dyn Platform>, window: gpui::WindowHandle<Launcher>, cx
                             caret_back: 0,
                             restore_clipboard: false,
                             files,
+                            image,
                             keep_out_of_history: true,
                         };
                         window
@@ -80,7 +88,15 @@ pub fn run(platform: Arc<dyn Platform>, window: gpui::WindowHandle<Launcher>, cx
                         touch(cx, &history, entry.id).await;
                     }
                     Effect::Copy(entry) => {
-                        if let Err(error) = platform.set_clipboard(&content(&entry), true) {
+                        let content = match entry.payload {
+                            Payload::Text => ClipboardContent::Text(entry.text.clone()),
+                            Payload::Files => ClipboardContent::Files(entry.files()),
+                            Payload::Image => match picture(cx, &history, &entry).await {
+                                Some(image) => ClipboardContent::Image(image),
+                                None => continue,
+                            },
+                        };
+                        if let Err(error) = platform.set_clipboard(&content, true) {
                             log::error!("could not copy a clipboard entry: {error:#}");
                             continue;
                         }
@@ -104,6 +120,35 @@ pub fn run(platform: Arc<dyn Platform>, window: gpui::WindowHandle<Launcher>, cx
                                 }
                             })
                             .await;
+                    }
+                    // A picture's address rather than the picture (F12).
+                    Effect::PasteText { id, text } => {
+                        let paste = lumen_platform::Paste {
+                            text,
+                            html: None,
+                            keys: lumen_platform::PasteKeys::default(),
+                            caret_back: 0,
+                            restore_clipboard: false,
+                            files: Vec::new(),
+                            image: None,
+                            keep_out_of_history: true,
+                        };
+                        window
+                            .update(cx, |launcher, _window, cx| launcher.paste(paste, cx))
+                            .ok();
+                        touch(cx, &history, id).await;
+                    }
+                    Effect::CopyText { id, text } => {
+                        if let Err(error) =
+                            platform.set_clipboard(&ClipboardContent::Text(text), true)
+                        {
+                            log::error!("could not copy a picture's address: {error:#}");
+                            continue;
+                        }
+                        window
+                            .update(cx, |launcher, _window, cx| launcher.close(cx))
+                            .ok();
+                        touch(cx, &history, id).await;
                     }
                     Effect::Delete(id) => {
                         let history = history.clone();
@@ -160,9 +205,21 @@ async fn touch(cx: &mut gpui::AsyncApp, history: &Option<Arc<Mutex<History>>>, i
         .await;
 }
 
-fn content(entry: &Entry) -> ClipboardContent {
-    match entry.payload {
-        Payload::Text => ClipboardContent::Text(entry.text.clone()),
-        Payload::Files => ClipboardContent::Files(entry.files()),
-    }
+/// A picture's pixels and PNG, read and decoded off the UI thread. `None`,
+/// and logged, when its file is gone.
+async fn picture(
+    cx: &mut gpui::AsyncApp,
+    history: &Option<Arc<Mutex<History>>>,
+    entry: &Entry,
+) -> Option<ClipboardImage> {
+    let history = history.clone()?;
+    let hash = entry.text.clone();
+    cx.background_executor()
+        .spawn(async move {
+            let dir = history.lock().images_dir()?.to_path_buf();
+            images::load(&dir, &hash)
+                .inspect_err(|error| log::warn!("could not read a clipboard picture: {error:#}"))
+                .ok()
+        })
+        .await
 }

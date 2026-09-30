@@ -262,6 +262,10 @@ pub struct ItemDetail {
     /// paragraph. The subset has no escapes and no hard breaks, and adding
     /// both would still leave the view escaping text to have it unescaped.
     pub text: Option<String>,
+    /// A picture the host wrote, shown first, scaled to fit (F12). The
+    /// host's alone, like [`Icon::Image`], and for the same reason.
+    #[serde(skip)]
+    pub image: Option<std::path::PathBuf>,
     /// Labelled values shown under the body.
     pub metadata: Vec<MetadataRow>,
 }
@@ -301,10 +305,10 @@ pub enum Tone {
 
 /// What to draw in a row's icon square.
 ///
-/// No arbitrary images by path *yet*: a file an extension names is a file the
-/// host would have to read on the UI thread to draw, and I-3 does not allow
-/// that. It arrives when the host RPC of AD-09 can fetch and cache one, which
-/// is step 3's problem.
+/// No arbitrary images by path from an extension *yet*: a file an extension
+/// names is a file the host would read on its behalf, which is AD-09's host
+/// RPC to decide, not a field to add. [`Icon::Image`] is the host's own, for
+/// files it wrote, and no extension can send it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Icon {
@@ -327,6 +331,15 @@ pub enum Icon {
     /// square's size, radius and border are still the theme's and the
     /// layout's.
     Swatch { color: String },
+    /// A picture the host wrote, drawn in the icon square: a copied image's
+    /// thumbnail (F12). Loaded off the UI thread; the square is reserved
+    /// while it loads (I-10).
+    ///
+    /// The host's alone: skipped by serde, so a view an extension sends
+    /// cannot carry one, and I-7 holds -- the host never reads a file because
+    /// an extension named it.
+    #[serde(skip)]
+    Image { path: std::path::PathBuf },
 }
 
 /// Something the user can do to a row or to the view.
@@ -420,6 +433,20 @@ pub fn from_json(source: &str) -> Result<View, serde_json::Error> {
 mod tests {
     use super::*;
 
+    /// I-7: a picture by path is the host's alone. An extension that names
+    /// one is refused, and one it puts in a pane is dropped, so the host
+    /// never reads a file because an extension said so.
+    #[test]
+    fn an_extension_cannot_name_a_picture_for_the_host_to_read() {
+        let icon: Result<Icon, _> =
+            serde_json::from_str(r#"{ "type": "image", "path": "C:\\secret.png" }"#);
+        assert!(icon.is_err());
+
+        let detail: ItemDetail =
+            serde_json::from_str(r#"{ "markdown": "x", "image": "C:\\secret.png" }"#).unwrap();
+        assert_eq!(detail.image, None);
+    }
+
     fn item(id: &str, title: &str) -> Item {
         Item {
             id: id.into(),
@@ -504,6 +531,7 @@ mod tests {
                     detail: Some(ItemDetail {
                         markdown: "# Fix the seam\n\nThe pane *follows*.".into(),
                         text: None,
+                        image: None,
                         metadata: vec![MetadataRow {
                             label: "Opened".into(),
                             value: "2 days ago".into(),
