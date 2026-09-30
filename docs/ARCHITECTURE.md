@@ -117,7 +117,7 @@ once Lumen was measured well inside them (7.36).
 | **F7** | Translator: a *Translate* command that turns what is typed into another language, online first, offline later | **Done.** Google and DeepL behind `trait Translator`; presets from `config.json` as root rows, edited on a *Translation* settings page; any source and target chosen in the view through *From* and *To* scopes. *Save as Preset* from the view was not built. **Offline translation is frozen.** See F7 decisions |
 | **F8** | Timers: countdowns started from the launcher, named presets with aliases, alert sounds, stopwatches, cycles (Pomodoro) and focus (blocking launches through Lumen) -- one concept, not three features | **Done.** Timers, presets, alert sounds and ringing, stopwatches, cycles (Pomodoro, once or repeating) and focus, as one concept. Laps declined. See F8 decisions |
 | **F9** | Currency: a *Currency* view that converts an amount, or an expression, into every currency or the ones filtered by code, name or country; and `10 usd in cad` answered in the root list | **Done.** The view, a searchable *From* picker (Translate's pickers search too), `in`/`to` filters and a written source, pins, root answers from the cache, and a *Currency* settings page. Historical rates are a door left open, not built. See F9 decisions |
-| **F10** | Dictionary: a *Define* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Planned.** Two commands, not one; a list with a detail pane in the vocabulary first; definitions in English for now, in the app's language later. See F10 decisions |
+| **F10** | Dictionary: a *Define* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Define* on English Wiktionary for 58 word languages, explained in English; Translate's alternatives; each offers the other; favourites and history. *Detect* for a word is still open. See F10 decisions |
 
 ### F4 build order is not optional
 
@@ -1057,6 +1057,59 @@ The decisions:
 
   The idle baseline and the binary size are measured before slice 1, and
   again after 6.
+
+What changed on the way, and what was learned:
+
+- **Views could not scroll to a row they had never drawn.** Found on the
+  first screenshot of *Define*: arrowing down moved the selection and the
+  pane, not the list. GPUI's `scroll_to_reveal_item` adds up the heights it
+  has *measured*, and a row below the fold has never been drawn, so it
+  counts as nothing and the list decides the row is already in view. It
+  was true of every view with more rows than the window; the pane only
+  made it visible. `measure_all()` would have fixed it by drawing every row
+  on each render, against the 8 ms frame budget in a 166-row Currency list.
+  Instead `view::reveal` works the offset out from the rows' heights, which
+  are known exactly (I-10), and moving up to a section's first item shows
+  its header too.
+- **A built-in view can open another on a word.** F7 noted that a view
+  cannot set the search field. That stays true: `Launcher::set_query` is
+  the daemon's, used when *Define* opens *Translate* (or the reverse) and
+  when a favourite is chosen. An extension still cannot type over the user.
+- **The pane takes the window's full height** when the rows fit, so two
+  senses still leave room to read them; when they do not, the list ends on
+  a whole row as before.
+- **The word languages are a table of 58,** the living languages with
+  about ten thousand entries or more in English Wiktionary. Historical
+  ones and "Translingual" are left out: a picker of 279 is not choosing.
+- **Lookups are case-sensitive at the source.** `Display` has no entry,
+  `display` does, and a German noun is only found with its capital. So a
+  word is asked for as typed, then in lower case if that finds nothing. A
+  word the source does not have is a `200` with no entries, read as
+  *not found*; an answer that is not an object is an error, so a broken
+  reply is never shown as "no such word".
+- **Alternatives use `/single` for one word only.** Checked with the
+  blocking client first, as F7 taught: `200`, three times running. Text of
+  more than one word stays on `/t`, which keeps line breaks. The terms are
+  cut to eight per part of speech; Google lists thirty. The alternatives
+  are a section under the translations, so the list grows once when they
+  arrive; they are kept while the same word is asked again, and dropped as
+  soon as the text is more than a word.
+- **History records a word when it is used,** not when a lookup answers:
+  copied, opened, translated, saved, or left on screen when the view
+  closes. Recording answers would fill it with `dis` and `disp` on the way
+  to `display`. `dictionary.history: false` in `config.json` stops it and
+  clears what was kept: a list nobody can see is one nobody can erase.
+- **Favourites are among the answers from the start,** keyed by word, word
+  language and explanation language, so choosing one asks nothing and
+  works offline.
+- **Still open: *Detect*.** *From* starts on the language used last, or
+  English, and has no detection.
+- **Measured.** With `scripts/measure-idle.ps1`, 60 s hidden, same machine:
+  before slice 1, 0.002 % CPU, 72.9 MB working set, 87.2 MB private, 31
+  threads, binary 17,104,384 bytes; after slice 6, 0.000 %, 73.8 MB,
+  88.5 MB, 31 threads, binary 17,334,784 bytes (**+225 KB**). No new
+  dependency: the client is the one Translate already uses, built on first
+  use and dropped thirty seconds after the last lookup.
 
 ---
 
