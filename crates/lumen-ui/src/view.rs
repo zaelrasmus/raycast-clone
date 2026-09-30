@@ -659,7 +659,7 @@ mod tests {
     /// or not the row was ever drawn -- the F10 bug was that it did not move.
     #[test]
     fn revealing_a_row_below_the_fold_scrolls_just_enough() {
-        // Header, five items, header, six items: the Define view for `display`.
+        // Header, five items, header, six items: the Dictionary view for `display`.
         let mut rows = vec![Row::Section("Noun".into(), None)];
         rows.extend((0..5).map(Row::Item));
         rows.push(Row::Section("Verb".into(), None));

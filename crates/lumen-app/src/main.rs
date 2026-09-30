@@ -36,7 +36,7 @@ use lumen_platform::{
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
 mod currency;
-mod define;
+mod dictionary;
 mod extensions;
 mod ipc;
 mod timers;
@@ -967,8 +967,8 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunCurrency);
                 return;
             }
-            LauncherEvent::RunDefine => {
-                let _ = commands.unbounded_send(Message::RunDefine);
+            LauncherEvent::RunDictionary => {
+                let _ = commands.unbounded_send(Message::RunDictionary);
                 return;
             }
             LauncherEvent::RefreshRates => {
@@ -993,7 +993,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunTimers
                 | LauncherEvent::RunAlertSounds
                 | LauncherEvent::RunCurrency
-                | LauncherEvent::RunDefine
+                | LauncherEvent::RunDictionary
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
@@ -1319,7 +1319,7 @@ fn handle(
         }
         Message::RunTranslate { preset } => {
             let platform = platform.clone();
-            let setup = define_setup(config, &surfaces.paths);
+            let setup = dictionary_setup(config, &surfaces.paths);
             let config = config.translate.clone();
             let window = surfaces.launcher;
             cx.update(move |cx| translate::run(platform, config, preset, None, setup, window, cx))
@@ -1350,12 +1350,12 @@ fn handle(
             cx.update(move |cx| currency::run(platform, config, path, window, cx))
                 .context("reaching the app to open the currency view")
         }
-        Message::RunDefine => {
+        Message::RunDictionary => {
             let platform = platform.clone();
-            let setup = define_setup(config, &surfaces.paths);
+            let setup = dictionary_setup(config, &surfaces.paths);
             let translate = config.translate.clone();
             let window = surfaces.launcher;
-            cx.update(move |cx| define::run(platform, setup, translate, None, window, cx))
+            cx.update(move |cx| dictionary::run(platform, setup, translate, None, window, cx))
                 .context("reaching the app to open the dictionary")
         }
         Message::RefreshRates => {
@@ -1509,9 +1509,10 @@ fn show(
     Ok(())
 }
 
-/// What Define needs from the configuration (F10), for either view to open it.
-fn define_setup(config: &Config, paths: &Paths) -> define::Setup {
-    define::Setup {
+/// What the Dictionary needs from the configuration (F10), for either view
+/// to open it.
+fn dictionary_setup(config: &Config, paths: &Paths) -> dictionary::Setup {
+    dictionary::Setup {
         browser: config.preferred_browser.clone(),
         dictionary: config.dictionary.clone(),
         file: paths.dictionary_file(),

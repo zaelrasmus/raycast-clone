@@ -51,9 +51,9 @@ pub enum Effect {
     Copy(String),
     /// These languages were chosen; open with them next time.
     Remember(Languages),
-    /// Open Define on this word (F10), in the source language when it is
+    /// Open the Dictionary on this word (F10), in the source language when it is
     /// known -- by code.
-    Define {
+    Dictionary {
         word: String,
         language: Option<&'static str>,
     },
@@ -126,7 +126,7 @@ const TARGET: &str = "target-";
 const ALTERNATIVE: &str = "alternative-";
 const COPY_TERM: &str = "copy-term";
 const COPY_TERMS: &str = "copy-terms";
-const DEFINE: &str = "define";
+const DICTIONARY: &str = "dictionary";
 /// The scopes, and the prefixes of their options.
 const FROM: &str = "from";
 const TO: &str = "to";
@@ -366,7 +366,7 @@ impl Session {
                 vec![Effect::Copy(all.join("\n"))]
             }
             RETRY => self.restart(true),
-            DEFINE => vec![Effect::Define {
+            DICTIONARY => vec![Effect::Dictionary {
                 word: self.text().to_string(),
                 language: self
                     .languages
@@ -604,8 +604,8 @@ impl Session {
                 // What it means, one key away from how it is said (F10).
                 if super::is_one_word(self.text()) {
                     actions.push(action(
-                        DEFINE,
-                        &format!("Define \u{201c}{}\u{201d}", self.text()),
+                        DICTIONARY,
+                        &format!("Look Up \u{201c}{}\u{201d} in Dictionary", self.text()),
                     ));
                 }
                 actions
@@ -1136,10 +1136,13 @@ mod tests {
             .unwrap()
             .actions
             .iter()
-            .find(|action| action.id == "define")
-            .expect("a Define action")
+            .find(|action| action.id == "dictionary")
+            .expect("a Dictionary action")
             .clone();
-        assert_eq!(define.title, "Define \u{201c}mostrar\u{201d}");
+        assert_eq!(
+            define.title,
+            "Look Up \u{201c}mostrar\u{201d} in Dictionary"
+        );
 
         let effects = session.event(Event::ActionInvoked {
             item: Some("target-0".into()),
@@ -1147,7 +1150,7 @@ mod tests {
         });
         assert_eq!(
             effects,
-            [Effect::Define {
+            [Effect::Dictionary {
                 word: "mostrar".into(),
                 language: Some("es"),
             }]
@@ -1165,7 +1168,7 @@ mod tests {
                 .unwrap()
                 .actions
                 .iter()
-                .all(|action| action.id != "define")
+                .all(|action| action.id != "dictionary")
         );
     }
 

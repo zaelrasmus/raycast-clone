@@ -1031,8 +1031,8 @@ impl Launcher {
                 return;
             }
             // Definitions are looked up by the daemon, like translations.
-            lumen_core::ViewSource::Define => {
-                cx.emit(LauncherEvent::RunDefine);
+            lumen_core::ViewSource::Dictionary => {
+                cx.emit(LauncherEvent::RunDictionary);
                 return;
             }
         };
@@ -2383,7 +2383,7 @@ impl Launcher {
     /// re-rank once for both.
     /// Put `text` in the search field of the open view, as if typed (F10).
     ///
-    /// For one built-in view opening another on the same word -- *Define
+    /// For one built-in view opening another on the same word -- *Look Up
     /// "display"* from Translate. The daemon calls it, never a view: an
     /// extension that could write the field could type over the user.
     pub fn set_query(&mut self, text: String, cx: &mut Context<Self>) {
@@ -2433,7 +2433,7 @@ pub enum LauncherEvent {
     /// The currency view was chosen (F9).
     RunCurrency,
     /// The dictionary was chosen (F10).
-    RunDefine,
+    RunDictionary,
     /// A conversion was typed in the root list with no table of rates, or
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.

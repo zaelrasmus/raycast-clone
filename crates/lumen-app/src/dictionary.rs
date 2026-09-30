@@ -1,4 +1,4 @@
-//! Running the Define view (F10).
+//! Running the Dictionary view (F10).
 //!
 //! `translate.rs`'s shape, for the same reasons: the decisions are in
 //! `lumen_core::dictionary::session`, where they are tested, and this only
@@ -53,7 +53,7 @@ type Client = Arc<Mutex<Option<Arc<dyn Dictionary>>>>;
 /// daemon, which is as long as anybody remembers having chosen it.
 static LAST: Mutex<Option<&'static languages::Language>> = Mutex::new(None);
 
-/// What Define needs from the configuration, carried by Translate too so
+/// What the Dictionary needs from the configuration, carried by Translate too so
 /// either can open the other (F10).
 #[derive(Clone)]
 pub struct Setup {
@@ -64,10 +64,10 @@ pub struct Setup {
     pub file: PathBuf,
 }
 
-/// Open the Define view, on a word and its language when it comes from
+/// Open the Dictionary view, on a word and its language when it comes from
 /// Translate (F10).
 ///
-/// `translate` is only passed on, for when Define opens Translate in turn.
+/// `translate` is only passed on, for when the Dictionary opens Translate in turn.
 pub fn run(
     platform: Arc<dyn Platform>,
     setup: Setup,
@@ -231,7 +231,7 @@ pub fn run(
 /// browser reads the registry, and opening it hands the foreground away.
 fn open(platform: Arc<dyn Platform>, url: String, browser: Option<String>) {
     let spawned = std::thread::Builder::new()
-        .name("lumen-define-open".into())
+        .name("lumen-dictionary-open".into())
         .spawn(move || {
             let link = match Template::parse(&url) {
                 Ok(link) => link,
@@ -262,7 +262,7 @@ fn send(request: Request, client: Client, tx: mpsc::UnboundedSender<Input>) {
     let reply = tx.clone();
 
     let spawned = std::thread::Builder::new()
-        .name("lumen-define".into())
+        .name("lumen-dictionary".into())
         .spawn(move || {
             let result = dictionary_client(&client)
                 .and_then(|dictionary| {

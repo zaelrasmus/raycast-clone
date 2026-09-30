@@ -203,7 +203,7 @@ pub enum ViewSource {
     /// The currency converter (F9).
     Currency,
     /// The dictionary (F10).
-    Define,
+    Dictionary,
 }
 
 impl Action {

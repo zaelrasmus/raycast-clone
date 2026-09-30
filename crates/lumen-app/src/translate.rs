@@ -72,15 +72,16 @@ enum Input {
 type Client = Arc<Mutex<Option<Arc<dyn Translator>>>>;
 
 /// Open the translate view on `preset`, or on the languages used last, with
-/// `text` already typed when it comes from Define (F10).
+/// `text` already typed when it comes from the Dictionary (F10).
 ///
-/// `define` is only passed on, for when Translate opens Define in turn.
+/// `dictionary` is only passed on, for when Translate opens the Dictionary
+/// in turn.
 pub fn run(
     platform: Arc<dyn Platform>,
     config: TranslateConfig,
     preset: Option<String>,
     text: Option<String>,
-    define: crate::define::Setup,
+    dictionary: crate::dictionary::Setup,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
 ) {
@@ -187,15 +188,22 @@ pub fn run(
                             .ok();
                     }
                     Effect::Remember(languages) => *LAST.lock() = Some(languages),
-                    // Opening Define drops this view's sink, which ends
+                    // Opening the Dictionary drops this view's sink, which ends
                     // this loop on its next turn.
-                    Effect::Define { word, language } => {
+                    Effect::Dictionary { word, language } => {
                         let platform = platform.clone();
                         let translate = (*config).clone();
-                        let setup = define.clone();
+                        let setup = dictionary.clone();
                         let start = (word, language.and_then(dictionary_languages::find));
                         cx.update(|cx| {
-                            crate::define::run(platform, setup, translate, Some(start), window, cx)
+                            crate::dictionary::run(
+                                platform,
+                                setup,
+                                translate,
+                                Some(start),
+                                window,
+                                cx,
+                            )
                         })
                         .ok();
                     }

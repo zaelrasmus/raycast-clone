@@ -1,4 +1,4 @@
-//! The Define view's state, as a plain value (F10).
+//! The Dictionary view's state, as a plain value (F10).
 //!
 //! Translate's shape (F7): the daemon owns the threads and the timer, this
 //! owns every decision. It is told what happened -- an event, a pause in
@@ -454,7 +454,7 @@ impl Session {
             (_, Some(entry)) => (None, self.sections(entry, actionable)),
             (State::Idle, _) => (
                 Some(empty(
-                    "Type a word to define".into(),
+                    "Type a word to look up".into(),
                     Some(format!(
                         "Looked up as you type, in {}. Tab chooses the language.",
                         self.attribution_short()
@@ -466,7 +466,7 @@ impl Session {
                 Some(empty(
                     "That is longer than a word".into(),
                     Some(format!(
-                        "Define looks up words and short phrases, up to {} characters.",
+                        "The dictionary looks up words and short phrases, up to {} characters.",
                         super::MAX_CHARS
                     )),
                 )),
@@ -490,7 +490,7 @@ impl Session {
         };
 
         View::List(List {
-            placeholder: Some(format!("Define a word in {}", self.language.name)),
+            placeholder: Some(format!("Look up a word in {}", self.language.name)),
             filtering: Filtering::Extension,
             scopes: vec![self.source_scope()],
             empty,
@@ -696,7 +696,8 @@ impl Session {
         let (title, subtitle, tone) = match failure {
             Failure::Offline => (
                 "No internet connection".to_string(),
-                "Define needs the internet to reach Wiktionary. Enter tries again.".to_string(),
+                "The dictionary needs the internet to reach Wiktionary. Enter tries again."
+                    .to_string(),
                 Tone::Caution,
             ),
             Failure::Other(message) => (
@@ -978,7 +979,7 @@ mod tests {
     fn nothing_typed_or_too_much_asks_nothing() {
         let mut session = session();
         let list = list(&typed(&mut session, "   "));
-        assert_eq!(list.empty.unwrap().title, "Type a word to define");
+        assert_eq!(list.empty.unwrap().title, "Type a word to look up");
 
         let effects = typed(&mut session, &"word ".repeat(20));
         assert!(sends(&effects).is_empty());
@@ -1023,7 +1024,7 @@ mod tests {
         assert_eq!(from.options.len(), LANGUAGES.len());
         assert_eq!(
             list.placeholder.as_deref(),
-            Some("Define a word in Spanish")
+            Some("Look up a word in Spanish")
         );
     }
 
