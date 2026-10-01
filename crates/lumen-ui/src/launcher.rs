@@ -3384,12 +3384,12 @@ impl Launcher {
             Mode::Form(_) => "Save".to_string(),
         };
         // Enter makes a new line in the snippet editor.
-        let save_keys = match &self.mode {
+        let save_keys: &[&str] = match &self.mode {
             Mode::Form(FormState {
                 form: FormKind::Snippet(_),
                 ..
-            }) => "Ctrl+\u{23ce}",
-            _ => "\u{23ce}",
+            }) => &["Ctrl", "\u{23ce}"],
+            _ => &["\u{23ce}"],
         };
 
         let count = match &self.mode {
@@ -3447,23 +3447,28 @@ impl Launcher {
             // Truncated rather than pushing the keys off the edge: a long
             // timer name must not move them (I-10).
             .child(div().flex_1().min_w_0().truncate().child(status))
-            .child(
+            .child({
+                let mut hints: Vec<(String, &[&str])> = vec![(verb, save_keys)];
+                // Advertised only when there is a second action to reach. A
+                // hint for a panel that would open empty teaches the user
+                // that the hint lies.
+                if entries.len() > 1 && picking.is_none() {
+                    hints.push(("Actions".into(), &["Ctrl", "K"]));
+                }
+                let leave = match self.mode {
+                    Mode::Root if self.argument.is_none() => "Dismiss",
+                    Mode::Root | Mode::View(_) | Mode::Form(_) => "Back",
+                };
+                hints.push((leave.into(), &["Esc"]));
+
                 div()
                     .flex()
+                    .items_center()
                     .gap(geometry.icon_gap())
-                    .child(format!("{verb}  {save_keys}"))
-                    // Advertised only when there is a second action to reach.
-                    // A hint for a panel that would open empty teaches the user
-                    // that the hint lies.
-                    .when(entries.len() > 1 && picking.is_none(), |footer| {
-                        footer.child("Actions  Ctrl+K")
-                    })
-                    .child(match self.mode {
-                        Mode::Root if self.argument.is_some() => "Back  Esc",
-                        Mode::Root => "Dismiss  Esc",
-                        Mode::View(_) | Mode::Form(_) => "Back  Esc",
-                    }),
-            )
+                    .children(hints.into_iter().enumerate().map(|(index, (label, keys))| {
+                        render_hint(index, label, keys, colors, &geometry)
+                    }))
+            })
     }
 
     /// The action panel, when it is open.
@@ -3553,6 +3558,69 @@ impl Launcher {
                 }))
                 .into_any_element(),
         )
+    }
+}
+
+/// One of the footer's hints: what a key does, and the key.
+///
+/// As text, `Actions  Ctrl+K`; as keycaps, the label and each key in a cap of
+/// its own, with a rule before every hint but the first (F15). Either way the
+/// keys are the keymap's, written out here only for show (I-14).
+fn render_hint(
+    index: usize,
+    label: String,
+    keys: &[&str],
+    colors: &lumen_core::theme::Colors,
+    geometry: &Geometry,
+) -> gpui::AnyElement {
+    use lumen_core::style::FooterHints;
+
+    match geometry.variants().footer_hints {
+        FooterHints::Text => div()
+            .child(format!("{label}  {}", keys.join("+")))
+            .into_any_element(),
+        FooterHints::Keycaps => div()
+            .flex()
+            .items_center()
+            .gap(geometry.keycap_gap())
+            // The rule takes the hint's own gap on its far side, so the
+            // spacing either side of it is the footer's.
+            .when(index > 0, |hint| {
+                hint.child(
+                    div()
+                        .h(geometry.keycap_height() * 0.6)
+                        .mr(geometry.icon_gap() - geometry.keycap_gap())
+                        .border_l_1()
+                        .border_color(color(colors.border_strong)),
+                )
+            })
+            // What Enter does reads first; the rest is there if wanted.
+            .child(
+                div()
+                    .mr(geometry.keycap_gap())
+                    .text_color(color(if index == 0 {
+                        colors.text_primary
+                    } else {
+                        colors.text_muted
+                    }))
+                    .child(label),
+            )
+            .children(keys.iter().map(|key| {
+                div()
+                    .h(geometry.keycap_height())
+                    .min_w(geometry.keycap_height())
+                    .px(geometry.keycap_padding())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(geometry.keycap_radius())
+                    .bg(color(colors.selection_background))
+                    .border_1()
+                    .border_color(color(colors.border_subtle))
+                    .text_color(color(colors.text_primary))
+                    .child(key.to_string())
+            }))
+            .into_any_element(),
     }
 }
 
