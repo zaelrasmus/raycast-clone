@@ -268,6 +268,9 @@ pub struct Launcher {
     /// (F9): once per showing, so a failing fetch is not asked again on
     /// every key.
     rates_asked: bool,
+    /// Whether the places have been asked to be read for a question about
+    /// time (F13). Once: read, they are kept.
+    places_asked: bool,
     /// The clipboard history, once the daemon has opened it.
     ///
     /// Shared with the recorder rather than opened twice: one database, one
@@ -371,6 +374,14 @@ impl Launcher {
 
         let mut root = RootSearch::new(Providers::builtin(), frecency);
         root.set_visible_rows(config.window.visible_rows);
+        // `time in vancouver` is answered in the system's way of writing a
+        // time, as the World Clock view is (F13).
+        let writer = platform.clone();
+        root.set_time_format(Arc::new(move |when| {
+            writer
+                .format_date(when, lumen_platform::DateStyle::Time, None)
+                .unwrap_or_else(|_| format!("{:02}:{:02}", when.hour, when.minute))
+        }));
 
         let mut launcher = Self {
             query_field,
@@ -384,6 +395,7 @@ impl Launcher {
             root,
             fetching_icons: false,
             rates_asked: false,
+            places_asked: false,
             clipboard: None,
             query: String::new(),
             selected: 0,
@@ -947,6 +959,27 @@ impl Launcher {
         if !self.rates_asked && self.root.wants_rates(lumen_core::currency::now) {
             self.rates_asked = true;
             cx.emit(LauncherEvent::RefreshRates);
+        }
+
+        // A question about time before the places are in memory: they are
+        // read off this thread, and the answer appears when they are (F13).
+        if !self.places_asked && self.root.wants_places() {
+            self.places_asked = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .spawn(async {
+                        lumen_core::places::catalogue();
+                    })
+                    .await;
+                this.update(cx, |launcher, cx| {
+                    if matches!(launcher.mode, Mode::Root) {
+                        launcher.rerank(cx);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
         }
 
         // The selection always returns to the top on a new query. Trying to keep

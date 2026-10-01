@@ -55,6 +55,8 @@ pub enum Kind {
     Timer,
     /// An amount converted into another currency, in the root list (F9).
     Currency,
+    /// A time somewhere, or converted, in the root list (F13).
+    Clock,
 }
 
 impl Kind {
@@ -73,6 +75,7 @@ impl Kind {
             Kind::Website => "Website",
             Kind::Timer => "Timer",
             Kind::Currency => "Currency",
+            Kind::Clock => "Clock",
         }
     }
 }

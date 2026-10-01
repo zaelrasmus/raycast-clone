@@ -227,7 +227,12 @@ mod tests {
         assert!(!items.is_empty());
         assert!(items.iter().all(|item| matches!(
             item.kind,
-            Kind::Command | Kind::Window | Kind::Timer | Kind::Currency | Kind::Clipboard
+            Kind::Command
+                | Kind::Window
+                | Kind::Timer
+                | Kind::Currency
+                | Kind::Clipboard
+                | Kind::Clock
         )));
     }
 

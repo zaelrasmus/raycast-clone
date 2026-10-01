@@ -5,6 +5,7 @@
 //! sides of a difference cannot disagree. Nothing here reads a clock: `now`
 //! is passed in, so every rule is a unit test.
 
+pub mod query;
 pub mod session;
 mod sun;
 

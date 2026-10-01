@@ -24,6 +24,11 @@ use crate::paths::Paths;
 use crate::providers::{self, Provider as _, Providers, QuicklinkProvider};
 use crate::search::{Candidate, Search};
 
+/// Writes a moment as the user's regional settings do (F13): the platform's
+/// `format_date`, handed in by the launcher, since `core` makes no system
+/// call of its own (I-1).
+pub type TimeFormat = Arc<dyn Fn(&lumen_platform::LocalTime) -> String + Send + Sync>;
+
 /// How many results are kept behind the visible window.
 ///
 /// Bounded because nobody scrolls to the four hundredth fuzzy match, and an
@@ -135,6 +140,11 @@ pub struct RootSearch {
     rates: Option<crate::currency::Rates>,
     /// Whether the last query was a conversion, answered or not.
     conversion: bool,
+    /// How the platform writes a time, for `time in vancouver` (F13): as
+    /// the user's regional settings do. Two digits each until it is set.
+    time_format: Option<TimeFormat>,
+    /// Whether the last query asked about time, answered or not.
+    asks_time: bool,
     /// This query's fallbacks.
     fallbacks: Vec<Item>,
     /// How many rows the window shows, so the fallbacks can be kept in view.
@@ -155,6 +165,8 @@ impl RootSearch {
             timer_presets: Vec::new(),
             rates: None,
             conversion: false,
+            time_format: None,
+            asks_time: false,
             fallbacks: Vec::new(),
             // What the configuration defaults to; the launcher sets the real
             // value before the first query.
@@ -222,6 +234,18 @@ impl RootSearch {
         self.conversion && self.rates.as_ref().is_none_or(|rates| rates.is_due(now()))
     }
 
+    /// How times in answers are written (F13).
+    pub fn set_time_format(&mut self, format: TimeFormat) {
+        self.time_format = Some(format);
+    }
+
+    /// Whether the last query asked about time and the places have not been
+    /// read: the launcher has them read off the UI thread, and ranks again
+    /// when they are (F13). Like [`Self::wants_rates`], it does not wait.
+    pub fn wants_places(&self) -> bool {
+        self.asks_time && crate::places::loaded().is_none()
+    }
+
     pub fn aside_is_empty(&self, aside: Aside) -> bool {
         self.asides[aside.slot()].is_empty()
     }
@@ -243,6 +267,24 @@ impl RootSearch {
         if let (Some(conversion), Some(rates)) = (conversion, &self.rates) {
             self.answers
                 .extend(providers::currency::answer(&conversion, rates));
+        }
+        // A question about time, from the places in memory or not at all
+        // (F13): their reading is the launcher's to start, off this thread.
+        let time = crate::clock::query::recognise(trimmed);
+        self.asks_time = time.is_some();
+        if let (Some(request), Some(places)) = (time, crate::places::loaded()) {
+            let format = self.time_format.clone();
+            let write = move |when: &lumen_platform::LocalTime| match &format {
+                Some(format) => format(when),
+                None => format!("{:02}:{:02}", when.hour, when.minute),
+            };
+            self.answers.extend(providers::clock::answer(
+                &request,
+                places,
+                &crate::clock::here(),
+                crate::clock::now(),
+                &write,
+            ));
         }
         self.fallbacks = self.quicklinks.fallbacks(query);
 
@@ -745,6 +787,25 @@ mod tests {
 
         root.rank("calc");
         assert!(!root.wants_rates(|| 0), "not a conversion");
+    }
+
+    /// F13: a question about time is answered first, from the places in
+    /// memory, in the platform's way of writing a time.
+    #[test]
+    fn a_question_about_time_leads_once_the_places_are_read() {
+        let mut root = root(apps(&["Timer Resolution"]));
+        crate::places::catalogue();
+        root.set_time_format(Arc::new(|_| "TIME".into()));
+
+        root.rank("time in vancouver");
+        assert_eq!(titles(&root)[0], "TIME in Vancouver");
+        assert!(!root.wants_places(), "read already");
+
+        root.rank("3pm vancouver");
+        assert_eq!(titles(&root)[0], "TIME your time");
+
+        root.rank("timer");
+        assert!(titles(&root).iter().all(|title| !title.starts_with("TIME")));
     }
 
     /// F8, found by using it: a preset's alias found it seventh, below files

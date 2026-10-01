@@ -176,9 +176,17 @@ pub struct Catalogue {
     cities: Vec<City>,
 }
 
-/// The catalogue, read on first use and kept.
+static CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
+
+/// The catalogue if it has been read, without reading it: what the root
+/// list asks on a keystroke, which must not wait for it (I-3).
+pub fn loaded() -> Option<&'static Catalogue> {
+    CATALOGUE.get()
+}
+
+/// The catalogue, read on first use and kept. Blocks for as long as
+/// reading takes, so the UI thread asks [`loaded`] instead.
 pub fn catalogue() -> &'static Catalogue {
-    static CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
     CATALOGUE.get_or_init(|| {
         let started = std::time::Instant::now();
         let catalogue = Catalogue::bundled();

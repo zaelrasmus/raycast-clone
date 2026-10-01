@@ -1,6 +1,6 @@
 # The icon set
 
-Fourteen glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
+Fifteen glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
 
 ## The grid
 
@@ -46,3 +46,4 @@ are further from the centre and there is no shading to soften them.
 | `link.svg` | A quicklink |
 | `timer.svg` | A timer, and the *Timers* view (F8) |
 | `currency.svg` | A conversion in the root list, and the *Currency* command (F9) |
+| `clock.svg` | A time in the root list, and the *World Clock* command (F13) |

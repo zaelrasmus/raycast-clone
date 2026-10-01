@@ -1690,10 +1690,26 @@ The decisions:
   answer from anybody. Weather needs a home city: suggested from the system
   zone, confirmed once, never read from Windows' location service, which
   asks for a permission and knows more than Lumen needs.
-- **The root list answers the clock, offline.** `time in vancouver`,
-  `vancouver time` and `3pm vancouver` (`15:00 vancouver in tokyo`) are
-  answers (7.9), from the catalogue in memory, costing what the calculator
-  does, so I-3 holds.
+- **The root list answers the clock, offline.** `time in vancouver` and
+  `vancouver time` are the time there, how far it is and its offset. A
+  time is converted: `3pm vancouver` is three in Vancouver's afternoon, in
+  the user's zone; `3pm in vancouver` is three in the user's, in
+  Vancouver's; `15:00 vancouver in tokyo` goes from one to the other, and
+  names both days when they differ. A time needs `am`, `pm` or a colon, so
+  `3 vancouver` is not one, and a place needs three letters, so `time in
+  v` answers nothing. The place is the city the view would list first.
+  These are answers (7.9), costing what the calculator does.
+- **The places are read when time is first asked about, not at start.**
+  The root list answers from the catalogue only if it is already in memory
+  (`places::loaded`); a question about time before then has the launcher
+  read it on the background executor and rank again when it is there, as
+  F9 does with a table of rates. The keystroke is never held (I-3), and a
+  daemon nobody asks the time of never holds 34,000 cities. Times are
+  written by the platform, as in the view, through a function the launcher
+  hands `RootSearch`, since `core` calls no system itself (I-1).
+- **A clock glyph and a `Clock` kind.** The command and the answers share
+  a fifteenth glyph, on the set's grid (7.23): a face and two hands, which
+  the timer's stopwatch is not.
 - **The root list answers the weather without waiting for it.** F9's
   pattern: `weather in vancouver`, `weather vancouver` and `vancouver
   weather` are recognised only when the city is an exact match, so typing

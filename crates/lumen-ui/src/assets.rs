@@ -69,6 +69,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/currency.svg",
         include_bytes!("../../../assets/icons/currency.svg"),
     ),
+    (
+        "icons/clock.svg",
+        include_bytes!("../../../assets/icons/clock.svg"),
+    ),
 ];
 
 pub struct Assets;
