@@ -18,6 +18,7 @@
 pub mod browse;
 mod favourites;
 mod find;
+pub mod store;
 
 use std::io::Read;
 use std::sync::OnceLock;

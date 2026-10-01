@@ -5,21 +5,15 @@
 //! read again after every save and whenever the file changes, written
 //! through `lumen_core::weather::store`.
 //!
-//! # The home city is chosen from *My Places*
-//!
-//! A search over 34,000 cities is the view's job, not a settings page's.
-//! Home is *Automatic* -- the largest city in the system's zone -- or one
-//! of *My Places*, which the view is where to add. The choices are read
-//! from `places.json`, and labelled from their keys, so opening settings
-//! never reads the catalogue. A home that is no longer among them is kept
-//! as a choice of its own, rather than lost by the next save.
+//! The home city is `places.home`, shared with World Clock and edited from
+//! either page (`home_choice`).
 
 use std::path::PathBuf;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, Entity, FocusHandle, SharedString, Window, div, px};
 use lumen_core::layout::{self, settings as metrics};
-use lumen_core::places::Favourites;
+use lumen_core::places::{Favourites, store as places_store};
 use lumen_core::theme::Colors;
 use lumen_core::weather::{Layout, Units, WeatherConfig, store};
 
@@ -42,9 +36,6 @@ const LAYOUTS: [(Layout, &str, &str); 2] = [
     (Layout::Pane, "pane", "Pane: beside the list, as you move"),
 ];
 
-/// The value of the *Automatic* home choice.
-const AUTOMATIC: &str = "";
-
 struct Form {
     units: Entity<Select>,
     layout: Entity<Select>,
@@ -56,6 +47,8 @@ pub struct WeatherPage {
     places_file: PathBuf,
     colors: Colors,
     config: WeatherConfig,
+    /// The shared home city, as the file has it.
+    home: Option<String>,
     /// *My Places*, as kept, for the home choices.
     mine: Vec<String>,
     problem: Option<String>,
@@ -75,12 +68,13 @@ impl WeatherPage {
         cx: &mut Context<Self>,
     ) -> Self {
         let config = WeatherConfig::default();
-        let form = form(&config, &[], &colors, cx);
+        let form = form(&config, None, &[], &colors, cx);
         let mut page = Self {
             config_file,
             places_file,
             colors,
             config,
+            home: None,
             mine: Vec::new(),
             problem: None,
             form,
@@ -102,17 +96,17 @@ impl WeatherPage {
             let (read, mine) = cx
                 .background_executor()
                 .spawn(async move {
-                    (
-                        store::read(&config_file),
-                        Favourites::load(&places_file).cities,
-                    )
+                    let read = store::read(&config_file)
+                        .and_then(|config| Ok((config, places_store::read_home(&config_file)?)));
+                    (read, Favourites::load(&places_file).cities)
                 })
                 .await;
             this.update(cx, |page, cx| {
                 page.mine = mine;
                 match read {
-                    Ok(config) => {
+                    Ok((config, home)) => {
                         page.config = config;
+                        page.home = home;
                         page.problem = None;
                     }
                     Err(error) => {
@@ -131,7 +125,13 @@ impl WeatherPage {
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.form = form(&self.config, &self.mine, &self.colors, cx);
+        self.form = form(
+            &self.config,
+            self.home.as_deref(),
+            &self.mine,
+            &self.colors,
+            cx,
+        );
         self.watch_form(cx);
         self.edited = false;
         self.error = None;
@@ -161,8 +161,12 @@ impl WeatherPage {
                 .iter()
                 .find(|(_, value, _)| Some(*value) == layout.as_deref())
                 .map_or_else(Layout::default, |(layout, _, _)| *layout),
-            home: chosen(&self.form.home).filter(|home| home != AUTOMATIC),
+            home: None,
         }
+    }
+
+    fn chosen_home(&self, cx: &App) -> Option<String> {
+        crate::home_choice::chosen(self.form.home.read(cx).value())
     }
 
     // -- Focus ----------------------------------------------------------------
@@ -227,12 +231,16 @@ impl WeatherPage {
         }
         let path = self.config_file.clone();
         let config = self.composed(cx);
+        let home = self.chosen_home(cx);
         self.saving = true;
         self.error = None;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { store::write(&path, &config) })
+                .spawn(async move {
+                    store::write(&path, &config)?;
+                    places_store::write_home(&path, home.as_deref())
+                })
                 .await;
             this.update(cx, |page, cx| {
                 page.saving = false;
@@ -293,50 +301,14 @@ fn select<T: PartialEq + Copy>(
     cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
 }
 
-/// `CA/British Columbia/Vancouver` as `Vancouver, British Columbia (CA)`.
-fn label(key: &str) -> String {
-    let mut parts = key.splitn(3, '/');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(country), Some(""), Some(name)) => format!("{name} ({country})"),
-        (Some(country), Some(region), Some(name)) => format!("{name}, {region} ({country})"),
-        _ => key.to_string(),
-    }
-}
-
-/// *Automatic*, then *My Places*, then the saved home if it is neither.
-fn home_choices(config: &WeatherConfig, mine: &[String]) -> (Vec<Choice>, usize) {
-    let zone = lumen_core::clock::here()
-        .iana_name()
-        .map(|zone| format!(" ({zone})"))
-        .unwrap_or_default();
-    let mut choices = vec![Choice {
-        value: Some(AUTOMATIC.into()),
-        label: format!("Automatic, from your time zone{zone}"),
-    }];
-    let mut keys: Vec<&String> = mine.iter().collect();
-    if let Some(home) = &config.home
-        && !keys.contains(&home)
-    {
-        keys.push(home);
-    }
-    choices.extend(keys.into_iter().map(|key| Choice {
-        value: Some(key.clone()),
-        label: label(key),
-    }));
-    let selected = config
-        .home
-        .as_ref()
-        .and_then(|home| {
-            choices
-                .iter()
-                .position(|choice| choice.value.as_ref() == Some(home))
-        })
-        .unwrap_or(0);
-    (choices, selected)
-}
-
-fn form(config: &WeatherConfig, mine: &[String], colors: &Colors, cx: &mut App) -> Form {
-    let (choices, selected) = home_choices(config, mine);
+fn form(
+    config: &WeatherConfig,
+    home: Option<&str>,
+    mine: &[String],
+    colors: &Colors,
+    cx: &mut App,
+) -> Form {
+    let (choices, selected) = crate::home_choice::choices(home, mine);
     Form {
         units: select(&UNITS, config.units, colors, cx),
         layout: select(&LAYOUTS, config.layout, colors, cx),
@@ -396,7 +368,7 @@ impl WeatherPage {
         let hints = [
             "How temperatures, wind and rain are written. Forecasts are kept in metric.",
             "Where a city's full report is shown.",
-            "The city the view leads with. Add one with Add to My Places in Weather.",
+            crate::home_choice::HINT,
         ];
         let (message, is_error) = match (&self.error, self.focused(window, cx)) {
             (Some(error), _) => (error.clone(), true),
@@ -436,34 +408,5 @@ impl WeatherPage {
                     ),
             )
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_key_reads_as_a_place() {
-        assert_eq!(
-            label("CA/British Columbia/Vancouver"),
-            "Vancouver, British Columbia (CA)"
-        );
-        assert_eq!(label("SG//Singapore"), "Singapore (SG)");
-        assert_eq!(label("broken"), "broken");
-    }
-
-    #[test]
-    fn a_home_no_longer_kept_is_still_a_choice() {
-        let config = WeatherConfig {
-            home: Some("JP/Tokyo/Tokyo".into()),
-            ..WeatherConfig::default()
-        };
-        let mine = vec!["CA/British Columbia/Vancouver".to_string()];
-        let (choices, selected) = home_choices(&config, &mine);
-        assert_eq!(choices.len(), 3);
-        assert_eq!(choices[selected].label, "Tokyo, Tokyo (JP)");
-        let (_, selected) = home_choices(&WeatherConfig::default(), &mine);
-        assert_eq!(selected, 0, "automatic");
     }
 }

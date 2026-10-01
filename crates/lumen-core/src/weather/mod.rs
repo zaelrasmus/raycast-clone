@@ -40,9 +40,9 @@ pub const KEPT: usize = 64;
 pub struct WeatherConfig {
     pub units: Units,
     pub layout: Layout,
-    /// The city the view leads with, by its key
-    /// (`CA/British Columbia/Vancouver`). `None` is the largest city in
-    /// the system's time zone.
+    /// Where the home city was first kept, before World Clock shared it:
+    /// read so a city chosen then is not lost, and moved to `places.home`
+    /// by the next save (`places::store`). Not written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
 }

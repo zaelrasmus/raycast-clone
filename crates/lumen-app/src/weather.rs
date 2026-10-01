@@ -53,6 +53,7 @@ fn now() -> i64 {
 pub fn run(
     platform: Arc<dyn Platform>,
     config: WeatherConfig,
+    home: Option<String>,
     files: Files,
     city: Option<String>,
     window: gpui::WindowHandle<Launcher>,
@@ -93,7 +94,8 @@ pub fn run(
                 .format_date(when, DateStyle::Time, None)
                 .unwrap_or_else(|_| format!("{:02}:{:02}", when.hour, when.minute))
         });
-        let mut session = Session::new(config, places, kept, cache, here.as_deref(), time);
+        let mut session = Session::new(config, places, kept, cache, here.as_deref(), time)
+            .with_home(home.as_deref());
         let mut effects = session.start(now());
         if let Some(index) = city.as_deref().and_then(|key| places.city_by_key(key)) {
             effects.extend(session.open(index, now()));

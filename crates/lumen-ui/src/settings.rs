@@ -286,7 +286,8 @@ impl Settings {
         let clock = {
             let colors = theme.colors.clone();
             let config_file = config_file.clone();
-            cx.new(|cx| ClockPage::new(config_file, colors, cx))
+            let places_file = places_file.clone();
+            cx.new(|cx| ClockPage::new(config_file, places_file, colors, cx))
         };
         cx.observe(&clock, |_, _, cx| cx.notify()).detach();
 

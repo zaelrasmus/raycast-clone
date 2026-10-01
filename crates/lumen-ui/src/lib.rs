@@ -19,6 +19,7 @@ pub mod currency_page;
 pub mod duration_input;
 pub mod edit;
 pub mod fonts;
+pub mod home_choice;
 pub mod icons;
 pub mod images;
 pub mod keymap;

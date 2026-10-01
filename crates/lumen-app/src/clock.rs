@@ -37,6 +37,7 @@ enum Input {
 pub fn run(
     platform: Arc<dyn Platform>,
     config: ClockConfig,
+    home: Option<String>,
     favourites: PathBuf,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
@@ -81,7 +82,7 @@ pub fn run(
                     format!("{:02}:{:02}", when.hour, when.minute)
                 })
         });
-        let mut session = Session::new(config, places, kept, here, time);
+        let mut session = Session::new(config, places, kept, here, time).with_home(home.as_deref());
         let mut effects = session.start(clock::now());
         tick(&tx, cx);
 

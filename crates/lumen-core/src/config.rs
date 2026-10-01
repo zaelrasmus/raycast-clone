@@ -14,6 +14,7 @@ use crate::clipboard::Retention;
 use crate::clock::ClockConfig;
 use crate::currency::CurrencyConfig;
 use crate::dictionary::DictionaryConfig;
+use crate::places::store::PlacesConfig;
 use crate::providers::files::{self, FileLimits};
 use crate::snippets::SnippetsConfig;
 use crate::timers::TimersConfig;
@@ -51,6 +52,8 @@ pub struct Config {
     pub clock: ClockConfig,
     /// Weather (F13): units, the report's layout, and the home city.
     pub weather: WeatherConfig,
+    /// The home city, shared by World Clock and Weather (F13).
+    pub places: PlacesConfig,
 }
 
 /// File search (F3).
@@ -177,6 +180,7 @@ impl Default for Config {
             snippets: SnippetsConfig::default(),
             clock: ClockConfig::default(),
             weather: WeatherConfig::default(),
+            places: PlacesConfig::default(),
         }
     }
 }

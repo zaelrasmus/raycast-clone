@@ -1766,6 +1766,19 @@ The decisions:
   `weather in vancouver` and `weather in london canada` ask; `weather in
   van` and `weather in vancouv` do not. A failed city is not asked again on
   every keystroke, and one city is asked at most once per showing.
+- **One home city for both views, and the clock never lies.** Found after
+  slice 7: Weather's home could be changed and World Clock's could not.
+  *Home* had been one word for two things -- where the user lives, which
+  Weather leads with, and what their clock says, which every difference is
+  from and which no setting can change. So home is one value,
+  `places.home`, edited from either settings page, and World Clock applies
+  one rule: a home that keeps the system's time *now* names *Your time*
+  (Santiago de los Caballeros keeps Santo Domingo's), and one that keeps
+  another is a row of its own under it -- *Home*, with how far it is --
+  rather than a name over a clock that is not its. By default both are the
+  zone's largest city, so the two views agree; when they cannot, the clock
+  says why instead of hiding it. A home chosen as `weather.home` before
+  this is still read, and moved by the next save.
 - **Home is the largest city in the system's zone until a setting names
   another.** The design said confirmed once; a first-run question is a
   dialog the view does not have, so the *Weather* settings page (slice 7)

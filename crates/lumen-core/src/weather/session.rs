@@ -102,11 +102,7 @@ impl Session {
         here: Option<&str>,
         time: TimeFormat,
     ) -> Self {
-        let home = config
-            .home
-            .as_deref()
-            .and_then(|key| places.city_by_key(key))
-            .or_else(|| here.and_then(|zone| places.largest_in_zone(zone)));
+        let home = here.and_then(|zone| places.largest_in_zone(zone));
         Self {
             config,
             places,
@@ -123,6 +119,15 @@ impl Session {
             report: None,
             selected: None,
         }
+    }
+
+    /// Lead with the home city keyed `home`, shared with World Clock
+    /// (`places.home`), over the system zone's largest city.
+    pub fn with_home(mut self, home: Option<&str>) -> Self {
+        if let Some(index) = home.and_then(|key| self.places.city_by_key(key)) {
+            self.home = Some(index);
+        }
+        self
     }
 
     /// What to do on opening, at `now`: draw, and ask at once for what the
@@ -1289,6 +1294,13 @@ mod tests {
             panic!("settle first");
         };
         assert_eq!(fetched(&session.settled(generation, NOW))[0], seoul);
+    }
+
+    #[test]
+    fn the_shared_home_leads() {
+        let mut session = session_with(Cache::default(), &[]).with_home(Some(&key("Seoul", "KR")));
+        let list = list(&session.start(NOW));
+        assert_eq!(list.sections[0].items[0].title, "Seoul");
     }
 
     #[test]

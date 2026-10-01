@@ -5,7 +5,6 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::Value;
 
 use crate::section;
 
@@ -19,20 +18,12 @@ pub fn read(path: &Path) -> Result<WeatherConfig> {
     section::read(path, SECTION)
 }
 
-/// Write the whole section. `home: None` removes the key, so the view goes
-/// back to the system's time zone.
+/// Write the units and the layout. The home city is the `places`
+/// section's, shared with World Clock (`places::store`).
 pub fn write(path: &Path, config: &WeatherConfig) -> Result<()> {
     section::edit(path, SECTION, |written| {
         written.insert("units".into(), serde_json::to_value(config.units)?);
         written.insert("layout".into(), serde_json::to_value(config.layout)?);
-        match &config.home {
-            Some(home) => {
-                written.insert("home".into(), Value::String(home.clone()));
-            }
-            None => {
-                written.remove("home");
-            }
-        }
         Ok(())
     })
 }
@@ -61,7 +52,16 @@ mod tests {
             home: None,
         };
         write(&path, &config).unwrap();
-        assert_eq!(read(&path).unwrap(), config, "home removed");
+        let written = read(&path).unwrap();
+        assert_eq!(
+            (written.units, written.layout),
+            (Units::Imperial, Layout::Pane)
+        );
+        assert_eq!(
+            written.home.as_deref(),
+            Some("x"),
+            "the home is not this writer's"
+        );
         assert!(std::fs::read_to_string(&path).unwrap().contains("daylight"));
 
         std::fs::write(&path, "{ broken").unwrap();

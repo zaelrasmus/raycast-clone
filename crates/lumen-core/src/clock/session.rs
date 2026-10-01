@@ -63,6 +63,8 @@ pub struct Session {
     /// *My Places*, as kept, and the cities of it the catalogue knows.
     favourites: Favourites,
     mine: Vec<u32>,
+    /// The home city, shared with Weather (`places.home`), if one is set.
+    home: Option<u32>,
 }
 
 impl Session {
@@ -84,7 +86,31 @@ impl Session {
             details: false,
             mine: favourites.resolve(places),
             favourites,
+            home: None,
         }
+    }
+
+    /// Compare with the home city keyed `home`, shared with Weather.
+    ///
+    /// Home never changes what *your time* is -- that is the system's clock,
+    /// and every difference is from it. It changes its name when home keeps
+    /// the same time as the system; when it keeps another (travelling, or a
+    /// home chosen elsewhere), it is a row of its own under it, saying how
+    /// far it is. Both views then name the same city, and neither lies.
+    pub fn with_home(mut self, home: Option<&str>) -> Self {
+        self.home = home.and_then(|key| self.places.city_by_key(key));
+        self
+    }
+
+    /// The home city, when it keeps the same time as the system now: what
+    /// *your time* is called.
+    fn home_as_here(&self) -> Option<&City> {
+        let city = self.places.city(self.home?)?;
+        let theirs = self
+            .now
+            .to_zoned(super::zone(self.places.zone_of(city)))
+            .offset();
+        (theirs == self.now.to_zoned(self.here.clone()).offset()).then_some(city)
     }
 
     /// What to do on opening, at `now`.
@@ -204,6 +230,9 @@ impl Session {
     /// The user's zone, as the list calls it: its largest city, or its IANA
     /// name when the catalogue has none there.
     fn here_name(&self) -> String {
+        if let Some(home) = self.home_as_here() {
+            return home.name.to_string();
+        }
         let Some(name) = self.here.iana_name() else {
             return "Local time".into();
         };
@@ -216,6 +245,9 @@ impl Session {
 
     /// The country code of the user's zone's largest city, for the icon.
     fn here_country(&self) -> Option<String> {
+        if let Some(home) = self.home_as_here() {
+            return Some(self.places.country_of(home).code.to_string());
+        }
         let index = self.places.largest_in_zone(self.here.iana_name()?)?;
         let city = self.places.city(index)?;
         Some(self.places.country_of(city).code.to_string())
@@ -223,12 +255,34 @@ impl Session {
 
     /// What the view should show now.
     pub fn view(&self) -> View {
-        let listing = self.browse.listing(self.places, &self.mine);
+        let top = self.browse.at_top();
+        // At the top, home is in *Your time* and is not repeated.
+        let mine: Vec<u32> = self
+            .mine
+            .iter()
+            .copied()
+            .filter(|index| !top || Some(*index) != self.home)
+            .collect();
+        let listing = self.browse.listing(self.places, &mine);
         let mut clocks = Clocks::new(self.now, &self.here);
-        let here = listing.top.then(|| Section {
-            title: Some("Your time".into()),
-            subtitle: None,
-            items: vec![self.here_row(&mut clocks)],
+        let here = listing.top.then(|| {
+            let mut items = vec![self.here_row(&mut clocks)];
+            if self.home_as_here().is_none()
+                && let Some(home) = self.home.and_then(|home| self.city_row(home, &mut clocks))
+            {
+                items.push(Item {
+                    subtitle: home
+                        .subtitle
+                        .as_ref()
+                        .map(|at| format!("Home \u{00b7} {at}")),
+                    ..home
+                });
+            }
+            Section {
+                title: Some("Your time".into()),
+                subtitle: None,
+                items,
+            }
         });
         let sections = self.browse.sections(
             &listing,
@@ -935,6 +989,57 @@ mod tests {
         Favourites {
             cities: keys.iter().map(|key| key.to_string()).collect(),
         }
+    }
+
+    fn key_of(name: &str, country: &str) -> String {
+        let places = places::catalogue();
+        let city = places
+            .cities()
+            .iter()
+            .find(|city| &*city.name == name && &*places.country_of(city).code == country)
+            .unwrap();
+        places.key(city)
+    }
+
+    fn your_time(session: &mut Session) -> Vec<Item> {
+        let list = list(&session.start("2026-09-30T16:14:00Z".parse().unwrap()));
+        section(&list, "Your time").items.clone()
+    }
+
+    /// A home that keeps the system's time names it: both views say the
+    /// same city, and the time is the system's.
+    #[test]
+    fn a_home_on_the_same_time_names_your_time() {
+        let santiago = key_of("Santiago de los Caballeros", "DO");
+        let mut session =
+            session_keeping(ClockConfig::default(), kept(&[&santiago])).with_home(Some(&santiago));
+        let rows = your_time(&mut session);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Santiago de los Caballeros");
+        assert_eq!(texts(&rows[0])[1].0, "12:14");
+        let list = list(&session.start("2026-09-30T16:14:00Z".parse().unwrap()));
+        assert!(
+            list.sections
+                .iter()
+                .all(|section| section.title.as_deref() != Some("My Places")),
+            "not repeated below"
+        );
+    }
+
+    /// A home on another time does not rename the system's clock: it is a
+    /// row of its own, saying how far it is.
+    #[test]
+    fn a_home_on_another_time_is_a_row_of_its_own() {
+        let vancouver = key_of("Vancouver", "CA");
+        let mut session = session().with_home(Some(&vancouver));
+        let rows = your_time(&mut session);
+        assert_eq!(rows[0].title, "Santo Domingo");
+        assert_eq!(rows[1].title, "Vancouver");
+        assert_eq!(
+            rows[1].subtitle.as_deref(),
+            Some("Home \u{00b7} British Columbia, Canada")
+        );
+        assert_eq!(texts(&rows[1]).last().unwrap().0, "3 h behind");
     }
 
     #[test]

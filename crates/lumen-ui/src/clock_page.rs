@@ -1,7 +1,8 @@
 //! The World Clock page of the settings window (F13, slice 4).
 //!
-//! Which value leads a row, how the difference is written, and the working
-//! hours compared with each place's. The Currency page's shape: a form over
+//! The home city (`places.home`, shared with Weather), which value leads a
+//! row, how the difference is written, and the working hours compared with
+//! each place's. The Currency page's shape: a form over
 //! one section of `config.json`, read again after every save and whenever
 //! the file changes, written through `lumen_core::clock::store`.
 //!
@@ -20,6 +21,7 @@ use gpui::{
 };
 use lumen_core::clock::{ClockConfig, DifferenceFormat, Overlap, RowLayout, store};
 use lumen_core::layout::{self, settings as metrics};
+use lumen_core::places::{Favourites, store as places_store};
 use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
@@ -49,6 +51,7 @@ const OVERLAP: [(bool, &str, &str); 2] = [
 
 /// The form's fields, rebuilt from the file.
 struct Form {
+    home: Entity<Select>,
     row: Entity<Select>,
     format: Entity<Select>,
     overlap: Entity<Select>,
@@ -58,6 +61,11 @@ struct Form {
 
 pub struct ClockPage {
     path: PathBuf,
+    places_file: PathBuf,
+    /// The shared home city, as the file has it, and *My Places* to choose
+    /// it from.
+    home: Option<String>,
+    mine: Vec<String>,
     colors: Colors,
     /// The section as the file last read had it.
     config: ClockConfig,
@@ -75,11 +83,19 @@ pub struct ClockPage {
 }
 
 impl ClockPage {
-    pub fn new(path: PathBuf, colors: Colors, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        places_file: PathBuf,
+        colors: Colors,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let config = ClockConfig::default();
-        let form = form(&config, &colors, cx);
+        let form = form(&config, None, &[], &colors, cx);
         let mut page = Self {
             path,
+            places_file,
+            home: None,
+            mine: Vec::new(),
             colors,
             config,
             problem: None,
@@ -98,15 +114,22 @@ impl ClockPage {
     /// touched one is left alone.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
+        let places_file = self.places_file.clone();
         cx.spawn(async move |this, cx| {
-            let read = cx
+            let (read, mine) = cx
                 .background_executor()
-                .spawn(async move { store::read(&path) })
+                .spawn(async move {
+                    let read = store::read(&path)
+                        .and_then(|config| Ok((config, places_store::read_home(&path)?)));
+                    (read, Favourites::load(&places_file).cities)
+                })
                 .await;
             this.update(cx, |page, cx| {
+                page.mine = mine;
                 match read {
-                    Ok(config) => {
+                    Ok((config, home)) => {
                         page.config = config;
+                        page.home = home;
                         page.problem = None;
                     }
                     Err(error) => {
@@ -125,7 +148,13 @@ impl ClockPage {
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.form = form(&self.config, &self.colors, cx);
+        self.form = form(
+            &self.config,
+            self.home.as_deref(),
+            &self.mine,
+            &self.colors,
+            cx,
+        );
         self.watch_form(cx);
         self.edited = false;
         self.error = None;
@@ -140,7 +169,12 @@ impl ClockPage {
             })
             .detach();
         }
-        for select in [&self.form.row, &self.form.format, &self.form.overlap] {
+        for select in [
+            &self.form.home,
+            &self.form.row,
+            &self.form.format,
+            &self.form.overlap,
+        ] {
             cx.subscribe(select, |page, _, SelectEvent::Changed, cx| page.touched(cx))
                 .detach();
         }
@@ -201,6 +235,7 @@ impl ClockPage {
     /// The fields Tab visits: those offered.
     fn stops(&self, cx: &App) -> Vec<FocusHandle> {
         let mut stops = vec![
+            self.form.home.read(cx).focus_handle().clone(),
             self.form.row.read(cx).focus_handle().clone(),
             self.form.format.read(cx).focus_handle().clone(),
         ];
@@ -260,6 +295,7 @@ impl ClockPage {
             return;
         }
         let path = self.path.clone();
+        let home = crate::home_choice::chosen(self.form.home.read(cx).value());
         let mut config = self.composed(cx);
         // Hours not asked for are kept as they were, not judged: a typo in
         // a field that is not shown must not stop the rest being saved.
@@ -272,7 +308,10 @@ impl ClockPage {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { store::write(&path, &config) })
+                .spawn(async move {
+                    store::write(&path, &config)?;
+                    places_store::write_home(&path, home.as_deref())
+                })
                 .await;
             this.update(cx, |page, cx| {
                 page.saving = false;
@@ -298,7 +337,12 @@ impl ClockPage {
     // -- What the host asks -------------------------------------------------------
 
     pub fn set_colors(&mut self, colors: Colors, cx: &mut Context<Self>) {
-        for select in [&self.form.row, &self.form.format, &self.form.overlap] {
+        for select in [
+            &self.form.home,
+            &self.form.row,
+            &self.form.format,
+            &self.form.overlap,
+        ] {
             select.update(cx, |select, cx| select.set_colors(colors.clone(), cx));
         }
         for field in [&self.form.start, &self.form.end] {
@@ -336,8 +380,16 @@ fn select<T: PartialEq + Copy>(
     cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
 }
 
-fn form(config: &ClockConfig, colors: &Colors, cx: &mut App) -> Form {
+fn form(
+    config: &ClockConfig,
+    home: Option<&str>,
+    mine: &[String],
+    colors: &Colors,
+    cx: &mut App,
+) -> Form {
+    let (choices, selected) = crate::home_choice::choices(home, mine);
     Form {
+        home: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx)),
         row: select(&ROWS, config.row, colors, cx),
         format: select(&FORMATS, config.difference_format, colors, cx),
         overlap: select(&OVERLAP, config.overlap.enabled, colors, cx),
@@ -405,10 +457,12 @@ impl ClockPage {
         };
 
         let mut rows = vec![
+            field_row("Home", self.form.home.clone().into_any_element()),
             field_row("Row", self.form.row.clone().into_any_element()),
             field_row("Difference", self.form.format.clone().into_any_element()),
         ];
         let mut hints = vec![
+            crate::home_choice::HINT,
             "Which value leads a row, drawn like its title: how far away, or what time.",
             "How the difference from your time is written.",
         ];

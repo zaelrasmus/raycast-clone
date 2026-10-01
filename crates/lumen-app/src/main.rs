@@ -1454,21 +1454,23 @@ fn handle(
         }
         Message::RunClock => {
             let platform = platform.clone();
+            let home = lumen_core::places::store::home(config);
             let config = config.clock.clone();
             let favourites = surfaces.paths.places_file();
             let window = surfaces.launcher;
-            cx.update(move |cx| clock::run(platform, config, favourites, window, cx))
+            cx.update(move |cx| clock::run(platform, config, home, favourites, window, cx))
                 .context("reaching the app to open the world clock")
         }
         Message::RunWeather { city } => {
             let platform = platform.clone();
+            let home = lumen_core::places::store::home(config);
             let config = config.weather.clone();
             let files = weather::Files {
                 favourites: surfaces.paths.places_file(),
                 cache: surfaces.paths.weather_file(),
             };
             let window = surfaces.launcher;
-            cx.update(move |cx| weather::run(platform, config, files, city, window, cx))
+            cx.update(move |cx| weather::run(platform, config, home, files, city, window, cx))
                 .context("reaching the app to open the weather")
         }
         Message::RefreshWeather { city } => {
