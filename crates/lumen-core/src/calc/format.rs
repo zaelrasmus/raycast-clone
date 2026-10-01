@@ -30,11 +30,13 @@ pub fn format_number(value: f64) -> String {
 }
 
 /// A value written with its unit, if it has one: `45°`, `2 rad`, `25%`.
+/// A day as the lists write one (`crate::dates`): `Fri, Dec 25, 2026`.
 pub fn format_value(value: Value) -> String {
     match value {
         Value::Number(number) => format_number(number),
         Value::Quantity { amount, unit } => unit.write(&format_number(amount)),
         Value::Percent(percent) => format!("{}%", format_number(percent)),
+        Value::Date(day) => day.strftime("%a, %b %-d, %Y").to_string(),
     }
 }
 

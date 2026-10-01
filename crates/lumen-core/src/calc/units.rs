@@ -63,6 +63,9 @@ pub struct Unit {
     pub names: &'static [&'static str],
     /// Case-insensitive, and only in a conversion: `c`, `f`.
     pub loose: &'static [&'static str],
+    /// What one of it is written as, for a unit written as a word: `1 day`
+    /// beside `2 days`.
+    pub singular: Option<&'static str>,
 }
 
 /// A unit, and whether it was named by a loose word.
@@ -89,8 +92,13 @@ impl Unit {
         self.offset != 0.0
     }
 
-    /// `amount` written with this unit: `45°`, `2 rad`.
+    /// `amount` written with this unit: `45°`, `2 rad`, `1 day`.
     pub fn write(&self, amount: &str) -> String {
+        if let Some(singular) = self.singular
+            && amount == "1"
+        {
+            return format!("{amount} {singular}");
+        }
         if self.display.starts_with('\u{b0}') {
             format!("{amount}{}", self.display)
         } else {
@@ -114,8 +122,38 @@ const fn unit(
         symbols,
         names,
         loose: &[],
+        singular: None,
     }
 }
+
+/// A span of the calendar, written as a word because dates are read in
+/// words: `85 days`, `1 week`.
+const fn calendar(
+    factor: f64,
+    singular: &'static str,
+    display: &'static str,
+    symbols: &'static [&'static str],
+    names: &'static [&'static str],
+) -> Unit {
+    Unit {
+        dimension: Dimension::Time,
+        factor,
+        offset: 0.0,
+        display,
+        symbols,
+        names,
+        loose: &[],
+        singular: Some(singular),
+    }
+}
+
+/// The calendar's spans, in seconds. A month and a year are the Gregorian
+/// averages, which is right for a conversion; a date adds them by the
+/// calendar instead (`Value::plus`).
+pub const DAY: f64 = 86_400.0;
+pub const WEEK: f64 = 7.0 * DAY;
+pub const MONTH: f64 = 2_629_746.0;
+pub const YEAR: f64 = 31_556_952.0;
 
 /// A temperature: `offset` is where its zero sits, in kelvin.
 const fn temperature(
@@ -134,6 +172,7 @@ const fn temperature(
         symbols,
         names,
         loose,
+        singular: None,
     }
 }
 
@@ -241,10 +280,10 @@ pub static UNITS: &[Unit] = &[
     ),
     unit(Time, 60.0, "min", &["min", "mins"], &["minute", "minutes"]),
     unit(Time, 3600.0, "h", &["h", "hr", "hrs"], &["hour", "hours"]),
-    unit(Time, 86_400.0, "d", &["d"], &["day", "days"]),
-    unit(Time, 604_800.0, "wk", &["wk", "wks"], &["week", "weeks"]),
-    unit(Time, 2_629_746.0, "mo", &[], &["month", "months"]),
-    unit(Time, 31_556_952.0, "yr", &["yr", "yrs"], &["year", "years"]),
+    calendar(DAY, "day", "days", &["d"], &["day", "days"]),
+    calendar(WEEK, "week", "weeks", &["wk", "wks"], &["week", "weeks"]),
+    calendar(MONTH, "month", "months", &[], &["month", "months"]),
+    calendar(YEAR, "year", "years", &["yr", "yrs"], &["year", "years"]),
     // Temperature.
     temperature(1.0, 0.0, "K", &["K"], &["kelvin", "kelvins"], &["k"]),
     temperature(
@@ -524,6 +563,14 @@ pub static UNITS: &[Unit] = &[
     ),
     unit(Pressure, 133.322_387_415, "mmHg", &["mmHg"], &["mmhg"]),
 ];
+
+/// The unit a span of the calendar is written in: `days`.
+pub fn calendar_unit(factor: f64) -> &'static Unit {
+    UNITS
+        .iter()
+        .find(|unit| unit.dimension == Dimension::Time && unit.factor == factor)
+        .expect("every span of the calendar is in the table")
+}
 
 /// The unit written `top/bottom`, if one is: `km/h`, `m/s`.
 pub fn find_per(top: &str, bottom: &str) -> Option<&'static Unit> {

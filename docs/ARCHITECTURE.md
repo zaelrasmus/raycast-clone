@@ -1906,7 +1906,12 @@ The decisions:
   since 1 jan`, `today + 3 weeks`. A date without a year that has passed is
   the next one. Numeric dates (`12/05`) are declined: which is the day
   depends on where the reader lives. Today is passed in, so tests do not
-  depend on the day they run.
+  depend on the day they run, and read only when a date is typed. A day
+  moves by the calendar -- `31 jan + 1 month` is the end of February --
+  and only by whole days, weeks, months or years: a day has no hours.
+  Spans of the calendar are written as words, `85 days`, `1 week`,
+  because that is how a date's answer is read. A weekday is never today:
+  `until friday` on a Friday is a week.
 - **Numbers are `f64`, rounded where they are written.** Ten significant
   digits, trailing zeros dropped. Input is capped, nesting is capped,
   `!` stops at 170, and a result that is not finite is no answer. This

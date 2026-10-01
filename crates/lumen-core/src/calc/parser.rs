@@ -13,12 +13,19 @@
 //! unary       := ('-' | '+') unary | power
 //! power       := postfix ('^' unary)?
 //! postfix     := primary '!'* ('%' (('of' | 'off' | 'on') unary)?)?
-//! primary     := NUMBER UNIT?
+//! primary     := DATE
+//!             | NUMBER UNIT?
 //!             | '(' expression ')' UNIT?
 //!             | FUNCTION '(' expression ')'
 //!             | CONSTANT
+//!             | SPAN? ('until' | 'since') unary
+//! DATE        := NUMBER ORDINAL? MONTH YEAR? | MONTH NUMBER ORDINAL? YEAR?
+//!             | WEEKDAY | 'today' | 'tomorrow' | 'yesterday'
 //! ```
 
+use jiff::civil::Date;
+
+use super::dates::{self, Toward};
 use super::functions::{self, factorial};
 use super::lexer::Token;
 use super::units;
@@ -44,17 +51,35 @@ pub struct Parser<'a> {
     /// Whether a unit was named by a loose word -- `c`, `f` -- which only
     /// a conversion may use.
     loose: bool,
+    /// Asked for the first time a date needs it, and only then: most of what
+    /// is typed has no date in it, and reading the time zone is not free.
+    today: &'a dyn Fn() -> Date,
+    today_read: Option<Date>,
+    /// Which way a date with no year is looked for: back, inside `since`.
+    toward: Toward,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: Vec<Token<'a>>) -> Self {
+    pub fn new(tokens: Vec<Token<'a>>, today: &'a dyn Fn() -> Date) -> Self {
         Self {
             tokens,
             at: 0,
             depth: 0,
             operations: 0,
             loose: false,
+            today,
+            today_read: None,
+            toward: Toward::Next,
         }
+    }
+
+    fn today(&mut self) -> Date {
+        *self.today_read.get_or_insert_with(|| (self.today)())
+    }
+
+    /// The token `ahead` places past the next one.
+    fn peek_at(&self, ahead: usize) -> Option<Token<'a>> {
+        self.tokens.get(self.at + ahead).copied()
     }
 
     /// Parse the whole input as one expression, or decline.
@@ -175,7 +200,7 @@ impl<'a> Parser<'a> {
             self.deeper()?;
             let value = self.unary()?;
             self.depth -= 1;
-            return self.counted(Some(value.map(|amount| -amount)));
+            return self.counted(value.map(|amount| -amount));
         }
         if self.eat(Token::Plus) {
             self.deeper()?;
@@ -234,6 +259,9 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             Token::Number(number) => {
                 self.at += 1;
+                if let Some(day) = self.day_then_month(number) {
+                    return day;
+                }
                 Some(self.unit_after(Value::Number(number)))
             }
             Token::Open => {
@@ -253,10 +281,112 @@ impl<'a> Parser<'a> {
                     }
                     return self.counted(function.apply(argument));
                 }
-                functions::constant(word).map(Value::Number)
+                if let Some(constant) = functions::constant(word) {
+                    return Some(Value::Number(constant));
+                }
+                self.date_or_span(word)
             }
             _ => None,
         }
+    }
+
+    /// A date written day first, when `number` is followed by a month:
+    /// `25 dec`, `25th december 2027`. `None` when it is not one, and the
+    /// number is left as a number; `Some(None)` when it began like one and
+    /// is not one, which declines.
+    fn day_then_month(&mut self, number: f64) -> Option<Option<Value>> {
+        let ordinal = matches!(self.peek(), Some(Token::Word(word)) if dates::is_ordinal(word));
+        let Some(Token::Word(word)) = self.peek_at(usize::from(ordinal)) else {
+            return None;
+        };
+        let month = dates::month(word)?;
+        self.at += 1 + usize::from(ordinal);
+        Some(self.date(month, number))
+    }
+
+    /// A date written month first, after its month: `dec 25`, `dec 25th
+    /// 2027`.
+    fn month_then_day(&mut self, month: i8) -> Option<Value> {
+        let Token::Number(number) = self.peek()? else {
+            return None;
+        };
+        self.at += 1;
+        if matches!(self.peek(), Some(Token::Word(word)) if dates::is_ordinal(word)) {
+            self.at += 1;
+        }
+        self.date(month, number)
+    }
+
+    /// `day` of `month`, and the year written after them, if one is.
+    fn date(&mut self, month: i8, day: f64) -> Option<Value> {
+        let day = dates::day(day)?;
+        let year = match self.peek() {
+            Some(Token::Number(number)) => {
+                let year = dates::year(number)?;
+                self.at += 1;
+                Some(year)
+            }
+            _ => None,
+        };
+        let today = self.today();
+        dates::on(month, day, year, today, self.toward).map(Value::Date)
+    }
+
+    /// What a word that is not a function or a constant may still be: a
+    /// date, or how long until or since one.
+    fn date_or_span(&mut self, word: &str) -> Option<Value> {
+        if let Some(days) = dates::relative(word) {
+            let today = self.today();
+            return today
+                .checked_add(jiff::Span::new().days(days))
+                .ok()
+                .map(Value::Date);
+        }
+        if let Some(weekday) = dates::weekday(word) {
+            let today = self.today();
+            return dates::weekday_from(weekday, today, self.toward).map(Value::Date);
+        }
+        if let Some(month) = dates::month(word) {
+            return self.month_then_day(month);
+        }
+        // `until 25 dec` is in days; `weeks until 25 dec` says so.
+        let span = if is_until_or_since(word) {
+            self.at -= 1;
+            units::calendar_unit(units::DAY)
+        } else {
+            let span = units::find(word).map(|found| found.unit).filter(|unit| {
+                [units::DAY, units::WEEK, units::MONTH, units::YEAR].contains(&unit.factor)
+            })?;
+            if !matches!(self.peek(), Some(Token::Word(next)) if is_until_or_since(next)) {
+                return None;
+            }
+            span
+        };
+        self.until_or_since(span)
+    }
+
+    /// `until <date>` or `since <date>`, in `span`: `weeks until 25 dec`.
+    fn until_or_since(&mut self, span: &'static units::Unit) -> Option<Value> {
+        let since = self.eat_word("since");
+        if !since && !self.eat_word("until") {
+            return None;
+        }
+        let looking = std::mem::replace(
+            &mut self.toward,
+            if since { Toward::Last } else { Toward::Next },
+        );
+        let target = self.unary();
+        self.toward = looking;
+        let Value::Date(target) = target? else {
+            return None;
+        };
+        let today = self.today();
+        let between = if since {
+            Value::days_between(target, today)
+        } else {
+            Value::days_between(today, target)
+        };
+        self.counted(between?.convert(span))
     }
 
     /// `value` in the unit named next, when a plain number is followed by
@@ -297,4 +427,8 @@ impl<'a> Parser<'a> {
         self.at += 1;
         Some(found)
     }
+}
+
+fn is_until_or_since(word: &str) -> bool {
+    word.eq_ignore_ascii_case("until") || word.eq_ignore_ascii_case("since")
 }

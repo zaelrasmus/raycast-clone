@@ -11,12 +11,13 @@
 //! or `7-zip` puts a wrong row above the right one. F3 refused every letter;
 //! F14 needs `sqrt`, `pi` and `deg`, so the gate is three rules instead:
 //!
-//! - **A digit or a parenthesis must appear.** A scan, before anything is
-//!   allocated: most of what is typed is an application's name, and this
-//!   is what it costs to turn one away.
-//! - **Every word must be known** -- a function, a constant or a unit. One
-//!   that is not declines the whole query: `7-zip`, `python 3.12`, `obs 28`.
-//!   A parse is never salvaged from a prefix.
+//! - **A digit, a parenthesis, `until` or `since` must appear.** A scan,
+//!   before anything is allocated: most of what is typed is an
+//!   application's name, and this is what it costs to turn one away.
+//! - **Every word must be known** -- a function, a constant, a unit or a
+//!   word of the calendar. One that is not declines the whole query:
+//!   `7-zip`, `python 3.12`, `obs 28`. A parse is never salvaged from a
+//!   prefix.
 //! - **Something must be calculated.** `2024`, `45 deg` and `pi` restate a
 //!   value; offering to copy it back is noise.
 //!
@@ -27,6 +28,7 @@
 //! more than it accepts, and owning the rejection rules is the entire point
 //! (see F14 decisions).
 
+mod dates;
 mod format;
 mod functions;
 mod lexer;
@@ -37,6 +39,8 @@ mod value;
 pub use format::{format_number, format_value};
 pub use value::Value;
 
+use jiff::civil::Date;
+
 /// The longest input read, in bytes. Past a line, it is not being typed.
 const MAX_INPUT: usize = 256;
 
@@ -44,12 +48,31 @@ const MAX_INPUT: usize = 256;
 ///
 /// Declining is the common case and is not an error.
 pub fn evaluate(input: &str) -> Option<Value> {
+    evaluate_on(input, &today)
+}
+
+/// [`evaluate`], on the day `today` says it is.
+pub fn evaluate_on(input: &str, today: &dyn Fn() -> Date) -> Option<Value> {
     let trimmed = input.trim();
-    if !trimmed.contains(|c: char| c.is_ascii_digit() || c == '(') {
+    if !trimmed.contains(|c: char| c.is_ascii_digit() || c == '(') && !mentions_a_span(trimmed) {
         return None;
     }
-    let parsed = parse(trimmed)?;
+    let parsed = parse(trimmed, today)?;
     (parsed.operations > 0).then_some(parsed.value)
+}
+
+/// Today, where the user is. Read only when a date is typed.
+fn today() -> Date {
+    jiff::Zoned::now().date()
+}
+
+/// Whether `input` has `until` or `since` in it, the two ways a date can
+/// be asked about with no digit: `days until friday`.
+fn mentions_a_span(input: &str) -> bool {
+    input
+        .as_bytes()
+        .windows(5)
+        .any(|word| word.eq_ignore_ascii_case(b"until") || word.eq_ignore_ascii_case(b"since"))
 }
 
 /// Evaluate `input` as arithmetic, a bare number included.
@@ -60,18 +83,18 @@ pub fn evaluate(input: &str) -> Option<Value> {
 /// stands for -- `50%` is `0.5` -- but not a quantity: `10 deg` is not an
 /// amount of money.
 pub fn amount(input: &str) -> Option<f64> {
-    match parse(input.trim())?.value {
+    match parse(input.trim(), &today)?.value {
         Value::Number(number) => Some(number),
         Value::Percent(percent) => Some(percent / 100.0),
-        Value::Quantity { .. } => None,
+        Value::Quantity { .. } | Value::Date(_) => None,
     }
 }
 
-fn parse(input: &str) -> Option<parser::Parsed> {
+fn parse(input: &str, today: &dyn Fn() -> Date) -> Option<parser::Parsed> {
     if input.len() > MAX_INPUT {
         return None;
     }
-    let parsed = parser::Parser::new(lexer::tokenize(input)?).whole()?;
+    let parsed = parser::Parser::new(lexer::tokenize(input)?, today).whole()?;
     parsed.value.is_finite().then_some(parsed)
 }
 
@@ -83,7 +106,7 @@ mod tests {
     fn number(input: &str) -> Option<f64> {
         match evaluate(input)? {
             Value::Number(number) => Some(number),
-            Value::Quantity { .. } | Value::Percent(_) => None,
+            Value::Quantity { .. } | Value::Percent(_) | Value::Date(_) => None,
         }
     }
 
@@ -182,7 +205,7 @@ mod tests {
         assert_eq!(shown("6 ft in cm").as_deref(), Some("182.88 cm"));
         assert_eq!(shown("2 lb in kg").as_deref(), Some("0.90718474 kg"));
         assert_eq!(shown("90 min in h").as_deref(), Some("1.5 h"));
-        assert_eq!(shown("1 week in days").as_deref(), Some("7 d"));
+        assert_eq!(shown("1 week in days").as_deref(), Some("7 days"));
         assert_eq!(shown("180 deg in rad").as_deref(), Some("3.1415926536 rad"));
         assert_eq!(shown("(1+2) km in m").as_deref(), Some("3000 m"));
         assert_eq!(
@@ -256,6 +279,88 @@ mod tests {
         assert_eq!(shown("1 to 10"), None);
         assert_eq!(shown("5 km in mi in ft"), None);
         assert_eq!(shown("25% in km"), None);
+    }
+
+    /// What the root list shows for `input` on Thursday, 1 October 2026.
+    fn on_the_first(input: &str) -> Option<String> {
+        evaluate_on(input, &|| jiff::civil::date(2026, 10, 1)).map(format_value)
+    }
+
+    #[test]
+    fn how_long_until_and_since() {
+        assert_eq!(
+            on_the_first("days until 25 dec").as_deref(),
+            Some("85 days")
+        );
+        assert_eq!(on_the_first("until dec 25").as_deref(), Some("85 days"));
+        assert_eq!(
+            on_the_first("Days Until 25th December").as_deref(),
+            Some("85 days")
+        );
+        assert_eq!(
+            on_the_first("weeks until 15 oct").as_deref(),
+            Some("2 weeks")
+        );
+        assert_eq!(on_the_first("days until 1 jan").as_deref(), Some("92 days"));
+        assert_eq!(
+            on_the_first("days since 1 jan").as_deref(),
+            Some("273 days")
+        );
+        assert_eq!(
+            on_the_first("days since 25 dec").as_deref(),
+            Some("280 days")
+        );
+        assert_eq!(
+            on_the_first("days until 25 dec 2027").as_deref(),
+            Some("450 days")
+        );
+        assert_eq!(on_the_first("days until friday").as_deref(), Some("1 day"));
+        assert_eq!(on_the_first("until thursday").as_deref(), Some("7 days"));
+        assert_eq!(on_the_first("days until today").as_deref(), Some("0 days"));
+    }
+
+    #[test]
+    fn days_moved_and_between() {
+        assert_eq!(
+            on_the_first("today + 3 weeks").as_deref(),
+            Some("Thu, Oct 22, 2026")
+        );
+        assert_eq!(
+            on_the_first("tomorrow + 1 day").as_deref(),
+            Some("Sat, Oct 3, 2026")
+        );
+        assert_eq!(
+            on_the_first("31 jan 2027 + 1 month").as_deref(),
+            Some("Sun, Feb 28, 2027")
+        );
+        assert_eq!(on_the_first("25 dec - today").as_deref(), Some("85 days"));
+        assert_eq!(
+            on_the_first("(25 dec - today) in weeks").as_deref(),
+            Some("12.1428571429 weeks")
+        );
+        assert_eq!(
+            on_the_first("25 dec - 1 week").as_deref(),
+            Some("Fri, Dec 18, 2026")
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_date_question_is_declined() {
+        assert_eq!(on_the_first("25 dec"), None, "a day restated");
+        assert_eq!(on_the_first("today"), None);
+        assert_eq!(on_the_first("friday"), None);
+        assert_eq!(on_the_first("until dawn"), None);
+        assert_eq!(on_the_first("since 1999"), None);
+        assert_eq!(on_the_first("days until"), None);
+        assert_eq!(on_the_first("28 days later"), None);
+        assert_eq!(on_the_first("500 days of summer"), None);
+        assert_eq!(on_the_first("jan 2024"), None);
+        assert_eq!(on_the_first("32 dec + 1 day"), None);
+        assert_eq!(on_the_first("today + 1"), None);
+        assert_eq!(on_the_first("today + 3 h"), None);
+        assert_eq!(on_the_first("today * 2"), None);
+        assert_eq!(on_the_first("hours until friday"), None);
+        assert_eq!(on_the_first("12/05").as_deref(), Some("2.4"), "a division");
     }
 
     /// The worst that can be typed without meaning harm costs microseconds
