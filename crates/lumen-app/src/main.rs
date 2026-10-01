@@ -28,6 +28,7 @@ use gpui::{
 };
 use lumen_core::clipboard::{History, Payload, Retention};
 use lumen_core::sheets::{Sheet, SheetLibrary};
+use lumen_core::style::Style;
 use lumen_core::theme::Appearance;
 use lumen_core::{Builtin, Config, Paths, Theme};
 use lumen_platform::{
@@ -175,6 +176,7 @@ fn run_daemon() -> Result<()> {
     let paths = Paths::discover()?;
     paths.ensure_exists()?;
     lumen_core::install_builtin_themes(&paths.themes_dir())?;
+    lumen_core::install_builtin_styles(&paths.styles_dir())?;
     lumen_core::install_builtin_sheets(&paths.sheets_dir())?;
     lumen_core::install_example_script(&paths.scripts_dir())?;
     lumen_core::install_example_extensions(&paths.extensions_dir())?;
@@ -183,15 +185,21 @@ fn run_daemon() -> Result<()> {
     Config::write_default(&paths.config_file())?;
 
     let config = Config::load(&paths.config_file());
-    let theme = Theme::load(&paths.theme_file(&config.theme)).unwrap_or_else(|error| {
+    let palette = Theme::load(&paths.theme_file(&config.theme)).unwrap_or_else(|error| {
         log::warn!("could not load theme {:?}: {error:#}", config.theme);
         Theme::default()
     });
+    let style = Style::load(&paths.style_file(&config.style)).unwrap_or_else(|error| {
+        log::warn!("could not load style {:?}: {error:#}", config.style);
+        Style::base()
+    });
+    let theme = palette.with_style(style);
 
     log::info!(
-        "starting the daemon; hotkey {}, theme {:?}",
+        "starting the daemon; hotkey {}, theme {:?}, style {:?}",
         config.hotkey,
-        theme.name
+        theme.name,
+        theme.style.name
     );
 
     // The icon set and the font are compiled in, so there is no folder to
@@ -393,7 +401,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         timers.clone(),
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
-    let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone());
+    let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone(), theme.clone());
 
     let surfaces = Surfaces {
         launcher: window,
@@ -510,7 +518,8 @@ struct Surfaces {
     theme: Rc<RefCell<Theme>>,
     /// The current configuration, replaced when the file changes.
     config: Rc<RefCell<Config>>,
-    /// Asks the theme watch to reload, for when `theme` names another file.
+    /// Asks the theme watch to reload, for when `theme` or `style` names
+    /// another file.
     reload_theme: mpsc::UnboundedSender<()>,
     /// The running timers (F8).
     timers: timers::Timers,
@@ -1100,41 +1109,68 @@ fn watch_theme(
     overlay: &gpui::WindowHandle<Overlay>,
     paths: &Paths,
     config: Rc<RefCell<Config>>,
+    current: Theme,
 ) -> mpsc::UnboundedSender<()> {
     use lumen_core::watcher::DirectoryWatcher;
 
     let (reload, mut changes) = mpsc::unbounded::<()>();
 
-    // The folder rather than one file: which file is "the theme" is whatever
-    // config.json says right now, and that can change while this runs.
-    let sink = reload.clone();
-    let watcher = DirectoryWatcher::start(&paths.themes_dir(), move || {
-        let _ = sink.unbounded_send(());
-    })
-    // Live reload is a convenience. Losing it must not stop the launcher
-    // from running.
-    .inspect_err(|error| log::warn!("theme live reload is unavailable: {error:#}"))
-    .ok();
+    // The folders rather than one file each: which files are "the theme" and
+    // "the style" is whatever config.json says right now, and that can change
+    // while this runs. One channel for both, so a palette and a style edited
+    // together arrive as one look.
+    let watch = |dir: std::path::PathBuf, what: &str| {
+        let sink = reload.clone();
+        DirectoryWatcher::start(&dir, move || {
+            let _ = sink.unbounded_send(());
+        })
+        // Live reload is a convenience. Losing it must not stop the launcher
+        // from running.
+        .inspect_err(|error| log::warn!("{what} live reload is unavailable: {error:#}"))
+        .ok()
+    };
+    let watchers = [
+        watch(paths.themes_dir(), "theme"),
+        watch(paths.styles_dir(), "style"),
+    ];
 
     let window = *window;
     let overlay = *overlay;
     let paths = paths.clone();
 
     cx.spawn(async move |cx| {
-        let _watcher = watcher;
+        let _watchers = watchers;
+        let mut current = current;
         while next_change(&mut changes, cx).await {
-            let wanted = config.borrow().theme.clone();
-            let theme = match Theme::load(&paths.theme_file(&wanted)) {
-                Ok(theme) => theme,
-                // Keep the current theme. A syntax error mid-edit is the
-                // normal case, and dropping to the base theme on every stray
-                // keystroke would make editing unusable.
-                Err(error) => {
-                    log::warn!("theme reload skipped: {error:#}");
-                    continue;
-                }
+            let (palette_name, style_name) = {
+                let config = config.borrow();
+                (config.theme.clone(), config.style.clone())
             };
-            log::info!("reloaded theme {:?}", theme.name);
+            // Each half keeps what it had when its file does not load. A
+            // syntax error mid-edit is the normal case, and dropping to the
+            // base on every stray keystroke would make editing unusable --
+            // and a broken style must not take the palette down with it.
+            let palette = Theme::load(&paths.theme_file(&palette_name));
+            let style = Style::load(&paths.style_file(&style_name));
+            if let Err(error) = &palette {
+                log::warn!("theme reload skipped: {error:#}");
+            }
+            if let Err(error) = &style {
+                log::warn!("style reload skipped: {error:#}");
+            }
+            if palette.is_err() && style.is_err() {
+                continue;
+            }
+            let style = style.unwrap_or_else(|_| current.style.clone());
+            let theme = palette
+                .unwrap_or_else(|_| current.clone())
+                .with_style(style);
+            current = theme.clone();
+            log::info!(
+                "reloaded theme {:?} with style {:?}",
+                theme.name,
+                theme.style.name
+            );
 
             // Both surfaces follow the same theme file. Reloading one and not
             // the other would leave two differently coloured windows one
@@ -1317,7 +1353,7 @@ fn reload_config(
             .detach();
     }
 
-    if applied.theme != older.theme {
+    if applied.theme != older.theme || applied.style != older.style {
         let _ = surfaces.reload_theme.unbounded_send(());
     }
 

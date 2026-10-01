@@ -88,6 +88,24 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Write the in-house styles into the styles folder if they are not there
+/// (F15). Never overwritten, as the themes are not.
+pub fn install_builtin_styles(styles_dir: &Path) -> Result<()> {
+    const BUILTIN: [(&str, &str); 1] =
+        [("lumen", include_str!("../../../assets/styles/lumen.json"))];
+
+    std::fs::create_dir_all(styles_dir)?;
+
+    for (name, source) in BUILTIN {
+        let path = styles_dir.join(format!("{name}.json"));
+        if !path.exists() {
+            std::fs::write(&path, source)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Write the starter shortcut sheet into the sheets folder if it is not there.
 ///
 /// Only the global sheet ships. Per-application sheets are deliberately left to

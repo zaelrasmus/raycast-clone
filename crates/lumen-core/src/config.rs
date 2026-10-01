@@ -27,8 +27,12 @@ use crate::weather::WeatherConfig;
 #[serde(default, rename_all = "kebab-case")]
 pub struct Config {
     pub hotkey: Hotkey,
-    /// File name (without `.json`) of the theme in the themes folder.
+    /// File name (without `.json`) of the theme -- the palette -- in the
+    /// themes folder.
     pub theme: String,
+    /// File name (without `.json`) of the style in the styles folder (F15):
+    /// the launcher's geometry and variants, chosen apart from its colours.
+    pub style: String,
     pub backdrop: BackdropMode,
     pub window: WindowConfig,
     pub clipboard: ClipboardConfig,
@@ -172,6 +176,7 @@ impl Default for Config {
         Self {
             hotkey: Hotkey::default(),
             theme: "nocturne".into(),
+            style: "lumen".into(),
             backdrop: BackdropMode::default(),
             window: WindowConfig::default(),
             clipboard: ClipboardConfig::default(),

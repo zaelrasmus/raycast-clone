@@ -37,6 +37,12 @@ impl Paths {
         self.config_dir.join("themes")
     }
 
+    /// Styles: the launcher's geometry and variants (F15). Installed like
+    /// themes, by dropping a file in, and chosen apart from them.
+    pub fn styles_dir(&self) -> PathBuf {
+        self.config_dir.join("styles")
+    }
+
     /// Shortcut sheets, distributed exactly like themes: same folder-drop
     /// model, same absence of any runtime (F3, tier T0).
     pub fn sheets_dir(&self) -> PathBuf {
@@ -63,6 +69,10 @@ impl Paths {
 
     pub fn theme_file(&self, name: &str) -> PathBuf {
         self.themes_dir().join(format!("{name}.json"))
+    }
+
+    pub fn style_file(&self, name: &str) -> PathBuf {
+        self.styles_dir().join(format!("{name}.json"))
     }
 
     /// Installed extensions, one folder each (F4).
@@ -124,6 +134,7 @@ impl Paths {
             &self.config_dir,
             &self.data_dir,
             &self.themes_dir(),
+            &self.styles_dir(),
             &self.sheets_dir(),
             &self.scripts_dir(),
         ] {

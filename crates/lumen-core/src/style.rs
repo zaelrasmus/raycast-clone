@@ -618,6 +618,17 @@ mod tests {
         assert_eq!(large.icon_resolution(), 140);
     }
 
+    /// The style a fresh install selects is the base, so installing F15
+    /// changes nothing anybody can see.
+    #[test]
+    fn the_shipped_lumen_style_is_the_base() {
+        let source = include_str!("../../../assets/styles/lumen.json");
+        let file: StyleFile = serde_json::from_str(source).unwrap();
+        let style = Style::resolve(&file);
+        assert_eq!(style.metrics, Metrics::BASE);
+        assert_eq!(style.variants, Variants::default());
+    }
+
     #[test]
     fn round_trips_through_json() {
         let json = r#"{
