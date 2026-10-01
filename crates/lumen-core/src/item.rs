@@ -57,6 +57,8 @@ pub enum Kind {
     Currency,
     /// A time somewhere, or converted, in the root list (F13).
     Clock,
+    /// The weather somewhere, in the root list (F13).
+    Weather,
 }
 
 impl Kind {
@@ -76,6 +78,7 @@ impl Kind {
             Kind::Timer => "Timer",
             Kind::Currency => "Currency",
             Kind::Clock => "Clock",
+            Kind::Weather => "Weather",
         }
     }
 }
@@ -216,6 +219,8 @@ pub enum ViewSource {
     Clipboard,
     /// *World Clock* (F13).
     Clock,
+    /// *Weather* (F13), on a city's report by its key, or on the list.
+    Weather { city: Option<String> },
 }
 
 impl Action {

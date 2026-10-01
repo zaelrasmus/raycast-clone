@@ -109,6 +109,11 @@ impl Paths {
         self.data_dir.join("places.json")
     }
 
+    /// The forecasts fetched last, by place (F13).
+    pub fn weather_file(&self) -> PathBuf {
+        self.data_dir.join("weather.json")
+    }
+
     pub fn ensure_exists(&self) -> Result<()> {
         for dir in [
             &self.config_dir,

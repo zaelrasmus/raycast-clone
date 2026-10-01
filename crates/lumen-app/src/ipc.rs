@@ -89,6 +89,14 @@ pub enum Message {
     RunClipboard,
     /// Open *World Clock* (F13).
     RunClock,
+    /// Open *Weather* (F13), on a city's report or on the list.
+    RunWeather {
+        city: Option<String>,
+    },
+    /// Fetch a city's forecast for the root list (F13).
+    RefreshWeather {
+        city: u32,
+    },
     /// Fetch exchange rates for a conversion typed at the root (F9).
     RefreshRates,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.

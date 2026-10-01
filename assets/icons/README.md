@@ -1,6 +1,6 @@
 # The icon set
 
-Fifteen glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
+Twenty-four glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
 
 ## The grid
 
@@ -47,3 +47,4 @@ are further from the centre and there is no shading to soften them.
 | `timer.svg` | A timer, and the *Timers* view (F8) |
 | `currency.svg` | A conversion in the root list, and the *Currency* command (F9) |
 | `clock.svg` | A time in the root list, and the *World Clock* command (F13) |
+| `weather-*.svg` | The sky in *Weather* (F13): clear by day and by night, partly cloudy, cloudy, fog, drizzle, rain, snow and storm. `weather-partly-cloudy.svg` is also the *Weather* command |

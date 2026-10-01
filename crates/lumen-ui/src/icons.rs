@@ -44,6 +44,7 @@ pub fn glyph(kind: Kind) -> &'static str {
         Kind::Timer => "icons/timer.svg",
         Kind::Currency => "icons/currency.svg",
         Kind::Clock => "icons/clock.svg",
+        Kind::Weather => "icons/weather-partly-cloudy.svg",
         // The bolt again: an extension command is a command, and a glyph per
         // extension means reading an image the host has not seen, which is a
         // host-RPC decision rather than an indexing one.

@@ -38,6 +38,7 @@ pub mod timers;
 pub mod translate;
 pub mod view;
 pub mod watcher;
+pub mod weather;
 
 pub use config::Config;
 pub use frecency::Frecency;

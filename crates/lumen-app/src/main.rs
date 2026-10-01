@@ -46,6 +46,7 @@ mod snippets;
 mod timers;
 mod timing;
 mod translate;
+mod weather;
 
 use ipc::Message;
 
@@ -998,6 +999,14 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunClock);
                 return;
             }
+            LauncherEvent::RunWeather { city } => {
+                let _ = commands.unbounded_send(Message::RunWeather { city: city.clone() });
+                return;
+            }
+            LauncherEvent::RefreshWeather { city } => {
+                let _ = commands.unbounded_send(Message::RefreshWeather { city: *city });
+                return;
+            }
             LauncherEvent::RefreshRates => {
                 let _ = commands.unbounded_send(Message::RefreshRates);
                 return;
@@ -1027,6 +1036,8 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunSnippets { .. }
                 | LauncherEvent::RunClipboard
                 | LauncherEvent::RunClock
+                | LauncherEvent::RunWeather { .. }
+                | LauncherEvent::RefreshWeather { .. }
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
@@ -1444,6 +1455,23 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| clock::run(platform, config, favourites, window, cx))
                 .context("reaching the app to open the world clock")
+        }
+        Message::RunWeather { city } => {
+            let platform = platform.clone();
+            let config = config.weather.clone();
+            let files = weather::Files {
+                favourites: surfaces.paths.places_file(),
+                cache: surfaces.paths.weather_file(),
+            };
+            let window = surfaces.launcher;
+            cx.update(move |cx| weather::run(platform, config, files, city, window, cx))
+                .context("reaching the app to open the weather")
+        }
+        Message::RefreshWeather { city } => {
+            let cache = surfaces.paths.weather_file();
+            let window = surfaces.launcher;
+            cx.update(move |cx| weather::refresh(city, cache, window, cx))
+                .context("reaching the app to fetch the weather")
         }
         Message::RefreshRates => {
             let config = config.currency.clone();

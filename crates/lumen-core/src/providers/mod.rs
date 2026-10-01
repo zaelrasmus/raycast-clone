@@ -33,6 +33,7 @@ pub mod scripts;
 pub mod snippets;
 pub mod timers;
 pub mod translate;
+pub mod weather;
 pub mod web;
 
 pub use arrange::ArrangeProvider;
@@ -48,6 +49,7 @@ pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
 pub use snippets::SnippetsProvider;
 pub use timers::{TimerPresetsProvider, TimersProvider};
 pub use translate::TranslateProvider;
+pub use weather::WeatherProvider;
 
 /// A source of results.
 ///
@@ -111,6 +113,7 @@ impl Providers {
         providers.register(Box::new(SnippetsProvider));
         providers.register(Box::new(ClipboardProvider));
         providers.register(Box::new(ClockProvider));
+        providers.register(Box::new(WeatherProvider));
         providers
     }
 
@@ -233,6 +236,7 @@ mod tests {
                 | Kind::Currency
                 | Kind::Clipboard
                 | Kind::Clock
+                | Kind::Weather
         )));
     }
 

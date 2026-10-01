@@ -143,8 +143,17 @@ pub struct RootSearch {
     /// How the platform writes a time, for `time in vancouver` (F13): as
     /// the user's regional settings do. Two digits each until it is set.
     time_format: Option<TimeFormat>,
-    /// Whether the last query asked about time, answered or not.
-    asks_time: bool,
+    /// Whether the last query asked about time or the weather, answered or
+    /// not: either needs the places.
+    asks_places: bool,
+    /// The forecasts the daemon last kept, for `weather in vancouver`
+    /// (F13). Read, never fetched: I-3.
+    weather: crate::weather::Cache,
+    weather_units: crate::weather::Units,
+    /// Why a city's forecast could not be fetched, by its key, until one is.
+    weather_failed: std::collections::HashMap<String, crate::weather::Failure>,
+    /// The city the last query wants a forecast fetched for.
+    wants_weather: Option<u32>,
     /// This query's fallbacks.
     fallbacks: Vec<Item>,
     /// How many rows the window shows, so the fallbacks can be kept in view.
@@ -166,7 +175,11 @@ impl RootSearch {
             rates: None,
             conversion: false,
             time_format: None,
-            asks_time: false,
+            asks_places: false,
+            weather: crate::weather::Cache::default(),
+            weather_units: crate::weather::Units::default(),
+            weather_failed: std::collections::HashMap::new(),
+            wants_weather: None,
             fallbacks: Vec::new(),
             // What the configuration defaults to; the launcher sets the real
             // value before the first query.
@@ -243,7 +256,36 @@ impl RootSearch {
     /// read: the launcher has them read off the UI thread, and ranks again
     /// when they are (F13). Like [`Self::wants_rates`], it does not wait.
     pub fn wants_places(&self) -> bool {
-        self.asks_time && crate::places::loaded().is_none()
+        self.asks_places && crate::places::loaded().is_none()
+    }
+
+    /// Take the forecasts the daemon now keeps (F13). Returns whether
+    /// anything changed. A forecast that arrived clears its failure.
+    pub fn replace_weather(&mut self, cache: crate::weather::Cache) -> bool {
+        if self.weather == cache {
+            return false;
+        }
+        self.weather_failed
+            .retain(|key, _| !cache.forecasts.contains_key(key));
+        self.weather = cache;
+        true
+    }
+
+    /// A forecast could not be fetched for the city keyed `key`.
+    pub fn weather_failed(&mut self, key: String, failure: crate::weather::Failure) {
+        self.weather_failed.insert(key, failure);
+    }
+
+    /// The units the answers are written in. Returns whether they changed.
+    pub fn set_weather_units(&mut self, units: crate::weather::Units) -> bool {
+        std::mem::replace(&mut self.weather_units, units) != units
+    }
+
+    /// The city the last query asked the weather of, when its forecast is
+    /// missing or old and has not failed: the launcher has the daemon fetch
+    /// it, and does not wait.
+    pub fn wants_weather(&self) -> Option<u32> {
+        self.wants_weather
     }
 
     pub fn aside_is_empty(&self, aside: Aside) -> bool {
@@ -271,7 +313,33 @@ impl RootSearch {
         // A question about time, from the places in memory or not at all
         // (F13): their reading is the launcher's to start, off this thread.
         let time = crate::clock::query::recognise(trimmed);
-        self.asks_time = time.is_some();
+        let weather = crate::weather::query::recognise(trimmed);
+        self.asks_places = time.is_some() || weather.is_some();
+        self.wants_weather = None;
+        if let (Some(place), Some(places)) = (weather, crate::places::loaded())
+            && let Some(city) = places.named_exactly(place)
+            && let Some(key) = places.city(city).map(|found| places.key(found))
+        {
+            use providers::weather::Standing;
+            let now = crate::clock::now().as_second();
+            let kept = self.weather.get(&key);
+            let failed = self.weather_failed.get(&key);
+            let standing = match (kept, failed) {
+                (Some(forecast), _) => Standing::Kept(forecast),
+                (None, Some(failure)) => Standing::Failed(failure),
+                (None, None) => Standing::Loading,
+            };
+            if failed.is_none() && kept.is_none_or(|forecast| !forecast.is_fresh(now)) {
+                self.wants_weather = Some(city);
+            }
+            self.answers.extend(providers::weather::answer(
+                places,
+                city,
+                standing,
+                self.weather_units,
+                now,
+            ));
+        }
         if let (Some(request), Some(places)) = (time, crate::places::loaded()) {
             let format = self.time_format.clone();
             let write = move |when: &lumen_platform::LocalTime| match &format {
@@ -806,6 +874,45 @@ mod tests {
 
         root.rank("timer");
         assert!(titles(&root).iter().all(|title| !title.starts_with("TIME")));
+    }
+
+    /// F13: the weather is answered from the forecasts in memory, and a
+    /// missing one is asked for, once named whole, without waiting.
+    #[test]
+    fn the_weather_is_answered_or_asked_for() {
+        let mut root = root(apps(&["Weatherbug"]));
+        crate::places::catalogue();
+
+        root.rank("weather in vancouv");
+        assert_eq!(root.wants_weather(), None, "not named whole yet");
+        assert!(
+            titles(&root)
+                .iter()
+                .all(|title| !title.contains("Vancouver"))
+        );
+
+        root.rank("weather in vancouver");
+        let vancouver = root.wants_weather().expect("asked for");
+        assert_eq!(titles(&root)[0], "Weather in Vancouver");
+
+        let places = crate::places::catalogue();
+        let key = places.key(places.city(vancouver).unwrap());
+        let mut cache = crate::weather::Cache::default();
+        cache.insert(
+            key.clone(),
+            crate::weather::tests::forecast(12.0, 3, crate::clock::now().as_second()),
+        );
+        assert!(root.replace_weather(cache));
+        root.rank("vancouver weather");
+        assert_eq!(titles(&root)[0], "12\u{b0} Overcast in Vancouver");
+        assert_eq!(root.wants_weather(), None, "fresh");
+
+        root.rank("weather in seoul");
+        let seoul = root.wants_weather().unwrap();
+        let seoul_key = places.key(places.city(seoul).unwrap());
+        root.weather_failed(seoul_key, crate::weather::Failure::Offline);
+        root.rank("weather in seoul");
+        assert_eq!(root.wants_weather(), None, "not retried on every key");
     }
 
     /// F8, found by using it: a preset's alias found it seventh, below files

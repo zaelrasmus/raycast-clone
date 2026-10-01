@@ -73,6 +73,42 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/clock.svg",
         include_bytes!("../../../assets/icons/clock.svg"),
     ),
+    (
+        "icons/weather-clear-day.svg",
+        include_bytes!("../../../assets/icons/weather-clear-day.svg"),
+    ),
+    (
+        "icons/weather-clear-night.svg",
+        include_bytes!("../../../assets/icons/weather-clear-night.svg"),
+    ),
+    (
+        "icons/weather-partly-cloudy.svg",
+        include_bytes!("../../../assets/icons/weather-partly-cloudy.svg"),
+    ),
+    (
+        "icons/weather-cloudy.svg",
+        include_bytes!("../../../assets/icons/weather-cloudy.svg"),
+    ),
+    (
+        "icons/weather-fog.svg",
+        include_bytes!("../../../assets/icons/weather-fog.svg"),
+    ),
+    (
+        "icons/weather-drizzle.svg",
+        include_bytes!("../../../assets/icons/weather-drizzle.svg"),
+    ),
+    (
+        "icons/weather-rain.svg",
+        include_bytes!("../../../assets/icons/weather-rain.svg"),
+    ),
+    (
+        "icons/weather-snow.svg",
+        include_bytes!("../../../assets/icons/weather-snow.svg"),
+    ),
+    (
+        "icons/weather-storm.svg",
+        include_bytes!("../../../assets/icons/weather-storm.svg"),
+    ),
 ];
 
 pub struct Assets;

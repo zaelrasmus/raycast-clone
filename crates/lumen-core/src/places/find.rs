@@ -132,6 +132,31 @@ impl Catalogue {
             .collect()
     }
 
+    /// The city `text` names whole (F13, slice 5): the one the list would
+    /// put first, when every word typed is a whole word of its name, its
+    /// region or its country. `vancouver`, `new york`, `london canada` name
+    /// one; `van` does not, so a request that costs something is never sent
+    /// for a name still being typed.
+    pub fn named_exactly(&self, text: &str) -> Option<u32> {
+        let words = words(text);
+        if words.is_empty() {
+            return None;
+        }
+        let index = *self.find(&words, Within::World, 1).cities.first()?;
+        let city = self.city(index)?;
+        let region = self
+            .regions
+            .get(city.region as usize)
+            .map(|region| &*region.folded)
+            .unwrap_or_default();
+        let country = &self.countries[usize::from(city.country)].folded;
+        let whole = |folded: &str, word: &str| folded.split(' ').any(|part| part == word);
+        words
+            .iter()
+            .all(|word| whole(&city.folded, word) || whole(region, word) || whole(country, word))
+            .then_some(index)
+    }
+
     fn prepare<'a>(&self, words: &'a [String]) -> Vec<Word<'a>> {
         words
             .iter()
@@ -487,6 +512,24 @@ mod tests {
             among("", Within::Country(country("ca"))),
             [mine[0], mine[2]]
         );
+    }
+
+    #[test]
+    fn a_city_is_named_exactly_only_by_whole_words() {
+        let named = |text: &str| {
+            catalogue().named_exactly(text).map(|index| {
+                let city = catalogue().city(index).unwrap();
+                format!("{}, {}", city.name, catalogue().country_of(city).code)
+            })
+        };
+        assert_eq!(named("vancouver").as_deref(), Some("Vancouver, CA"));
+        assert_eq!(named("Bogot\u{e1}").as_deref(), Some("Bogot\u{e1}, CO"));
+        assert_eq!(named("london canada").as_deref(), Some("London, CA"));
+        assert!(named("new york").is_some());
+        assert_eq!(named("van"), None);
+        assert_eq!(named("vancouv"), None);
+        assert_eq!(named(""), None);
+        assert_eq!(named("zzzzqx"), None);
     }
 
     #[test]

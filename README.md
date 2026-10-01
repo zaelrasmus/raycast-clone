@@ -134,6 +134,15 @@ an aesthetic worth looking at fifty times a day.
   `10 usd in cad` answers *14.16 CAD* straight away, from the rates Lumen
   already has. The rates are fetched once a day at most, only when a
   conversion asks for them, and the last ones keep working offline.
+- **World Clock and Weather** (F13). Over 34,000 cities, bundled, so finding
+  one never needs the internet. Type a city, a region, a country or a
+  continent -- `vancouver`, `california`, `canada`, `europe` -- or go into a
+  continent and a country with `Enter`, shown as a pill (`Europe › Spain`);
+  `Escape` comes back out. *World Clock* shows each place's time and how far
+  it is from yours, and, if you want, when your working days overlap.
+  *Weather* shows the conditions and the week ahead. *My Places* keeps the
+  cities you care about first, in both. In the root list, `time in vancouver`,
+  `3pm vancouver` and `weather in vancouver` are answered directly.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
@@ -829,3 +838,7 @@ Lumen is an independent project. It studies the architecture of
 [Vicinae](https://github.com/vicinaehq/vicinae) and
 [Asyar](https://github.com/asyarapp/asyar) — both GPL-3.0 — but contains none of
 their code, and it implements neither Raycast's API nor its store.
+
+The places are from [GeoNames](https://www.geonames.org/) and the forecasts
+from [Open-Meteo](https://open-meteo.com/), both under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

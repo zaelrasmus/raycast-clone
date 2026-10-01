@@ -271,6 +271,9 @@ pub struct Launcher {
     /// Whether the places have been asked to be read for a question about
     /// time (F13). Once: read, they are kept.
     places_asked: bool,
+    /// The city a forecast was last asked for from the root list (F13), so
+    /// a query is not asked again on every keystroke.
+    weather_asked: Option<u32>,
     /// The clipboard history, once the daemon has opened it.
     ///
     /// Shared with the recorder rather than opened twice: one database, one
@@ -374,6 +377,7 @@ impl Launcher {
 
         let mut root = RootSearch::new(Providers::builtin(), frecency);
         root.set_visible_rows(config.window.visible_rows);
+        root.set_weather_units(config.weather.units);
         // `time in vancouver` is answered in the system's way of writing a
         // time, as the World Clock view is (F13).
         let writer = platform.clone();
@@ -396,6 +400,7 @@ impl Launcher {
             fetching_icons: false,
             rates_asked: false,
             places_asked: false,
+            weather_asked: None,
             clipboard: None,
             query: String::new(),
             selected: 0,
@@ -558,12 +563,14 @@ impl Launcher {
             // Built and compared on the background thread: enumeration and
             // preparing the haystacks are the expensive halves, and the answer
             // to a re-index is usually "nothing changed".
-            let (rebuilt, quicklinks, sites, browsers, rates) = cx
+            let (rebuilt, quicklinks, sites, browsers, rates, weather) = cx
                 .background_executor()
                 .spawn(async move {
                     // The table the currency view last kept (F9), so a
                     // conversion typed at the root is answered at once.
                     let rates = lumen_core::currency::State::load(&paths.currency_file()).rates;
+                    // The forecasts last kept (F13), for `weather in ...`.
+                    let weather = lumen_core::weather::Cache::load(&paths.weather_file());
                     // Read once, for both halves: the index holds the links
                     // as catalogue entries, and root search needs the links
                     // themselves for answers and fallbacks -- an alias can
@@ -601,6 +608,7 @@ impl Launcher {
                         sites,
                         browsers,
                         rates,
+                        weather,
                     )
                 })
                 .await;
@@ -619,10 +627,16 @@ impl Launcher {
                 let links_changed = this.root.replace_quicklinks(quicklinks);
                 let presets_changed = this.root.replace_timer_presets(timer_presets);
                 let rates_changed = this.root.replace_rates(rates);
+                let weather_changed = this.root.replace_weather(weather);
                 // Nothing to show means nothing to re-rank: that would put the
                 // selection back on the first row under somebody who had just
                 // moved it (see `same_index`).
-                if index.is_none() && !links_changed && !presets_changed && !rates_changed {
+                if index.is_none()
+                    && !links_changed
+                    && !presets_changed
+                    && !rates_changed
+                    && !weather_changed
+                {
                     return;
                 }
                 if let Some(index) = index {
@@ -677,6 +691,7 @@ impl Launcher {
         self.selected = 0;
         self.appearances = self.appearances.wrapping_add(1);
         self.rates_asked = false;
+        self.weather_asked = None;
 
         // A view does not survive the launcher being dismissed. Coming back to
         // somebody else's list a day later, with no memory of opening it, is
@@ -776,7 +791,11 @@ impl Launcher {
             || config.timers.presets != self.config.timers.presets;
 
         self.root.set_visible_rows(config.window.visible_rows);
+        let units_changed = self.root.set_weather_units(config.weather.units);
         self.config = config;
+        if units_changed && matches!(self.mode, Mode::Root) {
+            self.rerank(cx);
+        }
 
         if files_changed {
             self.refresh_files(cx);
@@ -961,6 +980,16 @@ impl Launcher {
             cx.emit(LauncherEvent::RefreshRates);
         }
 
+        // A forecast missing or old for a city named whole: the daemon
+        // fetches it, and the answer fills in when it lands (F13). Asked once
+        // per city per showing, so a failing one is not retried on every key.
+        if let Some(city) = self.root.wants_weather()
+            && self.weather_asked != Some(city)
+        {
+            self.weather_asked = Some(city);
+            cx.emit(LauncherEvent::RefreshWeather { city });
+        }
+
         // A question about time before the places are in memory: they are
         // read off this thread, and the answer appears when they are (F13).
         if !self.places_asked && self.root.wants_places() {
@@ -1066,6 +1095,11 @@ impl Launcher {
             // (F13), off this thread.
             lumen_core::ViewSource::Clock => {
                 cx.emit(LauncherEvent::RunClock);
+                return;
+            }
+            // Forecasts are fetched by the daemon, like rates (F13).
+            lumen_core::ViewSource::Weather { city } => {
+                cx.emit(LauncherEvent::RunWeather { city: city.clone() });
                 return;
             }
         };
@@ -1323,6 +1357,28 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) {
         if self.root.replace_rates(rates) && matches!(self.mode, Mode::Root) {
+            self.rerank(cx);
+            cx.notify();
+        }
+    }
+
+    /// The forecasts the daemon keeps (F13), for the root list's answers.
+    pub fn set_weather(&mut self, cache: lumen_core::weather::Cache, cx: &mut Context<Self>) {
+        if self.root.replace_weather(cache) && matches!(self.mode, Mode::Root) {
+            self.rerank(cx);
+            cx.notify();
+        }
+    }
+
+    /// A forecast asked for from the root list could not be fetched (F13).
+    pub fn weather_failed(
+        &mut self,
+        key: String,
+        failure: lumen_core::weather::Failure,
+        cx: &mut Context<Self>,
+    ) {
+        self.root.weather_failed(key, failure);
+        if matches!(self.mode, Mode::Root) {
             self.rerank(cx);
             cx.notify();
         }
@@ -2578,6 +2634,16 @@ pub enum LauncherEvent {
     RunClipboard,
     /// *World Clock* was chosen (F13).
     RunClock,
+    /// *Weather* was chosen (F13), on a city's report or on the list.
+    RunWeather {
+        city: Option<String>,
+    },
+    /// `weather in ...` was typed for a city whose forecast is missing or
+    /// old (F13). The daemon fetches it and hands the forecasts back with
+    /// `Launcher::set_weather`.
+    RefreshWeather {
+        city: u32,
+    },
     /// A conversion was typed in the root list with no table of rates, or
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.

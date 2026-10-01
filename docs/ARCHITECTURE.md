@@ -1746,6 +1746,33 @@ The decisions:
   forecast -- and `Escape` returns. *Pane*: the report beside the list,
   with a compact forecast (`Thu ↑16 ↓9`), designed rather than squeezed.
   The data is the same; only the drawing differs.
+- **A forecast is asked for when typing settles, a few at a time.**
+  Opening the view asks at once for the home city and *My Places* that are
+  not fresh, in one request: Open-Meteo answers for several coordinates at
+  once. Typing asks nothing per keystroke: each change is a generation,
+  the driver waits 400 ms and reports back, and only the latest generation
+  asks -- for the first eight cities listed, again in one request. A row
+  says *Loading…* while it is out, and a failure (*Offline*,
+  *Unavailable*) is not asked again by itself, only by *Refresh*. Countries
+  and continents have no weather of their own; they are levels to go into.
+- **Weather is fetched by the coordinates the catalogue has**, kept in
+  metric and converted when written, so a change of units needs no
+  request. The cache is `weather.json` in the data folder, the newest 64
+  places, merged by whoever fetched -- the view or the root list -- after
+  reading the file again.
+- **A city is named whole before the root list asks anything.**
+  `Catalogue::named_exactly`: the city the list would put first, when every
+  word typed is a whole word of its name, its region or its country.
+  `weather in vancouver` and `weather in london canada` ask; `weather in
+  van` and `weather in vancouv` do not. A failed city is not asked again on
+  every keystroke, and one city is asked at most once per showing.
+- **Home is the largest city in the system's zone until a setting names
+  another.** The design said confirmed once; a first-run question is a
+  dialog the view does not have, so the *Weather* settings page (slice 7)
+  is where it is chosen, and the zone's guess is right for most people.
+- **Attribution.** Open-Meteo's data and GeoNames' are CC BY 4.0: the view
+  says *Forecasts by Open-Meteo* over the home city, and the README names
+  both.
 - **Nine condition glyphs, and metrics as words.** Clear by day and by
   night, partly cloudy, cloudy, fog, drizzle, rain, snow and storm, on the
   icon set's grid (7.23). The screenshots' small glyph beside every metric
@@ -1755,6 +1782,9 @@ The decisions:
   (several people, several zones); hourly weather beyond the report's day;
   alerts. Each is a field in the pane or a view of its own, not a redesign.
 - **The slices,** one acceptance criterion each:
+  0. Browsing -- the words, the levels, the pill, *My Places* -- moved to
+     `places::browse` before Weather, so the two views share it rather
+     than copy it.
   1. *World Clock* opens a view over the bundled catalogue: cities, the
      levels and the drill-down pill, both row layouts and both difference
      formats (from `config.json`), and the pane.

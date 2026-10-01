@@ -60,6 +60,11 @@ impl Browse {
         &self.query
     }
 
+    /// Nothing typed, and no level gone into.
+    pub fn at_top(&self) -> bool {
+        self.path.is_empty() && words(&self.query).is_empty()
+    }
+
     /// Take what is typed. `false` when it is what was there.
     pub fn set_query(&mut self, query: String) -> bool {
         if query == self.query {
@@ -120,7 +125,7 @@ impl Browse {
         let mine = places.find_among(&words, self.within(), mine);
         found.cities.retain(|index| !mine.contains(index));
         Listing {
-            top: self.path.is_empty() && words.is_empty(),
+            top: self.at_top(),
             mine,
             found,
         }

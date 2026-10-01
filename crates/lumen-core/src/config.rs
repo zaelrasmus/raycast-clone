@@ -18,6 +18,7 @@ use crate::providers::files::{self, FileLimits};
 use crate::snippets::SnippetsConfig;
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
+use crate::weather::WeatherConfig;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -48,6 +49,8 @@ pub struct Config {
     /// World Clock (F13): which value leads a row, and how the difference
     /// is written.
     pub clock: ClockConfig,
+    /// Weather (F13): units, the report's layout, and the home city.
+    pub weather: WeatherConfig,
 }
 
 /// File search (F3).
@@ -173,6 +176,7 @@ impl Default for Config {
             dictionary: DictionaryConfig::default(),
             snippets: SnippetsConfig::default(),
             clock: ClockConfig::default(),
+            weather: WeatherConfig::default(),
         }
     }
 }
