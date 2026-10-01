@@ -31,12 +31,6 @@ use crate::search::{Candidate, Search};
 /// call of its own (I-1).
 pub type TimeFormat = Arc<dyn Fn(&lumen_platform::LocalTime) -> String + Send + Sync>;
 
-/// How many results are kept behind the visible window.
-///
-/// Bounded because nobody scrolls to the four hundredth fuzzy match, and an
-/// unbounded list makes the sort the most expensive thing in the frame.
-pub const MAX_RESULTS: usize = 64;
-
 /// A secondary index: searched, but never browsed (7.21).
 ///
 /// Files are large, change without the user doing anything to the launcher,
@@ -539,7 +533,11 @@ impl RootSearch {
 
         let mut hits: Vec<Hit> = self
             .search
-            .rank(query, &self.index, &self.frecency, MAX_RESULTS)
+            // Every match, not the best 64 (F15): the matcher scores and
+            // sorts every candidate before any cap could apply, so a cap
+            // saved nothing measurable, and it cut rows a person could
+            // scroll to.
+            .rank(query, &self.index, &self.frecency, usize::MAX)
             .into_iter()
             .map(|m| Hit {
                 source: Source::Indexed(m.index),
@@ -613,7 +611,6 @@ impl RootSearch {
         // first screen. Sixteen loose clipboard matches would otherwise bury
         // it below the window, which is where nobody looks for it. Never above
         // an answer, which is what the user asked for by construction.
-        hits.truncate(MAX_RESULTS.saturating_sub(self.fallbacks.len()));
         let at = hits
             .len()
             .min(self.visible_rows.saturating_sub(self.fallbacks.len()))
@@ -734,11 +731,12 @@ impl RootSearch {
 
     /// Put the indexed item `id` first among `hits`.
     ///
-    /// Taken from the index when the matcher did not return it: the matcher
-    /// keeps only its best [`MAX_RESULTS`], and a two-letter alias such as
-    /// `io` matches dozens of names better than the keyword it is -- so the
-    /// row it names was cut before it could be promoted (F8, found by using
-    /// it).
+    /// Taken from the index when the matcher did not return it. The matcher
+    /// used to keep only its best 64, and a two-letter alias such as `io`
+    /// matches dozens of names better than the keyword it is -- so the row it
+    /// names was cut before it could be promoted (F8, found by using it).
+    /// Nothing is cut now (F15); this stays, because a row that leads must
+    /// not depend on the matcher having returned it.
     fn lead(&self, hits: &mut Vec<Hit>, id: &str) {
         if let Some(at) = hits.iter().position(|hit| self.item(hit).id == id) {
             let hit = hits.remove(at);
@@ -1232,15 +1230,17 @@ mod tests {
         assert_eq!(root.item(first).title, "84");
     }
 
+    /// Every match is listed, however many (F15): the cap of 64 saved
+    /// nothing measurable and hid rows that could be scrolled to.
     #[test]
-    fn results_are_bounded() {
+    fn every_match_is_listed() {
         let many: Vec<String> = (0..200).map(|n| format!("App {n}")).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         let mut root = root(apps(&many));
 
         root.rank("app");
 
-        assert_eq!(root.hits().len(), MAX_RESULTS);
+        assert_eq!(root.hits().len(), 200);
     }
 
     #[test]
@@ -1475,7 +1475,6 @@ mod tests {
         root.rank("io");
 
         assert_eq!(titles(&root)[0], "preset test 2");
-        assert_eq!(root.hits().len(), MAX_RESULTS);
     }
 
     /// Only an exact name: a prefix is still a fuzzy match like any other.
@@ -1545,7 +1544,8 @@ mod tests {
 
         root.rank("app");
 
-        assert_eq!(root.hits().len(), MAX_RESULTS);
+        // Two hundred matches and the fallback.
+        assert_eq!(root.hits().len(), 201);
         assert!(matches!(root.hits()[7].source, Source::Fallback(_)));
         assert!(matches!(root.hits()[8].source, Source::Indexed(_)));
     }

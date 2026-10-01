@@ -92,7 +92,7 @@ fn ranking(c: &mut Criterion) {
             b.iter(|| search.rank("vsc", &candidates, &frecency, 64));
         });
 
-        // The same two worst cases with no cap (F15): whether `MAX_RESULTS`
+        // The same two worst cases with no cap (F15): whether the old cap of 64
         // is worth keeping is this figure against the capped one above.
         group.bench_with_input(BenchmarkId::new("root-uncapped", count), &count, |b, _| {
             let mut search = Search::new();
