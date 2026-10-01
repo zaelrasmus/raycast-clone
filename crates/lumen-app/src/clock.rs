@@ -6,10 +6,12 @@
 //! # Nothing waits, and nothing wakes while hidden
 //!
 //! The places are read on the background executor the first time the view
-//! opens, and kept. The view redraws when the minute turns over, and only
+//! opens, and kept; *My Places* is read beside them each time, and written
+//! there too. The view redraws when the minute turns over, and only
 //! while the launcher is active: a tick that finds it hidden asks for no
 //! next one, and the view itself is gone the next time the launcher shows.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -17,6 +19,7 @@ use futures::channel::mpsc;
 use gpui::App;
 use lumen_core::clock::session::{Effect, Session};
 use lumen_core::clock::{self, ClockConfig};
+use lumen_core::places::Favourites;
 use lumen_core::view::Event;
 use lumen_platform::{DateStyle, Platform};
 use lumen_ui::{Launcher, ViewSink};
@@ -34,6 +37,7 @@ enum Input {
 pub fn run(
     platform: Arc<dyn Platform>,
     config: ClockConfig,
+    favourites: PathBuf,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut App,
 ) {
@@ -53,10 +57,18 @@ pub fn run(
         .ok();
 
     cx.spawn(async move |cx| {
-        let (places, here) = cx
-            .background_executor()
-            .spawn(async { (lumen_core::places::catalogue(), clock::here()) })
-            .await;
+        let (places, here, kept) = {
+            let favourites = favourites.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    (
+                        lumen_core::places::catalogue(),
+                        clock::here(),
+                        Favourites::load(&favourites),
+                    )
+                })
+                .await
+        };
 
         // Times are written as the user's regional settings write them,
         // so a 12-hour machine reads `9:14 AM`.
@@ -69,7 +81,7 @@ pub fn run(
                     format!("{:02}:{:02}", when.hour, when.minute)
                 })
         });
-        let mut session = Session::new(config, places, here, time);
+        let mut session = Session::new(config, places, kept, here, time);
         let mut effects = session.start(clock::now());
         tick(&tx, cx);
 
@@ -87,6 +99,16 @@ pub fn run(
                                 launcher.set_query(String::new(), cx)
                             })
                             .ok();
+                    }
+                    Effect::Save(kept) => {
+                        let path = favourites.clone();
+                        cx.background_executor()
+                            .spawn(async move {
+                                if let Err(error) = kept.save(&path) {
+                                    log::warn!("could not keep My Places: {error:#}");
+                                }
+                            })
+                            .detach();
                     }
                     Effect::Copy(text) => {
                         if let Err(error) = platform.set_clipboard_text(&text) {

@@ -1438,8 +1438,9 @@ fn handle(
         Message::RunClock => {
             let platform = platform.clone();
             let config = config.clock;
+            let favourites = surfaces.paths.places_file();
             let window = surfaces.launcher;
-            cx.update(move |cx| clock::run(platform, config, window, cx))
+            cx.update(move |cx| clock::run(platform, config, favourites, window, cx))
                 .context("reaching the app to open the world clock")
         }
         Message::RefreshRates => {

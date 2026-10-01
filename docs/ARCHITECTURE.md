@@ -1613,6 +1613,13 @@ The decisions:
 - **One catalogue of places, two views.** *World Clock* and *Weather* are
   built-in view sources over the same places and the same favourites.
   Favouriting a city in one puts it first in both: one list, *My Places*.
+- **A favourite is kept by name, not by number.** `places.json` in the
+  data folder lists keys -- `CA/British Columbia/Vancouver` -- because a
+  city's index in the catalogue moves whenever GeoNames is read again. A
+  key the catalogue no longer knows is skipped in the list and kept in the
+  file, so a city renamed upstream is not silently forgotten by the next
+  save. *My Places* follows the list's rule: filtered by what is typed and
+  by the pill, in the order added, and never shown twice.
 - **The places are bundled; only the weather is fetched.** GeoNames'
   `cities15000` (CC BY 4.0: every city over 15,000 people, 34,152 of them
   in 356 zones), reduced to name, ASCII name, country, region, IANA zone,

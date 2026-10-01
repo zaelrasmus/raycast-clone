@@ -15,11 +15,13 @@
 //! time of never pays for it. [`catalogue`] reads it on first use and keeps
 //! it. Callers on the UI thread ask for it from the background executor.
 
+mod favourites;
 mod find;
 
 use std::io::Read;
 use std::sync::OnceLock;
 
+pub use favourites::Favourites;
 pub use find::{Found, Within, words};
 
 const CITIES: &[u8] = include_bytes!("../../../../assets/places/cities.tsv.gz");

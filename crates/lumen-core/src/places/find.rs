@@ -103,7 +103,37 @@ struct Word<'a> {
 impl Catalogue {
     /// The places `words` find within `within`, at most `limit` cities.
     pub fn find(&self, words: &[String], within: Within, limit: usize) -> Found {
-        let words: Vec<Word> = words
+        let words = self.prepare(words);
+        Found {
+            continents: self.find_continents(&words, within),
+            countries: self.find_countries(&words, within),
+            ..self.find_cities(&words, within, limit)
+        }
+    }
+
+    /// Which of `cities` -- the user's own, *My Places* -- `words` find
+    /// within `within`, in their order (F13, slice 2). By the same rule as
+    /// the list, so a favourite is shown exactly when it would be found;
+    /// with nothing typed, every one in scope.
+    pub fn find_among(&self, words: &[String], within: Within, cities: &[u32]) -> Vec<u32> {
+        let words = self.prepare(words);
+        cities
+            .iter()
+            .copied()
+            .filter(|index| {
+                self.city(*index).is_some_and(|city| {
+                    if words.is_empty() {
+                        self.in_scope(city, within)
+                    } else {
+                        self.city_fit(&words, within, city).is_some()
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn prepare<'a>(&self, words: &'a [String]) -> Vec<Word<'a>> {
+        words
             .iter()
             .map(|word| Word {
                 text: word,
@@ -122,13 +152,50 @@ impl Catalogue {
                     .map(|region| fit(&region.folded, word))
                     .collect(),
             })
-            .collect();
+            .collect()
+    }
 
-        Found {
-            continents: self.find_continents(&words, within),
-            countries: self.find_countries(&words, within),
-            ..self.find_cities(&words, within, limit)
+    fn in_scope(&self, city: &super::City, within: Within) -> bool {
+        match within {
+            Within::World => true,
+            Within::Continent(continent) => {
+                self.countries[usize::from(city.country)].continent == continent
+            }
+            Within::Country(only) => city.country == only,
         }
+    }
+
+    /// Whether every word finds `city` within `within`, and if so whether a
+    /// word *named* it: the start of its own name, or the whole of its
+    /// region's or country's. `None` when it is not found, which includes
+    /// words that reach no lower than its continent.
+    fn city_fit(&self, words: &[Word], within: Within, city: &super::City) -> Option<bool> {
+        if !self.in_scope(city, within) {
+            return None;
+        }
+        let country = &self.countries[usize::from(city.country)];
+        let mut named_by_a_word = false;
+        let mut below_continent = matches!(within, Within::Country(_));
+        let matches = words.iter().all(|word| {
+            if starts_a_word(&city.folded, word.text) {
+                named_by_a_word = true;
+                below_continent = true;
+                return true;
+            }
+            let region = if city.region == super::NO_REGION {
+                Fit::None
+            } else {
+                word.regions[city.region as usize]
+            };
+            let above = region.max(word.countries[usize::from(city.country)]);
+            if above != Fit::None {
+                named_by_a_word |= above == Fit::Whole;
+                below_continent = true;
+                return true;
+            }
+            word.continents.contains(&country.continent)
+        });
+        (matches && below_continent).then_some(named_by_a_word)
     }
 
     /// At the top only: every continent with nothing typed, to browse; those
@@ -197,40 +264,9 @@ impl Catalogue {
         let mut found_through = Vec::new();
         let mut matched = 0;
         for (index, city) in self.cities.iter().enumerate() {
-            let country = &self.countries[usize::from(city.country)];
-            match within {
-                Within::World => {}
-                Within::Continent(continent) if country.continent == continent => {}
-                Within::Country(only) if city.country == only => {}
-                Within::Continent(_) | Within::Country(_) => continue,
-            }
-
-            // Named: a word is the start of the city's name, or the whole
-            // of its region's or country's.
-            let mut named_by_a_word = false;
-            let mut below_continent = matches!(within, Within::Country(_));
-            let matches = words.iter().all(|word| {
-                if starts_a_word(&city.folded, word.text) {
-                    named_by_a_word = true;
-                    below_continent = true;
-                    return true;
-                }
-                let region = if city.region == super::NO_REGION {
-                    Fit::None
-                } else {
-                    word.regions[city.region as usize]
-                };
-                let above = region.max(word.countries[usize::from(city.country)]);
-                if above != Fit::None {
-                    named_by_a_word |= above == Fit::Whole;
-                    below_continent = true;
-                    return true;
-                }
-                word.continents.contains(&country.continent)
-            });
-            if !matches || !below_continent {
+            let Some(named_by_a_word) = self.city_fit(words, within, city) else {
                 continue;
-            }
+            };
 
             matched += 1;
             if named_by_a_word {
@@ -424,6 +460,33 @@ mod tests {
         // But the start of a country's name does not: `van` is Vancouver,
         // not Port Vila in Vanuatu.
         assert_eq!(city_names(&find("van", Within::World))[0], "Vancouver, CA");
+    }
+
+    /// *My Places* are found by the list's own rule, in their own order.
+    #[test]
+    fn favourites_are_found_by_the_same_rule() {
+        let index = |name: &str| {
+            catalogue()
+                .cities()
+                .iter()
+                .position(|city| &*city.name == name)
+                .unwrap() as u32
+        };
+        let mine = [index("Vancouver"), index("Madrid"), index("Toronto")];
+        let among = |query: &str, within| catalogue().find_among(&words(query), within, &mine);
+
+        assert_eq!(among("", Within::World), mine);
+        assert_eq!(among("canada", Within::World), [mine[0], mine[2]]);
+        assert_eq!(among("mad", Within::World), [mine[1]]);
+        assert!(
+            among("europe", Within::World).is_empty(),
+            "a continent alone"
+        );
+        assert_eq!(among("", Within::Continent(Continent::Europe)), [mine[1]]);
+        assert_eq!(
+            among("", Within::Country(country("ca"))),
+            [mine[0], mine[2]]
+        );
     }
 
     #[test]

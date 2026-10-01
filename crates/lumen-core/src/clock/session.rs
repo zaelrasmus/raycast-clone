@@ -20,7 +20,7 @@ use jiff::{Timestamp, Zoned};
 use lumen_platform::LocalTime;
 
 use super::{ClockConfig, Daylight, DifferenceFormat, RowLayout};
-use crate::places::{self, Catalogue, City, Continent, Found, Within};
+use crate::places::{self, Catalogue, City, Continent, Favourites, Found, Within};
 use crate::view::{
     Accessory, Action, EmptyState, Event, Filtering, Icon, Item, ItemDetail, List, MetadataRow,
     Section, Tone, View,
@@ -36,6 +36,8 @@ pub enum Effect {
     ClearQuery,
     /// Put this on the clipboard and close the launcher.
     Copy(String),
+    /// Write *My Places* to `places.json` (F13, slice 2).
+    Save(Favourites),
 }
 
 /// The most city rows a list shows. Past this nobody is reading; the
@@ -51,6 +53,8 @@ const OPEN: &str = "open";
 const COPY_TIME: &str = "copy-time";
 const COPY_SENTENCE: &str = "copy-sentence";
 const DETAILS: &str = "details";
+const KEEP: &str = "keep";
+const FORGET: &str = "forget";
 
 /// How far into the places the list has gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +76,9 @@ pub struct Session {
     path: Vec<Level>,
     /// The pane beside the list, toggled from the action panel.
     details: bool,
+    /// *My Places*, as kept, and the cities of it the catalogue knows.
+    favourites: Favourites,
+    mine: Vec<u32>,
 }
 
 impl Session {
@@ -79,6 +86,7 @@ impl Session {
     pub fn new(
         config: ClockConfig,
         places: &'static Catalogue,
+        favourites: Favourites,
         here: TimeZone,
         time: TimeFormat,
     ) -> Self {
@@ -91,6 +99,8 @@ impl Session {
             query: String::new(),
             path: Vec::new(),
             details: false,
+            mine: favourites.resolve(places),
+            favourites,
         }
     }
 
@@ -139,6 +149,7 @@ impl Session {
         };
         match action {
             OPEN => self.go_into(item),
+            KEEP | FORGET => self.keep(item, action == KEEP),
             COPY_TIME | COPY_SENTENCE => {
                 let Some((name, zone)) = self.place(item) else {
                     return Vec::new();
@@ -156,6 +167,33 @@ impl Session {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Add a city to *My Places*, or take it off.
+    fn keep(&mut self, item: &str, keep: bool) -> Vec<Effect> {
+        let Some(index) = item
+            .strip_prefix(CITY)
+            .and_then(|index| index.parse::<u32>().ok())
+        else {
+            return Vec::new();
+        };
+        let Some(city) = self.places.city(index) else {
+            return Vec::new();
+        };
+        let key = self.places.key(city);
+        let changed = if keep {
+            self.favourites.add(key)
+        } else {
+            self.favourites.remove(&key)
+        };
+        if !changed {
+            return Vec::new();
+        }
+        self.mine = self.favourites.resolve(self.places);
+        vec![
+            Effect::Render(self.view()),
+            Effect::Save(self.favourites.clone()),
+        ]
     }
 
     /// `Enter` on a continent or a country: it joins the path. A country
@@ -239,7 +277,10 @@ impl Session {
     /// What the view should show now.
     pub fn view(&self) -> View {
         let words = places::words(&self.query);
-        let found = self.places.find(&words, self.within(), CITY_ROWS);
+        let mut found = self.places.find(&words, self.within(), CITY_ROWS);
+        let mine = self.places.find_among(&words, self.within(), &self.mine);
+        // A favourite is shown once, in its own section.
+        found.cities.retain(|index| !mine.contains(index));
         let mut clocks = Clocks::new(self.now, &self.here);
 
         let mut sections = Vec::new();
@@ -248,6 +289,16 @@ impl Session {
                 title: Some("Your time".into()),
                 subtitle: None,
                 items: vec![self.here_row(&mut clocks)],
+            });
+        }
+        if !mine.is_empty() {
+            sections.push(Section {
+                title: Some("My Places".into()),
+                subtitle: None,
+                items: mine
+                    .iter()
+                    .filter_map(|index| self.city_row(*index, &mut clocks))
+                    .collect(),
             });
         }
         if !found.continents.is_empty() {
@@ -496,7 +547,15 @@ impl Session {
             }),
             accessories: self.timed_accessories(&there, clocks),
             keywords: Vec::new(),
-            actions: self.timed_actions(),
+            actions: {
+                let mut actions = self.timed_actions();
+                actions.push(if self.mine.contains(&index) {
+                    action(FORGET, "Remove from My Places")
+                } else {
+                    action(KEEP, "Add to My Places")
+                });
+                actions
+            },
             detail: self.details.then(|| {
                 let zone = super::zone(zone_name);
                 self.detail(&there, &zone, Some(city), clocks)
@@ -654,9 +713,14 @@ mod tests {
     /// 24-hour, as a test can predict: the platform's own is checked by
     /// running it.
     fn session_with(config: ClockConfig) -> Session {
+        session_keeping(config, Favourites::default())
+    }
+
+    fn session_keeping(config: ClockConfig, favourites: Favourites) -> Session {
         let mut session = Session::new(
             config,
             places::catalogue(),
+            favourites,
             super::super::zone("America/Santo_Domingo"),
             Box::new(|time| format!("{:02}:{:02}", time.hour, time.minute)),
         );
@@ -954,6 +1018,97 @@ mod tests {
         typed(&mut session, "vancouver");
         let list = list_of(session.tick("2026-09-30T16:15:00Z".parse().unwrap()));
         assert_eq!(texts(&section(&list, "Cities").items[0])[0].0, "09:15");
+    }
+
+    fn kept(keys: &[&str]) -> Favourites {
+        Favourites {
+            cities: keys.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn my_places_come_after_here_and_before_the_continents() {
+        let mut session = session_keeping(
+            ClockConfig::default(),
+            kept(&["CA/British Columbia/Vancouver", "KR/Seoul/Seoul"]),
+        );
+        let list = list(&session.start("2026-09-30T16:14:00Z".parse().unwrap()));
+        let order: Vec<&str> = list
+            .sections
+            .iter()
+            .filter_map(|section| section.title.as_deref())
+            .collect();
+        assert_eq!(order, ["Your time", "My Places", "Continents"]);
+        assert_eq!(titles(section(&list, "My Places")), ["Vancouver", "Seoul"]);
+    }
+
+    #[test]
+    fn my_places_are_filtered_with_the_list_and_shown_once() {
+        let mut session = session_keeping(
+            ClockConfig::default(),
+            kept(&["CA/British Columbia/Vancouver", "KR/Seoul/Seoul"]),
+        );
+        let list = typed(&mut session, "canada");
+        assert_eq!(titles(section(&list, "My Places")), ["Vancouver"]);
+        assert!(
+            !titles(section(&list, "Cities")).contains(&"Vancouver"),
+            "not twice"
+        );
+        // Within a level too.
+        let list = list_of(session.event(Event::ActionInvoked {
+            item: Some("continent:AS".into()),
+            action: "open".into(),
+        }));
+        assert_eq!(titles(section(&list, "My Places")), ["Seoul"]);
+    }
+
+    #[test]
+    fn adding_and_removing_a_place_is_kept() {
+        let mut session = session();
+        typed(&mut session, "vancouver");
+        let item = Some(format!("city:{}", vancouver_index()));
+        let list_item = |list: &List| {
+            list.items()
+                .find(|row| row.id == item.clone().unwrap())
+                .unwrap()
+                .clone()
+        };
+        let actions = |row: &Item| -> Vec<String> {
+            row.actions.iter().map(|action| action.id.clone()).collect()
+        };
+        let before = typed(&mut session, "vancouver ");
+        assert!(actions(&list_item(&before)).contains(&"keep".to_string()));
+
+        let effects = session.event(Event::ActionInvoked {
+            item: item.clone(),
+            action: "keep".into(),
+        });
+        assert!(effects.contains(&Effect::Save(kept(&["CA/British Columbia/Vancouver"]))));
+        let list = list(&effects);
+        assert_eq!(titles(section(&list, "My Places")), ["Vancouver"]);
+        assert!(actions(&list_item(&list)).contains(&"forget".to_string()));
+
+        // Twice is once.
+        assert!(
+            session
+                .event(Event::ActionInvoked {
+                    item: item.clone(),
+                    action: "keep".into(),
+                })
+                .is_empty()
+        );
+
+        let effects = session.event(Event::ActionInvoked {
+            item,
+            action: "forget".into(),
+        });
+        assert!(effects.contains(&Effect::Save(Favourites::default())));
+        assert!(
+            list_of(effects)
+                .sections
+                .iter()
+                .all(|section| section.title.as_deref() != Some("My Places"))
+        );
     }
 
     #[test]

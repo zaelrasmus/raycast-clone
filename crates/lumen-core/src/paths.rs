@@ -104,6 +104,11 @@ impl Paths {
         self.data_dir.join("dictionary.json")
     }
 
+    /// *My Places*, shared by World Clock and Weather (F13).
+    pub fn places_file(&self) -> PathBuf {
+        self.data_dir.join("places.json")
+    }
+
     pub fn ensure_exists(&self) -> Result<()> {
         for dir in [
             &self.config_dir,
