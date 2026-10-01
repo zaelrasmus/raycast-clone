@@ -14,13 +14,13 @@ Not negotiated case by case.
 | I-2  | `lumen-platform-linux` always compiles, even if its methods are `todo!()`. **Paused:** the Linux cross-check is not run, locally or in CI, until F5 resumes (ARCHITECTURE 7.38). |
 | I-3  | Root search never waits on an extension process. No exceptions and no "short" timeouts. |
 | I-4  | The window is created once when the daemon starts and from then on is only shown or hidden. Never destroyed. |
-| I-5  | No colour, spacing, radius or type size appears literally in UI code. Everything comes from a token module: colour and type family from the theme file, geometry from `lumen_core::layout`. One exception: `Icon::Swatch` draws a copied colour, which is content, not styling (F12). |
+| I-5  | No colour, spacing, radius or type size appears literally in UI code. Everything comes from a token source: colour and type family from the palette, the launcher's geometry from the active style, the rest from `lumen_core::layout`. One exception: `Icon::Swatch` draws a copied colour, which is content, not styling (F12). |
 | I-6  | The `gpui` version is pinned exactly in `Cargo.toml`. Never `*`, never a range. Updating is a deliberate commit with its own verification. |
 | I-7  | Every capability an extension needs is requested over host RPC. The subprocess does not reach resources directly even where the system would allow it. |
 | I-8  | The performance budgets below are measured in CI. A regression breaks the build. |
 | I-9  | Changing the signature of `trait Platform` requires updating both implementations in the same commit. |
 | I-10 | Fixed row height and reserved space for icons and accessories. Zero layout shift when results change. |
-| I-11 | A theme may define only colour and type family. No geometric property is themeable. |
+| I-11 | A palette may define only colour and type family. A style may set only the geometry tokens and variants in its schema, each within its range; no structure or layout is themeable (F15). |
 | I-12 | Every missing theme token resolves from the base theme. A theme written today must still load a year from now. |
 | I-13 | The UI tree and event types exist in exactly one place. No parallel definitions in WIT, in JSON Schema or in the SDK. |
 | I-14 | In-app shortcuts are declared as GPUI actions and bound from a keymap file. No hand-written key comparisons in UI code. |

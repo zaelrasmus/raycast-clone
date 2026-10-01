@@ -80,8 +80,8 @@ Consequences that bind day to day:
 | AD-09 | Every extension capability goes through the host RPC | No real sandbox at first, but the boundary is drawn, so adding one later changes the runtime rather than redesigning the system. |
 | AD-10 | No compatibility with Raycast's API or store | Avoids reimplementing their reconciler and inheriting trademark/ToS risk. Their API *shape* is adopted so porting is mechanical. |
 | AD-11 | Licence chosen before the first commit | See section 2. |
-| AD-12 | Themes are pure data, no code, no runtime | Zed's model. Semantic tokens only; a token that names a component turns every new component into a break for every existing theme. |
-| AD-13 | Themes control colour and typography, never geometry | If a third-party theme can alter geometry, the calibrated layout dies the first day someone publishes one. This is the decision that protects what motivates the project. |
+| AD-12 | Themes are pure data, no code, no runtime | Zed's model. Semantic colour tokens only; a colour token that names a component turns every new component into a break for every existing theme. Geometry tokens name the launcher's parts, which do not multiply (F15). |
+| AD-13 | Geometry is themeable through a style, within bounds, and layout is not themeable at all | *Revised in F15.* Was: themes control colour and typography, never geometry. A palette sets colour and the type family; a style sets bounded geometry tokens and picks closed variants; nothing sets the structure. The calibration is protected by ranges and checked relations instead of by being out of reach. |
 | AD-14 | Extensibility in four tiers, not one mechanism | T0 themes, T1 script commands, T2 WebAssembly view extensions, T3 optional JS runtime. Each has a radically different effort-to-value ratio. |
 | AD-15 | Keyboard handling at two levels with a sharp boundary | Outside the window is bespoke platform code behind `trait Platform`; inside is GPUI's action and keymap system. GPUI resolves keystrokes against the focus tree, which requires the window to already hold focus — so it cannot cover global invocation. |
 | AD-16 | The press-and-hold gesture is not a shortcut | Accelerator APIs require modifiers plus a non-modifier key and report only the press. A lone held modifier with measured duration and a release event is a gesture over keyboard state, not an accelerator. |
@@ -122,6 +122,7 @@ once Lumen was measured well inside them (7.36).
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
+| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites | **In progress.** See F15 decisions |
 
 ### F4 build order is not optional
 
@@ -2020,6 +2021,122 @@ The decisions:
   frame, and under the 50 µs held to from slice 1. Gesture and cold
   start were not measured again: neither path reaches the calculator.
 
+### F15 decisions
+
+Lumen's look was one look: the geometry was the project's, in constants, and a
+theme could change colour and the type family and nothing else (AD-13). F15
+opens the look to the user. The references were Raycast on Windows, Vicinae
+and Asyar: a taller search field with larger type, taller rows, a filled
+selection without a border, the subtitle beside the title instead of under
+it, the footer's keys drawn as keycaps, and the empty list in sections. None
+of that is a colour, and most of it is not even a number.
+
+The decisions:
+
+- **Two layers, chosen apart.** A *palette* is what a theme file is today --
+  colours, appearance and the type family -- and keeps its schema, its folder
+  and its config key (`theme`). A *style* is new: geometry and variants, in
+  `styles/`, named by `style` in `config.json`. Either can change without the
+  other, so a Raycast style with a Gruvbox palette is two settings rather than
+  a file somebody has to merge by hand. A preset is a named pair. The resolved
+  `Theme` the UI sees carries both, so a component still receives one value.
+- **Tokens and variants, not layout.** A style sets numbers from a closed list
+  of tokens and picks variants from a closed list of variants. It does not
+  describe a tree. A layout language would make the UI tree exist twice
+  (I-13), make every element name public API that I-12 then freezes, and
+  leave window sizing, virtualisation and the budgets to whoever wrote the
+  theme. Going from closed to open later is a migration; the other way is a
+  breakage.
+- **Bounded, and resolved like colours.** Every token has a range, and the
+  relations the constants asserted at compile time (a row's radius under half
+  its height, the inset inside the gutter, the icon inside the row, the type
+  inside its line) are checked when a style loads. A value out of range is
+  clamped and a broken relation reverts the tokens involved to the base, each
+  with a warning, never an error: a style written for a later Lumen still
+  loads (I-12). The base style is the constants as they were, so the launcher
+  draws the same pixels until a style says otherwise.
+- **Only the launcher's surface is themeable.** The search field, the rows
+  and their icon, the section headers, the calculator's card and the footer --
+  in the root list and in a view, which share the geometry by AD-07. The action
+  panel, the forms, the overlay and the settings window keep their constants.
+  A token is added when a surface needs one, not ahead of it.
+- **Tokens name parts, not features.** AD-12 forbids a colour token named for
+  a component, because components multiply. The launcher's parts do not: a
+  new feature draws inside a row, it does not add one. So a geometry token
+  names a part (`row.height`, `footer.height`) and a new token is safe by the
+  same construction as a new colour: missing from old styles, filled from the
+  base.
+- **Rows stay one height.** I-10 holds within a style: a row is `row.height`
+  whether or not it has a subtitle, in every row of every list, and a section
+  header is `section.height`. Changing style may resize the window, which is a
+  resize and not a re-creation (I-4).
+- **Sections on the empty list only.** With nothing typed, the root list is an
+  ordered list of sections from `config.json`, each a title, what it shows and
+  whether its header is drawn. What a section can show is a closed set --
+  `favorites`, `commands`, `applications` -- that grows in code. The default
+  is Raycast's: *Favorites*, *Commands*, *Applications*. An item appears once,
+  in the first section that claims it; an empty section is not drawn, header
+  included; what no section claims is not browsed but is still searched.
+  Typing collapses the sections into one ranked list, under a *Results* header
+  that can be turned off: ranking by kind would put a strong match under a
+  weak one for being in the wrong section, and AD-03's order is the part of
+  the launcher that must survive any presentation.
+- **The empty list is computed once.** It depends on no query, so it is built
+  when the index, the frecency or the favourites change, and opening the
+  launcher ranks nothing. It is not capped: every application and every
+  command is browsable. Whether the typed list keeps `MAX_RESULTS` is decided
+  by measuring it against a 2,000-entry index, not by assuming. `MAX_RESULTS`
+  never protected the frame anyway: `Search::rank` scores and sorts every
+  candidate before it truncates.
+- **Favourites are an ordered list of ids.** Any application or command can
+  be one, from the action panel or by its keys (`Ctrl+Shift+F`, and
+  `Ctrl+Alt+Up`/`Down` to move one), bound in the keymap (I-14). An id whose
+  item is gone is kept, not shown, so an application reinstalled comes back
+  where it was.
+- **Measured first.** Ranking had a budget test; drawing had nothing. The
+  frame cost while typing is taken with gpui's own frame measurement
+  (`ZED_MEASUREMENTS`) by `scripts/measure-typing.ps1`, before anything
+  changes, and again at the close.
+
+The style schema, version 1. Base values are the constants as F14 left them.
+
+| Token | Base | Range | What it is |
+| --- | --- | --- | --- |
+| `window.radius` | 10 | 0--16 | The window's corner |
+| `search.height` | 56 | 40--96 | The search field's row |
+| `gutter` | 14 | 8--32 | The left edge text lines up on |
+| `list.padding` | 6 | 0--16 | Above and below the list |
+| `row.height` | 44 | 28--72 | Every row (I-10) |
+| `row.radius` | 7 | 0--18 | The selection's corner |
+| `row.inset` | 7 | 0--16 | The selection's distance from the window's edge |
+| `icon.size` | 26 | 14--40 | The icon's reserved square |
+| `icon.gap` | 12 | 4--24 | Between the icon and the title |
+| `section.height` | 28 | 16--48 | A section's header |
+| `footer.height` | 38 | 28--64 | The footer |
+| `keycap.height` | 20 | 14--32 | A keycap, when the footer draws them |
+| `keycap.padding` | 5 | 2--10 | Either side of a keycap's label |
+| `keycap.radius` | 4 | 0--8 | A keycap's corner |
+| `keycap.gap` | 4 | 0--12 | Between the keycaps of one chord |
+| `text.query` | 17 | 12--28 | What is typed |
+| `text.title` | 13.5 | 11--18 | A row's title |
+| `text.subtitle` | 12 | 10--16 | A row's subtitle |
+| `text.accessory` | 11.5 | 10--16 | What a row says at its right edge |
+| `text.section` | 11.5 | 10--16 | A section's header |
+| `text.footer` | 11.5 | 10--16 | The footer |
+| `text.card` | 22 | 14--48 | The calculator card's two values |
+| `weight.query`, `weight.title`, `weight.section` | 400 | 400, 500, 600 | The bundled faces; anything else snaps to the nearest |
+
+| Variant | Values (base first) | What it changes |
+| --- | --- | --- |
+| `row.subtitle` | `stacked`, `inline` | Under the title, or after it on the same line |
+| `selection` | `fill-border`, `fill` | Whether the selected row has a border |
+| `footer.hints` | `text`, `keycaps` | `Actions  Ctrl+K`, or the keys drawn as keycaps |
+| `section.case` | `title`, `upper` | *Commands* or *COMMANDS* |
+
+The icon's extraction resolution follows `icon.size`: three and a half times
+it, never under the 96 pixels it was, so a style with larger icons does not
+make them soft.
+
 ---
 
 ## 7. Deviations from the plan
@@ -2094,6 +2211,10 @@ guaranteed to arrive, and when it does not, the window is stranded at whatever
 opacity the first frame computed.
 
 ### 7.6 Geometry tokens live in code, not in the theme file
+
+*Superseded for the launcher's surface by 7.41.* The rest of the geometry --
+the action panel, the forms, the overlay, the settings window -- still lives
+here.
 
 I-5 says no colour, spacing, radius or type size may appear literally in UI code.
 I-11 says a theme may define only colour and type family. Both hold because there
@@ -2763,6 +2884,24 @@ only the drawing and the scroll know it is not a row. Its height, its type
 size and its gap are tokens (`layout::CARD_ROWS`, `layout::text::CARD`,
 `layout::CARD_LABEL_GAP`), as I-5 asks. An answer in money names its
 result by the rates' date, so a stale table shows on the card itself.
+
+### 7.41 The launcher's geometry moves from constants into a style
+
+7.6 kept geometry in `lumen_core::layout`, where only the project could
+change it, and checked the relations between the values at compile time.
+F15 makes the launcher's surface themeable (AD-13, revised), so those values
+become a resolved `Metrics` read at run time: the base style is the
+constants, a style file overrides some of them, and the compile-time
+assertions become checks run when a style loads. I-5 is unchanged in
+substance -- no literal measurement in a render function -- and the source
+of the measurement is now the active style instead of a constant.
+
+What this costs is a field read where a constant was folded in, a few
+nanoseconds against an 8 ms frame, and the guarantee that a broken relation
+never produces a binary, which becomes a guarantee that it never produces a
+window: it is reverted to the base before anything draws. The base style is
+checked by a test, so the project's own values still cannot be broken
+unnoticed.
 
 ---
 
