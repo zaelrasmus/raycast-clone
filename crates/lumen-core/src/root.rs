@@ -778,6 +778,8 @@ impl RootSearch {
             .into_iter()
             .collect();
         self.fallbacks.clear();
+        // One row, the link being filled in: nothing to head.
+        self.sections.clear();
         self.hits = (0..self.answers.len())
             .map(|index| Hit {
                 source: Source::Answer(index),

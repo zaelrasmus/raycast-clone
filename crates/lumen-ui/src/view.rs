@@ -410,7 +410,7 @@ fn render_metadata(row: &MetadataRow, colors: &Colors) -> AnyElement {
 /// A section's header: the title, and the subtitle after it in the same row
 /// and the same size, only dimmer -- so a header with a subtitle is exactly
 /// as tall as one without (I-10).
-fn render_section(
+pub(crate) fn render_section(
     title: SharedString,
     subtitle: Option<SharedString>,
     colors: &Colors,

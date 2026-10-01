@@ -297,7 +297,13 @@ pub struct Launcher {
     /// would need an `App` everywhere a query is read.
     query: String,
     selected: usize,
-    scroll: UniformListScrollHandle,
+    /// The root list as drawn: section headers and hits, in order (F15).
+    /// The card, when there is one, is drawn above it and is not a row.
+    rows: Vec<crate::view::Row>,
+    /// `list` rather than `uniform_list`: a header is shorter than a row
+    /// (7.29). Every height is still known before anything is drawn, so the
+    /// window is sized and the selection revealed by arithmetic.
+    list: gpui::ListState,
 
     /// The root list, or an extension's view (F4).
     mode: Mode,
@@ -420,7 +426,8 @@ impl Launcher {
             clipboard: None,
             query: String::new(),
             selected: 0,
-            scroll: UniformListScrollHandle::new(),
+            rows: Vec::new(),
+            list: crate::view::list_state(0),
             mode: Mode::Root,
             argument: None,
             focused_once: false,
@@ -801,6 +808,10 @@ impl Launcher {
             self.icons = IconCache::new(self.platform.clone(), resolution);
         }
         self.theme = theme;
+        // The headers' case is the style's, and is baked into the rows.
+        if restyled {
+            self.rebuild_rows();
+        }
         // A style is geometry: the window's height and its anchor may both
         // have moved, so it is re-placed even when the height alone has not
         // -- an empty list is as tall in any style with the same search field
@@ -848,10 +859,58 @@ impl Launcher {
         self.theme.appearance
     }
 
-    /// How many result rows the window should currently be sized for.
-    pub fn visible_rows(&self) -> usize {
-        (self.hits().len() + self.card_rows().saturating_sub(1))
-            .min(self.config.window.visible_rows)
+    /// Rebuild the drawn rows from the ranked hits and their sections.
+    ///
+    /// Called whenever the hits change. A header is drawn only over a section
+    /// that has a row under it in the list: a *Results* section holding only
+    /// the card would otherwise leave its header alone beneath it.
+    fn rebuild_rows(&mut self) {
+        use crate::view::Row;
+        use lumen_core::style::SectionCase;
+
+        let first = usize::from(self.card_rows() > 0);
+        let case = self.theme.style.variants.section_case;
+        let mut rows = Vec::with_capacity(self.hits().len() + self.root.sections().len());
+        if self.root.sections().is_empty() {
+            rows.extend((first..self.hits().len()).map(Row::Item));
+        }
+        for section in self.root.sections() {
+            let items = section.start.max(first)..section.start + section.len;
+            if items.is_empty() {
+                continue;
+            }
+            if section.header {
+                let title = match case {
+                    SectionCase::Title => section.title.clone(),
+                    SectionCase::Upper => section.title.to_uppercase(),
+                };
+                rows.push(Row::Section(title.into(), None));
+            }
+            rows.extend(items.map(Row::Item));
+        }
+        self.list.reset(rows.len());
+        self.rows = rows;
+    }
+
+    /// How tall the list's rows are, in whole rows (I-10).
+    ///
+    /// The rows a full window would hold, less the card's, accumulated whole
+    /// until the next would not fit -- as a view's are (7.29), and for the
+    /// same reason: with headers shorter than rows, capping the sum would
+    /// leave a row cut through at the bottom edge.
+    fn rows_height(&self) -> f32 {
+        let metrics = self.metrics();
+        let card = self.card_rows() as f32 * metrics.row_height;
+        let cap = self.config.window.visible_rows as f32 * metrics.row_height - card;
+        let mut used = 0.0;
+        for row in &self.rows {
+            let height = crate::view::row_height(row, metrics);
+            if used + height > cap {
+                break;
+            }
+            used += height;
+        }
+        used
     }
 
     /// How many rows the calculator's card takes (F14): `layout::CARD_ROWS`
@@ -890,7 +949,15 @@ impl Launcher {
 
         let metrics = self.metrics();
         match &self.mode {
-            Mode::Root => self.config.window_height(metrics, self.visible_rows()),
+            // Nothing found: the search field and the footer, as before.
+            Mode::Root if self.hits().is_empty() => self.config.window_height(metrics, 0),
+            Mode::Root => {
+                metrics.search_height
+                    + metrics.list_padding * 2.0
+                    + self.card_rows() as f32 * metrics.row_height
+                    + self.rows_height()
+                    + metrics.footer_height
+            }
             Mode::Form(state) => metrics.search_height + state.height + metrics.footer_height,
             Mode::View(state) if state.loading => self.loading_height(),
             Mode::View(state) => {
@@ -1080,6 +1147,7 @@ impl Launcher {
         // one, or Enter runs an action the user can no longer see.
         self.action_panel = None;
 
+        self.rebuild_rows();
         self.resize_if_needed(previous_height, cx);
     }
 
@@ -1975,7 +2043,7 @@ impl Launcher {
         self.rerank(cx);
         if let Some(at) = self.hits().iter().position(|hit| self.item(hit).id == id) {
             self.selected = at;
-            self.scroll.scroll_to_item(at, gpui::ScrollStrategy::Top);
+            self.reveal_row();
         }
         cx.notify();
     }
@@ -2186,14 +2254,34 @@ impl Launcher {
         self.action_panel = None;
         // F2 acceptance criterion: the list jumps directly to the selection.
         // There is no smooth scrolling, because smooth scrolling in a list being
-        // driven by arrow keys is motion the user did not ask for. Under a
-        // card, the list starts at the second result (F14).
-        let row = match self.card_rows() {
-            0 => self.selected,
-            _ => self.selected.saturating_sub(1),
-        };
-        self.scroll.scroll_to_item(row, ScrollStrategy::Top);
+        // driven by arrow keys is motion the user did not ask for.
+        self.reveal_row();
         cx.notify();
+    }
+
+    /// Scroll the root list just enough to show the selected row, by its
+    /// known height (I-10); moving up to a section's first row shows its
+    /// header too. The card is above the list, so selecting it puts the
+    /// list back at its start.
+    fn reveal_row(&self) {
+        let Some(row) = self.rows.iter().position(
+            |row| matches!(row, crate::view::Row::Item(index) if *index == self.selected),
+        ) else {
+            self.list.scroll_to(gpui::ListOffset::default());
+            return;
+        };
+        let top = self.list.logical_scroll_top();
+        let (item_ix, offset) = crate::view::reveal(
+            &self.rows,
+            self.metrics(),
+            (top.item_ix, f32::from(top.offset_in_item)),
+            row,
+            self.rows_height(),
+        );
+        self.list.scroll_to(gpui::ListOffset {
+            item_ix,
+            offset_in_item: gpui::px(offset),
+        });
     }
 
     fn activate(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {
@@ -3230,7 +3318,9 @@ impl Launcher {
     /// cannot disagree and the window never has to resize to swap between them.
     fn results_height(&self) -> gpui::Pixels {
         let geometry = self.geometry();
-        geometry.row_height() * self.visible_rows() as f32 + geometry.list_padding() * 2.0
+        geometry.row_height() * self.card_rows() as f32
+            + gpui::px(self.rows_height())
+            + geometry.list_padding() * 2.0
     }
 
     /// Draw the open view (F4, step 2).
@@ -3279,10 +3369,10 @@ impl Launcher {
         }
 
         // The card, when there is one, is the first result, drawn above the
-        // list in the place of `card_rows` rows; the list holds the rest.
+        // list in the place of `card_rows` rows; the list holds the rest,
+        // under their sections' headers.
         let card = self.card_rows();
-        let first = usize::from(card > 0);
-        let count = self.hits().len() - first;
+        let count = self.rows.len();
         let entity = cx.entity();
 
         div()
@@ -3293,16 +3383,12 @@ impl Launcher {
             .when(card > 0, |results| results.child(self.render_card(&entity)))
             .when(count > 0, |results| {
                 results.child(
-                    uniform_list(
-                        "results",
-                        count,
-                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                            range
-                                .map(|index| this.render_row(index + first, &entity, cx))
-                                .collect::<Vec<_>>()
+                    gpui::list(
+                        self.list.clone(),
+                        cx.processor(move |this, index: usize, _window, cx| {
+                            this.render_root_row(index, &entity, cx)
                         }),
                     )
-                    .track_scroll(self.scroll.clone())
                     .flex_1(),
                 )
             })
@@ -3384,6 +3470,25 @@ impl Launcher {
             )
             .child(side(item.title.clone(), named))
             .into_any_element()
+    }
+
+    /// One drawn row of the root list: a section's header, or a hit.
+    fn render_root_row(
+        &self,
+        index: usize,
+        entity: &Entity<Self>,
+        cx: &mut App,
+    ) -> gpui::AnyElement {
+        match self.rows.get(index) {
+            Some(crate::view::Row::Section(title, subtitle)) => crate::view::render_section(
+                title.clone(),
+                subtitle.clone(),
+                &self.theme.colors,
+                &self.geometry(),
+            ),
+            Some(crate::view::Row::Item(hit)) => self.render_row(*hit, entity, cx),
+            None => div().into_any_element(),
+        }
     }
 
     fn render_row(&self, index: usize, entity: &Entity<Self>, cx: &mut App) -> gpui::AnyElement {
