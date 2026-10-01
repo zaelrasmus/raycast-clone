@@ -38,6 +38,7 @@ use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
 use crate::clipboard_page::ClipboardPage;
+use crate::clock_page::ClockPage;
 use crate::currency_page::CurrencyPage;
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
@@ -53,16 +54,18 @@ enum Page {
     Translation,
     Timers,
     Currency,
+    Clock,
     Clipboard,
 }
 
 impl Page {
-    const ALL: [Page; 6] = [
+    const ALL: [Page; 7] = [
         Page::Sheets,
         Page::Quicklinks,
         Page::Translation,
         Page::Timers,
         Page::Currency,
+        Page::Clock,
         Page::Clipboard,
     ];
 
@@ -73,6 +76,7 @@ impl Page {
             Page::Translation => "Translation",
             Page::Timers => "Timers",
             Page::Currency => "Currency",
+            Page::Clock => "World Clock",
             Page::Clipboard => "Clipboard History",
         }
     }
@@ -84,6 +88,7 @@ impl Page {
             Page::Translation => "The service and your presets, in config.json",
             Page::Timers => "Quick durations and your presets, in config.json",
             Page::Currency => "Where exchange rates come from, in config.json",
+            Page::Clock => "How a place's time reads beside yours, in config.json",
             Page::Clipboard => "How much is kept, in config.json, and clearing it",
         }
     }
@@ -231,6 +236,7 @@ pub struct Settings {
     translation: Entity<TranslatePage>,
     timers: Entity<TimersPage>,
     currency: Entity<CurrencyPage>,
+    clock: Entity<ClockPage>,
     clipboard: Entity<ClipboardPage>,
 }
 
@@ -270,6 +276,13 @@ impl Settings {
         };
         cx.observe(&currency, |_, _, cx| cx.notify()).detach();
 
+        let clock = {
+            let colors = theme.colors.clone();
+            let config_file = config_file.clone();
+            cx.new(|cx| ClockPage::new(config_file, colors, cx))
+        };
+        cx.observe(&clock, |_, _, cx| cx.notify()).detach();
+
         let clipboard = {
             let colors = theme.colors.clone();
             let config_file = config_file.clone();
@@ -301,6 +314,7 @@ impl Settings {
             translation,
             timers,
             currency,
+            clock,
             clipboard,
         }
     }
@@ -319,6 +333,11 @@ impl Settings {
     /// Re-read the currency section of `config.json`, for the same reasons.
     pub fn reload_currency(&mut self, cx: &mut Context<Self>) {
         self.currency.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Re-read the clock section of `config.json`, for the same reasons.
+    pub fn reload_clock(&mut self, cx: &mut Context<Self>) {
+        self.clock.update(cx, |page, cx| page.reload(cx));
     }
 
     /// Re-read the clipboard section of `config.json`, for the same reasons,
@@ -410,6 +429,8 @@ impl Settings {
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.currency
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.clock
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.clipboard
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
@@ -423,6 +444,7 @@ impl Settings {
             Page::Translation => self.translation.read(cx).focus(window, cx),
             Page::Timers => self.timers.read(cx).focus(window, cx),
             Page::Currency => self.currency.read(cx).focus(window, cx),
+            Page::Clock => self.clock.read(cx).focus(window, cx),
             Page::Clipboard => self.clipboard.read(cx).focus(window, cx),
         }
     }
@@ -491,6 +513,10 @@ impl Settings {
         }
         if self.page == Page::Currency {
             self.currency.update(cx, |page, cx| page.save(cx));
+            return;
+        }
+        if self.page == Page::Clock {
+            self.clock.update(cx, |page, cx| page.save(cx));
             return;
         }
         if self.page == Page::Clipboard {
@@ -817,6 +843,12 @@ impl Render for Settings {
                 .flex_1()
                 .overflow_hidden()
                 .child(self.currency.clone())
+                .into_any_element(),
+            Page::Clock => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.clock.clone())
                 .into_any_element(),
             Page::Clipboard => div()
                 .flex()
@@ -1178,6 +1210,7 @@ impl Settings {
             Page::Translation => (self.translation.read(cx).status(), false),
             Page::Timers => (self.timers.read(cx).status(cx), false),
             Page::Currency => (self.currency.read(cx).status(), false),
+            Page::Clock => (self.clock.read(cx).status(), false),
             Page::Clipboard => (self.clipboard.read(cx).status(), false),
         };
 

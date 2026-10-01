@@ -7,6 +7,7 @@
 
 pub mod query;
 pub mod session;
+pub mod store;
 mod sun;
 
 use jiff::tz::TimeZone;
@@ -17,13 +18,98 @@ use serde::{Deserialize, Serialize};
 pub use sun::{Daylight, daylight};
 
 /// The `clock` section of `config.json` (F13).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct ClockConfig {
     /// Which value leads a row.
     pub row: RowLayout,
     /// How the difference from here is written.
     pub difference_format: DifferenceFormat,
+    /// When the user's working day and a place's overlap (slice 4).
+    pub overlap: Overlap,
+}
+
+impl ClockConfig {
+    /// The working hours to compare, when the overlap is to be shown: on,
+    /// with *Difference first*, and hours that parse.
+    pub fn working_hours(&self) -> Option<(u16, u16)> {
+        if !self.overlap.enabled || self.row != RowLayout::Difference {
+            return None;
+        }
+        self.overlap.hours()
+    }
+}
+
+/// Working hours, compared with each place's (F13, slice 4).
+///
+/// The same hours are assumed there as here -- nine to five is nine to five
+/// in Vancouver too -- which is the question a remote meeting asks: when
+/// are both of us at work?
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Overlap {
+    pub enabled: bool,
+    /// `HH:MM`, 24-hour, as written in the file whatever the system's clock.
+    pub start: String,
+    pub end: String,
+}
+
+impl Default for Overlap {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            start: "09:00".into(),
+            end: "17:00".into(),
+        }
+    }
+}
+
+impl Overlap {
+    /// The hours as minutes since midnight, when both parse and the day
+    /// starts before it ends.
+    pub fn hours(&self) -> Option<(u16, u16)> {
+        let (start, end) = (minutes(&self.start)?, minutes(&self.end)?);
+        (start < end).then_some((start, end))
+    }
+}
+
+/// `09:00` as 540. Anything else is `None`.
+pub fn minutes(text: &str) -> Option<u16> {
+    let (hours, minutes) = text.trim().split_once(':')?;
+    if hours.is_empty() || hours.len() > 2 || minutes.len() != 2 {
+        return None;
+    }
+    let (hours, minutes): (u16, u16) = (hours.parse().ok()?, minutes.parse().ok()?);
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+}
+
+/// When a working day `start..end` (minutes since midnight) here overlaps
+/// the same working day at a place `difference` seconds ahead: a span of
+/// the user's own day, or `None`. The day there is tried on either side of
+/// midnight here, so Seoul's morning is found in Santo Domingo's evening
+/// before.
+pub fn overlap(start: u16, end: u16, difference: i32) -> Option<(u16, u16)> {
+    let shift = difference.div_euclid(60);
+    let (start, end) = (i32::from(start), i32::from(end));
+    [-1440, 0, 1440]
+        .into_iter()
+        .map(|day| {
+            let (theirs_start, theirs_end) = (start - shift + day, end - shift + day);
+            (start.max(theirs_start), end.min(theirs_end))
+        })
+        .filter(|(from, to)| from < to)
+        .max_by_key(|(from, to)| to - from)
+        .map(|(from, to)| (from as u16, to as u16))
+}
+
+/// A minute of the user's day as a moment the platform writes, on `day`.
+pub fn at_minute(day: &Zoned, minute: u16) -> LocalTime {
+    LocalTime {
+        hour: (minute / 60) as u8,
+        minute: (minute % 60) as u8,
+        second: 0,
+        ..local_time(day)
+    }
 }
 
 /// Which value leads a row: drawn like the title, at the right edge, with
@@ -308,6 +394,59 @@ mod tests {
             until_next_minute(at("2026-09-30T12:01:00Z")),
             std::time::Duration::from_secs(60)
         );
+    }
+
+    #[test]
+    fn working_hours_are_read_strictly() {
+        assert_eq!(minutes("09:00"), Some(540));
+        assert_eq!(minutes("9:30"), Some(570));
+        assert_eq!(minutes("23:59"), Some(1439));
+        for text in ["24:00", "9", "9:5", "nine", "", "12:60"] {
+            assert_eq!(minutes(text), None, "{text}");
+        }
+        let backwards = Overlap {
+            enabled: true,
+            start: "17:00".into(),
+            end: "09:00".into(),
+        };
+        assert_eq!(backwards.hours(), None);
+    }
+
+    #[test]
+    fn the_overlap_is_a_span_of_the_users_own_day() {
+        let (nine, five) = (9 * 60, 17 * 60);
+        // Vancouver, three hours behind: their nine is our noon.
+        assert_eq!(overlap(nine, five, -3 * 3600), Some((12 * 60, five)));
+        // Madrid, six ahead: their five is our eleven.
+        assert_eq!(overlap(nine, five, 6 * 3600), Some((nine, 11 * 60)));
+        // India, nine and a half ahead: their day is our 23:30 to 07:30.
+        assert_eq!(overlap(nine, five, 9 * 3600 + 1800), None);
+        // Half an hour counts: five and a half ahead ends at 11:30.
+        assert_eq!(
+            overlap(nine, five, 5 * 3600 + 1800),
+            Some((nine, 11 * 60 + 30))
+        );
+        assert_eq!(overlap(nine, five, 0), Some((nine, five)));
+        // Seoul, thirteen ahead: their working day is our night.
+        assert_eq!(overlap(nine, five, 13 * 3600), None);
+        // A long day reaches across midnight: the larger of this morning
+        // (their evening, 06:00-09:00) and this evening (their next
+        // morning, 17:00-22:00).
+        assert_eq!(
+            overlap(6 * 60, 22 * 60, 13 * 3600),
+            Some((17 * 60, 22 * 60))
+        );
+    }
+
+    /// Shown only on, with *Difference first*, and with hours that parse.
+    #[test]
+    fn the_overlap_is_shown_only_where_it_belongs() {
+        let mut config = ClockConfig::default();
+        assert_eq!(config.working_hours(), None, "off by default");
+        config.overlap.enabled = true;
+        assert_eq!(config.working_hours(), Some((540, 1020)));
+        config.row = RowLayout::Time;
+        assert_eq!(config.working_hours(), None);
     }
 
     #[test]

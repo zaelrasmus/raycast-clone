@@ -14,6 +14,7 @@
 
 pub mod assets;
 pub mod clipboard_page;
+pub mod clock_page;
 pub mod currency_page;
 pub mod duration_input;
 pub mod edit;

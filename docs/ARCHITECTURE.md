@@ -120,7 +120,7 @@ once Lumen was measured well inside them (7.36).
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
 | **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
-| **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **In progress.** See F13 decisions |
+| **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **In progress.** World Clock is done: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather is next. See F13 decisions |
 
 ### F4 build order is not optional
 
@@ -1678,9 +1678,24 @@ The decisions:
   signed (`−2 h`), also a setting. Each layout has fixed columns: switching
   it changes the row, and nothing moves while results change (I-10).
 - **Working-hours overlap is optional, and only with *Difference first*.**
-  Off by default. On, it needs the user's working hours and reserves its
-  column even for *No overlap*. With *Time first* the setting is greyed
-  out and says why.
+  Off by default. On, the same hours are assumed there as here -- nine to
+  five is nine to five in Vancouver too -- and the row shows when both
+  days meet, as a span of the user's own day (`12:00–17:00`), or *No
+  overlap*: the column is there either way. Their day is tried on either
+  side of the user's midnight, so a long day finds Seoul's morning in
+  Santo Domingo's evening. A row holds three accessories
+  (`MAX_ACCESSORIES`), so with the overlap on the day leaves its tag and
+  joins the time (`01:14 Thu`) rather than one being dropped. The pane
+  says it in words: *Both at work 12:00–17:00 your time*.
+- **The *World Clock* settings page.** Row, difference, overlap and
+  working hours, written to the `clock` section only, through `section`'s
+  rules. `Select` has no disabled state, and one page did not justify
+  adding it to every dropdown: with *Time first* chosen, the overlap row
+  says *Only with Difference first* in its place and Tab passes it by. The
+  hours are `HH:MM`, 24-hour, as written in the file whatever the system's
+  clock; ones that do not read as a day are refused with why, and hours
+  not shown are kept as they were rather than judged. The next World Clock
+  opened reads what was saved.
 - **The pane is the whole answer, whatever the layout.** The exact time and
   date, the difference, the UTC offset and zone abbreviation, the next
   daylight-saving change, sunrise and sunset (computed from the

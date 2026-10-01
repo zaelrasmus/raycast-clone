@@ -683,6 +683,7 @@ fn open_settings(
             settings.reload_translation(cx);
             settings.reload_timers(cx);
             settings.reload_currency(cx);
+            settings.reload_clock(cx);
             settings.reload_clipboard(history, cx);
             settings.focus(window, cx);
         })
@@ -1255,6 +1256,7 @@ fn reload_config(
                 settings.reload_translation(cx);
                 settings.reload_timers(cx);
                 settings.reload_currency(cx);
+                settings.reload_clock(cx);
                 settings.reload_clipboard(history, cx);
             })
             .ok();
@@ -1437,7 +1439,7 @@ fn handle(
         }
         Message::RunClock => {
             let platform = platform.clone();
-            let config = config.clock;
+            let config = config.clock.clone();
             let favourites = surfaces.paths.places_file();
             let window = surfaces.launcher;
             cx.update(move |cx| clock::run(platform, config, favourites, window, cx))

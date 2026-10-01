@@ -393,18 +393,40 @@ impl Session {
     /// the one that leads last and drawn like the title. The leading value
     /// is always the last, so it lines up down the list whatever is
     /// beside it (I-10).
+    ///
+    /// With the working-hours overlap on, it takes the day's place, and the
+    /// day joins the time -- `01:14 Thu` -- so a row still holds three
+    /// (`MAX_ACCESSORIES`) and none is dropped.
     fn timed_accessories(&self, there: &Zoned, clocks: &Clocks) -> Vec<Accessory> {
-        let time = (self.time)(&super::local_time(there));
-        let difference = super::describe(
-            super::difference(&clocks.here, there),
-            self.config.difference_format,
-        );
+        let mut time = (self.time)(&super::local_time(there));
+        let seconds = super::difference(&clocks.here, there);
+        let difference = super::describe(seconds, self.config.difference_format);
+        let day = super::day(&clocks.here, there);
         let mut accessories = Vec::new();
-        if let Some(day) = super::day(&clocks.here, there) {
-            accessories.push(Accessory::Tag {
-                text: day.into(),
-                tone: Tone::Neutral,
-            });
+        match self.config.working_hours() {
+            Some((start, end)) => {
+                if day.is_some() {
+                    time = format!("{time} {}", there.strftime("%a"));
+                }
+                accessories.push(match super::overlap(start, end, seconds) {
+                    Some((from, to)) => Accessory::Tag {
+                        text: self.span(&clocks.here, from, to),
+                        tone: Tone::Positive,
+                    },
+                    None => Accessory::Tag {
+                        text: "No overlap".into(),
+                        tone: Tone::Neutral,
+                    },
+                });
+            }
+            None => {
+                if let Some(day) = day {
+                    accessories.push(Accessory::Tag {
+                        text: day.into(),
+                        tone: Tone::Neutral,
+                    });
+                }
+            }
         }
         let (dim, lead) = match self.config.row {
             RowLayout::Difference => (time, difference),
@@ -419,6 +441,16 @@ impl Session {
             strong: true,
         });
         accessories
+    }
+
+    /// `12:00\u{2013}17:00`: a span of the user's day, written the
+    /// system's way.
+    fn span(&self, here: &Zoned, from: u16, to: u16) -> String {
+        format!(
+            "{}\u{2013}{}",
+            (self.time)(&super::at_minute(here, from)),
+            (self.time)(&super::at_minute(here, to))
+        )
     }
 
     /// A place that keeps several times ends with their range instead:
@@ -612,6 +644,19 @@ impl Session {
                 super::describe_change(super::next_change(zone, self.now), zone),
             ),
         ];
+        if let Some((start, end)) = self.config.working_hours() {
+            let seconds = super::difference(&clocks.here, there);
+            metadata.push(row(
+                "Working hours",
+                match super::overlap(start, end, seconds) {
+                    Some((from, to)) => format!(
+                        "Both at work {} your time",
+                        self.span(&clocks.here, from, to)
+                    ),
+                    None => "No overlap with yours".into(),
+                },
+            ));
+        }
         if let Some(city) = city {
             let format_moment =
                 |moment: Timestamp| (self.time)(&super::local_time(&moment.to_zoned(zone.clone())));
@@ -811,6 +856,7 @@ mod tests {
         let mut session = session_with(ClockConfig {
             row: RowLayout::Time,
             difference_format: DifferenceFormat::Signed,
+            ..ClockConfig::default()
         });
         let list = typed(&mut session, "vancouver");
         assert_eq!(
@@ -1108,6 +1154,60 @@ mod tests {
                 .sections
                 .iter()
                 .all(|section| section.title.as_deref() != Some("My Places"))
+        );
+    }
+
+    fn overlapping(row: RowLayout) -> Session {
+        let mut config = ClockConfig {
+            row,
+            ..ClockConfig::default()
+        };
+        config.overlap.enabled = true;
+        session_with(config)
+    }
+
+    #[test]
+    fn the_overlap_takes_the_days_place_and_the_day_joins_the_time() {
+        let mut session = overlapping(RowLayout::Difference);
+        let list = typed(&mut session, "vancouver");
+        assert_eq!(
+            texts(&section(&list, "Cities").items[0]),
+            [
+                ("12:00\u{2013}17:00".to_string(), false),
+                ("09:14".to_string(), false),
+                ("3 h behind".to_string(), true)
+            ]
+        );
+        let list = typed(&mut session, "seoul");
+        assert_eq!(
+            texts(&section(&list, "Cities").items[0]),
+            [
+                ("No overlap".to_string(), false),
+                ("01:14 Thu".to_string(), false),
+                ("13 h ahead".to_string(), true)
+            ]
+        );
+        // The pane says it too.
+        let list = list_of(session.event(Event::ActionInvoked {
+            item: None,
+            action: "details".into(),
+        }));
+        let detail = section(&list, "Cities").items[0].detail.clone().unwrap();
+        assert!(
+            detail
+                .metadata
+                .iter()
+                .any(|row| row.label == "Working hours" && row.value == "No overlap with yours")
+        );
+    }
+
+    #[test]
+    fn the_overlap_is_not_shown_with_time_first() {
+        let mut session = overlapping(RowLayout::Time);
+        let list = typed(&mut session, "seoul");
+        assert_eq!(
+            texts(&section(&list, "Cities").items[0])[0],
+            ("Tomorrow".to_string(), false)
         );
     }
 
