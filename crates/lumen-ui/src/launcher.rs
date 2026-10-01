@@ -358,7 +358,7 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> Self {
         let frecency = Frecency::load(&paths.frecency_file());
-        let icons = IconCache::new(platform.clone(), layout::ICON_RESOLUTION);
+        let icons = IconCache::new(platform.clone(), theme.style.metrics.icon_resolution());
 
         let query_field =
             cx.new(|cx| TextField::search(ROOT_PLACEHOLDER, theme.colors.clone(), cx));
@@ -781,6 +781,14 @@ impl Launcher {
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
         let restyled = theme.style != self.theme.style;
+        // Icons are extracted at a resolution that follows their square, so
+        // a style that changes the square needs them extracted again, or a
+        // larger icon is a small one stretched (F1, F15). Once per change of
+        // style, which is something a person does, not something typing does.
+        let resolution = theme.style.metrics.icon_resolution();
+        if resolution != self.theme.style.metrics.icon_resolution() {
+            self.icons = IconCache::new(self.platform.clone(), resolution);
+        }
         self.theme = theme;
         // A style is geometry: the window's height and its anchor may both
         // have moved, so it is re-placed even when the height alone has not
