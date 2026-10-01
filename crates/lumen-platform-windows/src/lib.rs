@@ -212,6 +212,10 @@ impl Platform for WindowsPlatform {
         date::format(when, style, locale)
     }
 
+    fn number_separators(&self) -> Result<lumen_platform::NumberSeparators> {
+        date::number_separators()
+    }
+
     fn paste(&self, window: FocusOwner, paste: &Paste) -> Result<()> {
         paste::paste(window, paste)
     }

@@ -422,7 +422,7 @@ impl Placeholder {
             // Nothing copied is nothing inserted, as Raycast removes it.
             Kind::Clipboard { offset } => Some(sources.clipboard(*offset).unwrap_or_default()),
             Kind::Uuid => Some(sources.uuid()),
-            Kind::Calculator { expression } => calc::amount(expression).map(calc::format_number),
+            Kind::Calculator { expression } => calc::amount(expression).map(calc::copied_number),
             Kind::Date(spec) => spec.write(now, sources),
             // Filled in by `Template::expand_into`, which knows the answers
             // and how deep it is; reaching here means inside an inserted
@@ -445,7 +445,7 @@ fn modify(modifiers: &[Modifier], mut value: String) -> String {
             // What is not arithmetic is left as it was: the clipboard
             // holding a word is not a reason to paste nothing.
             Modifier::Calculate => calc::amount(&value)
-                .map(calc::format_number)
+                .map(calc::copied_number)
                 .unwrap_or(value),
         };
     }

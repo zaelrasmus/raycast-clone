@@ -35,12 +35,39 @@ pub struct CalculatorConfig {
     /// none, and clears what was kept: a record nobody can see is one
     /// nobody can erase.
     pub history_limit: usize,
+    /// How numbers are written and read.
+    pub number_format: NumberFormat,
 }
 
 impl Default for CalculatorConfig {
     fn default() -> Self {
         Self {
             history_limit: DEFAULT_LIMIT,
+            number_format: NumberFormat::default(),
+        }
+    }
+}
+
+/// How the calculator writes and reads numbers (F14).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NumberFormat {
+    /// As the regional settings do: `1,800,000.5`, or `1.800.000,5`.
+    #[default]
+    System,
+    /// A point, and no grouping: `1800000.5`, whatever the region.
+    Plain,
+}
+
+impl NumberFormat {
+    /// The separators this means, with `system` asked only when needed.
+    pub fn separators(
+        self,
+        system: impl FnOnce() -> lumen_platform::NumberSeparators,
+    ) -> lumen_platform::NumberSeparators {
+        match self {
+            NumberFormat::System => system(),
+            NumberFormat::Plain => lumen_platform::NumberSeparators::PLAIN,
         }
     }
 }
@@ -226,6 +253,10 @@ mod tests {
         assert_eq!(config.limit(), MAX_LIMIT);
         let config: CalculatorConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(config.limit(), DEFAULT_LIMIT);
+        assert_eq!(config.number_format, NumberFormat::System);
+        let config: CalculatorConfig =
+            serde_json::from_str(r#"{ "number-format": "plain" }"#).unwrap();
+        assert_eq!(config.number_format, NumberFormat::Plain);
     }
 
     #[test]

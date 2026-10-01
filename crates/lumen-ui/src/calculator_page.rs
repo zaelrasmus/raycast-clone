@@ -1,7 +1,7 @@
 //! The Calculator page of the settings window (F14).
 //!
-//! How many calculations are kept, and clearing them: *Clipboard History*'s
-//! page (F12), for a file instead of a database. The limit is the
+//! How numbers are written, how many calculations are kept, and clearing
+//! them: *Clipboard History*'s page (F12), for a file instead of a database. The limit is the
 //! `calculator` section of `config.json`, written through
 //! `lumen_core::calc::settings`; a lower one trims the history at once.
 //! Clearing is not a setting: it acts on the history itself, under the lock
@@ -13,13 +13,14 @@ use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div, px,
 };
-use lumen_core::calc::history::{CalculatorConfig, History, MAX_LIMIT};
+use lumen_core::calc::history::{CalculatorConfig, History, MAX_LIMIT, NumberFormat};
 use lumen_core::calc::settings;
 use lumen_core::layout::{self, settings as metrics};
 use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, DIALOG_CONTEXT};
+use crate::select::{Choice, Select, SelectEvent};
 use crate::settings::text_button;
 use crate::styling::{color, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
@@ -33,6 +34,7 @@ pub struct CalculatorPage {
     /// Why the file could not be read. Nothing can be saved until it is fixed.
     problem: Option<String>,
     limit: Entity<TextField>,
+    format: Entity<Select>,
     /// How many calculations clearing would remove, while the dialog asks.
     confirming: Option<usize>,
     dialog_focus: FocusHandle,
@@ -49,12 +51,14 @@ impl CalculatorPage {
     pub fn new(path: PathBuf, history: PathBuf, colors: Colors, cx: &mut Context<Self>) -> Self {
         let config = CalculatorConfig::default();
         let limit = field(&config, &colors, cx);
+        let format = format_select(config.number_format, &colors, cx);
         let mut page = Self {
             path,
             history,
             colors,
             problem: None,
             limit,
+            format,
             confirming: None,
             dialog_focus: cx.focus_handle(),
             edited: false,
@@ -99,6 +103,7 @@ impl CalculatorPage {
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.limit = field(&self.config, &self.colors, cx);
+        self.format = format_select(self.config.number_format, &self.colors, cx);
         self.watch_form(cx);
         self.edited = false;
         self.error = None;
@@ -113,6 +118,12 @@ impl CalculatorPage {
             }
         })
         .detach();
+        cx.subscribe(&self.format, |page, _, SelectEvent::Changed, cx| {
+            page.edited = true;
+            page.error = None;
+            cx.notify();
+        })
+        .detach();
     }
 
     // -- Focus ----------------------------------------------------------------
@@ -121,12 +132,23 @@ impl CalculatorPage {
         window.focus(&self.limit.focus_handle(cx));
     }
 
+    /// Two stops, so forwards and backwards are both the other one.
+    fn other_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let limit = self.limit.focus_handle(cx);
+        if limit.is_focused(window) {
+            window.focus(self.format.read(cx).focus_handle());
+        } else {
+            window.focus(&limit);
+        }
+        cx.notify();
+    }
+
     fn next_field(&mut self, _: &NextField, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus(window, cx);
+        self.other_field(window, cx);
     }
 
     fn previous_field(&mut self, _: &PreviousField, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus(window, cx);
+        self.other_field(window, cx);
     }
 
     fn cancel(&mut self, _: &CancelForm, _: &mut Window, cx: &mut Context<Self>) {
@@ -145,7 +167,8 @@ impl CalculatorPage {
         self.save(cx);
     }
 
-    /// Save the limit, as Enter does. For the window's Ctrl+S too.
+    /// Save the limit and the format, as Enter does. For the window's
+    /// Ctrl+S too.
     pub fn save(&mut self, cx: &mut Context<Self>) {
         if self.busy || self.problem.is_some() || !self.edited {
             return;
@@ -162,6 +185,7 @@ impl CalculatorPage {
             cx.notify();
             return;
         };
+        let format = chosen_format(self.format.read(cx).value());
         let path = self.path.clone();
         let history = self.history.clone();
         self.busy = true;
@@ -171,6 +195,7 @@ impl CalculatorPage {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    settings::set_number_format(&path, format)?;
                     settings::set_history_limit(&path, limit)?;
                     History::change(&history, |history| history.trim(limit)).map(|_| ())
                 })
@@ -181,8 +206,10 @@ impl CalculatorPage {
                     Ok(()) => {
                         log::info!("calculator history keeps {limit} calculations");
                         page.status = Some(match limit {
-                            0 => "History is off".into(),
-                            limit => format!("Keeping at most {}", calculations(limit)).into(),
+                            0 => "Saved. History is off".into(),
+                            limit => {
+                                format!("Saved. Keeping at most {}", calculations(limit)).into()
+                            }
                         });
                         page.edited = false;
                         page.reload(cx);
@@ -277,6 +304,8 @@ impl CalculatorPage {
     pub fn set_colors(&mut self, colors: Colors, cx: &mut Context<Self>) {
         self.limit
             .update(cx, |field, cx| field.set_colors(colors.clone(), cx));
+        self.format
+            .update(cx, |select, cx| select.set_colors(colors.clone(), cx));
         self.colors = colors;
         cx.notify();
     }
@@ -372,6 +401,39 @@ fn calculations(count: usize) -> String {
     }
 }
 
+/// The choices of the format dropdown: its value, as `config.json` writes
+/// it, and its label.
+const FORMATS: [(NumberFormat, &str, &str); 2] = [
+    (
+        NumberFormat::System,
+        "system",
+        "As Windows writes them  1,234.5 or 1.234,5",
+    ),
+    (NumberFormat::Plain, "plain", "Plain  1234.5"),
+];
+
+fn format_select(current: NumberFormat, colors: &Colors, cx: &mut App) -> Entity<Select> {
+    let choices = FORMATS
+        .iter()
+        .map(|(_, value, label)| Choice {
+            value: Some((*value).into()),
+            label: (*label).into(),
+        })
+        .collect();
+    let selected = FORMATS
+        .iter()
+        .position(|(format, _, _)| *format == current)
+        .unwrap_or(0);
+    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
+}
+
+fn chosen_format(value: Option<&str>) -> NumberFormat {
+    FORMATS
+        .iter()
+        .find(|(_, written, _)| Some(*written) == value)
+        .map_or_else(NumberFormat::default, |(format, _, _)| *format)
+}
+
 /// The limit field, filled in from `config`.
 fn field(config: &CalculatorConfig, colors: &Colors, cx: &mut App) -> Entity<TextField> {
     let current = config.limit().to_string();
@@ -434,8 +496,13 @@ impl CalculatorPage {
         .into_any_element();
 
         let focused = self.limit.focus_handle(cx).is_focused(window);
+        let on_format = self.format.read(cx).focus_handle().is_focused(window);
         let (message, is_error) = match (&self.error, focused) {
             (Some(error), _) => (error.clone(), true),
+            (None, false) if on_format => (
+                "How answers are shown and typed. Copied answers are never grouped.".to_string(),
+                false,
+            ),
             (None, true) => (
                 "The newest are kept, and 0 keeps none. Lowering it deletes the oldest \
                  past it at once."
@@ -461,6 +528,7 @@ impl CalculatorPage {
                     .flex()
                     .flex_col()
                     .child(row("Keep at most", self.limit.clone().into_any_element()))
+                    .child(row("Numbers", self.format.clone().into_any_element()))
                     .child(row("History", clear))
                     .child(
                         div()

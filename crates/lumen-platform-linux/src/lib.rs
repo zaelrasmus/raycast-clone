@@ -199,6 +199,13 @@ impl Platform for LinuxPlatform {
         todo!("F5: the locale's patterns from glibc (nl_langinfo) or ICU")
     }
 
+    /// Read at start, so not `todo!()`: a stub that panicked here would stop
+    /// the daemon before F5 has a chance to replace it.
+    fn number_separators(&self) -> Result<lumen_platform::NumberSeparators> {
+        // F5: RADIXCHAR and THOUSEP from glibc's nl_langinfo.
+        Ok(lumen_platform::NumberSeparators::PLAIN)
+    }
+
     fn paste(&self, _window: FocusOwner, _paste: &Paste) -> Result<()> {
         todo!(
             "F5: wl_data_device for the text, and a virtual keyboard (zwp_virtual_keyboard_v1) for Ctrl+V"

@@ -80,10 +80,7 @@ pub fn money(
             format::with_code(amount, currency),
             format::plain(amount, currency),
         ),
-        value => {
-            let shown = calc::format_value(value);
-            (shown.clone(), shown)
-        }
+        value => (calc::format_value(value), calc::copied_value(value)),
     };
     let mut actions = vec![Action::CopyToClipboard(copied)];
     actions.extend(currency);
@@ -122,17 +119,17 @@ impl Provider for CalculatorProvider {
             return Vec::new();
         };
 
-        let formatted = calc::format_value(value);
-
         vec![Item {
             id: RESULT.into(),
-            title: formatted.clone(),
+            // Shown with the regional settings' grouping, copied without it,
+            // so a number field the result is pasted into reads it (F14).
+            title: calc::format_value(value),
             subtitle: Some(query.trim().to_string()),
             icon: None,
             keywords: Vec::new(),
             // Copying is the only sensible thing to do with a number, and it is
             // what the user reached for the calculator to get.
-            actions: vec![Action::CopyToClipboard(formatted)],
+            actions: vec![Action::CopyToClipboard(calc::copied_value(value))],
             kind: Kind::Calculation,
         }]
     }
@@ -156,6 +153,7 @@ mod tests {
         let context = calc::Context {
             today: &calc::today,
             rates,
+            separators: calc::separators(),
         };
         let answer = calc::answer(input, &context).unwrap();
         money(input, &answer, rates, Standing { due, failed })

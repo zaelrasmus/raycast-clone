@@ -1,4 +1,11 @@
 //! Results written the way a person would write them.
+//!
+//! Twice: as shown, with the regional settings' decimal mark and grouping --
+//! `1,800,000.5` -- and as copied, with the decimal mark and no grouping --
+//! `1800000.5` -- because a number field a result is pasted into reads the
+//! one and stumbles on the other (F14).
+
+use lumen_platform::NumberSeparators;
 
 use super::value::Value;
 
@@ -15,7 +22,62 @@ const SMALL: f64 = 1e-6;
 /// without visibly harming anything the user typed, and trimming the trailing
 /// zeros keeps whole numbers looking whole. Very large and very small numbers
 /// are written as `1.2676506e30`, which another calculator reads back.
+///
+/// As shown, with the separators in use ([`super::separators`]).
 pub fn format_number(value: f64) -> String {
+    write_number(value, super::separators(), true)
+}
+
+/// [`format_number`] as copied: the decimal mark, and no grouping.
+pub fn copied_number(value: f64) -> String {
+    write_number(value, super::separators(), false)
+}
+
+/// `value` with `separators`, its whole part grouped when `grouped`. A
+/// number in scientific notation is never grouped: `1.2676506e30`.
+pub fn write_number(value: f64, separators: NumberSeparators, grouped: bool) -> String {
+    let text = digits(value);
+    let (number, exponent) = match text.split_once('e') {
+        Some((number, exponent)) => (number, Some(exponent)),
+        None => (text.as_str(), None),
+    };
+    let (sign, number) = match number.strip_prefix('-') {
+        Some(number) => ("-", number),
+        None => ("", number),
+    };
+    let (whole, fraction) = match number.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (number, None),
+    };
+
+    let mut written = String::from(sign);
+    match separators
+        .grouping
+        .filter(|_| grouped && exponent.is_none())
+    {
+        Some(grouping) => {
+            for (at, digit) in whole.chars().enumerate() {
+                if at > 0 && (whole.len() - at) % 3 == 0 {
+                    written.push(grouping);
+                }
+                written.push(digit);
+            }
+        }
+        None => written.push_str(whole),
+    }
+    if let Some(fraction) = fraction {
+        written.push(separators.decimal);
+        written.push_str(fraction);
+    }
+    if let Some(exponent) = exponent {
+        written.push('e');
+        written.push_str(exponent);
+    }
+    written
+}
+
+/// The digits of `value`, with a point, as Rust writes them.
+fn digits(value: f64) -> String {
     let magnitude = value.abs();
     if magnitude >= LARGE || (magnitude < SMALL && value != 0.0) {
         let text = format!("{value:.9e}");
@@ -31,12 +93,25 @@ pub fn format_number(value: f64) -> String {
 
 /// A value written with its unit, if it has one: `45°`, `2 rad`, `25%`.
 /// A day as the lists write one (`crate::dates`): `Fri, Dec 25, 2026`.
+/// As shown.
 pub fn format_value(value: Value) -> String {
+    write_value(value, super::separators(), true)
+}
+
+/// [`format_value`] as copied: the decimal mark, and no grouping.
+pub fn copied_value(value: Value) -> String {
+    write_value(value, super::separators(), false)
+}
+
+/// `value` with `separators`, grouped when `grouped`. Money keeps F9's own
+/// writing, which its view shares.
+pub fn write_value(value: Value, separators: NumberSeparators, grouped: bool) -> String {
+    let number = |number: f64| write_number(number, separators, grouped);
     match value {
-        Value::Number(number) => format_number(number),
-        Value::Quantity { amount, unit } => unit.write(&format_number(amount)),
+        Value::Number(amount) => number(amount),
+        Value::Quantity { amount, unit } => unit.write(&number(amount)),
         Value::Money { amount, currency } => crate::currency::format::with_code(amount, currency),
-        Value::Percent(percent) => format!("{}%", format_number(percent)),
+        Value::Percent(percent) => format!("{}%", number(percent)),
         Value::Date(day) => day.strftime("%a, %b %-d, %Y").to_string(),
     }
 }
@@ -77,5 +152,32 @@ mod tests {
         assert_eq!(format_number(-1e-7), "-1e-7");
         assert_eq!(format_number(0.000_001), "0.000001");
         assert_eq!(format_number(0.0), "0");
+    }
+
+    const US: NumberSeparators = NumberSeparators {
+        decimal: '.',
+        grouping: Some(','),
+    };
+    const SPAIN: NumberSeparators = NumberSeparators {
+        decimal: ',',
+        grouping: Some('.'),
+    };
+
+    #[test]
+    fn shown_with_the_regions_separators() {
+        assert_eq!(write_number(1_800_000.5, US, true), "1,800,000.5");
+        assert_eq!(write_number(1_800_000.5, SPAIN, true), "1.800.000,5");
+        assert_eq!(write_number(-1234.0, US, true), "-1,234");
+        assert_eq!(write_number(123.0, US, true), "123");
+        assert_eq!(write_number(0.700_197_505, SPAIN, true), "0,700197505");
+        assert_eq!(write_number(2f64.powi(100), SPAIN, true), "1,2676506e30");
+    }
+
+    /// Copied: the decimal mark, so a pasted number reads in the region's
+    /// own programs, and no grouping, so a number field accepts it.
+    #[test]
+    fn copied_without_grouping() {
+        assert_eq!(write_number(1_800_000.5, US, false), "1800000.5");
+        assert_eq!(write_number(1_800_000.5, SPAIN, false), "1800000,5");
     }
 }

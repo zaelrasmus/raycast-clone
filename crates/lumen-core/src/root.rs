@@ -324,6 +324,7 @@ impl RootSearch {
         let context = crate::calc::Context {
             today: &crate::calc::today,
             rates: self.rates.as_ref(),
+            separators: crate::calc::separators(),
         };
         let money = crate::calc::answer(trimmed, &context).filter(|answer| answer.money);
         self.conversion = money.is_some_and(|answer| answer.converts);

@@ -214,6 +214,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     keymap::verify_against_registry(cx);
 
     let platform = build_platform(&config, &theme);
+    apply_number_format(&platform, &config);
 
     let window = open_hidden_window(
         cx,
@@ -1231,6 +1232,20 @@ fn clipboard_history(
 /// including on a launcher that is open while the file is saved. The hotkey,
 /// the backdrop and clipboard history are wired into things made once at
 /// startup, and are reported as waiting rather than half-applied.
+/// How the calculator writes and reads numbers (F14): the regional
+/// settings', read once here, or plain. Windows says nothing when they
+/// change, so a change there applies on the next start, as Raycast's does.
+fn apply_number_format(platform: &Arc<dyn Platform>, config: &Config) {
+    let separators = config.calculator.number_format.separators(|| {
+        platform.number_separators().unwrap_or_else(|error| {
+            log::warn!("writing numbers plainly: {error:#}");
+            lumen_platform::NumberSeparators::PLAIN
+        })
+    });
+    log::info!("the calculator writes numbers with {separators:?}");
+    lumen_core::calc::set_separators(separators);
+}
+
 fn reload_config(
     platform: &Arc<dyn Platform>,
     shell: &Rc<RefCell<Shell>>,
@@ -1302,6 +1317,10 @@ fn reload_config(
 
     if applied.theme != older.theme {
         let _ = surfaces.reload_theme.unbounded_send(());
+    }
+
+    if applied.calculator.number_format != older.calculator.number_format {
+        apply_number_format(platform, &applied);
     }
 
     // The launcher first, so the height used to place the window is the one

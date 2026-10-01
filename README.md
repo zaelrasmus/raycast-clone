@@ -51,6 +51,11 @@ an aesthetic worth looking at fifty times a day.
   - money, in any of it: `100 usd + 20 eur in cad`, `25% off 399 usd in
     eur`, dated by the rates it used.
 
+  Numbers are shown and typed as your Windows region writes them --
+  `1,800,000.5`, and `2,000 * 3` works -- and copied without the grouping,
+  so they paste into any number field. *Plain* on the *Calculator* settings
+  page turns that off.
+
   It stays quiet for anything that is not a calculation, including `7-zip`,
   `python 3.12` and `28 days later`. *Calculator History* keeps the answers
   you copied -- twenty by default, set on the *Calculator* settings page,

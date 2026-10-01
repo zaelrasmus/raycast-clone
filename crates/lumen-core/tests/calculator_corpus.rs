@@ -102,6 +102,16 @@ const CORPUS: &[(&str, Owner)] = &[
     ("bar", Search),
     ("w10", Search),
     ("a4 paper", Search),
+    // Numbers as the region writes them (after slice 12).
+    ("2,000 * 3", Calculator),
+    ("25% off 1,299", Calculator),
+    ("2,000", Search),
+    ("1,299", Search),
+    ("1,5", Search),
+    ("1,5 + 1", Search),
+    ("hello, world", Search),
+    ("1, 2, 3", Search),
+    ("rock, paper, scissors 2", Search),
     // Dates (slice 7). Whatever today is, these answer or decline alike.
     ("days until 25 dec", Calculator),
     ("days until friday", Calculator),
@@ -190,11 +200,17 @@ const CORPUS: &[(&str, Owner)] = &[
 const INTENDED_OVERLAPS: &[(&str, &[Owner])] = &[("15:00 vancouver in tokyo", &[Timer, Clock])];
 
 /// The calculator, as the root list asks it, money included -- with no
-/// table of rates, as on the first keystroke of the day.
+/// table of rates, as on the first keystroke of the day, and numbers written
+/// as in the United States: the comma means something there, which is the
+/// harder case for the gate (F14).
 fn calculator(query: &str) -> bool {
     let context = lumen_core::calc::Context {
         today: &lumen_core::calc::today,
         rates: None,
+        separators: lumen_platform::NumberSeparators {
+            decimal: '.',
+            grouping: Some(','),
+        },
     };
     lumen_core::calc::answer(query, &context).is_some()
 }

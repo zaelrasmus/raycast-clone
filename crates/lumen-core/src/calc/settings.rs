@@ -11,7 +11,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-use super::history::{CalculatorConfig, MAX_LIMIT};
+use super::history::{CalculatorConfig, MAX_LIMIT, NumberFormat};
 use crate::section;
 
 const SECTION: &str = "calculator";
@@ -28,6 +28,15 @@ pub fn set_history_limit(path: &Path, limit: usize) -> Result<()> {
     }
     section::edit(path, SECTION, |calculator| {
         calculator.insert("history-limit".into(), Value::from(limit));
+        Ok(())
+    })
+}
+
+/// Write and read numbers as `format` says.
+pub fn set_number_format(path: &Path, format: NumberFormat) -> Result<()> {
+    let value = serde_json::to_value(format)?;
+    section::edit(path, SECTION, |calculator| {
+        calculator.insert("number-format".into(), value);
         Ok(())
     })
 }
@@ -54,6 +63,12 @@ mod tests {
         assert_eq!(read(&path).unwrap().history_limit, 50);
         set_history_limit(&path, 0).unwrap();
         assert_eq!(read(&path).unwrap().history_limit, 0);
+        set_number_format(&path, NumberFormat::Plain).unwrap();
+        let config = read(&path).unwrap();
+        assert_eq!(
+            (config.number_format, config.history_limit),
+            (NumberFormat::Plain, 0)
+        );
         assert!(std::fs::read_to_string(&path).unwrap().contains("nocturne"));
     }
 

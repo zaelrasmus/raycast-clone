@@ -225,6 +225,25 @@ pub enum DateStyle {
     Weekday,
 }
 
+/// How the user's regional settings write a number (F14): `1,234.5` or
+/// `1.234,5`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumberSeparators {
+    /// Between the whole part and the fraction: `.` or `,`.
+    pub decimal: char,
+    /// Between groups of three digits, if the locale groups them: `,`, `.`,
+    /// a non-breaking space, an apostrophe.
+    pub grouping: Option<char>,
+}
+
+impl NumberSeparators {
+    /// A point, and no grouping: what Lumen wrote before F14 read the locale.
+    pub const PLAIN: NumberSeparators = NumberSeparators {
+        decimal: '.',
+        grouping: None,
+    };
+}
+
 /// Where an application's icon can be found. Resolving it to pixels is the
 /// platform's job, because the mechanism differs entirely between
 /// `IShellItemImageFactory` and the XDG icon theme specification.
@@ -512,6 +531,12 @@ pub trait Platform: Send + Sync {
         style: DateStyle,
         locale: Option<&str>,
     ) -> Result<String>;
+
+    /// How the user's regional settings write a number (F14): the decimal
+    /// mark and the grouping separator, for the calculator's answers and for
+    /// what it reads. The system's, for the reason [`Platform::format_date`]
+    /// is: "the way my computer writes numbers" is the system's to define.
+    fn number_separators(&self) -> Result<NumberSeparators>;
 
     /// Start a long-lived extension process with its input and output piped
     /// (F4, step 3).

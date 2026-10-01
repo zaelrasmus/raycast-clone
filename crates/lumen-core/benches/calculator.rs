@@ -58,6 +58,7 @@ fn calculator(c: &mut Criterion) {
     let context = lumen_core::calc::Context {
         today: &lumen_core::calc::today,
         rates: None,
+        separators: lumen_core::calc::separators(),
     };
     group.bench_function("money", |b| {
         b.iter(|| lumen_core::calc::answer("100 usd + 20 eur in canadian dollar", &context))

@@ -39,22 +39,41 @@ pub mod settings;
 mod units;
 mod value;
 
-pub use format::{format_number, format_value};
+pub use format::{copied_number, copied_value, format_number, format_value};
 pub use value::Value;
 
 use jiff::civil::Date;
+use lumen_platform::NumberSeparators;
+use parking_lot::RwLock;
 
 use crate::currency::Rates;
+
+/// How numbers are written and read, as the daemon last set them from the
+/// configuration and the regional settings. Plain until it does: a point,
+/// and no grouping.
+static SEPARATORS: RwLock<NumberSeparators> = RwLock::new(NumberSeparators::PLAIN);
+
+/// The separators in use (F14).
+pub fn separators() -> NumberSeparators {
+    *SEPARATORS.read()
+}
+
+/// Use `separators` from now on: set by the daemon at start, and whenever
+/// the configuration changes. Core reads no regional setting itself (I-1).
+pub fn set_separators(separators: NumberSeparators) {
+    *SEPARATORS.write() = separators;
+}
 
 /// The longest input read, in bytes. Past a line, it is not being typed.
 const MAX_INPUT: usize = 256;
 
-/// What a calculation is answered with: the day, and the exchange rates in
-/// hand.
+/// What a calculation is answered with: the day, the exchange rates in
+/// hand, and how numbers are written.
 pub struct Context<'a> {
     /// Asked only when a date is typed.
     pub today: &'a dyn Fn() -> Date,
     pub rates: Option<&'a Rates>,
+    pub separators: NumberSeparators,
 }
 
 /// A calculation answered.
@@ -101,7 +120,12 @@ pub fn evaluate(input: &str) -> Option<Value> {
 
 /// [`evaluate`], on the day `today` says it is.
 pub fn evaluate_on(input: &str, today: &dyn Fn() -> Date) -> Option<Value> {
-    let answer = answer(input, &Context { today, rates: None })?;
+    let context = Context {
+        today,
+        rates: None,
+        separators: separators(),
+    };
+    let answer = answer(input, &context)?;
     (!answer.money).then_some(answer.value)
 }
 
@@ -130,6 +154,7 @@ pub fn amount(input: &str) -> Option<f64> {
     let context = Context {
         today: &today,
         rates: None,
+        separators: separators(),
     };
     match parse(input.trim(), &context)?.value {
         Value::Number(number) => Some(number),
@@ -142,7 +167,7 @@ fn parse(input: &str, context: &Context) -> Option<parser::Parsed> {
     if input.len() > MAX_INPUT {
         return None;
     }
-    let tokens = lexer::tokenize(input)?;
+    let tokens = lexer::tokenize(input, context.separators)?;
     let parsed = parser::Parser::new(tokens, context.today, context.rates).whole()?;
     parsed.value.is_finite().then_some(parsed)
 }
@@ -425,6 +450,7 @@ mod tests {
         let context = Context {
             today: &today,
             rates: Some(&rates),
+            separators: separators(),
         };
         answer(input, &context)
             .filter(|answer| answer.money)
@@ -492,6 +518,7 @@ mod tests {
         let context = Context {
             today: &today,
             rates: None,
+            separators: separators(),
         };
         let pending = answer("100 usd + 20 eur in cad", &context).unwrap();
         assert!(pending.money && pending.converts && pending.pending);
@@ -504,6 +531,68 @@ mod tests {
             None,
             "the currency view reads its own codes"
         );
+    }
+
+    /// What the root list shows for `input` with `separators`, as shown and
+    /// as copied.
+    fn written(input: &str, separators: NumberSeparators) -> Option<(String, String)> {
+        let context = Context {
+            today: &today,
+            rates: None,
+            separators,
+        };
+        let value = answer(input, &context)?.value;
+        Some((
+            format::write_value(value, separators, true),
+            format::write_value(value, separators, false),
+        ))
+    }
+
+    const US: NumberSeparators = NumberSeparators {
+        decimal: '.',
+        grouping: Some(','),
+    };
+    const SPAIN: NumberSeparators = NumberSeparators {
+        decimal: ',',
+        grouping: Some('.'),
+    };
+
+    fn shown_as(input: &str, separators: NumberSeparators) -> Option<String> {
+        written(input, separators).map(|(shown, _)| shown)
+    }
+
+    #[test]
+    fn numbers_read_and_written_as_the_region_does() {
+        assert_eq!(
+            written("150000 * 12", US),
+            Some(("1,800,000".into(), "1800000".into()))
+        );
+        assert_eq!(shown_as("2,000 * 3", US).as_deref(), Some("6,000"));
+        assert_eq!(shown_as("25% off 1,299", US).as_deref(), Some("974.25"));
+        assert_eq!(
+            shown_as("1,500.5 km in m", US).as_deref(),
+            Some("1,500,500 m")
+        );
+        assert_eq!(
+            written("1.500,5 * 2", SPAIN),
+            Some(("3.001".into(), "3001".into()))
+        );
+        assert_eq!(shown_as("1,5 + 1", SPAIN).as_deref(), Some("2,5"));
+        assert_eq!(
+            shown_as("sqrt(2)^pi / log(1000) * sin(45 deg)", SPAIN).as_deref(),
+            Some("0,700197505"),
+            "the screenshot, as it was written"
+        );
+    }
+
+    /// A separator that is not where the region puts one declines the
+    /// query: `1,5` to an American is not one and a half.
+    #[test]
+    fn a_separator_out_of_place_is_not_guessed_at() {
+        assert_eq!(shown_as("1,5 + 1", US), None);
+        assert_eq!(shown_as("1.5 + 1", SPAIN), None);
+        assert_eq!(shown_as("2,000", US), None, "a value restated");
+        assert_eq!(shown_as("2,000 * 3", NumberSeparators::PLAIN), None);
     }
 
     /// The worst that can be typed without meaning harm costs microseconds

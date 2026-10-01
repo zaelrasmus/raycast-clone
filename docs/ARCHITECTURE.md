@@ -1982,6 +1982,24 @@ The decisions:
   timer named *vancouver in tokyo*, since a clock reading is a duration to
   F8. Not the calculator's to settle; the corpus states it exactly, so the
   fix, when it comes, fails there and removes the row.
+- **Numbers are written as the region writes them, unless asked not to.**
+  Raycast has no setting of its own: its calculator follows the system's
+  number format. Lumen does the same by default -- `calculator.number-format`
+  is `system` -- and `plain` keeps a point and no grouping, as F3 wrote
+  them; the *Calculator* settings page switches it. The separators come
+  from `Platform::number_separators` (`GetLocaleInfoEx` on Windows; plain
+  on Linux until F5), read at start and when the setting changes, and set
+  in core with `calc::set_separators`: core reads no regional setting
+  itself (I-1). They apply to what is read as well as what is shown, since
+  `2,000` is two thousand in the United States and two in Spain. A
+  grouping separator counts only between groups of three, so `1,5` to an
+  American is declined, not guessed at. A result is shown grouped --
+  `1,800,000` -- and copied without grouping -- `1800000` -- because the
+  number field it is pasted into reads that; Raycast copies the grouping,
+  and its users ask it not to. Snippets paste the copied form. Money keeps
+  F9's own writing. A change in Windows' region applies on the next start,
+  as Raycast's does. It costs a second write per answer: about 2 µs for
+  arithmetic and 9 µs for the longest hostile input, from 1.2 and 4.8.
 - **That overlap is kept, on purpose.** After the try-out: a clock reading
   and a place are two fair questions, and the list already lets the user
   choose. Both rows are offered -- the timer and the time there -- and
