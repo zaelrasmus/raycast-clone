@@ -35,6 +35,7 @@ pub mod root;
 pub mod search;
 pub mod section;
 pub mod sheets;
+pub mod shipped;
 pub mod snippets;
 pub mod style;
 pub mod theme;
@@ -63,7 +64,7 @@ use anyhow::Result;
 /// Two themes, one light and one dark, exist to validate the schema before it is
 /// opened to third parties (F2, R-11). A format proven against exactly one theme
 /// is a format that encodes that theme's assumptions.
-pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
+pub fn install_builtin_themes(themes_dir: &Path, record: &Path) -> Result<()> {
     const BUILTIN: [(&str, &str); 5] = [
         (
             "nocturne",
@@ -83,24 +84,14 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
         ("ink", include_str!("../../../assets/themes/ink.json")),
     ];
 
-    std::fs::create_dir_all(themes_dir)?;
-
-    for (name, source) in BUILTIN {
-        let path = themes_dir.join(format!("{name}.json"));
-        // Never overwrite: the user may well have edited the shipped themes,
-        // and silently reverting their work on every launch would be the most
-        // annoying possible behaviour.
-        if !path.exists() {
-            std::fs::write(&path, source)?;
-        }
-    }
-
-    Ok(())
+    // Never over the user's own edits; an unedited copy follows the
+    // release (F15, `shipped`).
+    shipped::install(themes_dir, &BUILTIN, record)
 }
 
-/// Write the in-house styles into the styles folder if they are not there
-/// (F15). Never overwritten, as the themes are not.
-pub fn install_builtin_styles(styles_dir: &Path) -> Result<()> {
+/// Write the in-house styles into the styles folder (F15), kept current
+/// unless edited, as the themes are.
+pub fn install_builtin_styles(styles_dir: &Path, record: &Path) -> Result<()> {
     const BUILTIN: [(&str, &str); 4] = [
         ("lumen", include_str!("../../../assets/styles/lumen.json")),
         // The presets (F15): with the palette of the same name, Carbon
@@ -113,16 +104,7 @@ pub fn install_builtin_styles(styles_dir: &Path) -> Result<()> {
         ("ink", include_str!("../../../assets/styles/ink.json")),
     ];
 
-    std::fs::create_dir_all(styles_dir)?;
-
-    for (name, source) in BUILTIN {
-        let path = styles_dir.join(format!("{name}.json"));
-        if !path.exists() {
-            std::fs::write(&path, source)?;
-        }
-    }
-
-    Ok(())
+    shipped::install(styles_dir, &BUILTIN, record)
 }
 
 /// Write the starter shortcut sheet into the sheets folder if it is not there.

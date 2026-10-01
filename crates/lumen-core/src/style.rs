@@ -69,6 +69,7 @@ pub struct Metrics {
     pub subtitle_gap: f32,
     pub section_height: f32,
     pub footer_height: f32,
+    pub footer_icon: f32,
     pub keycap_height: f32,
     pub keycap_padding: f32,
     pub keycap_radius: f32,
@@ -102,6 +103,8 @@ impl Metrics {
         subtitle_gap: 8.0,
         section_height: layout::view::SECTION_HEIGHT,
         footer_height: layout::FOOTER_HEIGHT,
+        // Drawn only when `footer.icon` is not `none`.
+        footer_icon: 14.0,
         keycap_height: 20.0,
         keycap_padding: layout::overlay::KEYCAP_PADDING_X,
         keycap_radius: layout::overlay::KEYCAP_RADIUS,
@@ -139,6 +142,7 @@ impl Metrics {
             "subtitle.gap" => (&mut self.subtitle_gap, 4.0, 16.0),
             "section.height" => (&mut self.section_height, 16.0, 48.0),
             "footer.height" => (&mut self.footer_height, 28.0, 64.0),
+            "footer.icon-size" => (&mut self.footer_icon, 10.0, 24.0),
             "keycap.height" => (&mut self.keycap_height, 14.0, 32.0),
             "keycap.padding" => (&mut self.keycap_padding, 2.0, 10.0),
             "keycap.radius" => (&mut self.keycap_radius, 0.0, 8.0),
@@ -186,7 +190,7 @@ impl Metrics {
             RowSubtitle::Stacked => line(self.text_title) + line(self.text_subtitle),
             RowSubtitle::Inline => line(self.text_title.max(self.text_subtitle)),
         };
-        let checks: [(bool, &'static str, &'static [&'static str]); 10] = [
+        let checks: [(bool, &'static str, &'static [&'static str]); 11] = [
             (
                 self.row_radius * 2.0 <= self.row_height,
                 "a row's corner fits in the row",
@@ -226,6 +230,11 @@ impl Metrics {
                 line(self.text_footer) <= self.footer_height,
                 "the footer's text fits in the footer",
                 &["text.footer", "footer.height"],
+            ),
+            (
+                self.footer_icon <= self.footer_height,
+                "the footer's icon fits in the footer",
+                &["footer.icon-size", "footer.height"],
             ),
             // A keycap holds a label, not a line of text: the line's leading
             // may overhang it, the glyphs may not. Raycast sets 13.5 pt keys
@@ -290,6 +299,25 @@ pub enum Keycap {
     Outline,
 }
 
+/// What the search field shows before the query (F15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchIcon {
+    #[default]
+    None,
+    /// A magnifying glass.
+    Search,
+    /// Lumen's mark, as Raycast shows its own.
+    Logo,
+}
+
+/// What the footer shows before its status (F15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FooterIcon {
+    #[default]
+    None,
+    Logo,
+}
+
 /// How a section's title is cased.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SectionCase {
@@ -308,6 +336,8 @@ pub struct Variants {
     pub footer_hints: FooterHints,
     pub keycap: Keycap,
     pub section_case: SectionCase,
+    pub search_icon: SearchIcon,
+    pub footer_icon: FooterIcon,
 }
 
 impl Variants {
@@ -341,6 +371,21 @@ impl Variants {
                 self.keycap = match value {
                     "filled" => Keycap::Filled,
                     "outline" => Keycap::Outline,
+                    _ => return None,
+                }
+            }
+            "search.icon" => {
+                self.search_icon = match value {
+                    "none" => SearchIcon::None,
+                    "search" => SearchIcon::Search,
+                    "logo" => SearchIcon::Logo,
+                    _ => return None,
+                }
+            }
+            "footer.icon" => {
+                self.footer_icon = match value {
+                    "none" => FooterIcon::None,
+                    "logo" => FooterIcon::Logo,
                     _ => return None,
                 }
             }
@@ -483,7 +528,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 26;
+const TOKEN_COUNT: usize = 27;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -545,6 +590,7 @@ mod tests {
             "subtitle.gap",
             "section.height",
             "footer.height",
+            "footer.icon-size",
             "keycap.height",
             "keycap.padding",
             "keycap.radius",

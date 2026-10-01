@@ -30,6 +30,12 @@ use parking_lot::Mutex;
 /// [`Kind::Application`] has an entry too, even though an application almost
 /// always has a real icon: almost always is not always, and an empty square
 /// beside fifteen filled ones is worse than a plain glyph.
+/// The search field's magnifying glass (F15).
+pub const SEARCH: &str = "icons/search.svg";
+
+/// Lumen's mark, for the search field and the footer (F15).
+pub const LOGO: &str = "icons/lumen.svg";
+
 pub fn glyph(kind: Kind) -> &'static str {
     match kind {
         Kind::Application => "icons/application.svg",

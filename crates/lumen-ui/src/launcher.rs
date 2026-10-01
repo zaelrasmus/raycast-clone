@@ -3020,7 +3020,7 @@ impl Render for Launcher {
             .flex_col()
             .rounded(self.geometry().window_radius())
             .border_1()
-            .border_color(color(colors.border_subtle))
+            .border_color(color(colors.border_window))
             .bg(color(background))
             .text_color(color(colors.text_primary));
 
@@ -3087,6 +3087,7 @@ impl Launcher {
                 .text_size(geometry.text_query())
                 .font_weight(geometry.weight_query())
                 .text_color(color(colors.text_primary))
+                .children(search_icon(&geometry, colors))
                 .child(state.title);
         }
 
@@ -3165,6 +3166,7 @@ impl Launcher {
             .text_size(geometry.text_query())
             .font_weight(geometry.weight_query())
             .when(!pills.is_empty(), |row| row.key_context(SCOPE_CONTEXT))
+            .children(search_icon(&geometry, colors))
             // A view's levels, where the text would start, as the argument
             // is (F13): what is typed is a search within them.
             .when(!self.view_path().is_empty(), |row| {
@@ -3673,8 +3675,27 @@ impl Launcher {
             .px(geometry.gutter())
             .border_t_1()
             .border_color(color(colors.border_subtle))
+            // Its own surface when the palette gives it one, rounded with
+            // the window's bottom corners. The window's radius rather than
+            // that less its border: a pixel's difference in the curve does
+            // not show, and a literal for it would (I-5).
+            .bg(color(colors.surface_footer))
+            .rounded_b(geometry.window_radius())
             .text_size(geometry.text_footer())
             .text_color(color(colors.text_muted))
+            .when(
+                geometry.variants().footer_icon == lumen_core::style::FooterIcon::Logo,
+                |footer| {
+                    footer.child(
+                        svg()
+                            .path(crate::icons::LOGO)
+                            .flex_none()
+                            .size(geometry.footer_icon())
+                            .mr(geometry.keycap_gap() * 2.0)
+                            .text_color(color(colors.text_muted)),
+                    )
+                },
+            )
             // Truncated rather than pushing the keys off the edge: a long
             // timer name must not move them (I-10).
             .child(div().flex_1().min_w_0().truncate().child(status))
@@ -3790,6 +3811,30 @@ impl Launcher {
                 .into_any_element(),
         )
     }
+}
+
+/// The search field's icon, when the style asks for one (F15): the row
+/// icon's size and gap, so the query starts where the rows' titles do.
+fn search_icon(
+    geometry: &Geometry,
+    colors: &lumen_core::theme::Colors,
+) -> Option<gpui::AnyElement> {
+    use lumen_core::style::SearchIcon;
+
+    let path = match geometry.variants().search_icon {
+        SearchIcon::None => return None,
+        SearchIcon::Search => crate::icons::SEARCH,
+        SearchIcon::Logo => crate::icons::LOGO,
+    };
+    Some(
+        svg()
+            .path(path)
+            .flex_none()
+            .size(geometry.icon_size())
+            .mr(geometry.icon_gap())
+            .text_color(color(colors.icon))
+            .into_any_element(),
+    )
 }
 
 /// One of the footer's hints: what a key does, and the key.

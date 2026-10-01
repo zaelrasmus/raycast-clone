@@ -500,6 +500,16 @@ Vicinae).
 }
 ```
 
+The shipped palettes and styles follow Lumen's releases for as long as you
+leave them as they were: Lumen remembers what it wrote, and a file you have
+edited is never touched again. To make one your own without that question,
+copy it under a new name.
+
+Beyond geometry, a style can put an icon in the search field
+(`"search.icon": "search"` or `"logo"`) and Lumen's mark in the footer
+(`"footer.icon": "logo"`); a palette can give the footer its own
+`surface.footer` and the window's edge its own `border.window`.
+
 A style sets numbers from a closed list and picks variants from a closed
 list; it cannot describe a layout. Every number has a range, and the relations
 between them are checked when the style loads: a row must hold its text, a

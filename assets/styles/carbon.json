@@ -24,13 +24,16 @@
     "text.accessory": 14,
     "text.section": 12.5,
     "text.footer": 13.5,
-    "weight.title": 500
+    "weight.title": 500,
+    "footer.icon-size": 14
   },
   "variants": {
     "row.subtitle": "inline",
     "selection": "fill",
     "footer.hints": "keycaps",
     "keycap": "outline",
-    "section.case": "title"
+    "section.case": "title",
+    "search.icon": "logo",
+    "footer.icon": "logo"
   }
 }

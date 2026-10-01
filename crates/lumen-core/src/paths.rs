@@ -98,6 +98,12 @@ impl Paths {
         self.data_dir.join("frecency.json")
     }
 
+    /// Fingerprints of the themes and styles Lumen wrote, so an unedited
+    /// copy can follow the release (F15).
+    pub fn shipped_file(&self) -> PathBuf {
+        self.data_dir.join("shipped.json")
+    }
+
     /// The favourites, in the user's order (F15). State, like frecency: it
     /// is changed from the launcher, not edited as configuration.
     pub fn favorites_file(&self) -> PathBuf {

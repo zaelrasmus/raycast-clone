@@ -112,6 +112,10 @@ impl Geometry {
         px(self.metrics.footer_height)
     }
 
+    pub fn footer_icon(&self) -> Pixels {
+        px(self.metrics.footer_icon)
+    }
+
     pub fn keycap_height(&self) -> Pixels {
         px(self.metrics.keycap_height)
     }

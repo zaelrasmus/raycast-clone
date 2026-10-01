@@ -61,6 +61,15 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/window.svg",
         include_bytes!("../../../assets/icons/window.svg"),
     ),
+    // The search field's and the footer's, when a style asks (F15).
+    (
+        "icons/search.svg",
+        include_bytes!("../../../assets/icons/search.svg"),
+    ),
+    (
+        "icons/lumen.svg",
+        include_bytes!("../../../assets/icons/lumen.svg"),
+    ),
     (
         "icons/timer.svg",
         include_bytes!("../../../assets/icons/timer.svg"),

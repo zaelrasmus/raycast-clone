@@ -175,8 +175,8 @@ struct Shell {
 fn run_daemon() -> Result<()> {
     let paths = Paths::discover()?;
     paths.ensure_exists()?;
-    lumen_core::install_builtin_themes(&paths.themes_dir())?;
-    lumen_core::install_builtin_styles(&paths.styles_dir())?;
+    lumen_core::install_builtin_themes(&paths.themes_dir(), &paths.shipped_file())?;
+    lumen_core::install_builtin_styles(&paths.styles_dir(), &paths.shipped_file())?;
     lumen_core::install_builtin_sheets(&paths.sheets_dir())?;
     lumen_core::install_example_script(&paths.scripts_dir())?;
     lumen_core::install_example_extensions(&paths.extensions_dir())?;

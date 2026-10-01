@@ -18,6 +18,7 @@
     "selection.border": "#444448",
     "match.highlight": "#FFFFFF",
     "text.selection": "#A94DC166",
-    "shadow": "#00000099"
+    "shadow": "#00000099",
+    "surface.footer": "#28282A"
   }
 }

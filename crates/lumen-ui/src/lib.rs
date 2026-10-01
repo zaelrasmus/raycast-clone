@@ -57,6 +57,7 @@ pub use text_field::TextField;
 #[cfg(test)]
 mod invariants {
     const SOURCES: &[(&str, &str)] = &[
+        ("appearance_page.rs", include_str!("appearance_page.rs")),
         ("assets.rs", include_str!("assets.rs")),
         ("edit.rs", include_str!("edit.rs")),
         ("fonts.rs", include_str!("fonts.rs")),

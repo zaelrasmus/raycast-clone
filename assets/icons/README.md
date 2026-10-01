@@ -1,6 +1,6 @@
 # The icon set
 
-Twenty-nine glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
+Thirty-one glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
 
 ## The grid
 
@@ -42,6 +42,8 @@ are further from the centre and there is no shading to soften them.
 | `text.svg` | Copied text, in *Clipboard History* (F12) |
 | `image.svg` | A copied picture whose thumbnail cannot be shown (F12) |
 | `window.svg` | A window layout |
+| `search.svg` | The search field, when a style's `search.icon` is `search` |
+| `lumen.svg` | Lumen's mark, the four-pointed spark of `lumen.ico`: the search field and the footer, when a style asks |
 | `file.svg` | A file |
 | `link.svg` | A quicklink |
 | `timer.svg` | A timer, and the *Timers* view (F8) |

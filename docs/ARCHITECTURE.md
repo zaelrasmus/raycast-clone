@@ -2125,6 +2125,7 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `subtitle.gap` | 8 | 4--16 | Between the title and an inline subtitle |
 | `section.height` | 28 | 16--48 | A section's header |
 | `footer.height` | 38 | 28--64 | The footer |
+| `footer.icon-size` | 14 | 10--24 | The footer's mark, when `footer.icon` draws it |
 | `keycap.height` | 20 | 14--32 | A keycap, when the footer draws them |
 | `keycap.padding` | 5 | 2--10 | Either side of a keycap's label |
 | `keycap.radius` | 4 | 0--8 | A keycap's corner |
@@ -2144,6 +2145,23 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `selection` | `fill-border`, `fill` | Whether the selected row has a border |
 | `footer.hints` | `text`, `keycaps` | `Actions  Ctrl+K`, or the keys drawn as keycaps |
 | `keycap` | `filled`, `outline` | A keycap filled, or an outline the footer shows through (Raycast's) |
+| `search.icon` | `none`, `search`, `logo` | Before the query: nothing, a magnifying glass, or Lumen's mark; at the rows' icon size and gap, so the query starts where their titles do |
+| `footer.icon` | `none`, `logo` | Lumen's mark before the footer's status |
+
+Two colour tokens joined the palette with them: `surface.footer`, behind the
+footer (transparent in the base themes), and `border.window`, the window's
+edge. The edge resolves from the palette's own `border.subtle` when it is not
+set, not from the base theme's, so every palette written before it keeps one
+colour for its edge and its separators.
+
+The shipped themes and styles follow the releases unless edited
+(`lumen_core::shipped`). They used to be written once and never again, so a
+preset improved in a release never reached anyone who already had it -- which
+is how Carbon's search icon first failed to appear. Lumen now keeps a
+fingerprint of each file it writes, in `shipped.json`; at startup a file that
+still matches gets this build's version, and one that does not -- edited --
+is left alone. A file from before the fingerprints is left alone too, until
+it equals a shipped version.
 | `section.case` | `title`, `upper` | *Commands* or *COMMANDS* |
 
 The icon's extraction resolution follows `icon.size`: three and a half times

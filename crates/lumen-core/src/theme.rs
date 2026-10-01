@@ -196,6 +196,14 @@ pub struct Colors {
     pub shadow: Color,
     /// What went wrong, where it went wrong: a form's refusal to save (F6).
     pub text_error: Color,
+    /// Behind the launcher's footer, over the surface (F15). Transparent in
+    /// the base themes: the footer is the surface unless a palette says
+    /// otherwise, as Asyar's and Vicinae's do.
+    pub surface_footer: Color,
+    /// The window's own edge (F15). Unset, it is the palette's
+    /// `border.subtle` -- not the base theme's -- so a palette that set its
+    /// separators keeps them and its edge one colour, as before the token.
+    pub border_window: Color,
 }
 
 impl Colors {
@@ -221,6 +229,8 @@ impl Colors {
             "text.selection" => &mut self.text_selection,
             "shadow" => &mut self.shadow,
             "text.error" => &mut self.text_error,
+            "surface.footer" => &mut self.surface_footer,
+            "border.window" => &mut self.border_window,
             _ => return false,
         };
         *slot = value;
@@ -259,6 +269,8 @@ impl Theme {
                 text_selection: Color::rgba(0x7C, 0x6B, 0xD6, 0x66),
                 shadow: Color::rgba(0x00, 0x00, 0x00, 0x99),
                 text_error: Color::rgb(0xF0, 0x8C, 0x8C),
+                surface_footer: Color::rgba(0, 0, 0, 0),
+                border_window: Color::rgba(0xFF, 0xFF, 0xFF, 0x14),
             },
         }
     }
@@ -287,6 +299,8 @@ impl Theme {
                 text_selection: Color::rgba(0x5B, 0x4A, 0xC4, 0x40),
                 shadow: Color::rgba(0x1A, 0x1A, 0x2E, 0x33),
                 text_error: Color::rgb(0xB4, 0x2B, 0x2B),
+                surface_footer: Color::rgba(0, 0, 0, 0),
+                border_window: Color::rgba(0x1A, 0x1A, 0x2E, 0x14),
             },
         }
     }
@@ -305,6 +319,15 @@ impl Theme {
         theme.appearance = file.appearance;
         if let Some(family) = &file.font_family {
             theme.font_family = Some(family.clone());
+        }
+
+        // The window's edge follows the separators unless it is set apart.
+        if !file.colors.contains_key("border.window") {
+            theme.colors.border_window = file
+                .colors
+                .get("border.subtle")
+                .copied()
+                .unwrap_or(theme.colors.border_subtle);
         }
 
         for (token, value) in &file.colors {
@@ -405,6 +428,35 @@ mod tests {
             Theme::base_dark().colors.surface_background
         );
         assert_eq!(theme.name, "Sparse");
+    }
+
+    /// A palette that set its separators before `border.window` existed
+    /// keeps its window's edge the same colour (F15).
+    #[test]
+    fn the_window_edge_follows_the_palettes_own_separators() {
+        let file = ThemeFile {
+            schema_version: 1,
+            name: "Old".into(),
+            appearance: Appearance::Dark,
+            colors: BTreeMap::from([("border.subtle".to_string(), Color::rgb(1, 2, 3))]),
+            font_family: None,
+        };
+        assert_eq!(
+            Theme::resolve(&file).colors.border_window,
+            Color::rgb(1, 2, 3)
+        );
+
+        let apart = ThemeFile {
+            colors: BTreeMap::from([
+                ("border.subtle".to_string(), Color::rgb(1, 2, 3)),
+                ("border.window".to_string(), Color::rgb(4, 5, 6)),
+            ]),
+            ..file
+        };
+        assert_eq!(
+            Theme::resolve(&apart).colors.border_window,
+            Color::rgb(4, 5, 6)
+        );
     }
 
     /// A theme written against a future, wider palette must still load today.
