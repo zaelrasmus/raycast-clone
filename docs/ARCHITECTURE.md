@@ -120,7 +120,7 @@ once Lumen was measured well inside them (7.36).
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
 | **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
-| **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **In progress.** World Clock is done: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather is next. See F13 decisions |
+| **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 
 ### F4 build order is not optional
 
@@ -1788,6 +1788,15 @@ The decisions:
   selection settles, as typing is. The week is a line a day -- `Thu
   ↑16° ↓9° Light rain` -- not the report's rows squeezed. In the pane
   `Enter` copies, since the pane already shows what the report would.
+- **The *Weather* settings page: units, layout, home.** Written to the
+  `weather` section only. Home is *Automatic* -- the zone's largest city
+  -- or one of *My Places*: searching 34,000 cities is the view's job, and
+  a settings page that read the catalogue to list a few would hold it in
+  memory for nothing. The choices are labelled from their keys, so opening
+  settings never reads it. A home no longer among *My Places* stays a
+  choice of its own rather than being lost by the next save. Units apply
+  to the root list's answers live; the view reads the section when it
+  opens (7.33).
 - **Nine condition glyphs, and metrics as words.** Clear by day and by
   night, partly cloudy, cloudy, fog, drizzle, rain, snow and storm, on the
   icon set's grid (7.23). The screenshots' small glyph beside every metric

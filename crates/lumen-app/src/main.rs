@@ -685,6 +685,7 @@ fn open_settings(
             settings.reload_timers(cx);
             settings.reload_currency(cx);
             settings.reload_clock(cx);
+            settings.reload_weather(cx);
             settings.reload_clipboard(history, cx);
             settings.focus(window, cx);
         })
@@ -748,6 +749,7 @@ fn create_settings_window(
     let quicklinks_file = surfaces.paths.quicklinks_file();
     let favicons = surfaces.paths.favicons_dir();
     let config_file = surfaces.paths.config_file();
+    let places_file = surfaces.paths.places_file();
 
     let window = open_hidden_window(
         cx,
@@ -766,6 +768,7 @@ fn create_settings_window(
                     quicklinks_file,
                     favicons,
                     config_file,
+                    places_file,
                     cx,
                 )
             })
@@ -1268,6 +1271,7 @@ fn reload_config(
                 settings.reload_timers(cx);
                 settings.reload_currency(cx);
                 settings.reload_clock(cx);
+                settings.reload_weather(cx);
                 settings.reload_clipboard(history, cx);
             })
             .ok();

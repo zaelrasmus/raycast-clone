@@ -36,6 +36,7 @@ pub mod timer_form;
 pub mod timers_page;
 pub mod translate_page;
 pub mod view;
+pub mod weather_page;
 
 pub use assets::Assets;
 pub use fonts::FAMILY as FONT_FAMILY;
