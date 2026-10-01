@@ -215,6 +215,38 @@ mod tests {
     }
 
     #[test]
+    fn more_kinds_of_unit() {
+        assert_eq!(shown("2.4 ghz in MHz").as_deref(), Some("2400 MHz"));
+        assert_eq!(shown("3000 rpm in Hz").as_deref(), Some("50 Hz"));
+        assert_eq!(shown("1 hp in W").as_deref(), Some("745.6998715823 W"));
+        assert_eq!(shown("1.5 kW in watts").as_deref(), Some("1500 W"));
+        assert_eq!(shown("1 kWh in MJ").as_deref(), Some("3.6 MJ"));
+        assert_eq!(shown("500 kcal in kJ").as_deref(), Some("2092 kJ"));
+        assert_eq!(
+            shown("100 km/h in mph").as_deref(),
+            Some("62.1371192237 mph")
+        );
+        assert_eq!(shown("10 m/s to km/h").as_deref(), Some("36 km/h"));
+        assert_eq!(
+            shown("1 acre in m2").as_deref(),
+            Some("4046.8564224 m\u{b2}")
+        );
+        assert_eq!(shown("1 ha in m\u{b2}").as_deref(), Some("10000 m\u{b2}"));
+        assert_eq!(shown("1 gal in L").as_deref(), Some("3.785411784 L"));
+        assert_eq!(shown("2 cups in ml").as_deref(), Some("473.176473 mL"));
+        assert_eq!(shown("1 atm in psi").as_deref(), Some("14.6959487755 psi"));
+        assert_eq!(shown("1013 hPa in bar").as_deref(), Some("1.013 bar"));
+    }
+
+    /// A slash before a number divides; before a word it may name a unit.
+    #[test]
+    fn a_slash_is_a_unit_only_between_words() {
+        assert_eq!(shown("10 km / 2").as_deref(), Some("5 km"));
+        assert_eq!(shown("10 km / 2 km").as_deref(), Some("5"));
+        assert_eq!(shown("10 km / 2 h"), None, "a new unit, declined");
+    }
+
+    #[test]
     fn what_cannot_be_converted_is_declined() {
         assert_eq!(shown("5 km in kg"), None);
         assert_eq!(shown("5 in km"), None, "a number has no unit to convert");

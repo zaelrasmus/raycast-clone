@@ -31,6 +31,20 @@ pub enum Dimension {
     Data,
     /// Base: the radian.
     Angle,
+    /// Base: the hertz.
+    Frequency,
+    /// Base: the watt.
+    Power,
+    /// Base: the joule.
+    Energy,
+    /// Base: the metre per second.
+    Speed,
+    /// Base: the square metre.
+    Area,
+    /// Base: the cubic metre.
+    Volume,
+    /// Base: the pascal.
+    Pressure,
 }
 
 #[derive(Debug, PartialEq)]
@@ -328,7 +342,197 @@ pub static UNITS: &[Unit] = &[
         &["\u{b0}", "deg"],
         &["degree", "degrees"],
     ),
+    // Frequency. Lower case is what is typed: `2.4 ghz`.
+    unit(Frequency, 1.0, "Hz", &["Hz"], &["hertz", "hz"]),
+    unit(Frequency, 1e3, "kHz", &["kHz"], &["kilohertz", "khz"]),
+    unit(Frequency, 1e6, "MHz", &["MHz"], &["megahertz", "mhz"]),
+    unit(Frequency, 1e9, "GHz", &["GHz"], &["gigahertz", "ghz"]),
+    unit(Frequency, 1.0 / 60.0, "rpm", &["rpm"], &[]),
+    // Power. No lower-case `mw`: a milliwatt and a megawatt are nine
+    // orders apart.
+    unit(Power, 1e-3, "mW", &["mW"], &["milliwatt", "milliwatts"]),
+    unit(Power, 1.0, "W", &["W"], &["watt", "watts"]),
+    unit(Power, 1e3, "kW", &["kW"], &["kilowatt", "kilowatts", "kw"]),
+    unit(Power, 1e6, "MW", &["MW"], &["megawatt", "megawatts"]),
+    unit(Power, 1e9, "GW", &["GW"], &["gigawatt", "gigawatts"]),
+    // Mechanical horsepower.
+    unit(Power, 745.699_871_582_270_2, "hp", &["hp"], &["horsepower"]),
+    // Energy.
+    unit(Energy, 1.0, "J", &["J"], &["joule", "joules"]),
+    unit(
+        Energy,
+        1e3,
+        "kJ",
+        &["kJ"],
+        &["kilojoule", "kilojoules", "kj"],
+    ),
+    unit(
+        Energy,
+        1e6,
+        "MJ",
+        &["MJ"],
+        &["megajoule", "megajoules", "mj"],
+    ),
+    unit(Energy, 4.184, "cal", &["cal"], &["calorie", "calories"]),
+    unit(
+        Energy,
+        4184.0,
+        "kcal",
+        &["kcal", "Cal"],
+        &["kilocalorie", "kilocalories"],
+    ),
+    unit(Energy, 3600.0, "Wh", &["Wh"], &["wh"]),
+    unit(Energy, 3.6e6, "kWh", &["kWh"], &["kwh"]),
+    unit(Energy, 3.6e9, "MWh", &["MWh"], &[]),
+    unit(
+        Energy,
+        1.602_176_634e-19,
+        "eV",
+        &["eV"],
+        &["electronvolt", "electronvolts"],
+    ),
+    unit(Energy, 1055.05585262, "BTU", &["BTU", "Btu"], &["btu"]),
+    // Speed. `km/h` and `m/s` are read whole when a word follows the
+    // slash ([`find_per`]): `10 km / 2 h` is still a division.
+    unit(Speed, 1.0, "m/s", &["m/s"], &[]),
+    unit(Speed, 1.0 / 3.6, "km/h", &["km/h", "kmh", "kph"], &[]),
+    unit(Speed, 0.3048, "ft/s", &["ft/s"], &[]),
+    unit(Speed, 0.447_04, "mph", &["mph"], &[]),
+    unit(
+        Speed,
+        1852.0 / 3600.0,
+        "kn",
+        &["kn", "kt"],
+        &["knot", "knots"],
+    ),
+    // Area.
+    unit(Area, 1e-6, "mm\u{b2}", &["mm\u{b2}", "mm2"], &[]),
+    unit(Area, 1e-4, "cm\u{b2}", &["cm\u{b2}", "cm2"], &[]),
+    unit(Area, 1.0, "m\u{b2}", &["m\u{b2}", "m2", "sqm"], &[]),
+    unit(Area, 1e4, "ha", &["ha"], &["hectare", "hectares"]),
+    unit(Area, 1e6, "km\u{b2}", &["km\u{b2}", "km2"], &[]),
+    unit(
+        Area,
+        0.092_903_04,
+        "ft\u{b2}",
+        &["ft\u{b2}", "ft2", "sqft"],
+        &[],
+    ),
+    unit(Area, 0.836_127_36, "yd\u{b2}", &["yd\u{b2}", "yd2"], &[]),
+    unit(Area, 4046.8564224, "ac", &[], &["acre", "acres"]),
+    unit(
+        Area,
+        2_589_988.110_336,
+        "mi\u{b2}",
+        &["mi\u{b2}", "mi2"],
+        &[],
+    ),
+    // Volume. The cup, the pint and the gallon are the US ones.
+    unit(
+        Volume,
+        1e-6,
+        "mL",
+        &["mL", "ml"],
+        &["millilitre", "millilitres", "milliliter", "milliliters"],
+    ),
+    unit(
+        Volume,
+        1e-5,
+        "cL",
+        &["cL", "cl"],
+        &["centilitre", "centilitres", "centiliter", "centiliters"],
+    ),
+    unit(
+        Volume,
+        1e-4,
+        "dL",
+        &["dL", "dl"],
+        &["decilitre", "decilitres", "deciliter", "deciliters"],
+    ),
+    unit(
+        Volume,
+        1e-3,
+        "L",
+        &["L", "l"],
+        &["litre", "litres", "liter", "liters"],
+    ),
+    unit(Volume, 1.0, "m\u{b3}", &["m\u{b3}", "m3"], &[]),
+    unit(Volume, 1e-6, "cm\u{b3}", &["cm\u{b3}", "cm3", "cc"], &[]),
+    unit(
+        Volume,
+        4.928_921_593_75e-6,
+        "tsp",
+        &["tsp"],
+        &["teaspoon", "teaspoons"],
+    ),
+    unit(
+        Volume,
+        1.478_676_478_125e-5,
+        "tbsp",
+        &["tbsp"],
+        &["tablespoon", "tablespoons"],
+    ),
+    unit(Volume, 2.957_352_956_25e-5, "fl oz", &["floz"], &[]),
+    unit(Volume, 2.365_882_365e-4, "cup", &[], &["cup", "cups"]),
+    unit(Volume, 4.731_764_73e-4, "pt", &["pt"], &["pint", "pints"]),
+    unit(Volume, 9.463_529_46e-4, "qt", &["qt"], &["quart", "quarts"]),
+    unit(
+        Volume,
+        3.785_411_784e-3,
+        "gal",
+        &["gal"],
+        &["gallon", "gallons"],
+    ),
+    // Pressure.
+    unit(Pressure, 1.0, "Pa", &["Pa"], &["pascal", "pascals"]),
+    unit(
+        Pressure,
+        100.0,
+        "hPa",
+        &["hPa"],
+        &["hectopascal", "hectopascals", "hpa"],
+    ),
+    unit(
+        Pressure,
+        1e3,
+        "kPa",
+        &["kPa"],
+        &["kilopascal", "kilopascals", "kpa"],
+    ),
+    unit(
+        Pressure,
+        1e6,
+        "MPa",
+        &["MPa"],
+        &["megapascal", "megapascals", "mpa"],
+    ),
+    unit(
+        Pressure,
+        100.0,
+        "mbar",
+        &["mbar"],
+        &["millibar", "millibars"],
+    ),
+    unit(Pressure, 1e5, "bar", &["bar"], &["bars"]),
+    unit(Pressure, 6894.757293168, "psi", &["psi"], &[]),
+    unit(
+        Pressure,
+        101_325.0,
+        "atm",
+        &["atm"],
+        &["atmosphere", "atmospheres"],
+    ),
+    unit(Pressure, 133.322_387_415, "mmHg", &["mmHg"], &["mmhg"]),
 ];
+
+/// The unit written `top/bottom`, if one is: `km/h`, `m/s`.
+pub fn find_per(top: &str, bottom: &str) -> Option<&'static Unit> {
+    UNITS.iter().find(|unit| {
+        unit.symbols
+            .iter()
+            .any(|symbol| symbol.split_once('/') == Some((top, bottom)))
+    })
+}
 
 /// The unit `word` names, if any: by symbol, then by name, then loosely.
 pub fn find(word: &str) -> Option<Found> {
@@ -400,6 +604,13 @@ mod tests {
                 assert!(words.insert(word.to_lowercase()), "word {word}");
             }
         }
+    }
+
+    #[test]
+    fn a_unit_over_another() {
+        assert_eq!(find_per("km", "h").map(|unit| unit.display), Some("km/h"));
+        assert_eq!(find_per("m", "s").map(|unit| unit.display), Some("m/s"));
+        assert!(find_per("kg", "h").is_none());
     }
 
     #[test]

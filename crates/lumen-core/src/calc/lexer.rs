@@ -97,9 +97,10 @@ fn starts_word(character: char) -> bool {
     character.is_alphabetic() || character == '\u{b0}'
 }
 
-/// Digits continue a word, so `log10` is one: they never start one.
+/// Digits continue a word, so `log10` and `km2` are one: they never start
+/// one. So do the superscripts of `m²` and `m³`.
 fn continues_word(character: char) -> bool {
-    starts_word(character) || character.is_ascii_digit()
+    starts_word(character) || character.is_ascii_digit() || matches!(character, '\u{b2}' | '\u{b3}')
 }
 
 #[cfg(test)]

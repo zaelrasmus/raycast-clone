@@ -104,11 +104,7 @@ impl<'a> Parser<'a> {
             return (!self.loose).then_some(value);
         };
         if !self.eat(Token::Percent) {
-            let Some(Token::Word(word)) = self.peek() else {
-                return None;
-            };
-            let target = units::find(word)?;
-            self.at += 1;
+            let target = self.unit()?;
             return self.counted(value.convert(target.unit));
         }
         if into != "as" || self.loose {
@@ -267,12 +263,11 @@ impl<'a> Parser<'a> {
     /// one: `45 deg`, `(1+2) rad`. Anything else is left for the caller,
     /// which declines a word it cannot place.
     fn unit_after(&mut self, value: Value) -> Value {
-        let (Value::Number(amount), Some(Token::Word(word))) = (value, self.peek()) else {
+        let Value::Number(amount) = value else {
             return value;
         };
-        match units::find(word) {
+        match self.unit() {
             Some(found) => {
-                self.at += 1;
                 self.loose |= found.loose;
                 Value::Quantity {
                     amount,
@@ -281,5 +276,25 @@ impl<'a> Parser<'a> {
             }
             None => value,
         }
+    }
+
+    /// The unit named next, taken if there is one: a word, or two around a
+    /// slash that name one together -- `km/h`. A slash before a number is
+    /// a division, and is left alone.
+    fn unit(&mut self) -> Option<units::Found> {
+        let Some(Token::Word(word)) = self.peek() else {
+            return None;
+        };
+        if let (Some(Token::Slash), Some(Token::Word(below))) = (
+            self.tokens.get(self.at + 1).copied(),
+            self.tokens.get(self.at + 2).copied(),
+        ) && let Some(unit) = units::find_per(word, below)
+        {
+            self.at += 3;
+            return Some(units::Found { unit, loose: false });
+        }
+        let found = units::find(word)?;
+        self.at += 1;
+        Some(found)
     }
 }

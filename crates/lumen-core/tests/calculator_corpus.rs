@@ -91,6 +91,18 @@ const CORPUS: &[(&str, Owner)] = &[
     ("5m tea", Timer),
     ("focus 45m", Timer),
     ("3pm in tokyo", Clock),
+    // More units (slice 6).
+    ("100 km/h in mph", Calculator),
+    ("2.4 ghz in mhz", Calculator),
+    ("1 kwh in mj", Calculator),
+    ("60 hz", Search),
+    ("100 mph", Search),
+    ("1 l", Search),
+    ("hp laptop 15", Search),
+    ("ps5", Search),
+    ("bar", Search),
+    ("w10", Search),
+    ("a4 paper", Search),
     // Applications, and words that start them.
     ("code", Search),
     ("notepad", Search),
