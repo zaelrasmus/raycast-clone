@@ -1,8 +1,8 @@
 //! User configuration.
 //!
-//! Geometry lives here, in the user's own config, and explicitly *not* in the
-//! theme (AD-13, I-11). A theme may change colour and type family; only the
-//! person running the launcher may change how big it is.
+//! The window's width, its row count and where it sits live here, in the
+//! user's own config. The launcher's geometry is the active style's and its
+//! colours are the palette's (F15); both are chosen here by name.
 
 use std::path::Path;
 
@@ -18,6 +18,7 @@ use crate::dictionary::DictionaryConfig;
 use crate::places::store::PlacesConfig;
 use crate::providers::files::{self, FileLimits};
 use crate::snippets::SnippetsConfig;
+use crate::style::Metrics;
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
 use crate::weather::WeatherConfig;
@@ -288,21 +289,20 @@ impl Config {
 
     /// Total window height for a given number of visible rows.
     ///
-    /// Computed from the layout metrics rather than configured directly, which
-    /// is what makes "zero layout shift" (I-10) achievable: the window is always
-    /// a whole number of fixed-height rows plus fixed chrome.
-    pub fn window_height(&self, rows: usize) -> f32 {
-        use crate::layout;
-
+    /// Computed from the active style's metrics rather than configured
+    /// directly, which is what makes "zero layout shift" (I-10) achievable:
+    /// the window is always a whole number of fixed-height rows plus fixed
+    /// chrome.
+    pub fn window_height(&self, metrics: &Metrics, rows: usize) -> f32 {
         let rows = rows.min(self.window.visible_rows);
         if rows == 0 {
-            return layout::SEARCH_HEIGHT + layout::FOOTER_HEIGHT;
+            return metrics.search_height + metrics.footer_height;
         }
 
-        layout::SEARCH_HEIGHT
-            + layout::LIST_PADDING * 2.0
-            + rows as f32 * layout::ROW_HEIGHT
-            + layout::FOOTER_HEIGHT
+        metrics.search_height
+            + metrics.list_padding * 2.0
+            + rows as f32 * metrics.row_height
+            + metrics.footer_height
     }
 
     /// Total window height for the action panel showing `actions` rows.
@@ -311,18 +311,20 @@ impl Config {
     /// conversion into "equivalent result rows", because an action row is a
     /// different height from a result row -- one line against a title and a
     /// subtitle -- and rounding one into the other leaves exactly the band of
-    /// empty space this exists to remove.
-    pub fn panel_height(&self, actions: usize) -> f32 {
+    /// empty space this exists to remove. The panel's own rows keep their
+    /// constants (7.41); the search field and the footer around it are the
+    /// style's.
+    pub fn panel_height(&self, metrics: &Metrics, actions: usize) -> f32 {
         use crate::layout;
 
         if actions == 0 {
-            return layout::SEARCH_HEIGHT + layout::FOOTER_HEIGHT;
+            return metrics.search_height + metrics.footer_height;
         }
 
-        layout::SEARCH_HEIGHT
+        metrics.search_height
             + layout::action_panel::PADDING * 2.0
             + actions as f32 * layout::action_panel::ROW_HEIGHT
-            + layout::FOOTER_HEIGHT
+            + metrics.footer_height
     }
 }
 
@@ -508,8 +510,8 @@ mod tests {
     fn the_action_panel_is_shorter_than_the_list_it_replaces() {
         let config = Config::default();
 
-        assert!(config.panel_height(3) < config.window_height(3));
-        assert!(config.panel_height(1) < config.window_height(1));
+        assert!(config.panel_height(&Metrics::BASE, 3) < config.window_height(&Metrics::BASE, 3));
+        assert!(config.panel_height(&Metrics::BASE, 1) < config.window_height(&Metrics::BASE, 1));
     }
 
     #[test]
@@ -517,7 +519,10 @@ mod tests {
         let config = Config::default();
         let step = crate::layout::action_panel::ROW_HEIGHT;
 
-        assert_eq!(config.panel_height(3) - config.panel_height(2), step);
+        assert_eq!(
+            config.panel_height(&Metrics::BASE, 3) - config.panel_height(&Metrics::BASE, 2),
+            step
+        );
     }
 
     /// Unlike the result list, the panel is not capped at `visible-rows`: an
@@ -526,20 +531,23 @@ mod tests {
     #[test]
     fn the_panel_is_not_capped_at_the_visible_row_count() {
         let config = Config::default();
-        assert!(config.panel_height(12) > config.panel_height(8));
+        assert!(config.panel_height(&Metrics::BASE, 12) > config.panel_height(&Metrics::BASE, 8));
     }
 
     #[test]
     fn the_window_grows_in_whole_rows_and_stops_at_the_cap() {
         let config = Config::default();
 
-        let empty = config.window_height(0);
-        let one = config.window_height(1);
-        let two = config.window_height(2);
+        let empty = config.window_height(&Metrics::BASE, 0);
+        let one = config.window_height(&Metrics::BASE, 1);
+        let two = config.window_height(&Metrics::BASE, 2);
 
         assert!(one > empty);
         assert_eq!(two - one, crate::layout::ROW_HEIGHT);
         // Past the visible cap the window stops growing and the list scrolls.
-        assert_eq!(config.window_height(50), config.window_height(8));
+        assert_eq!(
+            config.window_height(&Metrics::BASE, 50),
+            config.window_height(&Metrics::BASE, 8)
+        );
     }
 }

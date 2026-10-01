@@ -38,13 +38,14 @@ use gpui::{
 };
 use lumen_core::layout;
 use lumen_core::markdown::{self, Block, Span};
+use lumen_core::style::Metrics;
 use lumen_core::theme::{Colors, Theme};
 use lumen_core::view::{
     Accessory, Detail, EmptyState, Icon, Item, ItemDetail, List, MAX_ACCESSORIES, MetadataRow, Tone,
 };
 
 use crate::images::{Fit, ImageCache, PREVIEW_PX};
-use crate::styling::{color, metrics, type_scale};
+use crate::styling::{Geometry, color, type_scale};
 
 /// One line of a rendered list, after sections have been flattened.
 ///
@@ -88,10 +89,10 @@ pub fn list_state(count: usize) -> ListState {
 }
 
 /// The height of one row, so the window can be sized before anything is drawn.
-pub fn row_height(row: &Row) -> f32 {
+pub fn row_height(row: &Row, metrics: &Metrics) -> f32 {
     match row {
-        Row::Section(..) => layout::view::SECTION_HEIGHT,
-        Row::Item(_) => layout::ROW_HEIGHT,
+        Row::Section(..) => metrics.section_height,
+        Row::Item(_) => metrics.row_height,
     }
 }
 
@@ -106,7 +107,14 @@ pub fn row_height(row: &Row) -> f32 {
 /// Moving up to a section's first item reveals the section's header too:
 /// an item scrolled to the top edge with its heading just out of sight
 /// reads as belonging to the section above.
-pub fn reveal(rows: &[Row], top: (usize, f32), row: usize, viewport: f32) -> (usize, f32) {
+pub fn reveal(
+    rows: &[Row],
+    metrics: &Metrics,
+    top: (usize, f32),
+    row: usize,
+    viewport: f32,
+) -> (usize, f32) {
+    let row_height = |row: &Row| row_height(row, metrics);
     let offset = |index: usize| -> f32 { rows.iter().take(index).map(row_height).sum() };
     let Some(target) = rows.get(row) else {
         return top;
@@ -118,7 +126,7 @@ pub fn reveal(rows: &[Row], top: (usize, f32), row: usize, viewport: f32) -> (us
 
     let new_top = if row_top < current {
         match row.checked_sub(1).and_then(|above| rows.get(above)) {
-            Some(Row::Section(..)) => row_top - layout::view::SECTION_HEIGHT,
+            Some(Row::Section(..)) => row_top - metrics.section_height,
             _ => row_top,
         }
     } else if row_bottom > current + viewport {
@@ -172,15 +180,23 @@ pub fn render_list(
     let rows = rows.to_vec();
     let colors = theme.colors.clone();
     let row_images = images.clone();
+    let geometry = Geometry::of(theme);
 
-    let list = div().h(height).py(metrics::list_padding()).child(
+    let list = div().h(height).py(geometry.list_padding()).child(
         list(state.clone(), move |index, _window, cx| {
             match rows.get(index) {
                 Some(Row::Section(title, subtitle)) => {
-                    render_section(title.clone(), subtitle.clone(), &colors)
+                    render_section(title.clone(), subtitle.clone(), &colors, &geometry)
                 }
                 Some(Row::Item(item)) => match items.get(*item) {
-                    Some(entry) => render_item(entry, *item == selected, &colors, &row_images, cx),
+                    Some(entry) => render_item(
+                        entry,
+                        *item == selected,
+                        &colors,
+                        &geometry,
+                        &row_images,
+                        cx,
+                    ),
                     None => div().into_any_element(),
                 },
                 None => div().into_any_element(),
@@ -247,7 +263,7 @@ fn render_pane(
         .min_w(px(0.0))
         .border_l_1()
         .border_color(color(colors.border_subtle))
-        .px(metrics::gutter())
+        .px(Geometry::of(theme).gutter())
         .py(px(layout::view::DETAIL_PADDING_Y))
         .overflow_y_scroll()
         .children(picture)
@@ -398,15 +414,17 @@ fn render_section(
     title: SharedString,
     subtitle: Option<SharedString>,
     colors: &Colors,
+    geometry: &Geometry,
 ) -> AnyElement {
     div()
-        .h(px(layout::view::SECTION_HEIGHT))
-        .px(metrics::gutter())
+        .h(geometry.section_height())
+        .px(geometry.gutter())
         .flex()
         .items_center()
         .gap(px(layout::view::SECTION_SUBTITLE_GAP))
         .overflow_hidden()
-        .text_size(type_scale::footer())
+        .text_size(geometry.text_section())
+        .font_weight(geometry.weight_section())
         .text_color(color(colors.text_muted))
         .child(div().flex_none().child(title))
         .when_some(subtitle, |header, subtitle| {
@@ -430,18 +448,19 @@ fn render_item(
     item: &Item,
     selected: bool,
     colors: &Colors,
+    geometry: &Geometry,
     images: &ImageCache,
     cx: &mut App,
 ) -> AnyElement {
     div()
-        .h(metrics::row_height())
+        .h(geometry.row_height())
         .w_full()
-        .mx(metrics::row_inset())
-        .px(metrics::gutter() - metrics::row_inset())
+        .mx(geometry.row_inset())
+        .px(geometry.gutter() - geometry.row_inset())
         .flex()
         .items_center()
-        .gap(metrics::icon_gap())
-        .rounded(metrics::row_radius())
+        .gap(geometry.icon_gap())
+        .rounded(geometry.row_radius())
         .when(selected, |row| {
             row.bg(color(colors.selection_background))
                 .border_1()
@@ -450,7 +469,13 @@ fn render_item(
         .when(!selected, |row| {
             row.border_1().border_color(gpui::transparent_black())
         })
-        .child(render_icon(item.icon.as_ref(), colors, images, cx))
+        .child(render_icon(
+            item.icon.as_ref(),
+            colors,
+            geometry,
+            images,
+            cx,
+        ))
         .child(
             div()
                 .flex()
@@ -459,7 +484,8 @@ fn render_item(
                 .overflow_hidden()
                 .child(
                     div()
-                        .text_size(type_scale::title())
+                        .text_size(geometry.text_title())
+                        .font_weight(geometry.weight_title())
                         .text_color(color(colors.text_primary))
                         .truncate()
                         .child(item.title.clone()),
@@ -467,7 +493,7 @@ fn render_item(
                 .when_some(item.subtitle.as_ref(), |slot, subtitle| {
                     slot.child(
                         div()
-                            .text_size(type_scale::subtitle())
+                            .text_size(geometry.text_subtitle())
                             .text_color(color(colors.text_muted))
                             .truncate()
                             .child(subtitle.clone()),
@@ -487,7 +513,7 @@ fn render_item(
                     item.accessories
                         .iter()
                         .take(MAX_ACCESSORIES)
-                        .map(|accessory| render_accessory(accessory, colors)),
+                        .map(|accessory| render_accessory(accessory, colors, geometry)),
                 ),
         )
         .into_any_element()
@@ -496,11 +522,12 @@ fn render_item(
 fn render_icon(
     icon: Option<&Icon>,
     colors: &Colors,
+    geometry: &Geometry,
     images: &ImageCache,
     cx: &mut App,
 ) -> AnyElement {
     let square = div()
-        .size(metrics::icon_size())
+        .size(geometry.icon_size())
         .flex_none()
         .flex()
         .items_center()
@@ -514,12 +541,12 @@ fn render_icon(
             .child(
                 svg()
                     .path(format!("icons/{name}.svg"))
-                    .size(metrics::icon_size())
+                    .size(geometry.icon_size())
                     .text_color(color(colors.icon)),
             )
             .into_any_element(),
         Some(Icon::Text { text }) => square
-            .text_size(type_scale::title())
+            .text_size(geometry.text_title())
             .text_color(color(colors.icon))
             .child(text.clone())
             .into_any_element(),
@@ -530,11 +557,11 @@ fn render_icon(
         // application's icon (I-10).
         Some(Icon::Image { path }) => square
             .when_some(
-                images.get(path, layout::ICON_RESOLUTION, Fit::Square, cx),
+                images.get(path, geometry.metrics().icon_resolution(), Fit::Square, cx),
                 |square, image| {
                     square.child(
                         img(image)
-                            .size(metrics::icon_size())
+                            .size(geometry.icon_size())
                             .rounded(px(layout::view::THUMBNAIL_RADIUS)),
                     )
                 },
@@ -559,15 +586,15 @@ fn swatch(value: &str, size: gpui::Pixels, colors: &Colors) -> gpui::Div {
     }
 }
 
-fn render_accessory(accessory: &Accessory, colors: &Colors) -> AnyElement {
+fn render_accessory(accessory: &Accessory, colors: &Colors, geometry: &Geometry) -> AnyElement {
     match accessory {
         // What the row exists to show reads like its title (F13); the rest
         // is dimmed beside it.
         Accessory::Text { text, strong } => div()
             .text_size(if *strong {
-                type_scale::title()
+                geometry.text_title()
             } else {
-                type_scale::footer()
+                geometry.text_accessory()
             })
             .text_color(color(if *strong {
                 colors.text_primary
@@ -581,7 +608,7 @@ fn render_accessory(accessory: &Accessory, colors: &Colors) -> AnyElement {
             .py(px(layout::view::TAG_PADDING_Y))
             .rounded(px(layout::view::TAG_RADIUS))
             .bg(color(tone_background(*tone, colors)))
-            .text_size(type_scale::footer())
+            .text_size(geometry.text_accessory())
             .text_color(color(tone_foreground(*tone, colors)))
             .child(text.clone())
             .into_any_element(),
@@ -697,7 +724,7 @@ pub fn render_detail(detail: &Detail, theme: &Theme, height: gpui::Pixels) -> An
     div()
         .id("detail")
         .h(height)
-        .px(metrics::gutter())
+        .px(Geometry::of(theme).gutter())
         .py(px(layout::view::DETAIL_PADDING_Y))
         .overflow_y_scroll()
         .child(render_body(
@@ -776,21 +803,26 @@ mod tests {
         rows.extend((0..5).map(Row::Item));
         rows.push(Row::Section("Verb".into(), None));
         rows.extend((5..11).map(Row::Item));
-        let header = layout::view::SECTION_HEIGHT;
-        let item = layout::ROW_HEIGHT;
+        let metrics = Metrics::BASE;
+        let header = metrics.section_height;
+        let item = metrics.row_height;
+        let row_height = |row: &Row| row_height(row, &metrics);
         // What the launcher gives it: two headers and six items.
         let viewport = header * 2.0 + item * 6.0;
 
         // Visible already: nothing moves.
-        assert_eq!(reveal(&rows, (0, 0.0), 7, viewport), (0, 0.0));
+        assert_eq!(
+            reveal(&rows, &Metrics::BASE, (0, 0.0), 7, viewport),
+            (0, 0.0)
+        );
 
         // The second verb, one row below the edge: scroll by one item.
-        let (index, offset) = reveal(&rows, (0, 0.0), 8, viewport);
+        let (index, offset) = reveal(&rows, &Metrics::BASE, (0, 0.0), 8, viewport);
         let top: f32 = rows[..index].iter().map(row_height).sum::<f32>() + offset;
         assert_eq!(top, item);
 
         // The last row, from the top.
-        let (index, offset) = reveal(&rows, (0, 0.0), 12, viewport);
+        let (index, offset) = reveal(&rows, &Metrics::BASE, (0, 0.0), 12, viewport);
         let top: f32 = rows[..index].iter().map(row_height).sum::<f32>() + offset;
         let total: f32 = rows.iter().map(row_height).sum();
         assert_eq!(top, total - viewport);
@@ -804,14 +836,18 @@ mod tests {
         rows.extend((5..11).map(Row::Item));
 
         // Scrolled so the first verb (row 7) is above the top edge.
-        assert_eq!(reveal(&rows, (9, 0.0), 7, 200.0), (6, 0.0));
+        assert_eq!(reveal(&rows, &Metrics::BASE, (9, 0.0), 7, 200.0), (6, 0.0));
         // And back to the very first item: its header too.
-        assert_eq!(reveal(&rows, (9, 0.0), 1, 200.0), (0, 0.0));
+        assert_eq!(reveal(&rows, &Metrics::BASE, (9, 0.0), 1, 200.0), (0, 0.0));
     }
 
     #[test]
     fn a_header_is_shorter_than_a_row() {
-        assert!(row_height(&Row::Section("x".into(), None)) < row_height(&Row::Item(0)));
+        let metrics = Metrics::BASE;
+        assert!(
+            row_height(&Row::Section("x".into(), None), &metrics)
+                < row_height(&Row::Item(0), &metrics)
+        );
     }
 
     /// The file the plan asks for in step 1, parsed and counted, so that

@@ -42,7 +42,7 @@ use lumen_platform::Platform;
 use crate::icons::IconCache;
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
 use crate::snippet_form::{SnippetForm, SnippetFormEvent};
-use crate::styling::{color, metrics, type_scale};
+use crate::styling::{Geometry, color, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::timer_form::{TimerForm, TimerFormEvent};
 
@@ -780,7 +780,18 @@ impl Launcher {
         }
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
+        let restyled = theme.style != self.theme.style;
         self.theme = theme;
+        // A style is geometry: the window's height and its anchor may both
+        // have moved, so it is re-placed even when the height alone has not
+        // -- an empty list is as tall in any style with the same search field
+        // and footer, and its full height still differs (F15).
+        if restyled {
+            cx.emit(LauncherEvent::Resized {
+                height: self.content_height(),
+                anchor: self.anchor_height(),
+            });
+        }
         cx.notify();
     }
 
@@ -848,23 +859,24 @@ impl Launcher {
             let rows = self
                 .picker_count()
                 .clamp(1, lumen_core::layout::view::PICKER_ROWS);
-            return self.config.panel_height(rows);
+            return self.config.panel_height(self.metrics(), rows);
         }
         if self.action_panel.is_some() {
-            return self.config.panel_height(self.panel_entries().len());
+            return self
+                .config
+                .panel_height(self.metrics(), self.panel_entries().len());
         }
 
+        let metrics = self.metrics();
         match &self.mode {
-            Mode::Root => self.config.window_height(self.visible_rows()),
-            Mode::Form(state) => {
-                lumen_core::layout::SEARCH_HEIGHT + state.height + lumen_core::layout::FOOTER_HEIGHT
-            }
+            Mode::Root => self.config.window_height(metrics, self.visible_rows()),
+            Mode::Form(state) => metrics.search_height + state.height + metrics.footer_height,
             Mode::View(state) if state.loading => self.loading_height(),
             Mode::View(state) => {
-                lumen_core::layout::SEARCH_HEIGHT
-                    + lumen_core::layout::LIST_PADDING * 2.0
+                metrics.search_height
+                    + metrics.list_padding * 2.0
                     + self.view_rows_height(state)
-                    + lumen_core::layout::FOOTER_HEIGHT
+                    + metrics.footer_height
             }
         }
     }
@@ -881,16 +893,17 @@ impl Launcher {
         // A list with nothing in it still has something to say, and needs room
         // to say it. Without this the window is sized to zero rows and the
         // empty state spills over the footer.
+        let metrics = self.metrics();
         if state.rows.is_empty() && !state.loading {
-            return lumen_core::layout::view::EMPTY_HEIGHT;
+            return metrics.empty_height();
         }
 
-        let cap = self.config.window.visible_rows as f32 * lumen_core::layout::ROW_HEIGHT;
+        let cap = self.config.window.visible_rows as f32 * metrics.row_height;
 
         let mut used = 0.0;
         let mut all_fit = true;
         for row in &state.rows {
-            let height = crate::view::row_height(row);
+            let height = crate::view::row_height(row, metrics);
             if used + height > cap {
                 all_fit = false;
                 break;
@@ -915,7 +928,7 @@ impl Launcher {
             return state
                 .rows
                 .first()
-                .map(crate::view::row_height)
+                .map(|row| crate::view::row_height(row, metrics))
                 .unwrap_or_default();
         }
 
@@ -930,7 +943,10 @@ impl Launcher {
     fn resize_if_needed(&mut self, previous: f32, cx: &mut Context<Self>) {
         let height = self.content_height();
         if height != previous {
-            cx.emit(LauncherEvent::Resized(height));
+            cx.emit(LauncherEvent::Resized {
+                height,
+                anchor: self.anchor_height(),
+            });
         }
     }
 
@@ -1173,10 +1189,28 @@ impl Launcher {
     /// The same as an empty state's, so that a view which turns out to have
     /// nothing in it does not resize the window on arrival.
     pub fn loading_height(&self) -> f32 {
-        lumen_core::layout::SEARCH_HEIGHT
-            + lumen_core::layout::LIST_PADDING * 2.0
-            + lumen_core::layout::view::EMPTY_HEIGHT
-            + lumen_core::layout::FOOTER_HEIGHT
+        let metrics = self.metrics();
+        metrics.search_height
+            + metrics.list_padding * 2.0
+            + metrics.empty_height()
+            + metrics.footer_height
+    }
+
+    /// How tall the window is with a full root list: where its top edge is
+    /// placed from, so the search field stays still as the results change.
+    pub fn anchor_height(&self) -> f32 {
+        self.config
+            .window_height(self.metrics(), self.config.window.visible_rows)
+    }
+
+    /// The active style's geometry, as numbers, for sizing the window.
+    fn metrics(&self) -> &lumen_core::style::Metrics {
+        &self.theme.style.metrics
+    }
+
+    /// The active style's geometry, for drawing.
+    fn geometry(&self) -> Geometry {
+        Geometry::of(&self.theme)
     }
 
     pub fn begin_view(&mut self, sink: ViewSink, cx: &mut Context<Self>) {
@@ -1296,6 +1330,7 @@ impl Launcher {
         let top = state.list.logical_scroll_top();
         let (item_ix, offset) = crate::view::reveal(
             &state.rows,
+            self.metrics(),
             (top.item_ix, f32::from(top.offset_in_item)),
             row,
             self.view_rows_height(state),
@@ -2726,7 +2761,14 @@ pub enum LauncherEvent {
     /// enough for a title and a subtitle, an action row holds one line. When
     /// this carried a row count the action panel was drawn into a window still
     /// sized for eight results, and two actions sat above six rows of nothing.
-    Resized(f32),
+    ///
+    /// With the anchor: how tall a full root list is in the active style,
+    /// which is where the window's top edge is placed from (F15). A style
+    /// changes it, and the launcher is what knows the style.
+    Resized {
+        height: f32,
+        anchor: f32,
+    },
 }
 
 impl gpui::EventEmitter<LauncherEvent> for Launcher {}
@@ -2769,7 +2811,7 @@ impl Render for Launcher {
             .size_full()
             .flex()
             .flex_col()
-            .rounded(metrics::window_radius())
+            .rounded(self.geometry().window_radius())
             .border_1()
             .border_color(color(colors.border_subtle))
             .bg(color(background))
@@ -2820,6 +2862,7 @@ impl Render for Launcher {
 impl Launcher {
     fn render_search_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.theme.colors;
+        let geometry = self.geometry();
 
         // A view says what its own search does. "Search for apps and
         // commands" over somebody's pull requests is the launcher talking
@@ -2830,11 +2873,12 @@ impl Launcher {
             return div()
                 .flex()
                 .items_center()
-                .h(metrics::search_height())
-                .px(metrics::gutter())
+                .h(geometry.search_height())
+                .px(geometry.gutter())
                 .border_b_1()
                 .border_color(color(colors.border_subtle))
-                .text_size(type_scale::query())
+                .text_size(geometry.text_query())
+                .font_weight(geometry.weight_query())
                 .text_color(color(colors.text_primary))
                 .child(state.title);
         }
@@ -2866,11 +2910,11 @@ impl Launcher {
                     .id(("scope", index))
                     .flex_none()
                     .flex()
-                    .gap(metrics::argument_pill_padding_x())
-                    .ml(metrics::argument_pill_gap())
-                    .px(metrics::argument_pill_padding_x())
-                    .py(metrics::argument_pill_padding_y())
-                    .rounded(metrics::argument_pill_radius())
+                    .gap(crate::styling::metrics::argument_pill_padding_x())
+                    .ml(crate::styling::metrics::argument_pill_gap())
+                    .px(crate::styling::metrics::argument_pill_padding_x())
+                    .py(crate::styling::metrics::argument_pill_padding_y())
+                    .rounded(crate::styling::metrics::argument_pill_radius())
                     .bg(color(colors.selection_background))
                     .border_1()
                     // The one whose options are showing is marked, so the
@@ -2907,11 +2951,12 @@ impl Launcher {
         div()
             .flex()
             .items_center()
-            .h(metrics::search_height())
-            .px(metrics::gutter())
+            .h(geometry.search_height())
+            .px(geometry.gutter())
             .border_b_1()
             .border_color(color(colors.border_subtle))
-            .text_size(type_scale::query())
+            .text_size(geometry.text_query())
+            .font_weight(geometry.weight_query())
             .when(!pills.is_empty(), |row| row.key_context(SCOPE_CONTEXT))
             // A view's levels, where the text would start, as the argument
             // is (F13): what is typed is a search within them.
@@ -2919,10 +2964,10 @@ impl Launcher {
                 row.child(
                     div()
                         .flex_none()
-                        .mr(metrics::argument_pill_gap())
-                        .px(metrics::argument_pill_padding_x())
-                        .py(metrics::argument_pill_padding_y())
-                        .rounded(metrics::argument_pill_radius())
+                        .mr(crate::styling::metrics::argument_pill_gap())
+                        .px(crate::styling::metrics::argument_pill_padding_x())
+                        .py(crate::styling::metrics::argument_pill_padding_y())
+                        .rounded(crate::styling::metrics::argument_pill_radius())
                         .bg(color(colors.selection_background))
                         .border_1()
                         .border_color(color(colors.selection_border))
@@ -2937,10 +2982,10 @@ impl Launcher {
                 row.child(
                     div()
                         .flex_none()
-                        .mr(metrics::argument_pill_gap())
-                        .px(metrics::argument_pill_padding_x())
-                        .py(metrics::argument_pill_padding_y())
-                        .rounded(metrics::argument_pill_radius())
+                        .mr(crate::styling::metrics::argument_pill_gap())
+                        .px(crate::styling::metrics::argument_pill_padding_x())
+                        .py(crate::styling::metrics::argument_pill_padding_y())
+                        .rounded(crate::styling::metrics::argument_pill_radius())
                         .bg(color(colors.selection_background))
                         .border_1()
                         .border_color(color(colors.selection_border))
@@ -2982,7 +3027,7 @@ impl Launcher {
                     .child(
                         div()
                             .h(gpui::px(panel::ROW_HEIGHT))
-                            .px(metrics::gutter())
+                            .px(self.geometry().gutter())
                             .flex()
                             .items_center()
                             .text_size(type_scale::title())
@@ -3029,7 +3074,7 @@ impl Launcher {
         div()
             .id(("scope-option", index))
             .h(gpui::px(panel::ROW_HEIGHT))
-            .px(metrics::gutter())
+            .px(self.geometry().gutter())
             .flex()
             .items_center()
             .justify_between()
@@ -3065,7 +3110,8 @@ impl Launcher {
     /// Shared with the action panel, which takes that region over, so the two
     /// cannot disagree and the window never has to resize to swap between them.
     fn results_height(&self) -> gpui::Pixels {
-        metrics::row_height() * self.visible_rows() as f32 + metrics::list_padding() * 2.0
+        let geometry = self.geometry();
+        geometry.row_height() * self.visible_rows() as f32 + geometry.list_padding() * 2.0
     }
 
     /// Draw the open view (F4, step 2).
@@ -3075,9 +3121,7 @@ impl Launcher {
     /// it supplies rows, and the chrome around them is never its to change.
     fn render_view(&self, state: &ViewState, cx: &mut gpui::App) -> gpui::AnyElement {
         let height = gpui::px(
-            self.content_height()
-                - lumen_core::layout::SEARCH_HEIGHT
-                - lumen_core::layout::FOOTER_HEIGHT,
+            self.content_height() - self.metrics().search_height - self.metrics().footer_height,
         );
 
         if state.loading {
@@ -3088,7 +3132,7 @@ impl Launcher {
         // the window does not jump when the first render turns out to be an
         // empty list.
         let height = if state.rows.is_empty() {
-            gpui::px(lumen_core::layout::view::EMPTY_HEIGHT)
+            gpui::px(self.metrics().empty_height())
         } else {
             height
         };
@@ -3123,7 +3167,7 @@ impl Launcher {
         let entity = cx.entity();
 
         div()
-            .py(metrics::list_padding())
+            .py(self.geometry().list_padding())
             .h(self.results_height())
             .flex()
             .flex_col()
@@ -3153,6 +3197,7 @@ impl Launcher {
     /// on the card itself.
     fn render_card(&self, entity: &Entity<Self>) -> gpui::AnyElement {
         let colors = &self.theme.colors;
+        let geometry = self.geometry();
         let item = self.item(&self.hits()[0]);
         let selected = self.selected == 0;
         let expression = self.query.trim().to_string();
@@ -3169,7 +3214,7 @@ impl Launcher {
                 .child(
                     div()
                         .max_w_full()
-                        .text_size(type_scale::card())
+                        .text_size(geometry.text_card())
                         .text_color(color(colors.text_primary))
                         .truncate()
                         .child(value),
@@ -3177,7 +3222,7 @@ impl Launcher {
                 .child(
                     div()
                         .max_w_full()
-                        .text_size(type_scale::footer())
+                        .text_size(geometry.text_footer())
                         .text_color(color(colors.text_muted))
                         .truncate()
                         .child(label),
@@ -3187,14 +3232,14 @@ impl Launcher {
         let entity = entity.clone();
         div()
             .id("calculator-card")
-            .h(metrics::row_height() * lumen_core::layout::CARD_ROWS as f32)
+            .h(geometry.row_height() * lumen_core::layout::CARD_ROWS as f32)
             .flex_none()
-            .mx(metrics::row_inset())
-            .px(metrics::gutter() - metrics::row_inset())
+            .mx(geometry.row_inset())
+            .px(geometry.gutter() - geometry.row_inset())
             .flex()
             .items_center()
-            .gap(metrics::gutter())
-            .rounded(metrics::row_radius())
+            .gap(geometry.gutter())
+            .rounded(geometry.row_radius())
             .border_1()
             .when(selected, |card| {
                 card.bg(color(colors.selection_background))
@@ -3214,7 +3259,7 @@ impl Launcher {
             .child(
                 div()
                     .flex_none()
-                    .text_size(type_scale::title())
+                    .text_size(geometry.text_title())
                     .text_color(color(colors.text_muted))
                     .child("\u{2192}"),
             )
@@ -3224,6 +3269,7 @@ impl Launcher {
 
     fn render_row(&self, index: usize, entity: &Entity<Self>, cx: &mut App) -> gpui::AnyElement {
         let colors = &self.theme.colors;
+        let geometry = self.geometry();
         let hit = &self.hits()[index];
         let item = self.item(hit);
         let selected = index == self.selected;
@@ -3237,19 +3283,19 @@ impl Launcher {
 
         div()
             .id(index)
-            .h(metrics::row_height())
+            .h(geometry.row_height())
             // Full width, and this is load-bearing rather than tidy. Without it
             // the row is only as wide as its content, `flex_1` below has no
             // free space to claim, and the kind label ends up butted against
             // the subtitle -- so it sits at a different horizontal position on
             // every row, which is precisely the layout shift I-10 forbids.
             .w_full()
-            .mx(metrics::row_inset())
-            .px(metrics::gutter() - metrics::row_inset())
+            .mx(geometry.row_inset())
+            .px(geometry.gutter() - geometry.row_inset())
             .flex()
             .items_center()
-            .gap(metrics::icon_gap())
-            .rounded(metrics::row_radius())
+            .gap(geometry.icon_gap())
+            .rounded(geometry.row_radius())
             .when(selected, |row| {
                 row.bg(color(colors.selection_background))
                     .border_1()
@@ -3276,7 +3322,7 @@ impl Launcher {
                 // one frame later is a flicker, and a row that is about to have
                 // its own icon should simply wait for it.
                 div()
-                    .size(metrics::icon_size())
+                    .size(geometry.icon_size())
                     .flex_none()
                     .flex()
                     .items_center()
@@ -3286,7 +3332,7 @@ impl Launcher {
                         None if item.icon.is_none() => slot.child(
                             svg()
                                 .path(crate::icons::glyph(item.kind))
-                                .size(metrics::icon_size())
+                                .size(geometry.icon_size())
                                 .text_color(color(colors.icon)),
                         ),
                         None => slot,
@@ -3300,14 +3346,15 @@ impl Launcher {
                     .overflow_hidden()
                     .child(
                         div()
-                            .text_size(type_scale::title())
+                            .text_size(geometry.text_title())
+                            .font_weight(geometry.weight_title())
                             .text_color(color(colors.text_primary))
                             .child(highlighted(&item.title, &hit.highlights, colors)),
                     )
                     .when_some(item.subtitle.as_ref(), |slot, subtitle| {
                         slot.child(
                             div()
-                                .text_size(type_scale::subtitle())
+                                .text_size(geometry.text_subtitle())
                                 .text_color(color(colors.text_muted))
                                 // A file's subtitle is a path and can be longer
                                 // than the window. Ending it in an ellipsis is
@@ -3322,8 +3369,8 @@ impl Launcher {
             .child(
                 div()
                     .flex_none()
-                    .pl(metrics::icon_gap())
-                    .text_size(type_scale::footer())
+                    .pl(geometry.icon_gap())
+                    .text_size(geometry.text_accessory())
                     .text_color(color(colors.text_muted))
                     .child(item.kind_label()),
             )
@@ -3332,6 +3379,7 @@ impl Launcher {
 
     fn render_footer(&self) -> impl IntoElement {
         let colors = &self.theme.colors;
+        let geometry = self.geometry();
         let entries = self.panel_entries();
         let verb = match &self.mode {
             Mode::Root => self
@@ -3407,11 +3455,11 @@ impl Launcher {
             .flex()
             .items_center()
             .justify_between()
-            .h(metrics::footer_height())
-            .px(metrics::gutter())
+            .h(geometry.footer_height())
+            .px(geometry.gutter())
             .border_t_1()
             .border_color(color(colors.border_subtle))
-            .text_size(type_scale::footer())
+            .text_size(geometry.text_footer())
             .text_color(color(colors.text_muted))
             // Truncated rather than pushing the keys off the edge: a long
             // timer name must not move them (I-10).
@@ -3419,7 +3467,7 @@ impl Launcher {
             .child(
                 div()
                     .flex()
-                    .gap(metrics::icon_gap())
+                    .gap(geometry.icon_gap())
                     .child(format!("{verb}  {save_keys}"))
                     // Advertised only when there is a second action to reach.
                     // A hint for a panel that would open empty teaches the user
@@ -3475,7 +3523,7 @@ impl Launcher {
                     div()
                         .id(("action", index))
                         .h(gpui::px(panel::ROW_HEIGHT))
-                        .px(metrics::gutter())
+                        .px(self.geometry().gutter())
                         .flex()
                         .items_center()
                         .justify_between()

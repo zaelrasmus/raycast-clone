@@ -23,6 +23,8 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::style::Style;
+
 /// The schema version this build writes and understands.
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -151,12 +153,19 @@ pub struct ThemeFile {
 ///
 /// The UI only ever sees this type, so no rendering code has to consider what
 /// happens when a token is missing (I-5 stays easy to obey).
+///
+/// It carries the palette and the style together (F15). They are chosen and
+/// loaded apart, but a component receives one value, so nothing that draws
+/// has to be handed two and keep them in step.
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub name: String,
     pub appearance: Appearance,
     pub font_family: Option<String>,
     pub colors: Colors,
+    /// The launcher's geometry and variants, from the style file `style` in
+    /// `config.json` names. The base style until one is loaded.
+    pub style: Style,
 }
 
 /// The semantic colour palette.
@@ -226,9 +235,10 @@ impl Theme {
             name: "Nocturne".into(),
             appearance: Appearance::Dark,
             // The bundled face, so the interface looks the same on Windows and
-            // on Hyprland. A theme may name a different family; it may not
-            // change any size, because sizes are geometry (AD-13, I-11).
+            // on Hyprland. A palette may name a different family; sizes are
+            // the style's (AD-13, I-11).
             font_family: Some(BUNDLED_FONT.into()),
+            style: Style::base(),
             colors: Colors {
                 // Alpha below 255 on purpose: this surface sits over the system
                 // acrylic, and an opaque value would hide the backdrop that F0
@@ -259,6 +269,7 @@ impl Theme {
             name: "Daylight".into(),
             appearance: Appearance::Light,
             font_family: Some(BUNDLED_FONT.into()),
+            style: Style::base(),
             colors: Colors {
                 surface_background: Color::rgba(0xF7, 0xF7, 0xFA, 0xDE),
                 surface_elevated: Color::rgba(0xFF, 0xFF, 0xFF, 0xF2),
@@ -306,6 +317,11 @@ impl Theme {
         }
 
         theme
+    }
+
+    /// This palette with `style`'s geometry and variants.
+    pub fn with_style(self, style: Style) -> Self {
+        Self { style, ..self }
     }
 
     pub fn load(path: &Path) -> Result<Self> {

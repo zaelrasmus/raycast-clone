@@ -34,6 +34,7 @@ pub mod search;
 pub mod section;
 pub mod sheets;
 pub mod snippets;
+pub mod style;
 pub mod theme;
 pub mod timers;
 pub mod translate;
