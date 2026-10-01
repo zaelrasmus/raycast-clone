@@ -211,6 +211,8 @@ pub enum ViewSource {
     Snippets,
     /// *Clipboard History* (F12).
     Clipboard,
+    /// *World Clock* (F13).
+    Clock,
 }
 
 impl Action {

@@ -107,7 +107,7 @@ impl Session {
             }
             Event::ScopeChanged { scope, option } => self.choose(&scope, &option),
             Event::ActionInvoked { item, action } => self.act(item.as_deref(), &action),
-            Event::SelectionChanged { .. } | Event::Dismissed => Vec::new(),
+            Event::SelectionChanged { .. } | Event::Back | Event::Dismissed => Vec::new(),
         }
     }
 
@@ -278,6 +278,7 @@ impl Session {
             placeholder: Some(format!("Convert from {}", self.from.name)),
             filtering: Filtering::Extension,
             scopes: vec![self.source_scope()],
+            path: Vec::new(),
             empty: Some(empty),
             sections,
         })
@@ -446,6 +447,7 @@ fn row(to: &'static Currency, value: f64, pinned: bool) -> Item {
         }),
         accessories: vec![crate::view::Accessory::Text {
             text: to.name.into(),
+            strong: false,
         }],
         keywords: Vec::new(),
         actions: vec![

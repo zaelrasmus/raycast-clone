@@ -22,6 +22,7 @@ use crate::item::Item;
 pub mod arrange;
 pub mod calculator;
 pub mod clipboard;
+pub mod clock;
 pub mod commands;
 pub mod currency;
 pub mod dictionary;
@@ -37,6 +38,7 @@ pub mod web;
 pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;
 pub use clipboard::ClipboardProvider;
+pub use clock::ClockProvider;
 pub use commands::CommandsProvider;
 pub use currency::CurrencyProvider;
 pub use dictionary::DictionaryProvider;
@@ -108,6 +110,7 @@ impl Providers {
         providers.register(Box::new(DictionaryProvider));
         providers.register(Box::new(SnippetsProvider));
         providers.register(Box::new(ClipboardProvider));
+        providers.register(Box::new(ClockProvider));
         providers
     }
 

@@ -561,9 +561,19 @@ fn swatch(value: &str, size: gpui::Pixels, colors: &Colors) -> gpui::Div {
 
 fn render_accessory(accessory: &Accessory, colors: &Colors) -> AnyElement {
     match accessory {
-        Accessory::Text { text } => div()
-            .text_size(type_scale::footer())
-            .text_color(color(colors.text_muted))
+        // What the row exists to show reads like its title (F13); the rest
+        // is dimmed beside it.
+        Accessory::Text { text, strong } => div()
+            .text_size(if *strong {
+                type_scale::title()
+            } else {
+                type_scale::footer()
+            })
+            .text_color(color(if *strong {
+                colors.text_primary
+            } else {
+                colors.text_muted
+            }))
             .child(text.clone())
             .into_any_element(),
         Accessory::Tag { text, tone } => div()

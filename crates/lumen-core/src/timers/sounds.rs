@@ -77,6 +77,7 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
         placeholder: Some("Search alert sounds".into()),
         filtering: Filtering::Host,
         scopes: Vec::new(),
+        path: Vec::new(),
         empty: Some(EmptyState {
             title: "No alert sounds".into(),
             description: Some("The system offers none that Lumen can play.".into()),

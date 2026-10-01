@@ -41,6 +41,9 @@ unicode-segmentation = "1.13"
 # Copied images are named by the hash of their pixels (F12), so the same
 # screenshot copied twice is one file. Already in the build through gpui.
 sha2 = "0.10"
+# The bundled catalogue of places is compressed (F13). Already in the build
+# through resvg and png, with the same pure-Rust backend.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }

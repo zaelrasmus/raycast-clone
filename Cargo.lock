@@ -3430,6 +3430,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "directories",
+ "flate2",
  "image",
  "jiff",
  "log",

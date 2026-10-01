@@ -301,6 +301,7 @@ impl Session {
             placeholder: Some(String::new()),
             filtering: Filtering::Extension,
             scopes: Vec::new(),
+            path: Vec::new(),
             empty: None,
             showing_detail: true,
             sections: vec![Section {
@@ -462,6 +463,7 @@ impl Session {
             placeholder: Some(placeholder),
             filtering: Filtering::Extension,
             scopes: Vec::new(),
+            path: Vec::new(),
             empty: Some(EmptyState {
                 title: format!("No {} matches", argument.label()),
                 description: Some(argument.options.join(", ")),
@@ -549,6 +551,7 @@ impl Session {
             placeholder: Some("Search snippets\u{2026}".into()),
             filtering: Filtering::Extension,
             scopes: vec![self.tag_scope()],
+            path: Vec::new(),
             empty: Some(empty),
             showing_detail: true,
             sections,

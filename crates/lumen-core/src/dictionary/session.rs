@@ -237,7 +237,7 @@ impl Session {
             Event::ActionInvoked { item, action } => self.act(item.as_deref(), &action),
             Event::ScopeChanged { scope, option } => self.choose(&scope, &option),
             Event::Dismissed => self.closed(),
-            Event::SelectionChanged { .. } => Vec::new(),
+            Event::SelectionChanged { .. } | Event::Back => Vec::new(),
         }
     }
 
@@ -590,6 +590,7 @@ impl Session {
             placeholder: Some(format!("Look up a word in {}", self.language_name())),
             filtering: Filtering::Extension,
             scopes: vec![self.source_scope()],
+            path: Vec::new(),
             empty,
             showing_detail: entry.is_some(),
             sections,
@@ -621,6 +622,7 @@ impl Session {
                         icon: None,
                         accessories: vec![Accessory::Text {
                             text: language_name(&entry.language),
+                            strong: false,
                         }],
                         keywords: Vec::new(),
                         actions: vec![
@@ -648,6 +650,7 @@ impl Session {
                         icon: None,
                         accessories: vec![Accessory::Text {
                             text: language_name(&recent.language),
+                            strong: false,
                         }],
                         keywords: Vec::new(),
                         actions: vec![

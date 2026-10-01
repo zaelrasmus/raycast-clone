@@ -11,6 +11,7 @@ use lumen_platform::{BackdropMode, Hotkey};
 use serde::{Deserialize, Serialize};
 
 use crate::clipboard::Retention;
+use crate::clock::ClockConfig;
 use crate::currency::CurrencyConfig;
 use crate::dictionary::DictionaryConfig;
 use crate::providers::files::{self, FileLimits};
@@ -44,6 +45,9 @@ pub struct Config {
     pub dictionary: DictionaryConfig,
     /// Snippets (F11): whether a paste puts the clipboard back.
     pub snippets: SnippetsConfig,
+    /// World Clock (F13): which value leads a row, and how the difference
+    /// is written.
+    pub clock: ClockConfig,
 }
 
 /// File search (F3).
@@ -168,6 +172,7 @@ impl Default for Config {
             currency: CurrencyConfig::default(),
             dictionary: DictionaryConfig::default(),
             snippets: SnippetsConfig::default(),
+            clock: ClockConfig::default(),
         }
     }
 }

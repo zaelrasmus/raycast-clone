@@ -91,6 +91,7 @@ pub fn view(clock: &Clock, presets: &[Preset], quick: &[Duration], now: Millis) 
         placeholder: Some("Search timers".into()),
         filtering: Filtering::Host,
         scopes: Vec::new(),
+        path: Vec::new(),
         empty: Some(EmptyState {
             title: "No timers running".into(),
             description: Some("Type a duration such as 25m in the launcher to start one.".into()),
@@ -121,6 +122,7 @@ fn item(timer: &Timer, now: Millis) -> Item {
     }
     accessories.push(Accessory::Text {
         text: clock_face(timer.remaining(now)),
+        strong: false,
     });
 
     let toggle = match timer.state {
@@ -196,6 +198,7 @@ fn stopwatch(watch: &Stopwatch, now: Millis) -> Item {
     }
     accessories.push(Accessory::Text {
         text: stopwatch_face(watch.elapsed(now)),
+        strong: false,
     });
     let toggle = if watch.is_running() {
         action(PAUSE, "Pause")
@@ -236,6 +239,7 @@ fn preset(preset: &Preset) -> Item {
             .iter()
             .map(|alias| Accessory::Text {
                 text: alias.clone(),
+                strong: false,
             })
             .collect(),
         keywords: preset.alias.iter().cloned().collect(),
@@ -439,7 +443,7 @@ mod tests {
         item.accessories
             .iter()
             .map(|accessory| match accessory {
-                Accessory::Text { text } | Accessory::Tag { text, .. } => text.clone(),
+                Accessory::Text { text, .. } | Accessory::Tag { text, .. } => text.clone(),
             })
             .collect()
     }

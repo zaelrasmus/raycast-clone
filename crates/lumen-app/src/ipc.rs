@@ -87,6 +87,8 @@ pub enum Message {
     },
     /// Open *Clipboard History* (F12).
     RunClipboard,
+    /// Open *World Clock* (F13).
+    RunClock,
     /// Fetch exchange rates for a conversion typed at the root (F9).
     RefreshRates,
     /// Start or stop a timer (F8), from a root row or `lumen timer`.

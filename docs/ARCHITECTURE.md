@@ -120,6 +120,7 @@ once Lumen was measured well inside them (7.36).
 | **F10** | Dictionary: a *Dictionary* command that explains a word from any language, and *Translate* showing a single word's alternatives by part of speech | **Done.** A detail pane in the vocabulary; *Dictionary* on English Wiktionary for 58 word languages, explained in English, the language detected or chosen; Translate's alternatives; each offers the other; favourites and history. See F10 decisions |
 | **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
+| **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **In progress.** See F13 decisions |
 
 ### F4 build order is not optional
 
@@ -1591,6 +1592,151 @@ The decisions:
   is the largest step of any phase and is written down as one. The script
   measures a launcher that was never opened, so it does not show what the
   emptied cache saves after a session with pictures; that was not measured.
+
+### F13 decisions
+
+Two Raycast extensions were read as the target: *World Clock* and
+*Weather*. The World Clock extension Lumen ships (F4) knows seven zones by
+their Windows names, and the question it cannot answer is the one this phase
+exists for: *how is that place -- a city, a country, a continent -- compared
+with mine?* For a remote meeting, an event somewhere else, a colleague in
+another zone. Time and weather are one concept over one set of places, not
+two features.
+
+The decisions:
+
+- **The World Clock extension is retired.** It was F4's first example,
+  and two *World Clock* rows in the root list would be one too many. New
+  installs get *Characters* alone as the protocol's example; a copy already
+  installed is the user's and is never deleted, so it stays until its
+  folder is.
+- **One catalogue of places, two views.** *World Clock* and *Weather* are
+  built-in view sources over the same places and the same favourites.
+  Favouriting a city in one puts it first in both: one list, *My Places*.
+- **The places are bundled; only the weather is fetched.** GeoNames'
+  `cities15000` (CC BY 4.0: every city over 15,000 people, 34,152 of them
+  in 356 zones), reduced to name, ASCII name, country, region, IANA zone,
+  coordinates and population, and bundled compressed: 2.2 MB of text, 836 KB
+  in the binary through `flate2`, already in the build through `png`.
+  `scripts/make-places.ps1` rebuilds it from GeoNames; the file is
+  committed, not downloaded at build time. Finding a city, its zone and its
+  coordinates never touches the network, so the clock is wholly offline and
+  the weather needs no geocoding service.
+- **The zone rules are jiff's bundled IANA database.** Already in the
+  binary since F9 (`tzdb-bundle-platform`, 2026c at this writing), so it
+  costs nothing, and the user's zone and the remote one come from the same
+  source and cannot disagree. Windows' ICU copy is fresher -- Windows Update
+  keeps it -- and was declined: it is a second source for the same answer,
+  and bindings to reach it. Governments change their rules several times a
+  year, so the database is refreshed with `cargo update -p jiff-tzdb`,
+  independent of jiff's exact pin; `Cargo.lock` records which. The pane
+  does not show the version: jiff does not expose it, and `jiff-tzdb`'s
+  constant would name the bundled copy on a Linux build that reads the
+  system's instead. The current time is the system clock, which is as
+  accurate as the taskbar's.
+- **Ranked by population.** There are two Vancouvers, several Madrids and
+  a Los Angeles in Spain. The largest place of a name comes first; the
+  subtitle names the region and country so the others can be told apart.
+- **Every word narrows, against any level.** A place is a city, its
+  region, its country and its continent, and every word typed must match
+  one of them: `california` lists Los Angeles and San Diego, `america
+  canada van` finds Vancouver, `bogota` finds Bogotá. Matching ignores
+  accents, and countries answer to their common aliases -- `usa`, `us`,
+  `uk`, `korea` -- from a small hand-written table.
+- **The list is at the level the words name.** A continent alone lists its
+  countries, one row each with its city count and its range of offsets;
+  a country lists its cities, largest first; anything else lists cities.
+  Thirty thousand rows are virtualised cheaply and read by nobody, so the
+  level is what keeps `europe` useful.
+- **Drill-down is a pill, and the pill is part of the query.** `Enter` on
+  a country or continent row puts it in a pill before the search field --
+  `Europe › Spain` -- and clears the text for a filter within it. `Escape`
+  clears the text first, then takes one level off the pill, then leaves the
+  view; `Backspace` in an empty field takes one level off, as it takes the
+  argument pill off in the root list (F6). Words typed at the top still go
+  straight to a city, with no pill. The pill and the words are one state,
+  so they cannot disagree. The vocabulary gains what this needs, and
+  nothing else: `List::path`, the pill's levels, drawn by the host, and
+  `Event::Back`, sent when a level is taken off.
+- **A row answers the comparison.** The icon is the country's two letters
+  (`Icon::Text`, as in F9), the title the city, the subtitle region and
+  country; on the right their time, the difference from the user's zone and
+  *Yesterday* or *Tomorrow* when their date is not the user's. A country
+  with several zones shows its range -- `UTC−4 … −10` -- not one time.
+- **Two row layouts, a setting, not a guess.** *Difference first* leads
+  with `2 h behind`; *Time first* leads with `09:14` and dims the
+  difference. Which reads better is a matter of feel, so it is a live
+  setting (7.33) the user can switch while trying both, not a decision made
+  here. The difference is written in words (`2 h behind`, `Same time`) or
+  signed (`−2 h`), also a setting. Each layout has fixed columns: switching
+  it changes the row, and nothing moves while results change (I-10).
+- **Working-hours overlap is optional, and only with *Difference first*.**
+  Off by default. On, it needs the user's working hours and reserves its
+  column even for *No overlap*. With *Time first* the setting is greyed
+  out and says why.
+- **The pane is the whole answer, whatever the layout.** The exact time and
+  date, the difference, the UTC offset and zone abbreviation, the next
+  daylight-saving change, sunrise and sunset (computed from the
+  coordinates).
+- **Home is the system's zone, and a city is confirmed once.** The
+  difference is always against the system clock and zone, which needs no
+  answer from anybody. Weather needs a home city: suggested from the system
+  zone, confirmed once, never read from Windows' location service, which
+  asks for a permission and knows more than Lumen needs.
+- **The root list answers the clock, offline.** `time in vancouver`,
+  `vancouver time` and `3pm vancouver` (`15:00 vancouver in tokyo`) are
+  answers (7.9), from the catalogue in memory, costing what the calculator
+  does, so I-3 holds.
+- **The root list answers the weather without waiting for it.** F9's
+  pattern: `weather in vancouver`, `weather vancouver` and `vancouver
+  weather` are recognised only when the city is an exact match, so typing
+  it asks nothing until it is whole. Cached (15 minutes), the answer shows
+  at once; otherwise the row appears at once, its height reserved, saying
+  *Loading…*, one request goes out in the background and the row fills in
+  when it lands. The keystroke is never held. The word *weather* is
+  required: typing a city alone never sends anything anywhere.
+- **Weather is Open-Meteo.** Keyless, structured, WMO condition codes,
+  current, hourly and daily in one request by coordinates, sunrise and
+  sunset included. The screenshots the phase was designed from are
+  wttr.in's, which is rate-limited and returns prose. The moon's phase is
+  computed, not fetched. A city's forecast is cached for 15 minutes and
+  fetched only when asked for: nothing is scheduled, so the idle budget
+  does not move.
+- **The weather report has two layouts, a setting.** *Report*, the
+  default: `Enter` on a city opens its report at full width, as in the
+  screenshots -- the current conditions, then details, then the daily
+  forecast -- and `Escape` returns. *Pane*: the report beside the list,
+  with a compact forecast (`Thu ↑16 ↓9`), designed rather than squeezed.
+  The data is the same; only the drawing differs.
+- **Nine condition glyphs, and metrics as words.** Clear by day and by
+  night, partly cloudy, cloudy, fog, drizzle, rain, snow and storm, on the
+  icon set's grid (7.23). The screenshots' small glyph beside every metric
+  is not copied: a labelled value says the same, and nine glyphs is already
+  the largest addition the set has had.
+- **Left open, not built:** a time-zone converter for a whole meeting
+  (several people, several zones); hourly weather beyond the report's day;
+  alerts. Each is a field in the pane or a view of its own, not a redesign.
+- **The slices,** one acceptance criterion each:
+  1. *World Clock* opens a view over the bundled catalogue: cities, the
+     levels and the drill-down pill, both row layouts and both difference
+     formats (from `config.json`), and the pane.
+  2. *My Places*: favourites, first in the list, filtered with it.
+  3. The clock in the root list: `time in vancouver`, `3pm vancouver`.
+  4. A *World Clock* settings page -- layout, difference format, overlap,
+     working hours -- and the overlap column.
+  5. *Weather*: the list, Open-Meteo, the cache, and `weather in
+     vancouver` in the root list.
+  6. The weather report, in both layouts, and the condition glyphs.
+  7. A *Weather* settings page -- units, layout, home city.
+
+  The idle baseline is measured before slice 1, and again after 5 and 7.
+- **Measured, before slice 1.** With `scripts/measure-idle.ps1`, 60 s
+  hidden: 0.002 % CPU, 73.3 MB working set, 87.4 MB private, 31 threads.
+  Binary 19,557,376 bytes.
+- **Measured, slice 1.** Binary 20,542,464 bytes, **+985 KB**: the places
+  are 836 KB of it. A render of the view -- finding the places and building
+  up to 200 rows -- takes 1 to 1.5 ms in a release build for most queries
+  and 2.5 ms for `a`, the worst there is, which matches 30,000 cities.
 
 ---
 

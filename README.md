@@ -63,8 +63,8 @@ an aesthetic worth looking at fifty times a day.
   `Enter` opens with the default application, `Ctrl+K` copies the path.
   Dependency and build trees are never walked into, so the index is about your
   files rather than about `node_modules`.
-- **Extensions with views of their own** (F4, up to step 3). Two ship as
-  examples: **World Clock** and **Characters**. An extension is a folder with a
+- **Extensions with views of their own** (F4, up to step 3). One ships as
+  an example: **Characters**. An extension is a folder with a
   manifest and a program; its commands are in the root list without anything
   being started, and choosing one starts its process, which sends views as
   JSON over stdio: sections, icons, accessories, coloured status tags and an

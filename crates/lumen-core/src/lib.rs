@@ -13,6 +13,7 @@
 //! (AD-03).
 
 pub mod clipboard;
+pub mod clock;
 pub mod config;
 pub mod currency;
 pub mod dates;
@@ -24,6 +25,7 @@ pub mod layout;
 pub mod markdown;
 pub mod net;
 pub mod paths;
+pub mod places;
 pub mod protocol;
 pub mod providers;
 pub mod root;
@@ -106,7 +108,7 @@ pub fn install_example_script(scripts_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write the two example extensions out, if they are not already there.
+/// Write the example extension out, if it is not already there.
 ///
 /// They are compiled in and written to the extensions folder rather than run
 /// from inside the binary, because the point of an example is that it can be
@@ -122,18 +124,13 @@ pub fn install_example_extensions(extensions_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    const FILES: &[(&str, &str, &str)] = &[
-        (
-            "lumen-clock",
-            include_str!("../../../assets/extensions/lumen-clock/extension.json"),
-            include_str!("../../../assets/extensions/lumen-clock/main.ps1"),
-        ),
-        (
-            "lumen-unicode",
-            include_str!("../../../assets/extensions/lumen-unicode/extension.json"),
-            include_str!("../../../assets/extensions/lumen-unicode/main.ps1"),
-        ),
-    ];
+    // World Clock was the first example (F4) and is built in since F13: its
+    // seven zones by Windows name are what the built-in view replaced.
+    const FILES: &[(&str, &str, &str)] = &[(
+        "lumen-unicode",
+        include_str!("../../../assets/extensions/lumen-unicode/extension.json"),
+        include_str!("../../../assets/extensions/lumen-unicode/main.ps1"),
+    )];
 
     for (folder, manifest, script) in FILES {
         let directory = extensions_dir.join(folder);
@@ -184,24 +181,20 @@ pub fn install_builtin_sheets(sheets_dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// The shipped extensions are compiled in, so a manifest that will not
+    /// The shipped extension is compiled in, so a manifest that will not
     /// parse is a failing build rather than a thing to discover on somebody's
-    /// machine. The scripts are only checked for existence -- whether
-    /// PowerShell likes them is not something a unit test can know.
+    /// machine. The script is only checked for existence -- whether
+    /// PowerShell likes it is not something a unit test can know.
     #[test]
-    fn the_example_extensions_have_valid_manifests() {
-        for source in [
-            include_str!("../../../assets/extensions/lumen-clock/extension.json"),
-            include_str!("../../../assets/extensions/lumen-unicode/extension.json"),
-        ] {
-            let manifest: extension::Manifest =
-                serde_json::from_str(source).expect("a shipped manifest must parse");
+    fn the_example_extension_has_a_valid_manifest() {
+        let source = include_str!("../../../assets/extensions/lumen-unicode/extension.json");
+        let manifest: extension::Manifest =
+            serde_json::from_str(source).expect("a shipped manifest must parse");
 
-            assert_eq!(manifest.schema_version, extension::SCHEMA_VERSION);
-            assert!(!manifest.run.is_empty());
-            assert!(!manifest.commands.is_empty());
-            assert!(manifest.commands.iter().all(|c| !c.id.is_empty()));
-        }
+        assert_eq!(manifest.schema_version, extension::SCHEMA_VERSION);
+        assert!(!manifest.run.is_empty());
+        assert!(!manifest.commands.is_empty());
+        assert!(manifest.commands.iter().all(|c| !c.id.is_empty()));
     }
 
     /// The shipped themes are compiled into the binary, so a malformed one is a

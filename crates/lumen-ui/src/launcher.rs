@@ -362,6 +362,9 @@ impl Launcher {
             TextFieldEvent::DeletedPastStart => {
                 if launcher.argument.is_some() {
                     launcher.leave_argument(cx);
+                } else if launcher.back_out_of_path() {
+                    // A view's pill, one level at a time (F13).
+                    cx.notify();
                 }
             }
         });
@@ -1026,6 +1029,12 @@ impl Launcher {
                 cx.emit(LauncherEvent::RunClipboard);
                 return;
             }
+            // The places are read and the minute is ticked by the daemon
+            // (F13), off this thread.
+            lumen_core::ViewSource::Clock => {
+                cx.emit(LauncherEvent::RunClock);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -1477,6 +1486,35 @@ impl Launcher {
             },
             _ => &[],
         }
+    }
+
+    /// The open view's levels, outermost first (F13): what its pill says.
+    fn view_path(&self) -> &[String] {
+        match &self.mode {
+            Mode::View(state) => match &state.view {
+                lumen_core::view::View::List(list) => &list.path,
+                lumen_core::view::View::Detail(_) => &[],
+            },
+            _ => &[],
+        }
+    }
+
+    /// Take the innermost level off the view's pill, if it has one: the view
+    /// is told, and answers with the level above. `false` with no pill, so
+    /// the key means what it meant before.
+    fn back_out_of_path(&mut self) -> bool {
+        if self.view_path().is_empty() || self.picker.is_some() {
+            return false;
+        }
+        self.action_panel = None;
+        self.tell_extension(lumen_core::view::Event::Back);
+        true
+    }
+
+    /// Whether somebody can see the launcher: what a view that ticks asks
+    /// before it asks for the next tick (F13). Hidden, nothing wakes.
+    pub fn is_active(&self) -> bool {
+        self.active
     }
 
     /// How many options the open picker shows: those that match.
@@ -2409,7 +2447,11 @@ impl Launcher {
         // key is what makes it feel like somewhere you went rather than
         // somewhere you are stuck.
         if matches!(self.mode, Mode::View(_)) {
-            if self.query.is_empty() {
+            // A pill is one more layer: its text, then each level, then the
+            // view (F13).
+            if self.query.is_empty() && self.back_out_of_path() {
+                cx.notify();
+            } else if self.query.is_empty() {
                 self.leave_view(cx);
             } else {
                 self.clear_query_text(cx);
@@ -2501,6 +2543,8 @@ pub enum LauncherEvent {
     },
     /// *Clipboard History* was chosen (F12).
     RunClipboard,
+    /// *World Clock* was chosen (F13).
+    RunClock,
     /// A conversion was typed in the root list with no table of rates, or
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.
@@ -2717,6 +2761,24 @@ impl Launcher {
             .border_color(color(colors.border_subtle))
             .text_size(type_scale::query())
             .when(!pills.is_empty(), |row| row.key_context(SCOPE_CONTEXT))
+            // A view's levels, where the text would start, as the argument
+            // is (F13): what is typed is a search within them.
+            .when(!self.view_path().is_empty(), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .mr(metrics::argument_pill_gap())
+                        .px(metrics::argument_pill_padding_x())
+                        .py(metrics::argument_pill_padding_y())
+                        .rounded(metrics::argument_pill_radius())
+                        .bg(color(colors.selection_background))
+                        .border_1()
+                        .border_color(color(colors.selection_border))
+                        .text_size(type_scale::title())
+                        .text_color(color(colors.text_primary))
+                        .child(self.view_path().join(" \u{203a} ")),
+                )
+            })
             // The link the field is filling in, where the text would start:
             // what you type reads as its continuation.
             .when_some(self.argument.as_ref(), |row, argument| {

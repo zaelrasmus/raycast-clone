@@ -164,6 +164,7 @@ pub fn refusal(what: &str, timer: Option<&Timer>, now: Millis) -> View {
         placeholder: Some("Esc to go back".into()),
         filtering: Filtering::Host,
         scopes: Vec::new(),
+        path: Vec::new(),
         empty: None,
         sections: vec![Section {
             title: Some("Blocked while you focus".into()),

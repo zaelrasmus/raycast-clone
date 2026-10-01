@@ -174,7 +174,7 @@ impl Session {
             }
             Event::ScopeChanged { scope, option } => self.choose(&scope, &option),
             Event::ActionInvoked { item, action } => self.act(item.as_deref(), &action),
-            Event::SelectionChanged { .. } | Event::Dismissed => Vec::new(),
+            Event::SelectionChanged { .. } | Event::Back | Event::Dismissed => Vec::new(),
         }
     }
 
@@ -420,6 +420,7 @@ impl Session {
             )),
             filtering: Filtering::Extension,
             scopes: vec![self.source_scope(), self.target_scope()],
+            path: Vec::new(),
             empty: Some(empty),
             sections,
         })
@@ -460,6 +461,7 @@ impl Session {
                             }),
                             accessories: vec![Accessory::Text {
                                 text: alternative.part.clone(),
+                                strong: false,
                             }],
                             keywords: Vec::new(),
                             actions: vec![

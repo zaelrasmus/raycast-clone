@@ -227,6 +227,7 @@ impl Session {
             placeholder: Some("Type to filter entries\u{2026}".into()),
             filtering: Filtering::Extension,
             scopes: vec![self.type_scope()],
+            path: Vec::new(),
             empty: Some(empty),
             showing_detail: true,
             sections,

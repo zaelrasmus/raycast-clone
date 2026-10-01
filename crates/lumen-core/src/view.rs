@@ -100,6 +100,15 @@ pub struct List {
     /// Choices that apply to the whole list, shown beside the search field,
     /// in order.
     pub scopes: Vec<Scope>,
+    /// How far into the list's own hierarchy the user has gone, outermost
+    /// first: `["Europe", "Spain"]` (F13). Drawn as one pill where the
+    /// text starts, so what is typed reads as a search within it.
+    ///
+    /// The view owns the levels; the host only draws them and says when
+    /// one is taken off, with [`Event::Back`] -- `Escape` or `Backspace` in
+    /// an empty field, as for the root list's argument pill (F6). Empty, the
+    /// default, draws nothing and changes nothing.
+    pub path: Vec<String>,
     /// Shown instead of the list when it is empty.
     pub empty: Option<EmptyState>,
     /// Show the selected item's [`Item::detail`] in a pane beside the list
@@ -282,7 +291,15 @@ pub const MAX_ACCESSORIES: usize = 3;
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Accessory {
     /// Plain text: a date, a count, a branch name.
-    Text { text: String },
+    Text {
+        text: String,
+        /// What the row exists to show, drawn as prominently as the title
+        /// rather than dimmed (F13): the time in a city, the difference
+        /// from here. A meaning, not a style, as a [`Tone`] is. Omitted, it
+        /// is plain, so views written before it are unchanged.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        strong: bool,
+    },
     /// Text in a pill, for a status with a meaning attached.
     ///
     /// The tone is semantic, never a colour. An extension that could name a
@@ -410,6 +427,9 @@ pub enum Event {
     /// An option of a [`Scope`] was chosen, both by id. Only sent to a list
     /// that has scopes.
     ScopeChanged { scope: String, option: String },
+    /// The innermost level of [`List::path`] was taken off (F13). Only sent
+    /// to a list with a path.
+    Back,
     /// An action ran.
     ActionInvoked {
         item: Option<String>,
@@ -516,6 +536,7 @@ mod tests {
             placeholder: Some("Search issues".into()),
             filtering: Filtering::Extension,
             scopes: vec![scope(&["mine", "all"], "mine")],
+            path: Vec::new(),
             empty: Some(EmptyState {
                 title: "Nothing open".into(),
                 description: Some("Every issue is closed.".into()),
@@ -547,6 +568,7 @@ mod tests {
                     accessories: vec![
                         Accessory::Text {
                             text: "2 days".into(),
+                            strong: false,
                         },
                         Accessory::Tag {
                             text: "open".into(),

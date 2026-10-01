@@ -37,6 +37,7 @@ use lumen_platform::{
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
 mod clipboard;
+mod clock;
 mod currency;
 mod dictionary;
 mod extensions;
@@ -992,6 +993,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunClipboard);
                 return;
             }
+            LauncherEvent::RunClock => {
+                let _ = commands.unbounded_send(Message::RunClock);
+                return;
+            }
             LauncherEvent::RefreshRates => {
                 let _ = commands.unbounded_send(Message::RefreshRates);
                 return;
@@ -1020,6 +1025,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunDictionary
                 | LauncherEvent::RunSnippets { .. }
                 | LauncherEvent::RunClipboard
+                | LauncherEvent::RunClock
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
@@ -1428,6 +1434,13 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| clipboard::run(platform, window, cx))
                 .context("reaching the app to open the clipboard history")
+        }
+        Message::RunClock => {
+            let platform = platform.clone();
+            let config = config.clock;
+            let window = surfaces.launcher;
+            cx.update(move |cx| clock::run(platform, config, window, cx))
+                .context("reaching the app to open the world clock")
         }
         Message::RefreshRates => {
             let config = config.currency.clone();
