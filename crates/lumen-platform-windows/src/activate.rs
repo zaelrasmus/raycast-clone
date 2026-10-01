@@ -37,7 +37,6 @@ use std::path::Path;
 use anyhow::Result;
 use lumen_platform::LaunchTarget;
 use windows::Win32::Foundation::{HWND, LPARAM, MAX_PATH, TRUE};
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, OpenProcess, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -46,13 +45,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IPropertyStore, PSGetPropertyKeyFromName, SHGetPropertyStoreForWindow,
 };
-use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowTextLengthW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SetForegroundWindow,
     ShowWindow, WS_EX_TOOLWINDOW,
 };
-use windows::core::{BOOL, Interface as _, PCWSTR};
+use windows::core::{BOOL, PCWSTR};
 
 use crate::com;
 
@@ -234,11 +232,6 @@ fn stem_of(path: &str) -> Option<String> {
 }
 
 /// What a `.lnk` points at.
-///
-/// Goes through `IShellLink` rather than parsing the file: the format is
-/// undocumented in the parts that matter, and the shell resolves relative
-/// paths, environment variables and the 32/64-bit Program Files split on the
-/// way out.
 fn resolve_shortcut(parsing_name: &str) -> Option<String> {
     // The parsing name reaches the shortcut through the AppsFolder namespace;
     // `IShellLink` wants a filesystem path, so ask the shell for one.
@@ -246,22 +239,7 @@ fn resolve_shortcut(parsing_name: &str) -> Option<String> {
     if !path.to_lowercase().ends_with(".lnk") {
         return Some(path);
     }
-
-    unsafe {
-        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
-        let file: IPersistFile = link.cast().ok()?;
-        file.Load(
-            PCWSTR(com::wide(&path).as_ptr()),
-            windows::Win32::System::Com::STGM_READ,
-        )
-        .ok()?;
-
-        let mut buffer = [0u16; MAX_PATH as usize];
-        link.GetPath(&mut buffer, std::ptr::null_mut(), 0).ok()?;
-
-        let end = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
-        (end > 0).then(|| String::from_utf16_lossy(&buffer[..end]))
-    }
+    crate::apps::shortcut_target(&path)
 }
 
 /// Every candidate window, newest first is not available, so: the first match

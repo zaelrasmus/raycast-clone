@@ -2453,6 +2453,19 @@ listed, so the first re-index usually still sees the old list. The launcher
 drops a re-index whose result is identical to the current one, so neither
 signal moves the selection unless something actually changed.
 
+The two Desktop folders are watched as well, without their subfolders,
+because the index also lists applications whose installer left only a
+Desktop shortcut (Modrinth is one). This has a known cost that was accepted
+rather than fixed: `FindFirstChangeNotificationW` cannot filter by
+extension, so *any* file created, renamed or deleted on the Desktop -- a
+download, a screenshot, a temporary save -- signals a re-index, not just a
+`.lnk` or `.url`. Coalescing turns a burst into one re-index, and a re-index
+costs about 600 ms of CPU on a background thread with no visible change when
+nothing Lumen lists moved. Removing the cost means moving the Desktop watch
+to `ReadDirectoryChangesW`, which reports file names and could ignore
+everything but shortcuts; that is the change to make if Desktop churn ever
+shows up in a measurement.
+
 ### 7.35 gpui is vendored, with one patch that parks its frame clock
 
 With Lumen's own timers gone (the file watchers push since `5506d19`), idle CPU

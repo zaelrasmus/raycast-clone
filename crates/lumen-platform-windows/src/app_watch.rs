@@ -6,6 +6,10 @@
 //! - **The Start Menu folders**, the per-user one and the all-users one. A
 //!   Win32 installer that wants to appear in Start writes a shortcut here, and
 //!   that is exactly the set of Win32 applications the AppsFolder lists.
+//!   The two Desktops are watched as well, without their subfolders, since
+//!   the index also lists applications that only have a Desktop shortcut.
+//!   That watch cannot tell a shortcut from any other file, so every Desktop
+//!   change re-indexes; ARCHITECTURE 7.34 records why that is accepted.
 //! - **The per-user package repository in the registry**. A packaged (MSIX or
 //!   Store) application writes no shortcut anywhere; registering it for the
 //!   user adds a subkey under `AppModel\Repository\Packages`, and removing it
@@ -59,7 +63,7 @@ const PACKAGES_KEY: PCWSTR = w!(
 
 /// One thing being waited on, and how to wait on it again.
 enum Source {
-    /// A Start Menu folder, watched with its subfolders.
+    /// A Start Menu or Desktop folder.
     Folder(HANDLE),
     /// The package key, whose notification has to be re-requested after
     /// every signal, onto the same event.
@@ -132,10 +136,12 @@ pub fn start(sink: ApplicationsSink) -> Result<()> {
 fn open_sources() -> Vec<Source> {
     let mut sources = Vec::new();
 
-    for folder in [&FOLDERID_Programs, &FOLDERID_CommonPrograms] {
-        match watch_folder(folder) {
+    let start_menu = [&FOLDERID_Programs, &FOLDERID_CommonPrograms].map(|folder| (folder, true));
+    let desktop = crate::apps::DESKTOP.map(|folder| (folder, false));
+    for (folder, subtree) in start_menu.into_iter().chain(desktop) {
+        match watch_folder(folder, subtree) {
             Ok(source) => sources.push(source),
-            Err(error) => log::debug!("not watching a Start Menu folder: {error:#}"),
+            Err(error) => log::debug!("not watching a shortcut folder: {error:#}"),
         }
     }
 
@@ -147,12 +153,12 @@ fn open_sources() -> Vec<Source> {
     sources
 }
 
-fn watch_folder(id: &GUID) -> Result<Source> {
+fn watch_folder(id: &GUID, subtree: bool) -> Result<Source> {
     let path = known_folder(id)?;
     let handle = unsafe {
         FindFirstChangeNotificationW(
             &HSTRING::from(path.as_str()),
-            true,
+            subtree,
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
         )
     }
@@ -181,7 +187,7 @@ fn watch_packages() -> Result<Source> {
 }
 
 /// A known folder's path, such as the user's Start Menu programs folder.
-fn known_folder(id: &GUID) -> Result<String> {
+pub(crate) fn known_folder(id: &GUID) -> Result<String> {
     unsafe {
         let raw =
             SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).context("SHGetKnownFolderPath")?;

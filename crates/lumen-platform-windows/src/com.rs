@@ -34,6 +34,14 @@ impl Apartment {
         }
         Ok(Self { owns: true })
     }
+
+    /// Whether the thread is in a single-threaded apartment.
+    ///
+    /// False when it was already in a multithreaded one, which is the case on
+    /// any thread-pool thread, including the ones GPUI runs background work on.
+    pub fn is_single_threaded(&self) -> bool {
+        self.owns
+    }
 }
 
 impl Drop for Apartment {

@@ -34,11 +34,34 @@ pub fn load(source: &IconSource, size_px: u32) -> Result<IconImage> {
         }
     };
 
-    let _apartment = com::Apartment::enter()?;
+    let apartment = com::Apartment::enter()?;
+    if apartment.is_single_threaded() {
+        return extract(&parsing_name, size_px);
+    }
+    drop(apartment);
 
+    // Some shell handlers only work in a single-threaded apartment. The one
+    // behind `.url` files, which is how Steam lists every game, answers a
+    // multithreaded caller with the generic page instead of the game's icon,
+    // and GPUI calls from thread-pool threads, which are multithreaded. A
+    // thread of its own costs far less than the extraction, and each icon is
+    // extracted once.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _apartment = com::Apartment::enter()?;
+                extract(&parsing_name, size_px)
+            })
+            .join()
+    })
+    .map_err(|_| anyhow::anyhow!("the icon thread panicked"))?
+}
+
+/// Extract an icon. The calling thread must be in a single-threaded apartment.
+fn extract(parsing_name: &str, size_px: u32) -> Result<IconImage> {
     unsafe {
         let factory: IShellItemImageFactory =
-            SHCreateItemFromParsingName(&com::wide(&parsing_name), None)
+            SHCreateItemFromParsingName(&com::wide(parsing_name), None)
                 .with_context(|| format!("resolving {parsing_name:?} as a shell item"))?;
 
         let requested = SIZE {
@@ -168,6 +191,38 @@ mod tests {
         to_straight_rgba(&mut pixels);
         assert_eq!(pixels[3], 128);
         assert!((127..=129).contains(&pixels[0]), "got {}", pixels[0]);
+    }
+
+    #[test]
+    fn an_internet_shortcut_icon_is_the_same_from_a_multithreaded_caller() {
+        // A `.url` with an icon of its own, as Steam writes them. The
+        // multithreaded call is what GPUI's background executor makes.
+        let file = std::env::temp_dir().join(format!("lumen-icon-{}.url", std::process::id()));
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let shortcut = format!(
+            "[InternetShortcut]\r\nURL=steam://rungameid/1\r\n\
+             IconFile={system}\\System32\\shell32.dll\r\nIconIndex=43\r\n"
+        );
+        std::fs::write(&file, shortcut).unwrap();
+        let source = IconSource::File(file.clone());
+
+        let single = load(&source, 32).unwrap();
+        let multi = std::thread::spawn({
+            let source = source.clone();
+            move || {
+                use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+                let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                load(&source, 32).unwrap()
+            }
+        })
+        .join()
+        .unwrap();
+        let _ = std::fs::remove_file(&file);
+
+        assert!(
+            single.rgba == multi.rgba,
+            "a multithreaded caller got a different icon"
+        );
     }
 
     #[test]
