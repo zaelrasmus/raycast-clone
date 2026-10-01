@@ -1829,6 +1829,13 @@ The decisions:
   are 836 KB of it. A render of the view -- finding the places and building
   up to 200 rows -- takes 1 to 1.5 ms in a release build for most queries
   and 2.5 ms for `a`, the worst there is, which matches 30,000 cities.
+- **Measured, at the close.** 60 s hidden: 0.004 % CPU, 73.6 MB working
+  set, 87.3 MB private, 31 threads -- the baseline's within noise, and no
+  thread added: nothing is scheduled, and the places are read only when
+  asked for. Binary 20,922,880 bytes, **+1.37 MB** over the baseline: the
+  places are 836 KB of it, Weather and its nine glyphs 272 KB, World
+  Clock's slices 2 to 4 the rest. The idle measurement after slice 5 was
+  folded into this one: Weather schedules nothing either.
 
 ---
 
