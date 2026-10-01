@@ -453,7 +453,7 @@ impl Session {
                 id: id(name),
                 title,
                 subtitle,
-                icon: None,
+                icon: detail_glyph(name).map(|glyph| Icon::Glyph { name: glyph.into() }),
                 accessories: values
                     .into_iter()
                     .enumerate()
@@ -824,6 +824,23 @@ impl Rows for WeatherRows<'_> {
     }
 }
 
+/// The glyph a detail row draws, as the screenshots' report has one per
+/// metric. The sun, the moon and the cloud are the condition glyphs; the
+/// rest are their own. A row with none -- now, a day -- sets its own.
+fn detail_glyph(row: &str) -> Option<&'static str> {
+    Some(match row {
+        "feels" => "metric-feels-like",
+        "uv" => "metric-uv",
+        "clouds" => "weather-cloudy",
+        "pressure" => "metric-pressure",
+        "visibility" => "metric-visibility",
+        "sun" => "weather-clear-day",
+        "moon" => "weather-clear-night",
+        "coordinates" => "metric-coordinates",
+        _ => return None,
+    })
+}
+
 /// The city a report row belongs to: `city:12#feels` is city 12's.
 fn report_city(item: &str) -> &str {
     item.split('#').next().unwrap_or(item)
@@ -1143,6 +1160,17 @@ mod tests {
             .unwrap();
         // 07:10 and 18:52 in Vancouver: the fixture's times, in its zone.
         assert_eq!(texts(sun), ["\u{2191} 07:10", "\u{2193} 18:52"]);
+        // Every detail has its glyph, and each one is bundled.
+        for row in &report.sections[1].items {
+            let Some(Icon::Glyph { name }) = &row.icon else {
+                panic!("{} has no glyph", row.title);
+            };
+            let path = format!(
+                "{}/../../assets/icons/{name}.svg",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            assert!(std::path::Path::new(&path).exists(), "{name} is not drawn");
+        }
 
         // Clearing the field as it opened changes nothing.
         assert!(

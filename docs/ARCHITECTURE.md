@@ -1797,14 +1797,30 @@ The decisions:
   choice of its own rather than being lost by the next save. Units apply
   to the root list's answers live; the view reads the section when it
   opens (7.33).
-- **Nine condition glyphs, and metrics as words.** Clear by day and by
+- **Nine condition glyphs, and a glyph per detail.** Clear by day and by
   night, partly cloudy, cloudy, fog, drizzle, rain, snow and storm, on the
-  icon set's grid (7.23). The screenshots' small glyph beside every metric
-  is not copied: a labelled value says the same, and nine glyphs is already
-  the largest addition the set has had.
+  icon set's grid (7.23). The details were first left as labelled values
+  with no glyph, to keep the set small; found on the first try-out, the
+  icon square they reserve (I-10) read as icons that failed to load. So
+  each detail has one, as in the screenshots: five new ones -- feels like,
+  UV, pressure, visibility, coordinates -- and the sun, the moon and the
+  cloud reused from the conditions. An empty square that looks broken is
+  worse than five more files. The screenshots' glyphs inside the values
+  (sunrise, sunset) are not copied: an accessory is text, and `↑`
+  and `↓` say it.
 - **Left open, not built:** a time-zone converter for a whole meeting
   (several people, several zones); hourly weather beyond the report's day;
-  alerts. Each is a field in the pane or a view of its own, not a redesign.
+  alerts; a *My Places* dashboard -- the favourites alone, with time and
+  temperature on one row -- asked for and deferred. Each is a field in the
+  pane or a view of its own, not a redesign.
+- **Updating the time zones without a new Lumen is a door left open.**
+  Asked for: the rules change between releases, and a user should not have
+  to wait for one. jiff can read a zone database from a folder at run time
+  instead of the bundled one, so a settings button that fetches a newer
+  one is possible. What it needs first: a source of *compiled* zone files
+  (IANA publishes the rules as source), a check of what was downloaded
+  before it is trusted, and a fall back to the bundled copy whenever the
+  fetched one is missing or unreadable.
 - **The slices,** one acceptance criterion each:
   0. Browsing -- the words, the levels, the pill, *My Places* -- moved to
      `places::browse` before Weather, so the two views share it rather

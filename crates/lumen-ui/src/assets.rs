@@ -109,6 +109,26 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/weather-storm.svg",
         include_bytes!("../../../assets/icons/weather-storm.svg"),
     ),
+    (
+        "icons/metric-feels-like.svg",
+        include_bytes!("../../../assets/icons/metric-feels-like.svg"),
+    ),
+    (
+        "icons/metric-uv.svg",
+        include_bytes!("../../../assets/icons/metric-uv.svg"),
+    ),
+    (
+        "icons/metric-pressure.svg",
+        include_bytes!("../../../assets/icons/metric-pressure.svg"),
+    ),
+    (
+        "icons/metric-visibility.svg",
+        include_bytes!("../../../assets/icons/metric-visibility.svg"),
+    ),
+    (
+        "icons/metric-coordinates.svg",
+        include_bytes!("../../../assets/icons/metric-coordinates.svg"),
+    ),
 ];
 
 pub struct Assets;
