@@ -51,3 +51,7 @@ criterion = { version = "0.7", default-features = false, features = ["cargo_benc
 [[bench]]
 name = "search"
 harness = false
+
+[[bench]]
+name = "calculator"
+harness = false

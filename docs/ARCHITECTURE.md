@@ -1949,6 +1949,16 @@ The decisions:
   hidden: 0.002 % CPU, 74.1 MB working set, 86.0 MB private, 32 threads.
   Binary 20,970,496 bytes. Ranking (`cargo bench -p lumen-core`, saved as
   `f14-before`): 451 µs for a typical query over 5,000 entries.
+  The calculator alone (`--bench calculator`, the same baseline): 15 ns to
+  decline, 1.7 µs to answer `(1+2)*3/4-5`, 6.6 µs for the longest hostile
+  input. F14 holds every query, hostile or not, under 50 µs: under 1 % of
+  the frame.
+- **A corpus found an overlap that was already there.** Slice 1's corpus
+  of owners (`tests/calculator_corpus.rs`) failed on its first run, on
+  F13's own example: `15:00 vancouver in tokyo` is also a fifteen-minute
+  timer named *vancouver in tokyo*, since a clock reading is a duration to
+  F8. Not the calculator's to settle; the corpus states it exactly, so the
+  fix, when it comes, fails there and removes the row.
 
 ---
 
