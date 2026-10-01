@@ -7,8 +7,8 @@
 
 use gpui::{FontWeight, Hsla, Pixels, Rgba, px};
 use lumen_core::layout;
-use lumen_core::style::{Metrics, Variants};
-use lumen_core::theme::{Color, Theme};
+use lumen_core::style::{Metrics, Selection, Variants};
+use lumen_core::theme::{Color, Colors, Theme};
 
 /// Convert a token colour to GPUI's colour type.
 pub fn color(value: Color) -> Hsla {
@@ -51,6 +51,17 @@ impl Geometry {
 
     pub fn variants(&self) -> &Variants {
         &self.variants
+    }
+
+    /// The selected row's border: the palette's, or none when the style
+    /// marks a selection with its fill alone. Transparent rather than absent,
+    /// so the row is the same size either way and selecting it moves nothing
+    /// (I-10).
+    pub fn selection_border(&self, colors: &Colors) -> Hsla {
+        match self.variants.selection {
+            Selection::FillBorder => color(colors.selection_border),
+            Selection::Fill => gpui::transparent_black(),
+        }
     }
 
     pub fn window_radius(&self) -> Pixels {

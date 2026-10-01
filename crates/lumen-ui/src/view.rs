@@ -499,7 +499,7 @@ fn render_item(
         .when(selected, |row| {
             row.bg(color(colors.selection_background))
                 .border_1()
-                .border_color(color(colors.selection_border))
+                .border_color(geometry.selection_border(colors))
         })
         .when(!selected, |row| {
             row.border_1().border_color(gpui::transparent_black())

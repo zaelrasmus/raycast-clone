@@ -3243,7 +3243,7 @@ impl Launcher {
             .border_1()
             .when(selected, |card| {
                 card.bg(color(colors.selection_background))
-                    .border_color(color(colors.selection_border))
+                    .border_color(geometry.selection_border(colors))
             })
             // Reserved when not selected, as a row's is (I-10).
             .when(!selected, |card| {
@@ -3299,7 +3299,7 @@ impl Launcher {
             .when(selected, |row| {
                 row.bg(color(colors.selection_background))
                     .border_1()
-                    .border_color(color(colors.selection_border))
+                    .border_color(geometry.selection_border(colors))
             })
             // Not selected rows still reserve the border, or selecting a row
             // would shift its text by a pixel (I-10).
