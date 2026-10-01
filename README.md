@@ -176,6 +176,18 @@ an aesthetic worth looking at fifty times a day.
   theme's `icon` token.
 - **Themes and sheets as data** with live reload for themes: edit the JSON, see
   it on screen, no rebuild. Two in-house themes ship, one dark and one light.
+- **The look is the user's (F15).** A *palette* (colours, type family) and a
+  *style* (row heights, spacing, type sizes and weights, and a few layout
+  variants: the subtitle beside the title, the footer's keys as keycaps, a
+  fill-only selection, upper-case section headers) are chosen apart, both
+  from files, both reloaded live. Two presets ship beside the original look:
+  **Graphite**, measured from Raycast, and **Ink**, measured from Vicinae.
+- **The empty list in sections**: *Favorites*, *Commands*, *Applications* by
+  default, or commands and applications together, or commands only; each
+  header can be turned off. Typing collapses them into one ranked list.
+- **Favourites**, from the action panel or `Ctrl+Shift+F`, in the order you
+  put them (`Ctrl+Alt+Up` / `Down`).
+- **An Appearance page** in settings for all of the above.
 - **Windows 11 chrome**: acrylic backdrop, rounded corners, dark mode, out of
   Alt+Tab and the taskbar, appearing on the monitor holding the cursor, and
   returning focus to exactly the window it took it from.
@@ -252,15 +264,18 @@ Release build, Ryzen 7 7735HS laptop, Radeon 660M, 1920 × 1080 at 125 %,
 Windows 11. The daemon times the first frame and cold start itself and logs
 them at `info`; `scripts/measure-gesture.ps1` summons it 15 times and reads
 them back, and `scripts/measure-idle.ps1` samples memory and CPU with the
-window hidden. Both are how the numbers below were taken.
+window hidden. `scripts/measure-typing.ps1` types into the launcher and reads
+gpui's own frame timings. They are how the numbers below were taken, last at
+the close of F15.
 
 | Budget | Threshold | Measured | |
 | ------ | --------- | -------- | --- |
 | Per-frame ranking | p95 < 8 ms | 1.06 ms at 5 000 entries | ✅ |
+| Per-frame drawing while typing | p95 < 8 ms | **2.0 ms** (p50 1.5 ms, ~525 frames) | ✅ |
 | Gesture → first frame | p50 < 20 ms, p95 < 40 ms | **8 ms** (p95 19 ms, 15 summonses) | ✅ |
-| Idle resident memory | < 100 MB | **64–72 MB** working set, window hidden | ✅ |
-| Idle CPU | < 0.02 % | **0.000 %** over 60 s, below one 15.6 ms tick | ✅ |
-| Cold start to usable | < 400 ms | **340–357 ms** from `main` to summonable | ✅ |
+| Idle resident memory | < 100 MB | **67–75 MB** working set, window hidden | ✅ |
+| Idle CPU | < 0.02 % | **0.002–0.009 %** over 60 s, one to four 15.6 ms ticks | ✅ |
+| Cold start to usable | < 400 ms | **357–377 ms** from `main` to summonable | ✅ |
 | Installed size | < 40 MB | **15.9 MB**, the whole install | ✅ |
 
 The budgets were tightened once these numbers were in (ARCHITECTURE 7.36). Idle
@@ -361,6 +376,15 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
 {
   "hotkey": { "modifiers": { "alt": true }, "key": "Space", "hold": null },
   "theme": "nocturne",
+  "style": "lumen",
+  "root": {
+    "sections": [
+      { "title": "Favorites", "shows": ["favorites"], "header": true },
+      { "title": "Commands", "shows": ["commands"], "header": true },
+      { "title": "Applications", "shows": ["applications"], "header": true }
+    ],
+    "results-header": true
+  },
   "backdrop": "system-acrylic",
   "window": {
     "width": 720.0,
@@ -448,9 +472,56 @@ The `icon` token colours the bundled glyphs. It sits between `text.primary` and
 `text.muted` on purpose: a 20-px glyph carries less ink than a word, so muted
 makes it vanish and primary makes it shout over the title beside it.
 
-A theme may set **colour and type family only**. Geometry — spacing, radii, row
-heights, icon sizes — is not themeable, deliberately: it is the calibration the
-whole project exists to protect.
+A theme -- a *palette* -- sets **colour and type family only**. The rest of
+the look is a style's.
+
+### Styles
+
+A style is the launcher's geometry and a few layout variants, in
+`%APPDATA%\Lumen\config\styles\`, named by `style` in `config.json` and
+chosen apart from the palette. Like a palette it is data, it reloads live, and
+everything it does not set comes from the base style, which is Lumen's
+original look (`lumen`). The presets pair a style and a palette of the same
+name: `graphite` (after Raycast) and `ink` (after Vicinae).
+
+```json
+{
+  "schema_version": 1,
+  "name": "Graphite",
+  "metrics": { "row.height": 41, "search.height": 56, "text.query": 21 },
+  "variants": {
+    "row.subtitle": "inline",
+    "selection": "fill-border",
+    "footer.hints": "keycaps",
+    "section.case": "upper"
+  }
+}
+```
+
+A style sets numbers from a closed list and picks variants from a closed
+list; it cannot describe a layout. Every number has a range, and the relations
+between them are checked when the style loads: a row must hold its text, a
+corner must fit its row, the query must fit its field. What is out of range is
+clamped and what breaks a relation goes back to the base, with a warning in
+the log naming the style and the rule. The list of tokens, their ranges and the
+variants is in [`ARCHITECTURE.md`](docs/ARCHITECTURE.md), F15 decisions.
+
+### The root list's sections, and favourites
+
+With nothing typed, the root list is the sections in `root.sections`, in
+order. Each has a `title`, what it `shows` -- `favorites`, `commands`,
+`applications`, or several -- and whether its `header` is drawn. An item is
+listed once, in the first section that claims it; a section with nothing in
+it is not drawn; what no section shows is not browsed, but is still found by
+typing. Typing collapses everything into one ranked list, under a *Results*
+header unless `results-header` is `false`. The *Appearance* page in settings
+offers four arrangements by name and a checkbox for each header.
+
+Any application or command can be a favourite: **Add to Favorites** in the
+action panel, or `Ctrl+Shift+F` on the selected row; `Ctrl+Alt+Up` and
+`Ctrl+Alt+Down` move it. Favourites are kept in
+`%APPDATA%\Lumen\data\favorites.json`, in your order; one whose application
+is uninstalled keeps its place, and comes back there if it is reinstalled.
 
 ### Quicklinks
 

@@ -122,7 +122,7 @@ once Lumen was measured well inside them (7.36).
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
-| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites | **In progress.** See F15 decisions |
+| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites | **Done.** Styles with 26 bounded tokens and four variants, reloaded live; Graphite (after Raycast) and Ink (after Vicinae) as presets; sections from `config.json`, built once and kept; favourites; every match listed; an *Appearance* page. See F15 decisions |
 
 ### F4 build order is not optional
 
@@ -2148,6 +2148,52 @@ The style schema, version 1. Base values are the constants as F14 left them.
 The icon's extraction resolution follows `icon.size`: three and a half times
 it, never under the 96 pixels it was, so a style with larger icons does not
 make them soft.
+
+What was decided while building it:
+
+- **The base style is the old look, pixel for pixel.** Checked by capturing
+  the launcher from the baseline build and from each slice's -- the empty
+  list, a search, the calculator's card, a search finding nothing -- and
+  diffing at a threshold of one: identical, through slice 7. Sections change
+  the default look on purpose after that; the style does not.
+- **The root list is a `list`, like a view's (7.29).** A header is shorter
+  than a row, so `uniform_list` could not hold one. The rows are a view's
+  `Row`s, sized and revealed by the same arithmetic, so the root list and a
+  view cannot drift apart (AD-07). The custom virtualiser kept in reserve was
+  not needed: typing measured p95 1.96 ms on `list` against 2.24 ms on
+  `uniform_list`.
+- **The card stays above the list.** With headers drawn, a calculation reads
+  card, *Results*, rows, as Asyar draws it. A *Results* section holding only
+  the card draws no header.
+- **`MAX_RESULTS` is gone.** Measured on the whole root pipeline: lifting it
+  costs 6% on one character typed (345 to 366 µs at 2,000 entries, 922 to
+  976 µs at 5,000), and a typical query does not move. The empty list, now
+  cached, went from 293 µs to 10 µs at 2,000. The files aside keeps its cap
+  of eight: that one is about what the list is for, not about time.
+- **What *commands* means.** Everything in the index that is not an
+  application: Lumen's own commands, scripts, quicklinks, presets, extensions'
+  commands. Answers, files and fallbacks are never browsed and can never be
+  favourites -- there is nothing to come back to.
+- **Moving a favourite steps over the ones not drawn,** so an uninstalled
+  application kept in the list never makes a move look like it did nothing.
+- **The presets are measured, not eyeballed,** from the reference
+  screenshots at 125 % -- edges and glyph heights scanned, cap heights turned
+  into type sizes through Inter's 0.727 -- and named for what they are
+  (Graphite, Ink) rather than for the products they follow (AD-10's caution
+  about other people's marks). A test holds every preset to resolving exactly
+  as written: none of its tokens may be clamped or reverted.
+- **The Appearance page writes as you choose.** Every other page saves on
+  Enter; this one has nothing to save, because seeing the launcher change is
+  the point of choosing a look. An arrangement written by hand is shown as
+  *Custom* and left alone.
+- **Measured, at the close.** Release build, both builds alternated. Typing:
+  p95 2.00--2.01 ms against 2.24 ms. Gesture: p50 8 ms, p95 19 ms. Idle:
+  0.002--0.009 % against 0.004 %, one to four 15.6 ms ticks either way;
+  67.4--74.5 MB working set against 74.2; private memory unchanged at about
+  88 MB. One thread more, 33 against 32: the styles folder's watcher, blocked
+  until a file changes. Cold start 360--377 ms against 357--366 ms, a
+  difference inside the spread between runs, under 400. Binary 21,371,392
+  bytes, **+187 KB**.
 
 ---
 
