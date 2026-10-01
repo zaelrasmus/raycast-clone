@@ -181,13 +181,13 @@ const CORPUS: &[(&str, Owner)] = &[
     ("vancouver weather", Weather),
 ];
 
-/// Overlaps that were found by this corpus and are not the calculator's to
-/// settle, stated exactly so that fixing one fails here and removes its row.
+/// Queries that are two questions at once, and get both answers on purpose.
 ///
-/// `15:00 vancouver in tokyo` is the clock's (F13), and is also read as a
-/// fifteen-minute timer named *vancouver in tokyo* (F8): a clock reading is
-/// a duration to the timers. Found before F14 changed anything.
-const KNOWN_OVERLAPS: &[(&str, &[Owner])] = &[("15:00 vancouver in tokyo", &[Timer, Clock])];
+/// `15:00 vancouver in tokyo` is the time in Tokyo (F13) and a fifteen-minute
+/// timer named *vancouver in tokyo* (F8). Found by this corpus in slice 1;
+/// decided after F14 that both rows are shown and the user picks one, rather
+/// than one recogniser guessing for the other.
+const INTENDED_OVERLAPS: &[(&str, &[Owner])] = &[("15:00 vancouver in tokyo", &[Timer, Clock])];
 
 /// The calculator, as the root list asks it, money included -- with no
 /// table of rates, as on the first keystroke of the day.
@@ -222,7 +222,7 @@ fn every_query_has_one_owner_at_most() {
     let mut wrong = Vec::new();
     for &(query, owner) in CORPUS {
         let claimed = claims(query);
-        let expected = match KNOWN_OVERLAPS.iter().find(|(known, _)| *known == query) {
+        let expected = match INTENDED_OVERLAPS.iter().find(|(known, _)| *known == query) {
             Some((_, owners)) => owners.to_vec(),
             None if owner == Search => Vec::new(),
             None => vec![owner],

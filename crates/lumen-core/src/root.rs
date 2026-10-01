@@ -896,6 +896,21 @@ mod tests {
         assert!(!root.wants_rates(|| 0), "not a conversion");
     }
 
+    /// A clock reading followed by a place is two questions: a timer named
+    /// after the place (F8), and the time there (F13). Both are offered, and
+    /// the arrows choose -- intended, not an overlap to settle (F14).
+    #[test]
+    fn a_clock_reading_and_a_place_offer_a_timer_and_the_time() {
+        let mut root = root(apps(&["Notepad"]));
+        crate::places::catalogue();
+        root.set_time_format(Arc::new(|_| "TIME".into()));
+
+        root.rank("15:00 vancouver in tokyo");
+        let kinds: Vec<Kind> = root.hits().iter().map(|hit| root.item(hit).kind).collect();
+        assert!(kinds.contains(&Kind::Timer), "{kinds:?}");
+        assert!(kinds.contains(&Kind::Clock), "{kinds:?}");
+    }
+
     /// F13: a question about time is answered first, from the places in
     /// memory, in the platform's way of writing a time.
     #[test]

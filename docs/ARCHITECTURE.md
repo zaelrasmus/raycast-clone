@@ -1982,6 +1982,10 @@ The decisions:
   timer named *vancouver in tokyo*, since a clock reading is a duration to
   F8. Not the calculator's to settle; the corpus states it exactly, so the
   fix, when it comes, fails there and removes the row.
+- **That overlap is kept, on purpose.** After the try-out: a clock reading
+  and a place are two fair questions, and the list already lets the user
+  choose. Both rows are offered -- the timer and the time there -- and
+  the corpus lists the query as an intended overlap, not a known one.
 - **Measured, at the close.** The baseline and the close measured again
   side by side, twice each, 60 s hidden: baseline 0.009 % CPU, 74.1--74.4
   MB working set, 85.6--86.9 MB private; the close 0.000--0.011 % CPU,
