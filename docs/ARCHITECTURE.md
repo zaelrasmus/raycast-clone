@@ -1982,6 +1982,21 @@ The decisions:
   timer named *vancouver in tokyo*, since a clock reading is a duration to
   F8. Not the calculator's to settle; the corpus states it exactly, so the
   fix, when it comes, fails there and removes the row.
+- **Measured, at the close.** The baseline and the close measured again
+  side by side, twice each, 60 s hidden: baseline 0.009 % CPU, 74.1--74.4
+  MB working set, 85.6--86.9 MB private; the close 0.000--0.011 % CPU,
+  74.2 MB working set, 86.5--87.8 MB private; 32 threads both. One tick
+  either way is noise -- the close read 0.000 % once, under the
+  baseline's 0.009 % -- and nothing is scheduled: the history is written
+  on use, and the rates are fetched only when money asks for them.
+  Binary 21,165,568 bytes, **+195 KB**. Ranking (`--bench search`)
+  within noise of `f14-before` at every size. The calculator, per
+  keystroke: 42 ns to decline an application's name, under 1.2 µs for
+  arithmetic, a conversion, a percentage, a date or the screenshot's
+  expression, 2.6 µs for `100 usd + 20 eur in canadian dollar`, and
+  4.8 µs for the longest hostile input -- under a thousandth of the
+  frame, and under the 50 µs held to from slice 1. Gesture and cold
+  start were not measured again: neither path reaches the calculator.
 
 ---
 

@@ -37,8 +37,24 @@ an aesthetic worth looking at fifty times a day.
 - **A settings window** for writing those sheets, so configuring the overlay
   does not mean hand-editing JSON. It offers to start a sheet for whichever
   application you were just using.
-- **Inline calculator.** Type `12*7` and the answer is the first row, ready to
-  copy. It stays quiet for anything that is not arithmetic, including `7-zip`.
+- **Inline calculator** (F14). Type a calculation and the answer is the first
+  thing in the list, drawn as a card -- what you typed, and the result --
+  ready to copy with `Enter`:
+  - functions and constants: `sqrt(2)^pi / log(1000) * sin(45 deg)`, `5!`;
+  - units: `5 km in mi`, `100 f in c`, `1 GiB in MB`, `100 km/h in mph`,
+    `2.4 ghz in mhz`, `1 kwh in mj`, `2 cups in ml` -- length, mass, time,
+    temperature, data, angle, frequency, power, energy, speed, area, volume
+    and pressure;
+  - percentages: `25% off 399`, `20% of 50`, `399 + 25%`, `5 as % of 20`.
+    `%` is a percentage; the remainder is `10 mod 3`;
+  - dates: `days until 25 dec`, `weeks since 1 jan`, `today + 3 weeks`;
+  - money, in any of it: `100 usd + 20 eur in cad`, `25% off 399 usd in
+    eur`, dated by the rates it used.
+
+  It stays quiet for anything that is not a calculation, including `7-zip`,
+  `python 3.12` and `28 days later`. *Calculator History* keeps the answers
+  you copied -- twenty by default, set on the *Calculator* settings page,
+  where it can be cleared.
 - **Snippets.** Blocks of text you paste often, in *Search Snippets*: found by
   name, keyword, tag or what they say, filtered by tag, grouped by when they
   last changed, shown in full beside the list, and pasted with `Enter` into
@@ -132,8 +148,9 @@ an aesthetic worth looking at fifty times a day.
   `10 in japan` or `10 to eur` narrows the rows. *Pin* in `Ctrl+K` keeps a
   currency on top. `Enter` copies the plain number. In the root list,
   `10 usd in cad` answers *14.16 CAD* straight away, from the rates Lumen
-  already has. The rates are fetched once a day at most, only when a
-  conversion asks for them, and the last ones keep working offline.
+  already has -- and since F14 money works inside any calculation. The
+  rates are fetched once a day at most, only when a conversion asks for
+  them, and the last ones keep working offline, dated.
 - **World Clock and Weather** (F13). Over 34,000 cities, bundled, so finding
   one never needs the internet. Type a city, a region, a country or a
   continent -- `vancouver`, `california`, `canada`, `europe` -- or go into a
