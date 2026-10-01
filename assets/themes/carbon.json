@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "Carbon",
+  "appearance": "dark",
+  "colors": {
+    "surface.background": "#1F1F1FF2",
+    "surface.elevated": "#282828F7",
+    "border.subtle": "#363636",
+    "border.strong": "#4C4C4C",
+    "text.primary": "#FFFFFF",
+    "text.muted": "#A5A5A5",
+    "text.error": "#F08C8C",
+    "text.placeholder": "#797979",
+    "text.on-accent": "#FFFFFF",
+    "icon": "#D0D0D0",
+    "accent": "#FF6363",
+    "selection.background": "#363636",
+    "selection.border": "#3C3C3C",
+    "match.highlight": "#FFFFFF",
+    "text.selection": "#FF636355",
+    "shadow": "#00000099"
+  }
+}

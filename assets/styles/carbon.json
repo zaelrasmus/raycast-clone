@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "Carbon",
+  "metrics": {
+    "window.radius": 10,
+    "search.height": 65,
+    "gutter": 16,
+    "list.padding": 2,
+    "row.height": 38,
+    "row.radius": 6,
+    "row.inset": 7,
+    "icon.size": 22,
+    "icon.gap": 12,
+    "subtitle.gap": 11,
+    "section.height": 32,
+    "footer.height": 41,
+    "keycap.height": 18,
+    "keycap.padding": 4,
+    "keycap.radius": 4,
+    "keycap.gap": 4,
+    "text.query": 19,
+    "text.title": 14,
+    "text.subtitle": 14,
+    "text.accessory": 14,
+    "text.section": 12.5,
+    "text.footer": 13.5,
+    "weight.title": 500
+  },
+  "variants": {
+    "row.subtitle": "inline",
+    "selection": "fill",
+    "footer.hints": "keycaps",
+    "keycap": "outline",
+    "section.case": "title"
+  }
+}

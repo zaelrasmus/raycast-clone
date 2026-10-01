@@ -64,7 +64,7 @@ use anyhow::Result;
 /// opened to third parties (F2, R-11). A format proven against exactly one theme
 /// is a format that encodes that theme's assumptions.
 pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
-    const BUILTIN: [(&str, &str); 4] = [
+    const BUILTIN: [(&str, &str); 5] = [
         (
             "nocturne",
             include_str!("../../../assets/themes/nocturne.json"),
@@ -75,6 +75,7 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
         ),
         // The palettes of the presets (F15), each paired with the style of
         // the same name.
+        ("carbon", include_str!("../../../assets/themes/carbon.json")),
         (
             "graphite",
             include_str!("../../../assets/themes/graphite.json"),
@@ -100,10 +101,11 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
 /// Write the in-house styles into the styles folder if they are not there
 /// (F15). Never overwritten, as the themes are not.
 pub fn install_builtin_styles(styles_dir: &Path) -> Result<()> {
-    const BUILTIN: [(&str, &str); 3] = [
+    const BUILTIN: [(&str, &str); 4] = [
         ("lumen", include_str!("../../../assets/styles/lumen.json")),
-        // The presets (F15): with the palette of the same name, Graphite
-        // reads like Raycast and Ink like Vicinae.
+        // The presets (F15): with the palette of the same name, Carbon
+        // reads like Raycast, Graphite like Asyar and Ink like Vicinae.
+        ("carbon", include_str!("../../../assets/styles/carbon.json")),
         (
             "graphite",
             include_str!("../../../assets/styles/graphite.json"),

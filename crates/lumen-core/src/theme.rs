@@ -452,6 +452,7 @@ mod tests {
         for source in [
             include_str!("../../../assets/themes/nocturne.json"),
             include_str!("../../../assets/themes/daylight.json"),
+            include_str!("../../../assets/themes/carbon.json"),
             include_str!("../../../assets/themes/graphite.json"),
             include_str!("../../../assets/themes/ink.json"),
         ] {

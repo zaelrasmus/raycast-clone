@@ -3797,7 +3797,7 @@ fn render_hint(
     colors: &lumen_core::theme::Colors,
     geometry: &Geometry,
 ) -> gpui::AnyElement {
-    use lumen_core::style::FooterHints;
+    use lumen_core::style::{FooterHints, Keycap};
 
     match geometry.variants().footer_hints {
         FooterHints::Text => div()
@@ -3830,7 +3830,7 @@ fn render_hint(
                     .child(label),
             )
             .children(keys.iter().map(|key| {
-                div()
+                let cap = div()
                     .h(geometry.keycap_height())
                     .min_w(geometry.keycap_height())
                     .px(geometry.keycap_padding())
@@ -3838,11 +3838,19 @@ fn render_hint(
                     .items_center()
                     .justify_center()
                     .rounded(geometry.keycap_radius())
-                    .bg(color(colors.selection_background))
-                    .border_1()
-                    .border_color(color(colors.border_subtle))
-                    .text_color(color(colors.text_primary))
-                    .child(key.to_string())
+                    .border_1();
+                match geometry.variants().keycap {
+                    Keycap::Filled => cap
+                        .bg(color(colors.selection_background))
+                        .border_color(color(colors.border_subtle))
+                        .text_color(color(colors.text_primary)),
+                    // The footer shows through, so the key reads as quieter
+                    // than the label beside it, as Raycast draws it.
+                    Keycap::Outline => cap
+                        .border_color(color(colors.border_strong))
+                        .text_color(color(colors.text_muted)),
+                }
+                .child(key.to_string())
             }))
             .into_any_element(),
     }

@@ -122,7 +122,7 @@ once Lumen was measured well inside them (7.36).
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
-| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites | **Done.** Styles with 26 bounded tokens and four variants, reloaded live; Graphite (after Raycast) and Ink (after Vicinae) as presets; sections from `config.json`, built once and kept; favourites; every match listed; an *Appearance* page. See F15 decisions |
+| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites | **Done.** Styles with 26 bounded tokens and five variants, reloaded live; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae) as presets; sections from `config.json`, built once and kept; favourites; every match listed; an *Appearance* page. See F15 decisions |
 
 ### F4 build order is not optional
 
@@ -2143,6 +2143,7 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `row.subtitle` | `stacked`, `inline` | Under the title, or after it on the same line |
 | `selection` | `fill-border`, `fill` | Whether the selected row has a border |
 | `footer.hints` | `text`, `keycaps` | `Actions  Ctrl+K`, or the keys drawn as keycaps |
+| `keycap` | `filled`, `outline` | A keycap filled, or an outline the footer shows through (Raycast's) |
 | `section.case` | `title`, `upper` | *Commands* or *COMMANDS* |
 
 The icon's extraction resolution follows `icon.size`: three and a half times
@@ -2179,8 +2180,15 @@ What was decided while building it:
 - **The presets are measured, not eyeballed,** from the reference
   screenshots at 125 % -- edges and glyph heights scanned, cap heights turned
   into type sizes through Inter's 0.727 -- and named for what they are
-  (Graphite, Ink) rather than for the products they follow (AD-10's caution
-  about other people's marks). A test holds every preset to resolving exactly
+  (Carbon, Graphite, Ink) rather than for the products they follow
+  (AD-10's caution about other people's marks). Carbon follows Raycast,
+  Graphite Asyar and Ink Vicinae. Graphite was first shipped as Raycast's:
+  two of the reference screenshots had been taken for each other, and the
+  preset was right for the one it was measured from. Carbon is measured from
+  Raycast's, and brought the `keycap` variant -- Raycast outlines its keys --
+  and a looser keycap rule: a keycap must be 1.2 times its label's type size,
+  not a whole line of it, which Raycast's 18 pt caps around 13.5 pt keys are
+  not. A test holds every preset to resolving exactly
   as written: none of its tokens may be clamped or reverted.
 - **The Appearance page writes as you choose.** Every other page saves on
   Enter; this one has nothing to save, because seeing the launcher change is

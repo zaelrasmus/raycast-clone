@@ -179,9 +179,10 @@ an aesthetic worth looking at fifty times a day.
 - **The look is the user's (F15).** A *palette* (colours, type family) and a
   *style* (row heights, spacing, type sizes and weights, and a few layout
   variants: the subtitle beside the title, the footer's keys as keycaps, a
-  fill-only selection, upper-case section headers) are chosen apart, both
-  from files, both reloaded live. Two presets ship beside the original look:
-  **Graphite**, measured from Raycast, and **Ink**, measured from Vicinae.
+  fill-only selection, outlined keycaps, upper-case section headers) are
+  chosen apart, both from files, both reloaded live. Three presets ship
+  beside the original look, each measured from a screenshot: **Carbon** from
+  Raycast, **Graphite** from Asyar and **Ink** from Vicinae.
 - **The empty list in sections**: *Favorites*, *Commands*, *Applications* by
   default, or commands and applications together, or commands only; each
   header can be turned off. Typing collapses them into one ranked list.
@@ -482,7 +483,8 @@ A style is the launcher's geometry and a few layout variants, in
 chosen apart from the palette. Like a palette it is data, it reloads live, and
 everything it does not set comes from the base style, which is Lumen's
 original look (`lumen`). The presets pair a style and a palette of the same
-name: `graphite` (after Raycast) and `ink` (after Vicinae).
+name: `carbon` (after Raycast), `graphite` (after Asyar) and `ink` (after
+Vicinae).
 
 ```json
 {

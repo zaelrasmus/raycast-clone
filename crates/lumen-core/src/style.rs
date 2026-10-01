@@ -43,6 +43,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// field that clips its own text.
 pub const LINE_HEIGHT: f32 = 1.618;
 
+/// How much taller than its label's type size a keycap must be.
+pub const KEYCAP_FIT: f32 = 1.2;
+
 /// The weights the bundled typeface ships (`assets/fonts`). A weight between
 /// them would be synthesised, which is what makes type look cheap.
 pub const WEIGHTS: [f32; 3] = [400.0, 500.0, 600.0];
@@ -224,9 +227,12 @@ impl Metrics {
                 "the footer's text fits in the footer",
                 &["text.footer", "footer.height"],
             ),
+            // A keycap holds a label, not a line of text: the line's leading
+            // may overhang it, the glyphs may not. Raycast sets 13.5 pt keys
+            // in caps 18 tall.
             (
                 self.keycap_height <= self.footer_height
-                    && line(self.text_footer) <= self.keycap_height,
+                    && self.text_footer * KEYCAP_FIT <= self.keycap_height,
                 "a keycap fits in the footer and holds its label",
                 &["keycap.height", "footer.height", "text.footer"],
             ),
@@ -274,6 +280,16 @@ pub enum FooterHints {
     Keycaps,
 }
 
+/// How a keycap is drawn, when the footer draws them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Keycap {
+    /// Filled, with a faint edge.
+    #[default]
+    Filled,
+    /// An outline only, the footer showing through: Raycast's.
+    Outline,
+}
+
 /// How a section's title is cased.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SectionCase {
@@ -290,6 +306,7 @@ pub struct Variants {
     pub row_subtitle: RowSubtitle,
     pub selection: Selection,
     pub footer_hints: FooterHints,
+    pub keycap: Keycap,
     pub section_case: SectionCase,
 }
 
@@ -317,6 +334,13 @@ impl Variants {
                 self.footer_hints = match value {
                     "text" => FooterHints::Text,
                     "keycaps" => FooterHints::Keycaps,
+                    _ => return None,
+                }
+            }
+            "keycap" => {
+                self.keycap = match value {
+                    "filled" => Keycap::Filled,
+                    "outline" => Keycap::Outline,
                     _ => return None,
                 }
             }
@@ -640,6 +664,7 @@ mod tests {
     #[test]
     fn the_presets_resolve_exactly_as_written() {
         for source in [
+            include_str!("../../../assets/styles/carbon.json"),
             include_str!("../../../assets/styles/graphite.json"),
             include_str!("../../../assets/styles/ink.json"),
         ] {
