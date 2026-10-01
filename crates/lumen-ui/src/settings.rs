@@ -37,6 +37,7 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
+use crate::appearance_page::AppearancePage;
 use crate::calculator_page::CalculatorPage;
 use crate::clipboard_page::ClipboardPage;
 use crate::clock_page::ClockPage;
@@ -51,6 +52,7 @@ use crate::weather_page::WeatherPage;
 /// Which page the window shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
+    Appearance,
     Sheets,
     Quicklinks,
     Translation,
@@ -63,7 +65,8 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 9] = [
+    const ALL: [Page; 10] = [
+        Page::Appearance,
         Page::Sheets,
         Page::Quicklinks,
         Page::Translation,
@@ -77,6 +80,7 @@ impl Page {
 
     fn label(self) -> &'static str {
         match self {
+            Page::Appearance => "Appearance",
             Page::Sheets => "Shortcut Sheets",
             Page::Quicklinks => "Quicklinks",
             Page::Translation => "Translation",
@@ -91,6 +95,7 @@ impl Page {
 
     fn hint(self) -> &'static str {
         match self {
+            Page::Appearance => "The look, and the root list's sections, in config.json",
             Page::Sheets => "Hold the gesture key to see these while you work",
             Page::Quicklinks => "Saved links and web searches, in quicklinks.json",
             Page::Translation => "The service and your presets, in config.json",
@@ -250,6 +255,7 @@ pub struct Settings {
     weather: Entity<WeatherPage>,
     clipboard: Entity<ClipboardPage>,
     calculator: Entity<CalculatorPage>,
+    appearance: Entity<AppearancePage>,
 }
 
 impl Settings {
@@ -317,6 +323,15 @@ impl Settings {
         };
         cx.observe(&calculator, |_, _, cx| cx.notify()).detach();
 
+        let appearance = {
+            let colors = theme.colors.clone();
+            let config_file = config_file.clone();
+            let themes_dir = paths.themes_dir();
+            let styles_dir = paths.styles_dir();
+            cx.new(|cx| AppearancePage::new(config_file, themes_dir, styles_dir, colors, cx))
+        };
+        cx.observe(&appearance, |_, _, cx| cx.notify()).detach();
+
         let timers = {
             let colors = theme.colors.clone();
             cx.new(|cx| TimersPage::new(config_file, colors, cx))
@@ -336,7 +351,8 @@ impl Settings {
             foreground: None,
             status: None,
             list_scroll: UniformListScrollHandle::new(),
-            page: Page::Sheets,
+            // The first page, as it is first in the list.
+            page: Page::Appearance,
             quicklinks,
             translation,
             timers,
@@ -345,6 +361,7 @@ impl Settings {
             weather,
             clipboard,
             calculator,
+            appearance,
         }
     }
 
@@ -392,6 +409,12 @@ impl Settings {
     /// (F14).
     pub fn reload_calculator(&mut self, cx: &mut Context<Self>) {
         self.calculator.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Re-read the look and the arrangement in `config.json`, and what the
+    /// themes and styles folders hold (F15).
+    pub fn reload_appearance(&mut self, cx: &mut Context<Self>) {
+        self.appearance.update(cx, |page, cx| page.reload(cx));
     }
 
     /// Re-read `quicklinks.json`: on open, and whenever the file changes.
@@ -477,6 +500,8 @@ impl Settings {
         self.clipboard
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.calculator
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.appearance
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
         cx.notify();
@@ -484,6 +509,7 @@ impl Settings {
 
     pub fn focus(&self, window: &mut Window, cx: &App) {
         match self.page {
+            Page::Appearance => self.appearance.read(cx).focus(window, cx),
             Page::Sheets => window.focus(&self.focus_handle),
             Page::Quicklinks => self.quicklinks.read(cx).focus(window, cx),
             Page::Translation => self.translation.read(cx).focus(window, cx),
@@ -568,6 +594,10 @@ impl Settings {
         }
         if self.page == Page::Weather {
             self.weather.update(cx, |page, cx| page.save(cx));
+            return;
+        }
+        // Appearance writes each choice as it is made; nothing waits.
+        if self.page == Page::Appearance {
             return;
         }
         if self.page == Page::Clipboard {
@@ -922,6 +952,12 @@ impl Render for Settings {
                 .flex_1()
                 .overflow_hidden()
                 .child(self.calculator.clone())
+                .into_any_element(),
+            Page::Appearance => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.appearance.clone())
                 .into_any_element(),
         };
         let dialog = match self.page {
@@ -1284,6 +1320,7 @@ impl Settings {
             Page::Weather => (self.weather.read(cx).status(), false),
             Page::Clipboard => (self.clipboard.read(cx).status(), false),
             Page::Calculator => (self.calculator.read(cx).status(), false),
+            Page::Appearance => (self.appearance.read(cx).status(), false),
         };
 
         div()

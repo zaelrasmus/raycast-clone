@@ -699,6 +699,7 @@ fn open_settings(
             settings.reload_weather(cx);
             settings.reload_clipboard(history, cx);
             settings.reload_calculator(cx);
+            settings.reload_appearance(cx);
             settings.focus(window, cx);
         })
         .ok();
@@ -1326,6 +1327,7 @@ fn reload_config(
                 settings.reload_weather(cx);
                 settings.reload_clipboard(history, cx);
                 settings.reload_calculator(cx);
+                settings.reload_appearance(cx);
             })
             .ok();
     }

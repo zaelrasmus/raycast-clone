@@ -12,6 +12,7 @@
 //! selects like any other field on the system. The editing arithmetic is in
 //! [`edit`], apart from GPUI, where it is tested without a window.
 
+pub mod appearance_page;
 pub mod assets;
 pub mod calculator_page;
 pub mod clipboard_page;

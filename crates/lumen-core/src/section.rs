@@ -53,6 +53,14 @@ pub fn edit(
     write(path, &Value::Object(root))
 }
 
+/// Read the file, set its top-level `key` to `value`, write it back: for a
+/// setting that is a value rather than a section, such as `theme` (F15).
+pub fn set(path: &Path, key: &str, value: Value) -> Result<()> {
+    let mut root = document(path)?;
+    root.insert(key.into(), value);
+    write(path, &Value::Object(root))
+}
+
 /// The list at `key` in `section`, created if absent.
 pub fn list<'a>(section: &'a mut Map<String, Value>, key: &str) -> Result<&'a mut Vec<Value>> {
     match section
