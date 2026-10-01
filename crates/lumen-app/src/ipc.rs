@@ -99,6 +99,11 @@ pub enum Message {
     },
     /// Fetch exchange rates for a conversion typed at the root (F9).
     RefreshRates,
+    /// Keep a calculation that was used in the calculator's history (F14).
+    Calculated {
+        expression: String,
+        result: String,
+    },
     /// Start or stop a timer (F8), from a root row or `lumen timer`.
     Timer(lumen_core::timers::Command),
 }

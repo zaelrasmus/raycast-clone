@@ -99,6 +99,11 @@ impl Paths {
         self.data_dir.join("currency.json")
     }
 
+    /// The calculations used (F14).
+    pub fn calculator_history_file(&self) -> PathBuf {
+        self.data_dir.join("calculator-history.json")
+    }
+
     /// Favourite words and the words looked at (F10).
     pub fn dictionary_file(&self) -> PathBuf {
         self.data_dir.join("dictionary.json")

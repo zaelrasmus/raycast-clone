@@ -2047,6 +2047,7 @@ impl Launcher {
             (None, _) => item.primary(),
         };
         let id = item.id.clone();
+        let calculated = calculated(item, &action);
         let blocked = self
             .focus
             .as_ref()
@@ -2098,6 +2099,9 @@ impl Launcher {
                 }
             })
             .detach();
+        }
+        if let Some(calculated) = calculated {
+            cx.emit(calculated);
         }
 
         // Arranging has to hide *and* keep the handle that hiding would
@@ -2648,6 +2652,12 @@ pub enum LauncherEvent {
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.
     RefreshRates,
+    /// A calculation was used -- its answer copied -- and the daemon keeps
+    /// it in the calculator's history (F14). Comes before `Dismissed`.
+    Calculated {
+        expression: String,
+        result: String,
+    },
     /// Focus refused to open `what` (F8, slice 6). `action` is what would
     /// have run, for *Open Anyway*. Replaces `Dismissed`: the launcher stays
     /// up to say why.
@@ -3423,11 +3433,45 @@ fn highlighted(
         .into_any_element()
 }
 
+/// What the daemon keeps when `action` runs on `item`: a calculation copied
+/// is one used (F14) -- what was typed, and what was copied.
+fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
+    match (&item.kind, action) {
+        (lumen_core::item::Kind::Calculation, Action::CopyToClipboard(result)) => item
+            .subtitle
+            .clone()
+            .map(|expression| LauncherEvent::Calculated {
+                expression,
+                result: result.clone(),
+            }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
+    use super::{LauncherEvent, calculated};
     use lumen_core::item::{Builtin, Kind};
+    use lumen_core::providers::Provider;
     use lumen_core::{Action, Item};
+
+    /// The calculator's own row, copied, is kept; anything else copied is not.
+    #[test]
+    fn a_calculation_copied_is_kept() {
+        let answer = lumen_core::providers::CalculatorProvider.answer("25% off 399");
+        let row = &answer[0];
+        assert_eq!(
+            calculated(row, &row.primary()),
+            Some(LauncherEvent::Calculated {
+                expression: "25% off 399".into(),
+                result: "299.25".into(),
+            })
+        );
+
+        let other = item_with(vec![Action::CopyToClipboard("x".into())]);
+        assert_eq!(calculated(&other, &other.primary()), None);
+    }
 
     fn item_with(actions: Vec<Action>) -> Item {
         Item {

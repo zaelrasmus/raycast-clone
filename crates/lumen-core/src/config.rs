@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result};
 use lumen_platform::{BackdropMode, Hotkey};
 use serde::{Deserialize, Serialize};
 
+use crate::calc::history::CalculatorConfig;
 use crate::clipboard::Retention;
 use crate::clock::ClockConfig;
 use crate::currency::CurrencyConfig;
@@ -54,6 +55,8 @@ pub struct Config {
     pub weather: WeatherConfig,
     /// The home city, shared by World Clock and Weather (F13).
     pub places: PlacesConfig,
+    /// The calculator (F14): how many calculations its history keeps.
+    pub calculator: CalculatorConfig,
 }
 
 /// File search (F3).
@@ -181,6 +184,7 @@ impl Default for Config {
             clock: ClockConfig::default(),
             weather: WeatherConfig::default(),
             places: PlacesConfig::default(),
+            calculator: CalculatorConfig::default(),
         }
     }
 }

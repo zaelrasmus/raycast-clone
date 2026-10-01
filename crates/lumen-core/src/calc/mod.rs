@@ -31,6 +31,7 @@
 mod dates;
 mod format;
 mod functions;
+pub mod history;
 mod lexer;
 mod parser;
 mod units;

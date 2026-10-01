@@ -36,6 +36,7 @@ use lumen_platform::{
 };
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
+mod calculator;
 mod clipboard;
 mod clock;
 mod currency;
@@ -1014,6 +1015,13 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RefreshRates);
                 return;
             }
+            LauncherEvent::Calculated { expression, result } => {
+                let _ = commands.unbounded_send(Message::Calculated {
+                    expression: expression.clone(),
+                    result: result.clone(),
+                });
+                return;
+            }
             LauncherEvent::Timer(command) => {
                 let _ = commands.unbounded_send(Message::Timer(command.clone()));
                 return;
@@ -1042,6 +1050,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunWeather { .. }
                 | LauncherEvent::RefreshWeather { .. }
                 | LauncherEvent::RefreshRates
+                | LauncherEvent::Calculated { .. }
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
@@ -1485,6 +1494,15 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| currency::refresh(config, path, window, cx))
                 .context("reaching the app to refresh exchange rates")
+        }
+        Message::Calculated { expression, result } => {
+            let limit = config.calculator.limit();
+            let path = surfaces.paths.calculator_history_file();
+            cx.background_spawn(async move {
+                calculator::record(&path, expression, result, limit);
+            })
+            .detach();
+            Ok(())
         }
         Message::RunAlertSounds => {
             surfaces.timers.open_sounds(surfaces.launcher, cx);
