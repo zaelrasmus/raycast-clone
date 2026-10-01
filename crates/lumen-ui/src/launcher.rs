@@ -977,6 +977,8 @@ impl Launcher {
         // held for it (I-3).
         if !self.rates_asked && self.root.wants_rates(lumen_core::currency::now) {
             self.rates_asked = true;
+            // Asked again: the row says *Fetching* while it is out (F14).
+            self.root.set_rates_failed(false);
             cx.emit(LauncherEvent::RefreshRates);
         }
 
@@ -1362,6 +1364,15 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) {
         if self.root.replace_rates(rates) && matches!(self.mode, Mode::Root) {
+            self.rerank(cx);
+            cx.notify();
+        }
+    }
+
+    /// The table asked for from the root list could not be fetched (F14):
+    /// a calculation in money says so, or falls back to the table it has.
+    pub fn rates_failed(&mut self, cx: &mut Context<Self>) {
+        if self.root.set_rates_failed(true) && matches!(self.mode, Mode::Root) {
             self.rerank(cx);
             cx.notify();
         }

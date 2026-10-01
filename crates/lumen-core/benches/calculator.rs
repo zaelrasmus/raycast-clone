@@ -53,6 +53,16 @@ fn calculator(c: &mut Criterion) {
         group.bench_function(name, |b| b.iter(|| CalculatorProvider.answer(&query)));
     }
 
+    // Money, as the root list asks it (F14, slice 12): with no table, the
+    // first keystroke of the day; the parse is the whole cost either way.
+    let context = lumen_core::calc::Context {
+        today: &lumen_core::calc::today,
+        rates: None,
+    };
+    group.bench_function("money", |b| {
+        b.iter(|| lumen_core::calc::answer("100 usd + 20 eur in canadian dollar", &context))
+    });
+
     group.finish();
 }
 

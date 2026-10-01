@@ -1,5 +1,5 @@
-//! What an expression is worth: a number, an amount of a unit, a
-//! percentage, or a day.
+//! What an expression is worth: a number, an amount of a unit, an amount
+//! of money, a percentage, or a day.
 //!
 //! Every operation answers `None` when it has no meaning -- `2 km * 3 km`,
 //! `5 km + 2 kg`, `today * 2` -- and the whole query is declined. A
@@ -8,6 +8,7 @@
 use jiff::civil::Date;
 
 use super::units::{self, Dimension, Unit};
+use crate::currency::Currency;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
@@ -15,6 +16,14 @@ pub enum Value {
     Quantity {
         amount: f64,
         unit: &'static Unit,
+    },
+    /// An amount of a currency (F14, slice 12). Not a unit: what one is
+    /// worth in another is the table of rates', which changes daily and may
+    /// not be loaded, so the parser converts between currencies before an
+    /// operation ever sees two.
+    Money {
+        amount: f64,
+        currency: &'static Currency,
     },
     /// `25%`, kept as written -- `25`, not `0.25` -- because what it means
     /// depends on what it meets: `399 + 25%` is `498.75`, `399 * 25%` is
@@ -24,13 +33,15 @@ pub enum Value {
     Date(Date),
 }
 
-use Value::{Date as Day, Number, Percent, Quantity};
+use Value::{Date as Day, Money, Number, Percent, Quantity};
 
 impl Value {
     /// The number inside, whatever unit it is in. A day has none.
     pub fn amount(self) -> Option<f64> {
         match self {
-            Number(amount) | Quantity { amount, .. } | Percent(amount) => Some(amount),
+            Number(amount) | Quantity { amount, .. } | Money { amount, .. } | Percent(amount) => {
+                Some(amount)
+            }
             Day(_) => None,
         }
     }
@@ -48,9 +59,19 @@ impl Value {
                 amount: f(amount),
                 unit,
             }),
+            Money { amount, currency } => Some(Money {
+                amount: f(amount),
+                currency,
+            }),
             Percent(percent) => Some(Percent(f(percent))),
             Day(_) => None,
         }
+    }
+
+    /// Whether this is an amount that a percentage can be a share of: a
+    /// number, a quantity or money.
+    fn is_amount(self) -> bool {
+        matches!(self, Number(_) | Quantity { .. } | Money { .. })
     }
 
     /// A percentage as the fraction it stands for: `25%` is `0.25`.
@@ -61,9 +82,12 @@ impl Value {
     /// `self` percent `of`, `off` or `on` `base`: `20% of 50` is `10`, `25%
     /// off 399` is `299.25`, `5% on 30` is `31.5`. The base keeps its unit.
     pub fn percent(self, phrase: Phrase, base: Value) -> Option<Value> {
-        let (Percent(percent), Number(_) | Quantity { .. }) = (self, base) else {
+        let Percent(percent) = self else {
             return None;
         };
+        if !base.is_amount() {
+            return None;
+        }
         let share = Self::fraction(percent);
         base.map(|amount| match phrase {
             Phrase::Of => amount * share,
@@ -110,6 +134,8 @@ impl Value {
     /// A number joins a quantity in its unit -- `5 km + 3` is `8 km` -- and a
     /// quantity joins another in the left one's. Temperatures on different
     /// scales are not added: `10 °C + 5 °F` is two different questions.
+    /// Money joins money of the same currency only; the parser has
+    /// converted the right into the left's by now.
     ///
     /// A percentage added to anything else is a share of it: `399 + 25%` is
     /// `498.75`. Two percentages add as numbers do; a percentage first and a
@@ -128,18 +154,29 @@ impl Value {
             (Day(_), _) | (_, Day(_)) => None,
             (Number(left), Number(right)) => Some(Number(left + sign * right)),
             (Percent(left), Percent(right)) => Some(Percent(left + sign * right)),
-            (left @ (Number(_) | Quantity { .. }), Percent(right)) => {
+            (left, Percent(right)) if left.is_amount() => {
                 left.map(|amount| amount * (1.0 + sign * Self::fraction(right)))
             }
-            (Percent(_), _) => None,
-            (Quantity { amount, unit }, Number(right)) => Some(Quantity {
+            (Percent(_), _) | (_, Percent(_)) => None,
+            (amount @ (Quantity { .. } | Money { .. }), Number(right))
+            | (Number(right), amount @ (Quantity { .. } | Money { .. })) => {
+                let left_first = matches!(self, Quantity { .. } | Money { .. });
+                amount.map(|amount| match left_first {
+                    true => amount + sign * right,
+                    false => right + sign * amount,
+                })
+            }
+            (
+                Money { amount, currency },
+                Money {
+                    amount: right,
+                    currency: other,
+                },
+            ) => (currency.code == other.code).then_some(Money {
                 amount: amount + sign * right,
-                unit,
+                currency,
             }),
-            (Number(left), Quantity { amount, unit }) => Some(Quantity {
-                amount: left + sign * amount,
-                unit,
-            }),
+            (Money { .. }, Quantity { .. }) | (Quantity { .. }, Money { .. }) => None,
             (Quantity { amount, unit }, right @ Quantity { unit: other, .. }) => {
                 if (unit.has_offset() || other.has_offset()) && !std::ptr::eq(unit, other) {
                     return None;
@@ -154,28 +191,31 @@ impl Value {
     }
 
     /// `self * right`. A quantity times a quantity would be a new unit,
-    /// which is declined rather than half-supported.
+    /// which is declined rather than half-supported; so is money times
+    /// money.
     pub fn times(self, right: Value) -> Option<Value> {
         match (self, right) {
             (Day(_), _) | (_, Day(_)) => None,
             (Number(left), Number(right)) => Some(Number(left * right)),
-            (quantity @ Quantity { .. }, Number(right))
-            | (Number(right), quantity @ Quantity { .. }) => quantity.map(|amount| amount * right),
-            (Quantity { .. }, Quantity { .. }) => None,
-            (Percent(percent), other) | (other, Percent(percent)) => match other {
-                Number(_) | Quantity { .. } => other.map(|amount| amount * Self::fraction(percent)),
-                Percent(_) | Day(_) => None,
-            },
+            (Percent(_), Percent(_)) => None,
+            (Percent(percent), other) | (other, Percent(percent)) => {
+                other.map(|amount| amount * Self::fraction(percent))
+            }
+            (scaled, Number(by)) | (Number(by), scaled) => scaled.map(|amount| amount * by),
+            _ => None,
         }
     }
 
-    /// `self / right`. A quantity over one of the same kind is a ratio:
-    /// `1 km / 1 m` is `1000`.
+    /// `self / right`. An amount over one of the same kind is a ratio:
+    /// `1 km / 1 m` is `1000`, `30 usd / 10 usd` is `3`.
     pub fn over(self, right: Value) -> Option<Value> {
         match (self, right) {
             (Day(_), _) | (_, Day(_)) => None,
             (Number(left), Number(right)) => Some(Number(left / right)),
-            (quantity @ Quantity { .. }, Number(right)) => quantity.map(|amount| amount / right),
+            (Percent(percent), Number(right)) => Some(Percent(percent / right)),
+            (Percent(_), _) => None,
+            (left, Percent(percent)) => left.map(|amount| amount / Self::fraction(percent)),
+            (scaled, Number(by)) => scaled.map(|amount| amount / by),
             (
                 Quantity { amount, unit },
                 Quantity {
@@ -184,11 +224,14 @@ impl Value {
                 },
             ) => (unit.dimension == other.dimension && !unit.has_offset() && !other.has_offset())
                 .then(|| Number(unit.to_base(amount) / other.to_base(below))),
-            (left @ (Number(_) | Quantity { .. }), Percent(percent)) => {
-                left.map(|amount| amount / Self::fraction(percent))
-            }
-            (Percent(percent), Number(right)) => Some(Percent(percent / right)),
-            (Number(_), Quantity { .. }) | (Percent(_), _) => None,
+            (
+                Money { amount, currency },
+                Money {
+                    amount: below,
+                    currency: other,
+                },
+            ) => (currency.code == other.code).then(|| Number(amount / below)),
+            _ => None,
         }
     }
 
@@ -309,6 +352,37 @@ mod tests {
         assert_eq!(day.plus(of(1.5, "days"), 1.0), None);
         assert_eq!(day.plus(Number(1.0), 1.0), None);
         assert_eq!(of(1.0, "day").plus(day, -1.0), None);
+    }
+
+    fn usd(amount: f64) -> Value {
+        Money {
+            amount,
+            currency: crate::currency::currencies::find("usd").unwrap(),
+        }
+    }
+
+    #[test]
+    fn money_is_an_amount_of_one_currency() {
+        let eur = Money {
+            amount: 5.0,
+            currency: crate::currency::currencies::find("eur").unwrap(),
+        };
+        assert_eq!(usd(10.0).plus(usd(5.0), 1.0), Some(usd(15.0)));
+        assert_eq!(usd(10.0).plus(Number(5.0), -1.0), Some(usd(5.0)));
+        assert_eq!(Number(3.0).times(usd(2.0)), Some(usd(6.0)));
+        assert_eq!(usd(30.0).over(usd(10.0)), Some(Number(3.0)));
+        assert_eq!(usd(399.0).plus(Percent(25.0), -1.0), Some(usd(299.25)));
+        assert_eq!(
+            Percent(20.0).percent(Phrase::Of, usd(50.0)),
+            Some(usd(10.0))
+        );
+        assert_eq!(
+            usd(10.0).plus(eur, 1.0),
+            None,
+            "converted by the parser first"
+        );
+        assert_eq!(usd(1.0).times(usd(1.0)), None);
+        assert_eq!(usd(1.0).plus(deg(1.0), 1.0), None);
     }
 
     #[test]

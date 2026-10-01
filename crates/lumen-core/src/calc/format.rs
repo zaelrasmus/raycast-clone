@@ -35,6 +35,7 @@ pub fn format_value(value: Value) -> String {
     match value {
         Value::Number(number) => format_number(number),
         Value::Quantity { amount, unit } => unit.write(&format_number(amount)),
+        Value::Money { amount, currency } => crate::currency::format::with_code(amount, currency),
         Value::Percent(percent) => format!("{}%", format_number(percent)),
         Value::Date(day) => day.strftime("%a, %b %-d, %Y").to_string(),
     }

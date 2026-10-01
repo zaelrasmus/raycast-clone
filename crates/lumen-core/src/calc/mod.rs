@@ -44,10 +44,55 @@ pub use value::Value;
 
 use jiff::civil::Date;
 
+use crate::currency::Rates;
+
 /// The longest input read, in bytes. Past a line, it is not being typed.
 const MAX_INPUT: usize = 256;
 
-/// Evaluate `input` as a calculation, or decline.
+/// What a calculation is answered with: the day, and the exchange rates in
+/// hand.
+pub struct Context<'a> {
+    /// Asked only when a date is typed.
+    pub today: &'a dyn Fn() -> Date,
+    pub rates: Option<&'a Rates>,
+}
+
+/// A calculation answered.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Answer {
+    pub value: Value,
+    /// Whether money was named: the root list answers it, with the rates'
+    /// date, rather than the provider.
+    pub money: bool,
+    /// Whether one currency was converted into another, so the table of
+    /// rates was needed: `100 usd + 20 eur`, `10 usd in cad`.
+    pub converts: bool,
+    /// Whether it was needed and not in hand. `value` is then not the
+    /// answer, only proof that the query is one.
+    pub pending: bool,
+}
+
+/// Answer `input` as a calculation, money included, or decline.
+///
+/// Whether a query is a calculation never depends on the table: which
+/// words are currencies is the static catalogue's to say. Only the value
+/// does.
+pub fn answer(input: &str, context: &Context) -> Option<Answer> {
+    let trimmed = input.trim();
+    if !trimmed.contains(|c: char| c.is_ascii_digit() || c == '(') && !mentions_a_span(trimmed) {
+        return None;
+    }
+    let parsed = parse(trimmed, context)?;
+    (parsed.operations > 0).then_some(Answer {
+        value: parsed.value,
+        money: parsed.money,
+        converts: parsed.converts,
+        pending: parsed.pending,
+    })
+}
+
+/// Evaluate `input` as a calculation, or decline. Money is declined too:
+/// it is answered by the root list, which holds the table of rates.
 ///
 /// Declining is the common case and is not an error.
 pub fn evaluate(input: &str) -> Option<Value> {
@@ -56,16 +101,12 @@ pub fn evaluate(input: &str) -> Option<Value> {
 
 /// [`evaluate`], on the day `today` says it is.
 pub fn evaluate_on(input: &str, today: &dyn Fn() -> Date) -> Option<Value> {
-    let trimmed = input.trim();
-    if !trimmed.contains(|c: char| c.is_ascii_digit() || c == '(') && !mentions_a_span(trimmed) {
-        return None;
-    }
-    let parsed = parse(trimmed, today)?;
-    (parsed.operations > 0).then_some(parsed.value)
+    let answer = answer(input, &Context { today, rates: None })?;
+    (!answer.money).then_some(answer.value)
 }
 
 /// Today, where the user is. Read only when a date is typed.
-fn today() -> Date {
+pub fn today() -> Date {
     jiff::Zoned::now().date()
 }
 
@@ -86,18 +127,23 @@ fn mentions_a_span(input: &str) -> bool {
 /// stands for -- `50%` is `0.5` -- but not a quantity: `10 deg` is not an
 /// amount of money.
 pub fn amount(input: &str) -> Option<f64> {
-    match parse(input.trim(), &today)?.value {
+    let context = Context {
+        today: &today,
+        rates: None,
+    };
+    match parse(input.trim(), &context)?.value {
         Value::Number(number) => Some(number),
         Value::Percent(percent) => Some(percent / 100.0),
-        Value::Quantity { .. } | Value::Date(_) => None,
+        Value::Quantity { .. } | Value::Money { .. } | Value::Date(_) => None,
     }
 }
 
-fn parse(input: &str, today: &dyn Fn() -> Date) -> Option<parser::Parsed> {
+fn parse(input: &str, context: &Context) -> Option<parser::Parsed> {
     if input.len() > MAX_INPUT {
         return None;
     }
-    let parsed = parser::Parser::new(lexer::tokenize(input)?, today).whole()?;
+    let tokens = lexer::tokenize(input)?;
+    let parsed = parser::Parser::new(tokens, context.today, context.rates).whole()?;
     parsed.value.is_finite().then_some(parsed)
 }
 
@@ -109,7 +155,7 @@ mod tests {
     fn number(input: &str) -> Option<f64> {
         match evaluate(input)? {
             Value::Number(number) => Some(number),
-            Value::Quantity { .. } | Value::Percent(_) | Value::Date(_) => None,
+            _ => None,
         }
     }
 
@@ -364,6 +410,100 @@ mod tests {
         assert_eq!(on_the_first("today * 2"), None);
         assert_eq!(on_the_first("hours until friday"), None);
         assert_eq!(on_the_first("12/05").as_deref(), Some("2.4"), "a division");
+    }
+
+    /// What the root list shows for `input` with a table of rates in hand:
+    /// a dollar is 1.41649 Canadian dollars, 0.9 euros, 150 yen.
+    fn with_rates(input: &str) -> Option<String> {
+        let rates = crate::currency::tests::rates(&[
+            ("USD", 1.0),
+            ("CAD", 1.41649),
+            ("EUR", 0.9),
+            ("JPY", 150.0),
+            ("MXN", 18.0),
+        ]);
+        let context = Context {
+            today: &today,
+            rates: Some(&rates),
+        };
+        answer(input, &context)
+            .filter(|answer| answer.money)
+            .map(|answer| format_value(answer.value))
+    }
+
+    /// F9's root conversions, moved here when money became the
+    /// calculator's: everything they answered is answered the same.
+    #[test]
+    fn what_f9_answered() {
+        assert_eq!(with_rates("10 usd in cad").as_deref(), Some("14.16 CAD"));
+        assert_eq!(with_rates("10usd to japan").as_deref(), Some("1,500 JPY"));
+        assert_eq!(
+            with_rates("2*5 EUR in canadian dollar").as_deref(),
+            Some("15.74 CAD")
+        );
+    }
+
+    /// And everything they declined is declined.
+    #[test]
+    fn what_f9_declined() {
+        for text in [
+            "10 usd",
+            "10 usd in",
+            "10 usd in ca",
+            "10 in cad",
+            "usd in cad",
+            "10 usd in usd",
+            "10 usd in zimbabwe",
+            "log in to github",
+        ] {
+            assert_eq!(with_rates(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn money_inside_a_calculation() {
+        assert_eq!(
+            with_rates("100 usd + 20 eur in cad").as_deref(),
+            Some("173.13 CAD")
+        );
+        assert_eq!(
+            with_rates("100 usd + 18 eur").as_deref(),
+            Some("120.00 USD")
+        );
+        assert_eq!(
+            with_rates("25% off 399 usd in eur").as_deref(),
+            Some("269.32 EUR")
+        );
+        assert_eq!(
+            with_rates("10 usd * 3 in mxn").as_deref(),
+            Some("540.00 MXN")
+        );
+        assert_eq!(with_rates("25% off 399 usd").as_deref(), Some("299.25 USD"));
+        assert_eq!(with_rates("90 usd / 10 eur").as_deref(), Some("8.1"));
+        assert_eq!(with_rates("10 usd + 5 km"), None);
+        assert_eq!(with_rates("10 usd in km"), None);
+        assert_eq!(with_rates("10 usd in xyz"), None);
+    }
+
+    /// Whether a query is money never waits for the table: with none, the
+    /// answer is pending, and the root list says it is fetching.
+    #[test]
+    fn money_is_recognised_without_a_table() {
+        let context = Context {
+            today: &today,
+            rates: None,
+        };
+        let pending = answer("100 usd + 20 eur in cad", &context).unwrap();
+        assert!(pending.money && pending.converts && pending.pending);
+        let same = answer("25% off 399 usd", &context).unwrap();
+        assert!(same.money && !same.converts && !same.pending);
+        assert_eq!(format_value(same.value), "299.25 USD");
+        assert_eq!(evaluate("10 usd in cad"), None, "money is the root list's");
+        assert_eq!(
+            amount("10 usd"),
+            None,
+            "the currency view reads its own codes"
+        );
     }
 
     /// The worst that can be typed without meaning harm costs microseconds

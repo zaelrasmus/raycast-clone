@@ -1935,6 +1935,23 @@ The decisions:
   the same one. The row always dates its rates. With no table it says
   *Fetching exchange rates…*; if the fetch fails it falls back to the
   table kept, dated, and with none it says it could not fetch them.
+- **Money, as built.** `Value::Money` is not a unit: the parser converts
+  the right side into the left's currency, through the table, before
+  `+`, `-` or `/` sees two, and with no table it finishes the parse one
+  for one and marks the answer pending, so the row can say why it has no
+  number. One currency throughout -- `25% off 399 usd` -- needs no table
+  and says none. The provider declines money and the root list answers
+  it, because the root list holds the table; `calc::answer` is the one
+  engine for both. The row is the calculator's (`Kind::Calculation`), so a
+  copied answer in money is kept in its history like any other, and it
+  still copies the number alone, as F9 did. Its subtitle is what was
+  typed and the rates' date -- `10 usd in cad · rates of 28 Sep 2026` --
+  where F9 wrote both sides out, which `100 usd + 20 eur in cad` has no
+  room for. A conversion into the same unit or currency restates a value
+  and is not an operation: `10 usd in usd`, as F9 declined it, and `5 km
+  in km` likewise. A failed fetch now reaches the launcher
+  (`Launcher::rates_failed`), and asking again clears it. A currency the
+  table has no rate for declines the query rather than half-answering it.
 - **The slices,** one acceptance criterion each:
   0. This entry, and 7.39.
   1. Measurement first: the calculator in the benchmark, and the corpus of

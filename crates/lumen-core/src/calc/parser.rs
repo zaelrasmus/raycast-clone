@@ -6,7 +6,7 @@
 //! fails it. That is what keeps `7-zip` and `python 3.12` out.
 //!
 //! ```text
-//! calculation := expression (('in' | 'to' | 'as') UNIT)?
+//! calculation := expression (('in' | 'to' | 'as') (UNIT | CURRENCY))?
 //!              | expression ('as' '%' ('of' expression)?)?
 //! expression  := term (('+' | '-') term)*
 //! term        := unary (('*' | '/' | 'mod') unary)*
@@ -14,7 +14,7 @@
 //! power       := postfix ('^' unary)?
 //! postfix     := primary '!'* ('%' (('of' | 'off' | 'on') unary)?)?
 //! primary     := DATE
-//!             | NUMBER UNIT?
+//!             | NUMBER (UNIT | CODE)?
 //!             | '(' expression ')' UNIT?
 //!             | FUNCTION '(' expression ')'
 //!             | CONSTANT
@@ -30,6 +30,7 @@ use super::functions::{self, factorial};
 use super::lexer::Token;
 use super::units;
 use super::value::{Phrase, Value};
+use crate::currency::{Currency, Rates, currencies};
 
 /// How deep parentheses and signs may nest. Far past anything typed by
 /// hand, and well short of the stack.
@@ -41,6 +42,15 @@ pub struct Parsed {
     /// Zero for `2024`, `45 deg` or `pi`: a value restated is not a
     /// calculation, and the root list does not answer it.
     pub operations: u32,
+    /// Whether money was named.
+    pub money: bool,
+    /// Whether one currency was converted into another: the table of rates
+    /// was needed.
+    pub converts: bool,
+    /// Whether it was needed and there was none, so `value` is not the
+    /// answer: every rate was taken as one, to finish the parse and know
+    /// that the query is money.
+    pub pending: bool,
 }
 
 pub struct Parser<'a> {
@@ -57,10 +67,19 @@ pub struct Parser<'a> {
     today_read: Option<Date>,
     /// Which way a date with no year is looked for: back, inside `since`.
     toward: Toward,
+    /// The table of exchange rates in hand, if any.
+    rates: Option<&'a Rates>,
+    money: bool,
+    converts: bool,
+    pending: bool,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: Vec<Token<'a>>, today: &'a dyn Fn() -> Date) -> Self {
+    pub fn new(
+        tokens: Vec<Token<'a>>,
+        today: &'a dyn Fn() -> Date,
+        rates: Option<&'a Rates>,
+    ) -> Self {
         Self {
             tokens,
             at: 0,
@@ -70,6 +89,10 @@ impl<'a> Parser<'a> {
             today,
             today_read: None,
             toward: Toward::Next,
+            rates,
+            money: false,
+            converts: false,
+            pending: false,
         }
     }
 
@@ -91,6 +114,9 @@ impl<'a> Parser<'a> {
         (self.at == self.tokens.len()).then_some(Parsed {
             value,
             operations: self.operations,
+            money: self.money,
+            converts: self.converts,
+            pending: self.pending,
         })
     }
 
@@ -129,7 +155,22 @@ impl<'a> Parser<'a> {
             return (!self.loose).then_some(value);
         };
         if !self.eat(Token::Percent) {
+            if let Value::Money { amount, currency } = value {
+                let to = self.currency_named()?;
+                let value = self.exchange(amount, currency, to)?;
+                // `10 usd in usd` restates a value, as `5 km in km` does.
+                return if std::ptr::eq(currency, to) {
+                    Some(value)
+                } else {
+                    self.counted(Some(value))
+                };
+            }
             let target = self.unit()?;
+            if let Value::Quantity { unit, .. } = value
+                && std::ptr::eq(unit, target.unit)
+            {
+                return Some(value);
+            }
             return self.counted(value.convert(target.unit));
         }
         if into != "as" || self.loose {
@@ -167,6 +208,7 @@ impl<'a> Parser<'a> {
                 break;
             };
             let right = self.term()?;
+            let right = self.in_currency_of(left, right)?;
             left = self.counted(left.plus(right, sign))?;
         }
         self.depth -= 1;
@@ -184,6 +226,7 @@ impl<'a> Parser<'a> {
                 // the caller rejects non-finite results -- so the launcher
                 // shows nothing rather than a row saying `inf`.
                 let right = self.unary()?;
+                let right = self.in_currency_of(left, right)?;
                 self.counted(left.over(right))?
             } else if self.eat_word("mod") {
                 // `%` is a percentage (7.39); the remainder has a name.
@@ -396,15 +439,82 @@ impl<'a> Parser<'a> {
         let Value::Number(amount) = value else {
             return value;
         };
-        match self.unit() {
-            Some(found) => {
-                self.loose |= found.loose;
-                Value::Quantity {
-                    amount,
-                    unit: found.unit,
-                }
+        if let Some(found) = self.unit() {
+            self.loose |= found.loose;
+            return Value::Quantity {
+                amount,
+                unit: found.unit,
+            };
+        }
+        // A currency's code, after the units: `10 usd`, `10usd`.
+        if let Some(Token::Word(word)) = self.peek()
+            && let Some(currency) = currencies::find(word)
+        {
+            self.at += 1;
+            self.money = true;
+            return Value::Money { amount, currency };
+        }
+        value
+    }
+
+    /// The currency the rest of the query names: a code, a name or a
+    /// country, as many words as it takes -- `cad`, `canadian dollar`,
+    /// `japan` -- and only one currency: Zimbabwe has two, and the root list
+    /// does not guess.
+    fn currency_named(&mut self) -> Option<&'static Currency> {
+        let words: Vec<&str> = self.tokens[self.at..]
+            .iter()
+            .map(|token| match token {
+                Token::Word(word) => Some(*word),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        let currency = currencies::exactly(&words.join(" "))?;
+        self.at = self.tokens.len();
+        Some(currency)
+    }
+
+    /// `amount` of `from` in `to`, from the table in hand. With no table,
+    /// one for one and marked pending, so the parse can finish. A currency
+    /// the table has no rate for declines the query.
+    fn exchange(
+        &mut self,
+        amount: f64,
+        from: &'static Currency,
+        to: &'static Currency,
+    ) -> Option<Value> {
+        if std::ptr::eq(from, to) {
+            return Some(Value::Money {
+                amount,
+                currency: to,
+            });
+        }
+        self.converts = true;
+        let amount = match self.rates {
+            Some(rates) => rates.convert(amount, from.code, to.code)?,
+            None => {
+                self.pending = true;
+                amount
             }
-            None => value,
+        };
+        Some(Value::Money {
+            amount,
+            currency: to,
+        })
+    }
+
+    /// `right` in `left`'s currency, when both are money: `100 usd + 20 eur`
+    /// adds dollars.
+    fn in_currency_of(&mut self, left: Value, right: Value) -> Option<Value> {
+        match (left, right) {
+            (
+                Value::Money { currency, .. },
+                Value::Money {
+                    amount,
+                    currency: from,
+                },
+            ) => self.exchange(amount, from, currency),
+            _ => Some(right),
         }
     }
 

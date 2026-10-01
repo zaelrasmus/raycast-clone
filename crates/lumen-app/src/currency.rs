@@ -131,8 +131,9 @@ pub fn run(
 ///
 /// The same fetch the view makes, with no view: the table is kept in
 /// `currency.json` beside what the view chose, and handed to the launcher,
-/// whose next ranking answers with it. A failure is only logged -- the root
-/// list has nowhere to say it, and the view says it when opened.
+/// whose next ranking answers with it. A failure is logged and told to the
+/// launcher, whose row in money says so (F14), or falls back to the table
+/// it already has.
 pub fn refresh(
     config: CurrencyConfig,
     path: PathBuf,
@@ -141,8 +142,15 @@ pub fn refresh(
 ) {
     let answer = fetch(Arc::new(config));
     cx.spawn(async move |cx| {
-        let Ok(mut rates) = answered(answer).await else {
-            return;
+        let mut rates = match answered(answer).await {
+            Ok(rates) => rates,
+            Err(failure) => {
+                log::warn!("could not fetch exchange rates for the root list: {failure:?}");
+                window
+                    .update(cx, |launcher, _window, cx| launcher.rates_failed(cx))
+                    .ok();
+                return;
+            }
         };
         rates.retain_known();
         let kept = rates.clone();

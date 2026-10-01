@@ -136,10 +136,13 @@ pub struct RootSearch {
     /// one leads the matches, as a quicklink does.
     timer_presets: Vec<crate::timers::Preset>,
     /// The last table of exchange rates the daemon loaded, for `10 usd in
-    /// cad` (F9). Read, never fetched: I-3.
+    /// cad` (F9) and any calculation in money (F14). Read, never fetched: I-3.
     rates: Option<crate::currency::Rates>,
-    /// Whether the last query was a conversion, answered or not.
+    /// Whether the last query converted one currency into another, answered
+    /// or not.
     conversion: bool,
+    /// Whether the last table asked for could not be fetched, until one is.
+    rates_failed: bool,
     /// How the platform writes a time, for `time in vancouver` (F13): as
     /// the user's regional settings do. Two digits each until it is set.
     time_format: Option<TimeFormat>,
@@ -174,6 +177,7 @@ impl RootSearch {
             timer_presets: Vec::new(),
             rates: None,
             conversion: false,
+            rates_failed: false,
             time_format: None,
             asks_places: false,
             weather: crate::weather::Cache::default(),
@@ -236,8 +240,19 @@ impl RootSearch {
         if self.rates == rates {
             return false;
         }
+        if rates.is_some() {
+            self.rates_failed = false;
+        }
         self.rates = rates;
         true
+    }
+
+    /// Whether the table being asked for could not be fetched (F14). Set
+    /// when a fetch fails, and cleared when the next is asked for, so the
+    /// row says *Fetching* again while it is out. Returns whether anything
+    /// changed.
+    pub fn set_rates_failed(&mut self, failed: bool) -> bool {
+        std::mem::replace(&mut self.rates_failed, failed) != failed
     }
 
     /// Whether the last query asked for a conversion that needs a table this
@@ -304,11 +319,28 @@ impl RootSearch {
         if !trimmed.is_empty() {
             self.answers.extend(self.quicklinks.answer(trimmed));
         }
-        let conversion = crate::currency::query::recognise(trimmed);
-        self.conversion = conversion.is_some();
-        if let (Some(conversion), Some(rates)) = (conversion, &self.rates) {
-            self.answers
-                .extend(providers::currency::answer(&conversion, rates));
+        // Money is the calculator's (F14), answered here because the table
+        // is: the provider answers everything else, and declines money.
+        let context = crate::calc::Context {
+            today: &crate::calc::today,
+            rates: self.rates.as_ref(),
+        };
+        let money = crate::calc::answer(trimmed, &context).filter(|answer| answer.money);
+        self.conversion = money.is_some_and(|answer| answer.converts);
+        if let Some(answer) = money {
+            let standing = providers::calculator::Standing {
+                due: self
+                    .rates
+                    .as_ref()
+                    .is_some_and(|rates| rates.is_due(crate::currency::now())),
+                failed: self.rates_failed,
+            };
+            self.answers.push(providers::calculator::money(
+                trimmed,
+                &answer,
+                self.rates.as_ref(),
+                standing,
+            ));
         }
         // A question about time, from the places in memory or not at all
         // (F13): their reading is the launcher's to start, off this thread.
@@ -831,14 +863,21 @@ mod tests {
     }
 
     /// F9: a conversion is answered first, from the table in hand; without
-    /// one it is only recognised, so the launcher can ask for a table.
+    /// one it is only recognised, so the launcher can ask for a table. Since
+    /// F14 the row holds its place meanwhile, and says why it is empty.
     #[test]
     fn a_conversion_is_answered_from_the_table_or_asks_for_one() {
         let mut root = root(apps(&["Calculator"]));
 
         root.rank("10 usd in cad");
         assert!(titles(&root).iter().all(|title| !title.ends_with("CAD")));
+        assert_eq!(titles(&root)[0], "Fetching exchange rates\u{2026}");
         assert!(root.wants_rates(|| 0));
+
+        assert!(root.set_rates_failed(true));
+        root.rank("10 usd in cad");
+        assert_eq!(titles(&root)[0], "Couldn\u{2019}t fetch exchange rates");
+        assert!(root.set_rates_failed(false), "asked again: fetching again");
 
         let rates = crate::currency::tests::rates(&[("USD", 1.0), ("CAD", 1.4)]);
         let fresh = rates.next - 1;

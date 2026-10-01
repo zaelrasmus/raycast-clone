@@ -97,7 +97,12 @@ impl Function {
                 Value::Quantity { amount, unit } if unit.dimension == Dimension::Angle => {
                     unit.to_base(amount)
                 }
-                Value::Quantity { .. } | Value::Percent(_) | Value::Date(_) => return None,
+                Value::Quantity { .. }
+                | Value::Money { .. }
+                | Value::Percent(_)
+                | Value::Date(_) => {
+                    return None;
+                }
             };
             let result = match self {
                 Sin => radians.sin(),

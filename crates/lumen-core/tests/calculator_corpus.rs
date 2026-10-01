@@ -14,7 +14,7 @@
 //! Each slice that teaches the calculator something adds the rows it now
 //! owns, and the rows it must still leave alone.
 
-use lumen_core::providers::{Provider, TimersProvider, calculator::CalculatorProvider};
+use lumen_core::providers::{Provider, TimersProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -22,7 +22,6 @@ enum Owner {
     Search,
     Calculator,
     Timer,
-    Currency,
     Clock,
     Weather,
 }
@@ -161,10 +160,17 @@ const CORPUS: &[(&str, Owner)] = &[
     ("1:30", Timer),
     ("1h30 deep work", Timer),
     ("timer 5m", Timer),
-    // Currencies (F9).
-    ("10 usd in cad", Currency),
-    ("10usd to japan", Currency),
-    ("2*5 EUR in canadian dollar", Currency),
+    // Currencies: F9's, and since slice 12 the calculator's, inside any
+    // expression. Whether a query is money never waits on the table.
+    ("10 usd in cad", Calculator),
+    ("10usd to japan", Calculator),
+    ("2*5 EUR in canadian dollar", Calculator),
+    ("100 usd + 20 eur in cad", Calculator),
+    ("25% off 399 usd in eur", Calculator),
+    ("10 usd", Search),
+    ("10 usd in zimbabwe", Search),
+    ("usd in cad", Search),
+    ("log in to github", Search),
     // The clock (F13).
     ("time in vancouver", Clock),
     ("vancouver time", Clock),
@@ -183,9 +189,14 @@ const CORPUS: &[(&str, Owner)] = &[
 /// a duration to the timers. Found before F14 changed anything.
 const KNOWN_OVERLAPS: &[(&str, &[Owner])] = &[("15:00 vancouver in tokyo", &[Timer, Clock])];
 
-/// The calculator, as the root list asks it.
+/// The calculator, as the root list asks it, money included -- with no
+/// table of rates, as on the first keystroke of the day.
 fn calculator(query: &str) -> bool {
-    !CalculatorProvider.answer(query).is_empty()
+    let context = lumen_core::calc::Context {
+        today: &lumen_core::calc::today,
+        rates: None,
+    };
+    lumen_core::calc::answer(query, &context).is_some()
 }
 
 /// Every owner whose recogniser claims `query`, the calculator included.
@@ -196,9 +207,6 @@ fn claims(query: &str) -> Vec<Owner> {
     }
     if !TimersProvider.answer(query).is_empty() {
         owners.push(Timer);
-    }
-    if lumen_core::currency::query::recognise(query).is_some() {
-        owners.push(Currency);
     }
     if lumen_core::clock::query::recognise(query).is_some() {
         owners.push(Clock);
