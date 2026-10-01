@@ -13,6 +13,7 @@
 //! [`edit`], apart from GPUI, where it is tested without a window.
 
 pub mod assets;
+pub mod calculator_page;
 pub mod clipboard_page;
 pub mod clock_page;
 pub mod currency_page;

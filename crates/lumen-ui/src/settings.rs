@@ -37,6 +37,7 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 use lumen_core::theme::{Colors, Theme};
 
+use crate::calculator_page::CalculatorPage;
 use crate::clipboard_page::ClipboardPage;
 use crate::clock_page::ClockPage;
 use crate::currency_page::CurrencyPage;
@@ -58,14 +59,16 @@ enum Page {
     Clock,
     Weather,
     Clipboard,
+    Calculator,
 }
 
 impl Page {
-    const ALL: [Page; 8] = [
+    const ALL: [Page; 9] = [
         Page::Sheets,
         Page::Quicklinks,
         Page::Translation,
         Page::Timers,
+        Page::Calculator,
         Page::Currency,
         Page::Clock,
         Page::Weather,
@@ -82,6 +85,7 @@ impl Page {
             Page::Clock => "World Clock",
             Page::Weather => "Weather",
             Page::Clipboard => "Clipboard History",
+            Page::Calculator => "Calculator",
         }
     }
 
@@ -95,6 +99,7 @@ impl Page {
             Page::Clock => "How a place's time reads beside yours, in config.json",
             Page::Weather => "Units, the report, and your home city, in config.json",
             Page::Clipboard => "How much is kept, in config.json, and clearing it",
+            Page::Calculator => "How many answers are kept, in config.json, and clearing them",
         }
     }
 }
@@ -244,18 +249,18 @@ pub struct Settings {
     clock: Entity<ClockPage>,
     weather: Entity<WeatherPage>,
     clipboard: Entity<ClipboardPage>,
+    calculator: Entity<CalculatorPage>,
 }
 
 impl Settings {
-    pub fn new(
-        theme: Theme,
-        sheets_dir: PathBuf,
-        quicklinks_file: PathBuf,
-        favicons: PathBuf,
-        config_file: PathBuf,
-        places_file: PathBuf,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    /// Every file a page edits is one of `paths`'.
+    pub fn new(theme: Theme, paths: &lumen_core::Paths, cx: &mut Context<Self>) -> Self {
+        let sheets_dir = paths.sheets_dir();
+        let quicklinks_file = paths.quicklinks_file();
+        let favicons = paths.favicons_dir();
+        let config_file = paths.config_file();
+        let places_file = paths.places_file();
+        let calculator_history_file = paths.calculator_history_file();
         let focus_handle = cx.focus_handle();
         let quicklinks = {
             let colors = theme.colors.clone();
@@ -305,6 +310,13 @@ impl Settings {
         };
         cx.observe(&clipboard, |_, _, cx| cx.notify()).detach();
 
+        let calculator = {
+            let colors = theme.colors.clone();
+            let config_file = config_file.clone();
+            cx.new(|cx| CalculatorPage::new(config_file, calculator_history_file, colors, cx))
+        };
+        cx.observe(&calculator, |_, _, cx| cx.notify()).detach();
+
         let timers = {
             let colors = theme.colors.clone();
             cx.new(|cx| TimersPage::new(config_file, colors, cx))
@@ -332,6 +344,7 @@ impl Settings {
             clock,
             weather,
             clipboard,
+            calculator,
         }
     }
 
@@ -373,6 +386,12 @@ impl Settings {
             page.use_history(history);
             page.reload(cx);
         });
+    }
+
+    /// Re-read the calculator section of `config.json`, for the same reasons
+    /// (F14).
+    pub fn reload_calculator(&mut self, cx: &mut Context<Self>) {
+        self.calculator.update(cx, |page, cx| page.reload(cx));
     }
 
     /// Re-read `quicklinks.json`: on open, and whenever the file changes.
@@ -456,6 +475,8 @@ impl Settings {
         self.weather
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.clipboard
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.calculator
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
         cx.notify();
@@ -471,6 +492,7 @@ impl Settings {
             Page::Clock => self.clock.read(cx).focus(window, cx),
             Page::Weather => self.weather.read(cx).focus(window, cx),
             Page::Clipboard => self.clipboard.read(cx).focus(window, cx),
+            Page::Calculator => self.calculator.read(cx).focus(window, cx),
         }
     }
 
@@ -550,6 +572,10 @@ impl Settings {
         }
         if self.page == Page::Clipboard {
             self.clipboard.update(cx, |page, cx| page.save(cx));
+            return;
+        }
+        if self.page == Page::Calculator {
+            self.calculator.update(cx, |page, cx| page.save(cx));
             return;
         }
         let Some(sheet) = self.compose(cx) else {
@@ -891,6 +917,12 @@ impl Render for Settings {
                 .overflow_hidden()
                 .child(self.clipboard.clone())
                 .into_any_element(),
+            Page::Calculator => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.calculator.clone())
+                .into_any_element(),
         };
         let dialog = match self.page {
             Page::Translation => self
@@ -898,6 +930,9 @@ impl Render for Settings {
                 .update(cx, |page, cx| page.render_dialog(cx)),
             Page::Timers => self.timers.update(cx, |page, cx| page.render_dialog(cx)),
             Page::Clipboard => self.clipboard.update(cx, |page, cx| page.render_dialog(cx)),
+            Page::Calculator => self
+                .calculator
+                .update(cx, |page, cx| page.render_dialog(cx)),
             _ => self
                 .quicklinks
                 .update(cx, |page, cx| page.render_dialog(cx)),
@@ -1248,6 +1283,7 @@ impl Settings {
             Page::Clock => (self.clock.read(cx).status(), false),
             Page::Weather => (self.weather.read(cx).status(), false),
             Page::Clipboard => (self.clipboard.read(cx).status(), false),
+            Page::Calculator => (self.calculator.read(cx).status(), false),
         };
 
         div()

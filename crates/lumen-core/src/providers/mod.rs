@@ -237,6 +237,7 @@ mod tests {
                 | Kind::Clipboard
                 | Kind::Clock
                 | Kind::Weather
+                | Kind::Calculation
         )));
     }
 
@@ -247,12 +248,23 @@ mod tests {
         assert!(answers.iter().any(|item| item.kind == Kind::Timer));
     }
 
-    /// The calculator must not contribute to the catalogue, or every launch
-    /// starts with a stray arithmetic row.
+    /// The calculator must not contribute a result to the catalogue, or every
+    /// launch starts with a stray arithmetic row. Its one entry is the
+    /// command that opens its history (F14).
     #[test]
-    fn the_calculator_contributes_no_catalogue_entries() {
+    fn the_calculator_contributes_no_result_to_the_catalogue() {
         let items = Providers::builtin().catalogue();
-        assert!(items.iter().all(|item| item.kind != Kind::Calculation));
+        let calculator: Vec<_> = items
+            .iter()
+            .filter(|item| item.kind == Kind::Calculation)
+            .map(|item| item.primary())
+            .collect();
+        assert_eq!(
+            calculator,
+            [crate::item::Action::OpenView(
+                crate::item::ViewSource::CalculatorHistory
+            )]
+        );
     }
 
     /// The bug this split exists to prevent: a calculation must survive being

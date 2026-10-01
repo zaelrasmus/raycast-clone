@@ -11,7 +11,14 @@
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+
+/// Held while the file is read, changed and written. A use is kept on a
+/// background thread, and the settings window clears on another: without
+/// it, two of them a moment apart would both read the file before either
+/// wrote it, and one would be lost.
+static WRITING: Mutex<()> = Mutex::new(());
 
 /// How many calculations are kept when the configuration does not say.
 pub const DEFAULT_LIMIT: usize = 20;
@@ -80,6 +87,17 @@ impl History {
         })
     }
 
+    /// Read the file at `path`, change it, and write it back if `edit` says
+    /// it changed, all under one lock. Returns the history as it now is.
+    pub fn change(path: &Path, edit: impl FnOnce(&mut History) -> bool) -> Result<History> {
+        let _writing = WRITING.lock();
+        let mut history = History::load(path);
+        if edit(&mut history) {
+            history.save(path)?;
+        }
+        Ok(history)
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         let source = serde_json::to_string_pretty(self)?;
         let temporary = path.with_extension("json.tmp");
@@ -99,6 +117,14 @@ impl History {
         self.entries.insert(0, entry);
         self.entries.truncate(limit);
         self.entries != before
+    }
+
+    /// Forget the entry for `expression`. Returns whether there was one.
+    pub fn delete(&mut self, expression: &str) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|kept| !same(&kept.expression, expression));
+        self.entries.len() != before
     }
 
     /// Keep at most `limit` entries. Returns whether any were dropped.
@@ -181,6 +207,16 @@ mod tests {
         assert!(history.trim(3));
         assert_eq!(expressions(&history), ["4+1", "3+1", "2+1"]);
         assert!(!history.trim(3));
+    }
+
+    #[test]
+    fn an_entry_is_deleted_by_its_expression() {
+        let mut history = History::default();
+        history.record(entry("2+2", "4", 1), 20);
+        history.record(entry("3+3", "6", 2), 20);
+        assert!(history.delete("2 + 2"));
+        assert_eq!(expressions(&history), ["3+3"]);
+        assert!(!history.delete("2+2"));
     }
 
     #[test]

@@ -34,6 +34,8 @@ mod functions;
 pub mod history;
 mod lexer;
 mod parser;
+pub mod session;
+pub mod settings;
 mod units;
 mod value;
 

@@ -221,6 +221,8 @@ pub enum ViewSource {
     Clock,
     /// *Weather* (F13), on a city's report by its key, or on the list.
     Weather { city: Option<String> },
+    /// *Calculator History* (F14).
+    CalculatorHistory,
 }
 
 impl Action {

@@ -688,6 +688,7 @@ fn open_settings(
             settings.reload_clock(cx);
             settings.reload_weather(cx);
             settings.reload_clipboard(history, cx);
+            settings.reload_calculator(cx);
             settings.focus(window, cx);
         })
         .ok();
@@ -746,11 +747,7 @@ fn create_settings_window(
     surfaces: &Surfaces,
 ) -> Result<gpui::WindowHandle<Settings>> {
     let theme = surfaces.theme.borrow().clone();
-    let sheets_dir = surfaces.paths.sheets_dir();
-    let quicklinks_file = surfaces.paths.quicklinks_file();
-    let favicons = surfaces.paths.favicons_dir();
-    let config_file = surfaces.paths.config_file();
-    let places_file = surfaces.paths.places_file();
+    let paths = surfaces.paths.clone();
 
     let window = open_hidden_window(
         cx,
@@ -761,19 +758,7 @@ fn create_settings_window(
             px(lumen_core::layout::settings::WIDTH),
             px(lumen_core::layout::settings::HEIGHT),
         ),
-        move |_window, cx| {
-            cx.new(|cx| {
-                Settings::new(
-                    theme,
-                    sheets_dir,
-                    quicklinks_file,
-                    favicons,
-                    config_file,
-                    places_file,
-                    cx,
-                )
-            })
-        },
+        move |_window, cx| cx.new(|cx| Settings::new(theme, &paths, cx)),
     )?;
 
     subscribe_to_settings(cx, &window, platform.clone(), surfaces);
@@ -1015,6 +1000,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RefreshRates);
                 return;
             }
+            LauncherEvent::RunCalculatorHistory => {
+                let _ = commands.unbounded_send(Message::RunCalculatorHistory);
+                return;
+            }
             LauncherEvent::Calculated { expression, result } => {
                 let _ = commands.unbounded_send(Message::Calculated {
                     expression: expression.clone(),
@@ -1051,6 +1040,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RefreshWeather { .. }
                 | LauncherEvent::RefreshRates
                 | LauncherEvent::Calculated { .. }
+                | LauncherEvent::RunCalculatorHistory
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
@@ -1282,6 +1272,7 @@ fn reload_config(
                 settings.reload_clock(cx);
                 settings.reload_weather(cx);
                 settings.reload_clipboard(history, cx);
+                settings.reload_calculator(cx);
             })
             .ok();
     }
@@ -1494,6 +1485,14 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| currency::refresh(config, path, window, cx))
                 .context("reaching the app to refresh exchange rates")
+        }
+        Message::RunCalculatorHistory => {
+            let platform = platform.clone();
+            let path = surfaces.paths.calculator_history_file();
+            let limit = config.calculator.limit();
+            let window = surfaces.launcher;
+            cx.update(move |cx| calculator::run(platform, path, limit, window, cx))
+                .context("reaching the app to open the calculator history")
         }
         Message::Calculated { expression, result } => {
             let limit = config.calculator.limit();

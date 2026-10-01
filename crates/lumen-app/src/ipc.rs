@@ -99,6 +99,8 @@ pub enum Message {
     },
     /// Fetch exchange rates for a conversion typed at the root (F9).
     RefreshRates,
+    /// Open *Calculator History* (F14).
+    RunCalculatorHistory,
     /// Keep a calculation that was used in the calculator's history (F14).
     Calculated {
         expression: String,

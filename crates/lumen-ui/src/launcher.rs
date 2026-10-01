@@ -1102,6 +1102,11 @@ impl Launcher {
                 cx.emit(LauncherEvent::RunWeather { city: city.clone() });
                 return;
             }
+            // The file and the clipboard are the daemon's (F14).
+            lumen_core::ViewSource::CalculatorHistory => {
+                cx.emit(LauncherEvent::RunCalculatorHistory);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -2652,6 +2657,8 @@ pub enum LauncherEvent {
     /// one that is due (F9). The daemon fetches one and hands it back with
     /// `Launcher::set_rates`.
     RefreshRates,
+    /// *Calculator History* was chosen (F14).
+    RunCalculatorHistory,
     /// A calculation was used -- its answer copied -- and the daemon keeps
     /// it in the calculator's history (F14). Comes before `Dismissed`.
     Calculated {

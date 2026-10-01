@@ -8,7 +8,7 @@
 //! [`crate::calc`].
 
 use crate::calc;
-use crate::item::{Action, Item, Kind};
+use crate::item::{Action, Item, Kind, ViewSource};
 use crate::providers::Provider;
 
 pub struct CalculatorProvider;
@@ -16,6 +16,24 @@ pub struct CalculatorProvider;
 impl Provider for CalculatorProvider {
     fn id(&self) -> &'static str {
         "calculator"
+    }
+
+    /// The one row that opens what was calculated before (F14).
+    fn catalogue(&self) -> Vec<Item> {
+        vec![Item {
+            id: "calculator:history".into(),
+            title: "Calculator History".into(),
+            subtitle: Some("The answers you copied, to use again".into()),
+            icon: None,
+            keywords: vec![
+                "calculator".into(),
+                "calculation".into(),
+                "history".into(),
+                "math".into(),
+            ],
+            actions: vec![Action::OpenView(ViewSource::CalculatorHistory)],
+            kind: Kind::Calculation,
+        }]
     }
 
     // An answer, not a catalogue entry: `84` is the result of `12*7`, and
@@ -53,6 +71,16 @@ mod tests {
         assert_eq!(items[0].title, "4");
         assert_eq!(items[0].subtitle.as_deref(), Some("2+2"));
         assert_eq!(items[0].primary(), Action::CopyToClipboard("4".to_string()));
+    }
+
+    #[test]
+    fn the_history_is_a_command() {
+        let items = CalculatorProvider.catalogue();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].primary(),
+            Action::OpenView(ViewSource::CalculatorHistory)
+        );
     }
 
     #[test]
