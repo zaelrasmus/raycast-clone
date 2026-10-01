@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "Graphite",
+  "appearance": "dark",
+  "colors": {
+    "surface.background": "#252528F2",
+    "surface.elevated": "#2C2C30F7",
+    "border.subtle": "#3F3F43",
+    "border.strong": "#4A4A4F",
+    "text.primary": "#F4F4F4",
+    "text.muted": "#A5A5AC",
+    "text.error": "#F08C8C",
+    "text.placeholder": "#74747A",
+    "text.on-accent": "#FFFFFF",
+    "icon": "#C2C2C8",
+    "accent": "#A94DC1",
+    "selection.background": "#3C3C40",
+    "selection.border": "#444448",
+    "match.highlight": "#FFFFFF",
+    "text.selection": "#A94DC166",
+    "shadow": "#00000099"
+  }
+}

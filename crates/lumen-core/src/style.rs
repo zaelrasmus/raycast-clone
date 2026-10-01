@@ -635,6 +635,28 @@ mod tests {
         assert_eq!(style.variants, Variants::default());
     }
 
+    /// A preset is drawn as written: no token clamped, none reverted by a
+    /// relation. A preset that fell back to the base would look like neither.
+    #[test]
+    fn the_presets_resolve_exactly_as_written() {
+        for source in [
+            include_str!("../../../assets/styles/graphite.json"),
+            include_str!("../../../assets/styles/ink.json"),
+        ] {
+            let file: StyleFile = serde_json::from_str(source).unwrap();
+            let mut style = Style::resolve(&file);
+            for (name, value) in &file.metrics {
+                let (resolved, ..) = style.metrics.slot(name).expect(name);
+                assert_eq!(*resolved, *value, "{} sets {name}", file.name);
+            }
+            let mut variants = Variants::default();
+            for (name, value) in &file.variants {
+                assert!(variants.apply(name, value).is_some(), "{name} = {value}");
+            }
+            assert_eq!(style.variants, variants, "{}", file.name);
+        }
+    }
+
     #[test]
     fn round_trips_through_json() {
         let json = r#"{

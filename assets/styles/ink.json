@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "Ink",
+  "metrics": {
+    "window.radius": 10,
+    "search.height": 61,
+    "gutter": 16,
+    "list.padding": 4,
+    "row.height": 38,
+    "row.radius": 8,
+    "row.inset": 6,
+    "icon.size": 22,
+    "icon.gap": 12,
+    "subtitle.gap": 7,
+    "section.height": 30,
+    "footer.height": 41,
+    "keycap.height": 22,
+    "keycap.padding": 5,
+    "keycap.radius": 5,
+    "keycap.gap": 4,
+    "text.query": 17.5,
+    "text.title": 14,
+    "text.subtitle": 14,
+    "text.accessory": 13,
+    "text.section": 13,
+    "text.footer": 13.5,
+    "weight.section": 600
+  },
+  "variants": {
+    "row.subtitle": "inline",
+    "selection": "fill",
+    "footer.hints": "keycaps",
+    "section.case": "title"
+  }
+}

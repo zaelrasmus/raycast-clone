@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "Ink",
+  "appearance": "dark",
+  "colors": {
+    "surface.background": "#16161AF2",
+    "surface.elevated": "#1E1F25F7",
+    "border.subtle": "#2D2E36",
+    "border.strong": "#3C3E49",
+    "text.primary": "#E6E3DE",
+    "text.muted": "#A8A7A5",
+    "text.error": "#F08C8C",
+    "text.placeholder": "#939293",
+    "text.on-accent": "#16161A",
+    "icon": "#C9C6C0",
+    "accent": "#D19A4E",
+    "selection.background": "#2B2C34",
+    "selection.border": "#34353F",
+    "match.highlight": "#F5F2EC",
+    "text.selection": "#D19A4E55",
+    "shadow": "#00000099"
+  }
+}

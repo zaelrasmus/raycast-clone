@@ -445,6 +445,24 @@ mod tests {
         );
     }
 
+    /// Every shipped palette sets only tokens this build knows: a typo would
+    /// be a colour silently left at the base.
+    #[test]
+    fn the_shipped_palettes_name_only_known_tokens() {
+        for source in [
+            include_str!("../../../assets/themes/nocturne.json"),
+            include_str!("../../../assets/themes/daylight.json"),
+            include_str!("../../../assets/themes/graphite.json"),
+            include_str!("../../../assets/themes/ink.json"),
+        ] {
+            let file: ThemeFile = serde_json::from_str(source).unwrap();
+            let mut colors = Theme::base_dark().colors;
+            for (token, value) in &file.colors {
+                assert!(colors.apply(token, *value), "{} sets {token}", file.name);
+            }
+        }
+    }
+
     #[test]
     fn round_trips_through_json() {
         // Doubled hashes: a hex colour contains `"#`, which would otherwise

@@ -63,7 +63,7 @@ use anyhow::Result;
 /// opened to third parties (F2, R-11). A format proven against exactly one theme
 /// is a format that encodes that theme's assumptions.
 pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
-    const BUILTIN: [(&str, &str); 2] = [
+    const BUILTIN: [(&str, &str); 4] = [
         (
             "nocturne",
             include_str!("../../../assets/themes/nocturne.json"),
@@ -72,6 +72,13 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
             "daylight",
             include_str!("../../../assets/themes/daylight.json"),
         ),
+        // The palettes of the presets (F15), each paired with the style of
+        // the same name.
+        (
+            "graphite",
+            include_str!("../../../assets/themes/graphite.json"),
+        ),
+        ("ink", include_str!("../../../assets/themes/ink.json")),
     ];
 
     std::fs::create_dir_all(themes_dir)?;
@@ -92,8 +99,16 @@ pub fn install_builtin_themes(themes_dir: &Path) -> Result<()> {
 /// Write the in-house styles into the styles folder if they are not there
 /// (F15). Never overwritten, as the themes are not.
 pub fn install_builtin_styles(styles_dir: &Path) -> Result<()> {
-    const BUILTIN: [(&str, &str); 1] =
-        [("lumen", include_str!("../../../assets/styles/lumen.json"))];
+    const BUILTIN: [(&str, &str); 3] = [
+        ("lumen", include_str!("../../../assets/styles/lumen.json")),
+        // The presets (F15): with the palette of the same name, Graphite
+        // reads like Raycast and Ink like Vicinae.
+        (
+            "graphite",
+            include_str!("../../../assets/styles/graphite.json"),
+        ),
+        ("ink", include_str!("../../../assets/styles/ink.json")),
+    ];
 
     std::fs::create_dir_all(styles_dir)?;
 
