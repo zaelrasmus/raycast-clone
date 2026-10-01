@@ -487,56 +487,60 @@ fn render_item(
     images: &ImageCache,
     cx: &mut App,
 ) -> AnyElement {
+    // Inset by a wrapper's padding: `list` ignores an item's margins.
     div()
-        .h(geometry.row_height())
-        .w_full()
-        .mx(geometry.row_inset())
-        .px(geometry.gutter() - geometry.row_inset())
-        .flex()
-        .items_center()
-        .gap(geometry.icon_gap())
-        .rounded(geometry.row_radius())
-        .when(selected, |row| {
-            row.bg(color(colors.selection_background))
-                .border_1()
-                .border_color(geometry.selection_border(colors))
-        })
-        .when(!selected, |row| {
-            row.border_1().border_color(gpui::transparent_black())
-        })
-        .child(render_icon(
-            item.icon.as_ref(),
-            colors,
-            geometry,
-            images,
-            cx,
-        ))
-        .child(row_text(
-            div()
-                .text_size(geometry.text_title())
-                .font_weight(geometry.weight_title())
-                .text_color(color(colors.text_primary))
-                .truncate()
-                .child(item.title.clone())
-                .into_any_element(),
-            item.subtitle.clone().map(Into::into),
-            colors,
-            geometry,
-        ))
+        .px(geometry.row_inset())
         .child(
             div()
-                .flex_none()
+                .h(geometry.row_height())
+                .w_full()
+                .px(geometry.gutter() - geometry.row_inset())
                 .flex()
                 .items_center()
-                .gap(px(layout::view::ACCESSORY_GAP))
-                // Dropped rather than squeezed past the cap: a row that shrinks
-                // its text to fit a fourth accessory no longer lines up with
-                // the row above it.
-                .children(
-                    item.accessories
-                        .iter()
-                        .take(MAX_ACCESSORIES)
-                        .map(|accessory| render_accessory(accessory, colors, geometry)),
+                .gap(geometry.icon_gap())
+                .rounded(geometry.row_radius())
+                .when(selected, |row| {
+                    row.bg(color(colors.selection_background))
+                        .border_1()
+                        .border_color(geometry.selection_border(colors))
+                })
+                .when(!selected, |row| {
+                    row.border_1().border_color(gpui::transparent_black())
+                })
+                .child(render_icon(
+                    item.icon.as_ref(),
+                    colors,
+                    geometry,
+                    images,
+                    cx,
+                ))
+                .child(row_text(
+                    div()
+                        .text_size(geometry.text_title())
+                        .font_weight(geometry.weight_title())
+                        .text_color(color(colors.text_primary))
+                        .truncate()
+                        .child(item.title.clone())
+                        .into_any_element(),
+                    item.subtitle.clone().map(Into::into),
+                    colors,
+                    geometry,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(layout::view::ACCESSORY_GAP))
+                        // Dropped rather than squeezed past the cap: a row that shrinks
+                        // its text to fit a fourth accessory no longer lines up with
+                        // the row above it.
+                        .children(
+                            item.accessories
+                                .iter()
+                                .take(MAX_ACCESSORIES)
+                                .map(|accessory| render_accessory(accessory, colors, geometry)),
+                        ),
                 ),
         )
         .into_any_element()

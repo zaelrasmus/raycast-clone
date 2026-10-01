@@ -3505,81 +3505,88 @@ impl Launcher {
 
         let entity = entity.clone();
 
+        // The inset is padding on a wrapper, not a margin on the row: gpui's
+        // `list` lays an item out at its full width from its origin and
+        // ignores the item's own margins, so a margin left the selection
+        // touching the window's edges (F15).
         div()
-            .id(index)
-            .h(geometry.row_height())
-            // Full width, and this is load-bearing rather than tidy. Without it
-            // the row is only as wide as its content, `flex_1` below has no
-            // free space to claim, and the kind label ends up butted against
-            // the subtitle -- so it sits at a different horizontal position on
-            // every row, which is precisely the layout shift I-10 forbids.
-            .w_full()
-            .mx(geometry.row_inset())
-            .px(geometry.gutter() - geometry.row_inset())
-            .flex()
-            .items_center()
-            .gap(geometry.icon_gap())
-            .rounded(geometry.row_radius())
-            .when(selected, |row| {
-                row.bg(color(colors.selection_background))
-                    .border_1()
-                    .border_color(geometry.selection_border(colors))
-            })
-            // Not selected rows still reserve the border, or selecting a row
-            // would shift its text by a pixel (I-10).
-            .when(!selected, |row| {
-                row.border_1().border_color(gpui::transparent_black())
-            })
-            .on_click(move |_event, window, cx| {
-                entity.update(cx, |this, cx| {
-                    this.selected = index;
-                    this.activate(&Activate, window, cx);
-                });
-            })
+            .px(geometry.row_inset())
             .child(
-                // The icon square exists whether or not the icon has loaded, so
-                // a late icon never moves the title (I-10). What fills it is a
-                // three-way choice and the order matters: the real icon if it
-                // has arrived, the bundled glyph for the row's kind if there is
-                // no real icon to arrive, and nothing at all while extraction
-                // is still in flight -- because swapping a glyph for an icon
-                // one frame later is a flicker, and a row that is about to have
-                // its own icon should simply wait for it.
                 div()
-                    .size(geometry.icon_size())
-                    .flex_none()
+                    .id(index)
+                    .h(geometry.row_height())
+                    // Full width, and this is load-bearing rather than tidy. Without it
+                    // the row is only as wide as its content, `flex_1` below has no
+                    // free space to claim, and the kind label ends up butted against
+                    // the subtitle -- so it sits at a different horizontal position on
+                    // every row, which is precisely the layout shift I-10 forbids.
+                    .w_full()
+                    .px(geometry.gutter() - geometry.row_inset())
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .map(|slot| match icon {
-                        Some(image) => slot.child(img(image).size_full()),
-                        None if item.icon.is_none() => slot.child(
-                            svg()
-                                .path(crate::icons::glyph(item.kind))
-                                .size(geometry.icon_size())
-                                .text_color(color(colors.icon)),
-                        ),
-                        None => slot,
-                    }),
-            )
-            .child(crate::view::row_text(
-                div()
-                    .text_size(geometry.text_title())
-                    .font_weight(geometry.weight_title())
-                    .text_color(color(colors.text_primary))
-                    .child(highlighted(&item.title, &hit.highlights, colors))
-                    .into_any_element(),
-                item.subtitle.clone().map(Into::into),
-                colors,
-                &geometry,
-            ))
-            .child(
-                div()
-                    .flex_none()
-                    .pl(geometry.icon_gap())
-                    .text_size(geometry.text_accessory())
-                    .text_color(color(colors.text_muted))
-                    .child(item.kind_label()),
+                    .gap(geometry.icon_gap())
+                    .rounded(geometry.row_radius())
+                    .when(selected, |row| {
+                        row.bg(color(colors.selection_background))
+                            .border_1()
+                            .border_color(geometry.selection_border(colors))
+                    })
+                    // Not selected rows still reserve the border, or selecting a row
+                    // would shift its text by a pixel (I-10).
+                    .when(!selected, |row| {
+                        row.border_1().border_color(gpui::transparent_black())
+                    })
+                    .on_click(move |_event, window, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.selected = index;
+                            this.activate(&Activate, window, cx);
+                        });
+                    })
+                    .child(
+                        // The icon square exists whether or not the icon has loaded, so
+                        // a late icon never moves the title (I-10). What fills it is a
+                        // three-way choice and the order matters: the real icon if it
+                        // has arrived, the bundled glyph for the row's kind if there is
+                        // no real icon to arrive, and nothing at all while extraction
+                        // is still in flight -- because swapping a glyph for an icon
+                        // one frame later is a flicker, and a row that is about to have
+                        // its own icon should simply wait for it.
+                        div()
+                            .size(geometry.icon_size())
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .map(|slot| match icon {
+                                Some(image) => slot.child(img(image).size_full()),
+                                None if item.icon.is_none() => slot.child(
+                                    svg()
+                                        .path(crate::icons::glyph(item.kind))
+                                        .size(geometry.icon_size())
+                                        .text_color(color(colors.icon)),
+                                ),
+                                None => slot,
+                            }),
+                    )
+                    .child(crate::view::row_text(
+                        div()
+                            .text_size(geometry.text_title())
+                            .font_weight(geometry.weight_title())
+                            .text_color(color(colors.text_primary))
+                            .child(highlighted(&item.title, &hit.highlights, colors))
+                            .into_any_element(),
+                        item.subtitle.clone().map(Into::into),
+                        colors,
+                        &geometry,
+                    ))
+                    .child(
+                        div()
+                            .flex_none()
+                            .pl(geometry.icon_gap())
+                            .text_size(geometry.text_accessory())
+                            .text_color(color(colors.text_muted))
+                            .child(item.kind_label()),
+                    ),
             )
             .into_any_element()
     }
