@@ -30,7 +30,7 @@ use lumen_platform::{DateStyle, LocalTime};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::providers::calculator;
+use crate::calc;
 
 /// Everything but RFC 3986's unreserved characters, as quicklinks encode.
 const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
@@ -422,9 +422,7 @@ impl Placeholder {
             // Nothing copied is nothing inserted, as Raycast removes it.
             Kind::Clipboard { offset } => Some(sources.clipboard(*offset).unwrap_or_default()),
             Kind::Uuid => Some(sources.uuid()),
-            Kind::Calculator { expression } => {
-                calculator::amount(expression).map(calculator::format_number)
-            }
+            Kind::Calculator { expression } => calc::amount(expression).map(calc::format_number),
             Kind::Date(spec) => spec.write(now, sources),
             // Filled in by `Template::expand_into`, which knows the answers
             // and how deep it is; reaching here means inside an inserted
@@ -446,8 +444,8 @@ fn modify(modifiers: &[Modifier], mut value: String) -> String {
             Modifier::Raw => value,
             // What is not arithmetic is left as it was: the clipboard
             // holding a word is not a reason to paste nothing.
-            Modifier::Calculate => calculator::amount(&value)
-                .map(calculator::format_number)
+            Modifier::Calculate => calc::amount(&value)
+                .map(calc::format_number)
                 .unwrap_or(value),
         };
     }

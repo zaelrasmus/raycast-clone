@@ -13,7 +13,7 @@
 //! with nothing after it filters nothing.
 
 use super::{Currency, currencies};
-use crate::providers::calculator;
+use crate::calc;
 
 /// A query taken apart.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,7 +63,7 @@ pub fn recognise(text: &str) -> Option<Conversion> {
         return None;
     }
     Some(Conversion {
-        amount: calculator::amount(rest)?,
+        amount: calc::amount(rest)?,
         from,
         to,
     })
@@ -94,13 +94,13 @@ fn word_spans(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
 /// The amount, and the code written after it if there is one.
 fn amount_and_code(text: &str) -> Option<(f64, Option<&'static Currency>)> {
     let text = text.trim();
-    if let Some(amount) = calculator::amount(text) {
+    if let Some(amount) = calc::amount(text) {
         return Some((amount, None));
     }
 
     let (rest, word) = last_word(text)?;
     let written = code(word);
-    if let Some(amount) = calculator::amount(rest) {
+    if let Some(amount) = calc::amount(rest) {
         // A word that is not a code is one still being typed: left out.
         return Some((amount, written));
     }
@@ -110,7 +110,7 @@ fn amount_and_code(text: &str) -> Option<(f64, Option<&'static Currency>)> {
     }
     let (rest, word) = last_word(rest)?;
     let written = code(word)?;
-    Some((calculator::amount(rest)?, Some(written)))
+    Some((calc::amount(rest)?, Some(written)))
 }
 
 /// The letters at the end of `text`, written apart from what is before them
