@@ -38,7 +38,7 @@ use gpui::{
 };
 use lumen_core::layout;
 use lumen_core::markdown::{self, Block, Span};
-use lumen_core::style::Metrics;
+use lumen_core::style::{Metrics, RowSubtitle};
 use lumen_core::theme::{Colors, Theme};
 use lumen_core::view::{
     Accessory, Detail, EmptyState, Icon, Item, ItemDetail, List, MAX_ACCESSORIES, MetadataRow, Tone,
@@ -438,6 +438,41 @@ fn render_section(
         .into_any_element()
 }
 
+/// A row's title and subtitle, placed as the style says: one under the
+/// other, or side by side with the subtitle muted after the title (F15).
+///
+/// Shared by the root list and a view's list, which must not look like two
+/// applications (AD-07). The title arrives drawn, so the root list can light
+/// the characters that matched. Inline, the title keeps its width and the
+/// subtitle is what gives way; stacked, each truncates on its own line.
+pub fn row_text(
+    title: AnyElement,
+    subtitle: Option<SharedString>,
+    colors: &Colors,
+    geometry: &Geometry,
+) -> AnyElement {
+    let subtitle = subtitle.map(|subtitle| {
+        div()
+            .text_size(geometry.text_subtitle())
+            .text_color(color(colors.text_muted))
+            // A file's subtitle is a path and can be longer than the window.
+            // Ending it in an ellipsis is the difference between a row that
+            // is too long and a row cut through the middle of a letter.
+            .truncate()
+            .child(subtitle)
+    });
+    let text = div().flex().flex_1().overflow_hidden();
+    match geometry.variants().row_subtitle {
+        RowSubtitle::Stacked => text.flex_col().child(title).children(subtitle),
+        RowSubtitle::Inline => text
+            .items_baseline()
+            .gap(geometry.subtitle_gap())
+            .child(div().flex_none().child(title))
+            .children(subtitle.map(|subtitle| subtitle.flex_1().min_w(px(0.0)))),
+    }
+    .into_any_element()
+}
+
 /// One item row.
 ///
 /// Structurally the same as a root-list row and for the same reasons: a fixed
@@ -476,30 +511,18 @@ fn render_item(
             images,
             cx,
         ))
-        .child(
+        .child(row_text(
             div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .text_size(geometry.text_title())
-                        .font_weight(geometry.weight_title())
-                        .text_color(color(colors.text_primary))
-                        .truncate()
-                        .child(item.title.clone()),
-                )
-                .when_some(item.subtitle.as_ref(), |slot, subtitle| {
-                    slot.child(
-                        div()
-                            .text_size(geometry.text_subtitle())
-                            .text_color(color(colors.text_muted))
-                            .truncate()
-                            .child(subtitle.clone()),
-                    )
-                }),
-        )
+                .text_size(geometry.text_title())
+                .font_weight(geometry.weight_title())
+                .text_color(color(colors.text_primary))
+                .truncate()
+                .child(item.title.clone())
+                .into_any_element(),
+            item.subtitle.clone().map(Into::into),
+            colors,
+            geometry,
+        ))
         .child(
             div()
                 .flex_none()

@@ -3338,34 +3338,17 @@ impl Launcher {
                         None => slot,
                     }),
             )
-            .child(
+            .child(crate::view::row_text(
                 div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .text_size(geometry.text_title())
-                            .font_weight(geometry.weight_title())
-                            .text_color(color(colors.text_primary))
-                            .child(highlighted(&item.title, &hit.highlights, colors)),
-                    )
-                    .when_some(item.subtitle.as_ref(), |slot, subtitle| {
-                        slot.child(
-                            div()
-                                .text_size(geometry.text_subtitle())
-                                .text_color(color(colors.text_muted))
-                                // A file's subtitle is a path and can be longer
-                                // than the window. Ending it in an ellipsis is
-                                // the difference between a row that is too long
-                                // and a row that is cut through the middle of a
-                                // letter.
-                                .truncate()
-                                .child(subtitle.clone()),
-                        )
-                    }),
-            )
+                    .text_size(geometry.text_title())
+                    .font_weight(geometry.weight_title())
+                    .text_color(color(colors.text_primary))
+                    .child(highlighted(&item.title, &hit.highlights, colors))
+                    .into_any_element(),
+                item.subtitle.clone().map(Into::into),
+                colors,
+                &geometry,
+            ))
             .child(
                 div()
                     .flex_none()

@@ -89,6 +89,10 @@ impl Geometry {
         px(self.metrics.icon_gap)
     }
 
+    pub fn subtitle_gap(&self) -> Pixels {
+        px(self.metrics.subtitle_gap)
+    }
+
     pub fn section_height(&self) -> Pixels {
         px(self.metrics.section_height)
     }

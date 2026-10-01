@@ -2122,6 +2122,7 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `row.inset` | 7 | 0--16 | The selection's distance from the window's edge |
 | `icon.size` | 26 | 14--40 | The icon's reserved square |
 | `icon.gap` | 12 | 4--24 | Between the icon and the title |
+| `subtitle.gap` | 8 | 4--16 | Between the title and an inline subtitle |
 | `section.height` | 28 | 16--48 | A section's header |
 | `footer.height` | 38 | 28--64 | The footer |
 | `keycap.height` | 20 | 14--32 | A keycap, when the footer draws them |

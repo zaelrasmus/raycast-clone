@@ -63,6 +63,7 @@ pub struct Metrics {
     pub row_inset: f32,
     pub icon_size: f32,
     pub icon_gap: f32,
+    pub subtitle_gap: f32,
     pub section_height: f32,
     pub footer_height: f32,
     pub keycap_height: f32,
@@ -93,6 +94,9 @@ impl Metrics {
         row_inset: layout::ROW_INSET,
         icon_size: layout::ICON_SIZE,
         icon_gap: layout::ICON_GAP,
+        // Only drawn when the subtitle is inline; the stacked base never
+        // reads it.
+        subtitle_gap: 8.0,
         section_height: layout::view::SECTION_HEIGHT,
         footer_height: layout::FOOTER_HEIGHT,
         keycap_height: 20.0,
@@ -129,6 +133,7 @@ impl Metrics {
             "row.inset" => (&mut self.row_inset, 0.0, 16.0),
             "icon.size" => (&mut self.icon_size, 14.0, 40.0),
             "icon.gap" => (&mut self.icon_gap, 4.0, 24.0),
+            "subtitle.gap" => (&mut self.subtitle_gap, 4.0, 16.0),
             "section.height" => (&mut self.section_height, 16.0, 48.0),
             "footer.height" => (&mut self.footer_height, 28.0, 64.0),
             "keycap.height" => (&mut self.keycap_height, 14.0, 32.0),
@@ -454,7 +459,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 25;
+const TOKEN_COUNT: usize = 26;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -513,6 +518,7 @@ mod tests {
             "row.inset",
             "icon.size",
             "icon.gap",
+            "subtitle.gap",
             "section.height",
             "footer.height",
             "keycap.height",
