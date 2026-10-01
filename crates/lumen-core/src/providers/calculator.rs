@@ -25,7 +25,7 @@ impl Provider for CalculatorProvider {
             return Vec::new();
         };
 
-        let formatted = calc::format_number(value);
+        let formatted = calc::format_value(value);
 
         vec![Item {
             id: "calculator:result".into(),
