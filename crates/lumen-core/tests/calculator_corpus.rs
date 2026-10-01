@@ -59,6 +59,18 @@ const CORPUS: &[(&str, Owner)] = &[
     ("(2024)", Search),
     ("half-life 2", Search),
     ("sin(", Search),
+    // Percentages, and the remainder by name (slice 4, 7.39).
+    ("25% off 399", Calculator),
+    ("20% of 50", Calculator),
+    ("399 + 25%", Calculator),
+    ("5 as % of 20", Calculator),
+    ("10 mod 3", Calculator),
+    ("50%", Search),
+    ("10%3", Search),
+    ("100% orange juice", Search),
+    ("mod", Search),
+    ("20% of", Search),
+    ("5 as", Search),
     // Applications, and words that start them.
     ("code", Search),
     ("notepad", Search),

@@ -827,7 +827,8 @@ and how old it is allowed to be.
   one request a day does not need a pool kept warm.
 - **What is typed:** `<amount> [<code>] [in|to <filter>]`.
   - The amount is the calculator's arithmetic, so `1+2`, `(3*4)/2` and
-    `10%3` work. The calculator's gate -- an operator must appear -- is
+    `10%3` work -- `10 mod 3` since F14, where `%` became a percentage
+    (7.39). The calculator's gate -- an operator must appear -- is
     what keeps the root list quiet, and it is wrong in a view whose whole
     purpose is a number, so the gate and the evaluator are separated and
     the view asks for the evaluator alone: `10` is an amount here.

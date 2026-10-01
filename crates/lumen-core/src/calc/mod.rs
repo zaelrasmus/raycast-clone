@@ -56,11 +56,13 @@ pub fn evaluate(input: &str) -> Option<Value> {
 ///
 /// [`evaluate`] without its gate. The gate keeps the root list quiet, and is
 /// wrong where a number is what was asked for: in the currency view (F9),
-/// `10` is an amount. A plain number only: `10 deg` is not an amount of
-/// money.
+/// `10` is an amount. A plain number, or a percentage as the fraction it
+/// stands for -- `50%` is `0.5` -- but not a quantity: `10 deg` is not an
+/// amount of money.
 pub fn amount(input: &str) -> Option<f64> {
     match parse(input.trim())?.value {
         Value::Number(number) => Some(number),
+        Value::Percent(percent) => Some(percent / 100.0),
         Value::Quantity { .. } => None,
     }
 }
@@ -81,7 +83,7 @@ mod tests {
     fn number(input: &str) -> Option<f64> {
         match evaluate(input)? {
             Value::Number(number) => Some(number),
-            Value::Quantity { .. } => None,
+            Value::Quantity { .. } | Value::Percent(_) => None,
         }
     }
 
@@ -209,9 +211,50 @@ mod tests {
         assert_eq!(number("2^3^2"), Some(512.0));
     }
 
+    /// `%` was the remainder until F14 (7.39); the remainder is `mod` now.
     #[test]
     fn handles_the_modulo_operator() {
-        assert_eq!(number("10 % 3"), Some(1.0));
+        assert_eq!(number("10 mod 3"), Some(1.0));
+        assert_eq!(number("10 MOD 3 + 1"), Some(2.0));
+        assert_eq!(number("10 % 3"), None, "a percentage, then junk");
+        assert_eq!(number("mod 3"), None);
+    }
+
+    #[test]
+    fn percentages_of_off_and_on() {
+        assert_eq!(number("20% of 50"), Some(10.0));
+        assert_eq!(number("25% off 399"), Some(299.25));
+        assert_eq!(number("5% on 30"), Some(31.5));
+        assert_eq!(number("20% OF 50 + 1"), Some(11.0));
+        assert_eq!(number("10% of 20% of 1000"), Some(20.0));
+    }
+
+    #[test]
+    fn a_percentage_added_is_a_share_of_the_left() {
+        assert_eq!(number("399 + 25%"), Some(498.75));
+        assert_eq!(number("399 - 25%"), Some(299.25));
+        assert_eq!(number("200 * 15%"), Some(30.0));
+        assert_eq!(number("30 / 50%"), Some(60.0));
+        assert_eq!(shown("10% + 5%").as_deref(), Some("15%"));
+        assert_eq!(number("25% + 399"), None, "which one is the share?");
+    }
+
+    #[test]
+    fn what_share_one_is_of_another() {
+        assert_eq!(shown("5 as % of 20").as_deref(), Some("25%"));
+        assert_eq!(shown("1/8 as %").as_deref(), Some("12.5%"));
+        assert_eq!(shown("90 deg as % of 360 deg").as_deref(), Some("25%"));
+        assert_eq!(shown("5 as"), None);
+        assert_eq!(shown("5 as % of"), None);
+    }
+
+    #[test]
+    fn a_percentage_alone_is_a_value_not_a_calculation() {
+        assert_eq!(shown("50%"), None);
+        assert_eq!(amount("50%"), Some(0.5));
+        assert_eq!(amount("10%3"), None);
+        assert_eq!(shown("sqrt(25%)"), None);
+        assert_eq!(shown("45 deg %"), None);
     }
 
     // The rejection rules matter more than the arithmetic. Each of these is a

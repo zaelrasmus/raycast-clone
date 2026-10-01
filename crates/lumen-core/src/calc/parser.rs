@@ -6,12 +6,13 @@
 //! fails it. That is what keeps `7-zip` and `python 3.12` out.
 //!
 //! ```text
-//! expression := term (('+' | '-') term)*
-//! term       := unary (('*' | '/' | '%') unary)*
-//! unary      := ('-' | '+') unary | power
-//! power      := postfix ('^' unary)?
-//! postfix    := primary '!'*
-//! primary    := NUMBER UNIT?
+//! calculation := expression ('as' '%' ('of' expression)?)?
+//! expression  := term (('+' | '-') term)*
+//! term        := unary (('*' | '/' | 'mod') unary)*
+//! unary       := ('-' | '+') unary | power
+//! power       := postfix ('^' unary)?
+//! postfix     := primary '!'* ('%' (('of' | 'off' | 'on') unary)?)?
+//! primary     := NUMBER UNIT?
 //!             | '(' expression ')' UNIT?
 //!             | FUNCTION '(' expression ')'
 //!             | CONSTANT
@@ -20,7 +21,7 @@
 use super::functions::{self, factorial};
 use super::lexer::Token;
 use super::units;
-use super::value::Value;
+use super::value::{Phrase, Value};
 
 /// How deep parentheses and signs may nest. Far past anything typed by
 /// hand, and well short of the stack.
@@ -56,7 +57,7 @@ impl<'a> Parser<'a> {
     /// Trailing junk means this was not an expression after all. Accepting a
     /// prefix is how `3 apples` becomes `3`.
     pub fn whole(mut self) -> Option<Parsed> {
-        let value = self.expression()?;
+        let value = self.calculation()?;
         (self.at == self.tokens.len()).then_some(Parsed {
             value,
             operations: self.operations,
@@ -73,6 +74,34 @@ impl<'a> Parser<'a> {
             return true;
         }
         false
+    }
+
+    /// Take the word `name` if it is next, in any case.
+    fn eat_word(&mut self, name: &str) -> bool {
+        if let Some(Token::Word(word)) = self.peek()
+            && word.eq_ignore_ascii_case(name)
+        {
+            self.at += 1;
+            return true;
+        }
+        false
+    }
+
+    /// What the whole expression is turned into, last: `5 as % of 20`.
+    fn calculation(&mut self) -> Option<Value> {
+        let value = self.expression()?;
+        if !self.eat_word("as") {
+            return Some(value);
+        }
+        if !self.eat(Token::Percent) {
+            return None;
+        }
+        let whole = if self.eat_word("of") {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        self.counted(value.share_of(whole))
     }
 
     /// One more operation, whose result is `value`.
@@ -117,7 +146,8 @@ impl<'a> Parser<'a> {
                 // shows nothing rather than a row saying `inf`.
                 let right = self.unary()?;
                 self.counted(left.over(right))?
-            } else if self.eat(Token::Percent) {
+            } else if self.eat_word("mod") {
+                // `%` is a percentage (7.39); the remainder has a name.
                 let right = self.unary()?;
                 self.counted(left.numbers(right, |left, right| left % right))?
             } else {
@@ -160,7 +190,30 @@ impl<'a> Parser<'a> {
             };
             value = self.counted(factorial(n).map(Value::Number))?;
         }
-        Some(value)
+        if !self.eat(Token::Percent) {
+            return Some(value);
+        }
+        // A percentage is a value written another way, not a calculation:
+        // `50%` alone is not answered.
+        let Value::Number(percent) = value else {
+            return None;
+        };
+        let percent = Value::Percent(percent);
+        let Some(phrase) = self.phrase() else {
+            return Some(percent);
+        };
+        let base = self.unary()?;
+        self.counted(percent.percent(phrase, base))
+    }
+
+    /// `of`, `off` or `on`, taken if next.
+    fn phrase(&mut self) -> Option<Phrase> {
+        let Some(Token::Word(word)) = self.peek() else {
+            return None;
+        };
+        let phrase = Phrase::named(word)?;
+        self.at += 1;
+        Some(phrase)
     }
 
     fn primary(&mut self) -> Option<Value> {

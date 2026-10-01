@@ -1,4 +1,5 @@
-//! What an expression is worth: a number, or an amount of a unit.
+//! What an expression is worth: a number, an amount of a unit, or a
+//! percentage.
 //!
 //! Every operation answers `None` when it has no meaning -- `2 km * 3 km`,
 //! `5 km + 2 kg` -- and the whole query is declined. A calculator that
@@ -9,16 +10,23 @@ use super::units::Unit;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
     Number(f64),
-    Quantity { amount: f64, unit: &'static Unit },
+    Quantity {
+        amount: f64,
+        unit: &'static Unit,
+    },
+    /// `25%`, kept as written -- `25`, not `0.25` -- because what it means
+    /// depends on what it meets: `399 + 25%` is `498.75`, `399 * 25%` is
+    /// `99.75` (see 7.39).
+    Percent(f64),
 }
 
-use Value::{Number, Quantity};
+use Value::{Number, Percent, Quantity};
 
 impl Value {
     /// The number inside, whatever unit it is in.
     pub fn amount(self) -> f64 {
         match self {
-            Number(amount) | Quantity { amount, .. } => amount,
+            Number(amount) | Quantity { amount, .. } | Percent(amount) => amount,
         }
     }
 
@@ -34,6 +42,39 @@ impl Value {
                 amount: f(amount),
                 unit,
             },
+            Percent(percent) => Percent(f(percent)),
+        }
+    }
+
+    /// A percentage as the fraction it stands for: `25%` is `0.25`.
+    fn fraction(percent: f64) -> f64 {
+        percent / 100.0
+    }
+
+    /// `self` percent `of`, `off` or `on` `base`: `20% of 50` is `10`, `25%
+    /// off 399` is `299.25`, `5% on 30` is `31.5`. The base keeps its unit.
+    pub fn percent(self, phrase: Phrase, base: Value) -> Option<Value> {
+        let (Percent(percent), Number(_) | Quantity { .. }) = (self, base) else {
+            return None;
+        };
+        let share = Self::fraction(percent);
+        Some(base.map(|amount| match phrase {
+            Phrase::Of => amount * share,
+            Phrase::Off => amount * (1.0 - share),
+            Phrase::On => amount * (1.0 + share),
+        }))
+    }
+
+    /// What share of `whole` this is: `5 as % of 20` is `25%`. With no
+    /// whole, the number itself: `0.125 as %` is `12.5%`.
+    pub fn share_of(self, whole: Option<Value>) -> Option<Value> {
+        let ratio = match whole {
+            Some(whole) => self.over(whole)?,
+            None => self,
+        };
+        match ratio {
+            Number(ratio) => Some(Percent(ratio * 100.0)),
+            _ => None,
         }
     }
 
@@ -53,9 +94,18 @@ impl Value {
     /// A number joins a quantity in its unit -- `5 km + 3` is `8 km` -- and a
     /// quantity joins another in the left one's. Temperatures on different
     /// scales are not added: `10 °C + 5 °F` is two different questions.
+    ///
+    /// A percentage added to anything else is a share of it: `399 + 25%` is
+    /// `498.75`. Two percentages add as numbers do; a percentage first and a
+    /// number second has no one meaning, and is declined.
     pub fn plus(self, right: Value, sign: f64) -> Option<Value> {
         match (self, right) {
             (Number(left), Number(right)) => Some(Number(left + sign * right)),
+            (Percent(left), Percent(right)) => Some(Percent(left + sign * right)),
+            (left @ (Number(_) | Quantity { .. }), Percent(right)) => {
+                Some(left.map(|amount| amount * (1.0 + sign * Self::fraction(right))))
+            }
+            (Percent(_), _) => None,
             (Quantity { amount, unit }, Number(right)) => Some(Quantity {
                 amount: amount + sign * right,
                 unit,
@@ -87,6 +137,12 @@ impl Value {
                 Some(quantity.map(|amount| amount * right))
             }
             (Quantity { .. }, Quantity { .. }) => None,
+            (Percent(percent), other) | (other, Percent(percent)) => match other {
+                Number(_) | Quantity { .. } => {
+                    Some(other.map(|amount| amount * Self::fraction(percent)))
+                }
+                Percent(_) => None,
+            },
         }
     }
 
@@ -106,7 +162,11 @@ impl Value {
                 },
             ) => (unit.dimension == other.dimension && !unit.has_offset() && !other.has_offset())
                 .then(|| Number(unit.to_base(amount) / other.to_base(below))),
-            (Number(_), Quantity { .. }) => None,
+            (left @ (Number(_) | Quantity { .. }), Percent(percent)) => {
+                Some(left.map(|amount| amount / Self::fraction(percent)))
+            }
+            (Percent(percent), Number(right)) => Some(Percent(percent / right)),
+            (Number(_), Quantity { .. }) | (Percent(_), _) => None,
         }
     }
 
@@ -116,6 +176,23 @@ impl Value {
             (Number(left), Number(right)) => Some(Number(f(left, right))),
             _ => None,
         }
+    }
+}
+
+/// The words that follow a percentage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phrase {
+    Of,
+    Off,
+    On,
+}
+
+impl Phrase {
+    pub fn named(word: &str) -> Option<Phrase> {
+        [("of", Phrase::Of), ("off", Phrase::Off), ("on", Phrase::On)]
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(word))
+            .map(|(_, phrase)| phrase)
     }
 }
 

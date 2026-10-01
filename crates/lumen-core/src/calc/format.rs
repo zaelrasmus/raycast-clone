@@ -29,11 +29,12 @@ pub fn format_number(value: f64) -> String {
     trimmed(&format!("{value:.10}")).to_string()
 }
 
-/// A value written with its unit, if it has one: `45°`, `2 rad`.
+/// A value written with its unit, if it has one: `45°`, `2 rad`, `25%`.
 pub fn format_value(value: Value) -> String {
     match value {
         Value::Number(number) => format_number(number),
         Value::Quantity { amount, unit } => unit.write(&format_number(amount)),
+        Value::Percent(percent) => format!("{}%", format_number(percent)),
     }
 }
 
