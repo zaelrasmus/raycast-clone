@@ -29,8 +29,9 @@ use gpui::{App, KeyBinding};
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::launcher::{
-    Activate, AskArgument, ClearQuery, Dismiss, NextScope, PreviousScope, SCOPE_CONTEXT,
-    SelectFirst, SelectLast, SelectNext, SelectPrevious, ToggleActionPanel,
+    Activate, AskArgument, ClearQuery, Dismiss, MoveFavoriteDown, MoveFavoriteUp, NextScope,
+    PreviousScope, SCOPE_CONTEXT, SelectFirst, SelectLast, SelectNext, SelectPrevious,
+    ToggleActionPanel, ToggleFavorite,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
@@ -277,6 +278,21 @@ const BINDINGS: &[Binding] = &[
         description: Some("Show all actions"),
     },
     Binding {
+        keys: "ctrl-shift-f",
+        group: "Favorites",
+        description: Some("Add to or remove from Favorites"),
+    },
+    Binding {
+        keys: "ctrl-alt-up",
+        group: "Favorites",
+        description: Some("Move a favorite up"),
+    },
+    Binding {
+        keys: "ctrl-alt-down",
+        group: "Favorites",
+        description: Some("Move a favorite down"),
+    },
+    Binding {
         keys: "tab",
         group: "Forms",
         description: Some("Next field"),
@@ -331,6 +347,10 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("ctrl-u", ClearQuery, Some(CONTEXT)),
         // The action panel, on the chord every launcher uses for it.
         KeyBinding::new("ctrl-k", ToggleActionPanel, Some(CONTEXT)),
+        // Favourites (F15), as Raycast binds them.
+        KeyBinding::new("ctrl-shift-f", ToggleFavorite, Some(CONTEXT)),
+        KeyBinding::new("ctrl-alt-up", MoveFavoriteUp, Some(CONTEXT)),
+        KeyBinding::new("ctrl-alt-down", MoveFavoriteDown, Some(CONTEXT)),
     ]);
 
     // A view's scope -- the translator's presets (F7). Only in the search row
@@ -607,7 +627,10 @@ mod tests {
             .iter()
             .map(|group| group.title.clone())
             .collect();
-        assert_eq!(titles, vec!["Navigation", "Actions", "Editing", "Forms"]);
+        assert_eq!(
+            titles,
+            vec!["Navigation", "Actions", "Editing", "Favorites", "Forms"]
+        );
     }
 
     /// Aliases share a description slot so the sheet does not list the same

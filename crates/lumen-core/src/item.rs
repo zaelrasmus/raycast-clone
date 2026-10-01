@@ -89,6 +89,12 @@ impl Kind {
 /// clone, and eventually serialisable across the extension boundary (AD-06).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// Add the row to the favourites, take it out, or move it (F15).
+    ///
+    /// Never one of an item's own actions: the launcher offers it beside
+    /// them, for any row of the index, and carries it out on the list it
+    /// owns -- nothing is opened and the launcher stays.
+    Favorite(crate::favorites::Change),
     /// Open it, raising a copy that is already running rather than starting a
     /// second one.
     Launch(LaunchTarget),
@@ -229,6 +235,7 @@ impl Action {
     /// The verb shown in the footer and the action panel.
     pub fn verb(&self) -> &'static str {
         match self {
+            Action::Favorite(change) => change.verb(),
             Action::Launch(_) => "Open",
             Action::LaunchNew(_) => "Open New Window",
             Action::CopyToClipboard(_) => "Copy",
@@ -292,6 +299,7 @@ impl Action {
             | Action::CreateQuicklink
             | Action::CreateSnippet
             | Action::OpenTimerForm { .. }
+            | Action::Favorite(_)
             | Action::Timer(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }

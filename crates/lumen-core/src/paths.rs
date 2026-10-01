@@ -98,6 +98,12 @@ impl Paths {
         self.data_dir.join("frecency.json")
     }
 
+    /// The favourites, in the user's order (F15). State, like frecency: it
+    /// is changed from the launcher, not edited as configuration.
+    pub fn favorites_file(&self) -> PathBuf {
+        self.data_dir.join("favorites.json")
+    }
+
     /// The timers running or paused (F8). State, not configuration: the
     /// presets are in `config.json`.
     pub fn timers_file(&self) -> PathBuf {

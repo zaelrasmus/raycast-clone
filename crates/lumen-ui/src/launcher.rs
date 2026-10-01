@@ -31,6 +31,7 @@ use gpui::{
     SharedString, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div,
     ease_out_quint, img, svg, uniform_list,
 };
+use lumen_core::favorites::Change as FavoriteChange;
 use lumen_core::providers::QuicklinkProvider;
 use lumen_core::root::{Aside, Hit};
 use lumen_core::theme::Appearance;
@@ -72,6 +73,12 @@ actions!(
         NextScope,
         /// Open the picker on a view's last scope, or move it to the previous.
         PreviousScope,
+        /// Add the selected row to the favourites, or take it out (F15).
+        ToggleFavorite,
+        /// Move the selected favourite one place up (F15).
+        MoveFavoriteUp,
+        /// Move the selected favourite one place down (F15).
+        MoveFavoriteDown,
     ]
 );
 
@@ -381,6 +388,9 @@ impl Launcher {
         });
 
         let mut root = RootSearch::new(Providers::builtin(), frecency);
+        root.set_favorites(lumen_core::favorites::Favorites::load(
+            &paths.favorites_file(),
+        ));
         root.set_visible_rows(config.window.visible_rows);
         root.set_weather_units(config.weather.units);
         // `time in vancouver` is answered in the system's way of writing a
@@ -1889,11 +1899,82 @@ impl Launcher {
 
     // -- Commands ----------------------------------------------------------
 
-    /// The actions available for the selected row.
+    /// The actions available for the selected row: its own, then what can
+    /// be done to it as a favourite (F15).
     fn available_actions(&self) -> Vec<Action> {
-        self.selected_item()
-            .map(|item| item.actions.clone())
-            .unwrap_or_default()
+        let Some(hit) = self.hits().get(self.selected) else {
+            return Vec::new();
+        };
+        let mut actions = self.item(hit).actions.clone();
+        if matches!(self.mode, Mode::Root) {
+            actions.extend(
+                self.root
+                    .favorite_changes(hit)
+                    .into_iter()
+                    .map(Action::Favorite),
+            );
+        }
+        actions
+    }
+
+    /// Add, remove or move the selected row as a favourite, if that is
+    /// something it can have done to it from where it is.
+    fn change_favorite(&mut self, change: FavoriteChange, cx: &mut Context<Self>) {
+        if !matches!(self.mode, Mode::Root) || self.argument.is_some() {
+            return;
+        }
+        let Some(hit) = self.hits().get(self.selected).cloned() else {
+            return;
+        };
+        if !self.root.favorite_changes(&hit).contains(&change) {
+            return;
+        }
+        let id = self.item(&hit).id.clone();
+        let Some(favorites) = self.root.change_favorite(change, &id) else {
+            return;
+        };
+        // On the background executor, like frecency: disk I/O for a list of
+        // a few ids is not worth a frame.
+        let path = self.paths.favorites_file();
+        cx.background_spawn(async move {
+            if let Err(error) = favorites.save(&path) {
+                log::warn!("could not save the favourites: {error:#}");
+            }
+        })
+        .detach();
+        self.rerank_keeping(&id, cx);
+    }
+
+    fn toggle_favorite(&mut self, _: &ToggleFavorite, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(hit) = self.hits().get(self.selected) else {
+            return;
+        };
+        let changes = self.root.favorite_changes(hit);
+        let change = if changes.contains(&FavoriteChange::Add) {
+            FavoriteChange::Add
+        } else {
+            FavoriteChange::Remove
+        };
+        self.change_favorite(change, cx);
+    }
+
+    fn move_favorite_up(&mut self, _: &MoveFavoriteUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.change_favorite(FavoriteChange::MoveUp, cx);
+    }
+
+    fn move_favorite_down(&mut self, _: &MoveFavoriteDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.change_favorite(FavoriteChange::MoveDown, cx);
+    }
+
+    /// Rank again, keeping the selection on `id` wherever it lands, so a
+    /// favourite moved or added is still the row under the user's eye.
+    fn rerank_keeping(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.rerank(cx);
+        if let Some(at) = self.hits().iter().position(|hit| self.item(hit).id == id) {
+            self.selected = at;
+            self.scroll.scroll_to_item(at, gpui::ScrollStrategy::Top);
+        }
+        cx.notify();
     }
 
     /// The action panel's rows, whichever mode is showing.
@@ -1919,7 +2000,19 @@ impl Launcher {
                 .into_iter()
                 .map(|action| PanelEntry {
                     title: action.verb().to_string(),
-                    shortcut: None,
+                    // The keymap's chords, written out for show (I-14).
+                    shortcut: match action {
+                        Action::Favorite(FavoriteChange::Add | FavoriteChange::Remove) => {
+                            Some("Ctrl+Shift+F".into())
+                        }
+                        Action::Favorite(FavoriteChange::MoveUp) => {
+                            Some("Ctrl+Alt+\u{2191}".into())
+                        }
+                        Action::Favorite(FavoriteChange::MoveDown) => {
+                            Some("Ctrl+Alt+\u{2193}".into())
+                        }
+                        _ => None,
+                    },
                 })
                 .collect(),
             Mode::View(state) => state
@@ -2127,9 +2220,21 @@ impl Launcher {
                 }),
                 None => Action::OpenLink(open),
             },
-            (Some(index), None) => item.actions.get(index).cloned().unwrap_or(item.primary()),
+            (Some(index), None) => self
+                .available_actions()
+                .get(index)
+                .cloned()
+                .unwrap_or(item.primary()),
             (None, _) => item.primary(),
         };
+
+        // A favourite is changed in place: nothing opens, nothing is
+        // recorded as used, and the launcher stays.
+        if let Action::Favorite(change) = action {
+            self.action_panel = None;
+            self.change_favorite(change, cx);
+            return;
+        }
         let id = item.id.clone();
         let calculated = calculated(item, &action);
         let blocked = self
@@ -2816,6 +2921,9 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::ask_argument))
             .on_action(cx.listener(Self::next_scope))
             .on_action(cx.listener(Self::previous_scope))
+            .on_action(cx.listener(Self::toggle_favorite))
+            .on_action(cx.listener(Self::move_favorite_up))
+            .on_action(cx.listener(Self::move_favorite_down))
             .size_full()
             .flex()
             .flex_col()

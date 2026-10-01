@@ -20,6 +20,7 @@ pub mod currency;
 pub mod dates;
 pub mod dictionary;
 pub mod extension;
+pub mod favorites;
 pub mod frecency;
 pub mod item;
 pub mod layout;

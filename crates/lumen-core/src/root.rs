@@ -18,6 +18,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use lumen_platform::Platform;
 
+use crate::favorites::{Change, Favorites};
 use crate::frecency::Frecency;
 use crate::item::Item;
 use crate::paths::Paths;
@@ -121,6 +122,8 @@ pub struct RootSearch {
     search: Search,
     providers: Providers,
     frecency: Frecency,
+    /// The user's favourites, in their order (F15).
+    favorites: Favorites,
     /// The searchable index. Empty until the first enumeration completes,
     /// which is why the root list is allowed to be empty rather than treated
     /// as a bug.
@@ -170,6 +173,7 @@ impl RootSearch {
             search: Search::new(),
             providers,
             frecency,
+            favorites: Favorites::new(),
             index: Arc::new(Vec::new()),
             asides: std::array::from_fn(|_| Arc::new(Vec::new())),
             answers: Vec::new(),
@@ -584,6 +588,51 @@ impl RootSearch {
         self.frecency.record(id);
         self.frecency.clone()
     }
+
+    pub fn set_favorites(&mut self, favorites: Favorites) {
+        self.favorites = favorites;
+    }
+
+    /// The ids of the favourites that are drawn, in the user's order: those
+    /// whose item is in the index now.
+    pub fn shown_favorites(&self) -> Vec<&str> {
+        let present: std::collections::HashSet<&str> = self
+            .index
+            .iter()
+            .map(|candidate| candidate.item.id.as_str())
+            .collect();
+        self.favorites
+            .ids()
+            .iter()
+            .map(String::as_str)
+            .filter(|id| present.contains(id))
+            .collect()
+    }
+
+    /// What can be done to `hit` as a favourite. Nothing for a row that is
+    /// not in the index -- an answer, a file, a fallback -- because none of
+    /// those is there to come back to.
+    pub fn favorite_changes(&self, hit: &Hit) -> Vec<Change> {
+        if !matches!(hit.source, Source::Indexed(_)) {
+            return Vec::new();
+        }
+        self.favorites
+            .changes(&self.item(hit).id, &self.shown_favorites())
+    }
+
+    /// Apply `change` to the item `id`, returning the list to persist when
+    /// anything changed.
+    pub fn change_favorite(&mut self, change: Change, id: &str) -> Option<Favorites> {
+        let shown: Vec<String> = self
+            .shown_favorites()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+        self.favorites
+            .apply(change, id, &shown)
+            .then(|| self.favorites.clone())
+    }
 }
 
 /// Build the root index: applications plus every provider's catalogue.
@@ -717,6 +766,25 @@ mod tests {
             .iter()
             .map(|hit| root.item(hit).title.clone())
             .collect()
+    }
+
+    /// An application can be a favourite; an answer computed from the query
+    /// cannot, because there is nothing to come back to (F15).
+    #[test]
+    fn only_rows_of_the_index_can_be_favourites() {
+        let mut root = root(apps(&["Code", "Slack"]));
+        root.rank("2+2");
+        let answer = root.hits()[0].clone();
+        assert!(matches!(answer.source, Source::Answer(_)));
+        assert!(root.favorite_changes(&answer).is_empty());
+
+        root.rank("code");
+        let code = root.hits()[0].clone();
+        assert_eq!(root.favorite_changes(&code), [Change::Add]);
+        let id = root.item(&code).id.clone();
+        assert!(root.change_favorite(Change::Add, &id).is_some());
+        assert_eq!(root.shown_favorites(), [id.as_str()]);
+        assert_eq!(root.favorite_changes(&code), [Change::Remove]);
     }
 
     /// 7.26, the case that motivated the discount: two letters match an
