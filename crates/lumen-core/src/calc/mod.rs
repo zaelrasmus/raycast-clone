@@ -174,6 +174,58 @@ mod tests {
         assert_eq!(shown("2 deg * 3 deg"), None);
     }
 
+    #[test]
+    fn conversions_with_in_to_and_as() {
+        assert_eq!(shown("5 km in mi").as_deref(), Some("3.1068559612 mi"));
+        assert_eq!(shown("5km to miles").as_deref(), Some("3.1068559612 mi"));
+        assert_eq!(shown("1 mile as feet").as_deref(), Some("5280 ft"));
+        assert_eq!(shown("6 ft in cm").as_deref(), Some("182.88 cm"));
+        assert_eq!(shown("2 lb in kg").as_deref(), Some("0.90718474 kg"));
+        assert_eq!(shown("90 min in h").as_deref(), Some("1.5 h"));
+        assert_eq!(shown("1 week in days").as_deref(), Some("7 d"));
+        assert_eq!(shown("180 deg in rad").as_deref(), Some("3.1415926536 rad"));
+        assert_eq!(shown("(1+2) km in m").as_deref(), Some("3000 m"));
+        assert_eq!(
+            shown("2 kg + 500 g in lb").as_deref(),
+            Some("5.5115565546 lb")
+        );
+    }
+
+    #[test]
+    fn temperatures_convert_but_do_not_mix() {
+        assert_eq!(
+            shown("100 \u{b0}C in \u{b0}F").as_deref(),
+            Some("212\u{b0}F")
+        );
+        assert_eq!(shown("100 f in c").as_deref(), Some("37.7777777778\u{b0}C"));
+        assert_eq!(shown("0 celsius to K").as_deref(), Some("273.15 K"));
+        assert_eq!(shown("20 \u{b0}C + 5").as_deref(), Some("25\u{b0}C"));
+        assert_eq!(shown("10 \u{b0}C + 5 \u{b0}F"), None, "two scales");
+        assert_eq!(shown("2f + 3"), None, "a loose word outside a conversion");
+        assert_eq!(shown("5k + 1"), None);
+    }
+
+    #[test]
+    fn data_in_bits_and_bytes() {
+        assert_eq!(shown("1 GiB in MB").as_deref(), Some("1073.741824 MB"));
+        assert_eq!(shown("5gb in mb").as_deref(), Some("5000 MB"));
+        assert_eq!(shown("100 Mb in MB").as_deref(), Some("12.5 MB"));
+        assert_eq!(shown("1 byte in bits").as_deref(), Some("8 bit"));
+        assert_eq!(shown("1 TB in GiB").as_deref(), Some("931.3225746155 GiB"));
+    }
+
+    #[test]
+    fn what_cannot_be_converted_is_declined() {
+        assert_eq!(shown("5 km in kg"), None);
+        assert_eq!(shown("5 in km"), None, "a number has no unit to convert");
+        assert_eq!(shown("5 km in"), None);
+        assert_eq!(shown("5 km in zip"), None);
+        assert_eq!(shown("5 km"), None, "a value restated");
+        assert_eq!(shown("1 to 10"), None);
+        assert_eq!(shown("5 km in mi in ft"), None);
+        assert_eq!(shown("25% in km"), None);
+    }
+
     /// The worst that can be typed without meaning harm costs microseconds
     /// and answers nothing, rather than a stack or a stall.
     #[test]

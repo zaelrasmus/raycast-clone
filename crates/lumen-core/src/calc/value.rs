@@ -204,7 +204,7 @@ mod tests {
     fn deg(amount: f64) -> Value {
         Quantity {
             amount,
-            unit: find("deg").unwrap(),
+            unit: find("deg").unwrap().unit,
         }
     }
 
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn quantities_of_one_kind_convert_into_the_left() {
-        let rad = find("rad").unwrap();
+        let rad = find("rad").unwrap().unit;
         let sum = deg(180.0)
             .plus(
                 Value::Quantity {
@@ -240,6 +240,6 @@ mod tests {
         assert_eq!(deg(1.0).times(deg(1.0)), None);
         assert_eq!(Number(1.0).over(deg(1.0)), None);
         assert_eq!(deg(2.0).numbers(Number(2.0), f64::powf), None);
-        assert_eq!(Number(1.0).convert(find("rad").unwrap()), None);
+        assert_eq!(Number(1.0).convert(find("rad").unwrap().unit), None);
     }
 }

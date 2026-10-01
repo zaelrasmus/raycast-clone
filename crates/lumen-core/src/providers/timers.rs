@@ -242,6 +242,13 @@ impl Provider for TimersProvider {
         }) {
             return Vec::new();
         }
+        // `25 min in s` is a conversion, not a timer named *in s* (F14).
+        // What follows a duration is a name, so the calculator, which
+        // declines any word it does not know, settles it: `10m in the
+        // oven` is still a timer.
+        if crate::calc::evaluate(query).is_some() {
+            return Vec::new();
+        }
         if let Some(name) = stopwatch_name(query) {
             return vec![Item {
                 id: STOPWATCH.into(),

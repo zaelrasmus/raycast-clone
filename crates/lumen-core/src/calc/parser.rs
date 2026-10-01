@@ -6,7 +6,8 @@
 //! fails it. That is what keeps `7-zip` and `python 3.12` out.
 //!
 //! ```text
-//! calculation := expression ('as' '%' ('of' expression)?)?
+//! calculation := expression (('in' | 'to' | 'as') UNIT)?
+//!              | expression ('as' '%' ('of' expression)?)?
 //! expression  := term (('+' | '-') term)*
 //! term        := unary (('*' | '/' | 'mod') unary)*
 //! unary       := ('-' | '+') unary | power
@@ -40,6 +41,9 @@ pub struct Parser<'a> {
     at: usize,
     depth: u32,
     operations: u32,
+    /// Whether a unit was named by a loose word -- `c`, `f` -- which only
+    /// a conversion may use.
+    loose: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -49,6 +53,7 @@ impl<'a> Parser<'a> {
             at: 0,
             depth: 0,
             operations: 0,
+            loose: false,
         }
     }
 
@@ -87,13 +92,26 @@ impl<'a> Parser<'a> {
         false
     }
 
-    /// What the whole expression is turned into, last: `5 as % of 20`.
+    /// What the whole expression is turned into, last: `5 km in mi`, `5 as
+    /// % of 20`.
     fn calculation(&mut self) -> Option<Value> {
         let value = self.expression()?;
-        if !self.eat_word("as") {
-            return Some(value);
-        }
+        let into = ["in", "to", "as"]
+            .into_iter()
+            .find(|&word| self.eat_word(word));
+        let Some(into) = into else {
+            // `2f + 3` is not a temperature; `100 f in c` is.
+            return (!self.loose).then_some(value);
+        };
         if !self.eat(Token::Percent) {
+            let Some(Token::Word(word)) = self.peek() else {
+                return None;
+            };
+            let target = units::find(word)?;
+            self.at += 1;
+            return self.counted(value.convert(target.unit));
+        }
+        if into != "as" || self.loose {
             return None;
         }
         let whole = if self.eat_word("of") {
@@ -253,9 +271,13 @@ impl<'a> Parser<'a> {
             return value;
         };
         match units::find(word) {
-            Some(unit) => {
+            Some(found) => {
                 self.at += 1;
-                Value::Quantity { amount, unit }
+                self.loose |= found.loose;
+                Value::Quantity {
+                    amount,
+                    unit: found.unit,
+                }
             }
             None => value,
         }
