@@ -6,12 +6,8 @@
 //! platform writes times as the user's regional settings do, through the
 //! function it is given, so a 12-hour machine reads `9:14 AM`.
 //!
-//! # Levels, and the pill
-//!
-//! The list is at the level the words name (`places::find`). `Enter` on a
-//! continent or a country goes into it: the place joins the path, which the
-//! host draws as a pill before the search field, and the text is cleared
-//! for a search within it. `Event::Back` takes the innermost level off.
+//! Browsing -- the words, the levels, the pill -- is `places::browse`,
+//! shared with Weather; this says what a row of time shows.
 
 use std::collections::HashMap;
 
@@ -20,10 +16,11 @@ use jiff::{Timestamp, Zoned};
 use lumen_platform::LocalTime;
 
 use super::{ClockConfig, Daylight, DifferenceFormat, RowLayout};
-use crate::places::{self, Catalogue, City, Continent, Favourites, Found, Within};
+use crate::places::browse::{self, Browse, CONTINENT, COUNTRY, Rows, grouped};
+use crate::places::{Catalogue, City, Continent, Favourites};
 use crate::view::{
-    Accessory, Action, EmptyState, Event, Filtering, Icon, Item, ItemDetail, List, MetadataRow,
-    Section, Tone, View,
+    Accessory, Action, Event, Filtering, Icon, Item, ItemDetail, List, MetadataRow, Section, Tone,
+    View,
 };
 
 /// What the driver should do next.
@@ -40,28 +37,16 @@ pub enum Effect {
     Save(Favourites),
 }
 
-/// The most city rows a list shows. Past this nobody is reading; the
-/// section says how many more matched, and typing narrows.
-pub const CITY_ROWS: usize = 200;
+pub use crate::places::browse::CITY_ROWS;
 
 // Ids. Opaque to the host; only this file reads them back.
 const HERE: &str = "here";
-const CITY: &str = "city:";
-const COUNTRY: &str = "country:";
-const CONTINENT: &str = "continent:";
 const OPEN: &str = "open";
 const COPY_TIME: &str = "copy-time";
 const COPY_SENTENCE: &str = "copy-sentence";
 const DETAILS: &str = "details";
 const KEEP: &str = "keep";
 const FORGET: &str = "forget";
-
-/// How far into the places the list has gone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Level {
-    Continent(Continent),
-    Country(u16),
-}
 
 /// Writes a moment as the user's regional settings do.
 pub type TimeFormat = Box<dyn Fn(&LocalTime) -> String>;
@@ -72,8 +57,7 @@ pub struct Session {
     here: TimeZone,
     time: TimeFormat,
     now: Timestamp,
-    query: String,
-    path: Vec<Level>,
+    browse: Browse,
     /// The pane beside the list, toggled from the action panel.
     details: bool,
     /// *My Places*, as kept, and the cities of it the catalogue knows.
@@ -96,8 +80,7 @@ impl Session {
             here,
             time,
             now: Timestamp::UNIX_EPOCH,
-            query: String::new(),
-            path: Vec::new(),
+            browse: Browse::default(),
             details: false,
             mine: favourites.resolve(places),
             favourites,
@@ -120,14 +103,13 @@ impl Session {
     pub fn event(&mut self, event: Event) -> Vec<Effect> {
         match event {
             Event::QueryChanged { query } => {
-                if query == self.query {
+                if !self.browse.set_query(query) {
                     return Vec::new();
                 }
-                self.query = query;
                 vec![Effect::Render(self.view())]
             }
             Event::Back => {
-                if self.path.pop().is_none() {
+                if !self.browse.back() {
                     return Vec::new();
                 }
                 vec![Effect::Render(self.view())]
@@ -148,7 +130,12 @@ impl Session {
             return Vec::new();
         };
         match action {
-            OPEN => self.go_into(item),
+            OPEN => {
+                if !self.browse.go_into(self.places, item) {
+                    return Vec::new();
+                }
+                vec![Effect::ClearQuery, Effect::Render(self.view())]
+            }
             KEEP | FORGET => self.keep(item, action == KEEP),
             COPY_TIME | COPY_SENTENCE => {
                 let Some((name, zone)) = self.place(item) else {
@@ -171,10 +158,7 @@ impl Session {
 
     /// Add a city to *My Places*, or take it off.
     fn keep(&mut self, item: &str, keep: bool) -> Vec<Effect> {
-        let Some(index) = item
-            .strip_prefix(CITY)
-            .and_then(|index| index.parse::<u32>().ok())
-        else {
+        let Some(index) = browse::city_index(item) else {
             return Vec::new();
         };
         let Some(city) = self.places.city(index) else {
@@ -196,42 +180,13 @@ impl Session {
         ]
     }
 
-    /// `Enter` on a continent or a country: it joins the path. A country
-    /// gone into from the top brings its continent, so `Back` goes up one
-    /// level rather than all the way out.
-    fn go_into(&mut self, item: &str) -> Vec<Effect> {
-        if let Some(code) = item.strip_prefix(CONTINENT) {
-            let Some(continent) = Continent::ALL
-                .into_iter()
-                .find(|continent| continent.code() == code)
-            else {
-                return Vec::new();
-            };
-            self.path = vec![Level::Continent(continent)];
-        } else if let Some(code) = item.strip_prefix(COUNTRY) {
-            let Some(index) = self.places.country_by_code(code) else {
-                return Vec::new();
-            };
-            let continent = self.places.country(index).map(|country| country.continent);
-            if !matches!(self.path.last(), Some(Level::Continent(_))) {
-                self.path.clear();
-                self.path.extend(continent.map(Level::Continent));
-            }
-            self.path.push(Level::Country(index));
-        } else {
-            return Vec::new();
-        }
-        self.query.clear();
-        vec![Effect::ClearQuery, Effect::Render(self.view())]
-    }
-
     /// A row that keeps one time: its name and zone.
     fn place(&self, item: &str) -> Option<(String, TimeZone)> {
         if item == HERE {
             return Some((self.here_name(), self.here.clone()));
         }
-        if let Some(index) = item.strip_prefix(CITY) {
-            let city = self.places.city(index.parse().ok()?)?;
+        if let Some(index) = browse::city_index(item) {
+            let city = self.places.city(index)?;
             return Some((
                 city.name.to_string(),
                 super::zone(self.places.zone_of(city)),
@@ -244,14 +199,6 @@ impl Session {
         let mut clocks = Clocks::new(self.now, &self.here);
         (clocks.offsets(&zones).len() == 1)
             .then(|| (country.name.to_string(), super::zone(zones[0])))
-    }
-
-    fn within(&self) -> Within {
-        match self.path.last() {
-            None => Within::World,
-            Some(Level::Continent(continent)) => Within::Continent(*continent),
-            Some(Level::Country(country)) => Within::Country(*country),
-        }
     }
 
     /// The user's zone, as the list calls it: its largest city, or its IANA
@@ -276,115 +223,30 @@ impl Session {
 
     /// What the view should show now.
     pub fn view(&self) -> View {
-        let words = places::words(&self.query);
-        let mut found = self.places.find(&words, self.within(), CITY_ROWS);
-        let mine = self.places.find_among(&words, self.within(), &self.mine);
-        // A favourite is shown once, in its own section.
-        found.cities.retain(|index| !mine.contains(index));
+        let listing = self.browse.listing(self.places, &self.mine);
         let mut clocks = Clocks::new(self.now, &self.here);
-
-        let mut sections = Vec::new();
-        if self.path.is_empty() && words.is_empty() {
-            sections.push(Section {
-                title: Some("Your time".into()),
-                subtitle: None,
-                items: vec![self.here_row(&mut clocks)],
-            });
-        }
-        if !mine.is_empty() {
-            sections.push(Section {
-                title: Some("My Places".into()),
-                subtitle: None,
-                items: mine
-                    .iter()
-                    .filter_map(|index| self.city_row(*index, &mut clocks))
-                    .collect(),
-            });
-        }
-        if !found.continents.is_empty() {
-            sections.push(Section {
-                title: Some("Continents".into()),
-                subtitle: None,
-                items: found
-                    .continents
-                    .iter()
-                    .map(|continent| self.continent_row(*continent, &mut clocks))
-                    .collect(),
-            });
-        }
-        if !found.countries.is_empty() {
-            sections.push(Section {
-                title: Some("Countries".into()),
-                subtitle: None,
-                items: found
-                    .countries
-                    .iter()
-                    .filter_map(|index| self.country_row(*index, &mut clocks))
-                    .collect(),
-            });
-        }
-        if !found.cities.is_empty() {
-            sections.push(Section {
-                title: Some("Cities".into()),
-                subtitle: self.cities_subtitle(&found),
-                items: found
-                    .cities
-                    .iter()
-                    .filter_map(|index| self.city_row(*index, &mut clocks))
-                    .collect(),
-            });
-        }
+        let here = listing.top.then(|| Section {
+            title: Some("Your time".into()),
+            subtitle: None,
+            items: vec![self.here_row(&mut clocks)],
+        });
+        let sections = self.browse.sections(
+            &listing,
+            here,
+            &mut ClockRows {
+                session: self,
+                clocks: &mut clocks,
+            },
+        );
 
         View::List(List {
-            placeholder: Some(self.placeholder()),
+            placeholder: Some(self.browse.placeholder(self.places)),
             filtering: Filtering::Extension,
             scopes: Vec::new(),
-            path: self.path_names(),
-            empty: Some(EmptyState {
-                title: format!("No place matches \u{201c}{}\u{201d}", self.query.trim()),
-                description: Some(
-                    "Try a city, a region, a country or a continent: vancouver, california, canada, europe".into(),
-                ),
-                icon: None,
-            }),
+            path: self.browse.path_names(self.places),
+            empty: Some(self.browse.empty()),
             showing_detail: self.details,
             sections,
-        })
-    }
-
-    fn placeholder(&self) -> String {
-        match self.path.last() {
-            None => "Search for a city, a country or a continent".into(),
-            Some(level) => format!("Search in {}", self.level_name(*level)),
-        }
-    }
-
-    fn path_names(&self) -> Vec<String> {
-        self.path
-            .iter()
-            .map(|level| self.level_name(*level))
-            .collect()
-    }
-
-    fn level_name(&self, level: Level) -> String {
-        match level {
-            Level::Continent(continent) => continent.name().into(),
-            Level::Country(index) => self
-                .places
-                .country(index)
-                .map(|country| country.name.to_string())
-                .unwrap_or_default(),
-        }
-    }
-
-    /// `200 of 3,412` when the rows stop short of what matched.
-    fn cities_subtitle(&self, found: &Found) -> Option<String> {
-        (found.matched_cities > found.cities.len()).then(|| {
-            format!(
-                "{} of {} \u{00b7} type to narrow",
-                found.cities.len(),
-                grouped(found.matched_cities)
-            )
         })
     }
 
@@ -502,12 +364,7 @@ impl Session {
     }
 
     fn continent_row(&self, continent: Continent, clocks: &mut Clocks) -> Item {
-        let countries: Vec<_> = self
-            .places
-            .countries()
-            .iter()
-            .filter(|country| country.continent == continent && country.cities > 0)
-            .collect();
+        let countries = browse::countries_of(self.places, continent);
         let zones: Vec<&str> = countries
             .iter()
             .flat_map(|country| self.places.zones_of(country))
@@ -571,7 +428,7 @@ impl Session {
         let zone_name = self.places.zone_of(city);
         let there = clocks.at(zone_name);
         Some(Item {
-            id: format!("{CITY}{index}"),
+            id: browse::city_id(index),
             title: city.name.to_string(),
             subtitle: Some(self.places.whereabouts(city)),
             icon: Some(Icon::Text {
@@ -684,6 +541,26 @@ impl Session {
     }
 }
 
+/// The rows of one render, with the times it has worked out.
+struct ClockRows<'a> {
+    session: &'a Session,
+    clocks: &'a mut Clocks,
+}
+
+impl Rows for ClockRows<'_> {
+    fn city(&mut self, index: u32) -> Option<Item> {
+        self.session.city_row(index, self.clocks)
+    }
+
+    fn country(&mut self, index: u16) -> Option<Item> {
+        self.session.country_row(index, self.clocks)
+    }
+
+    fn continent(&mut self, continent: Continent) -> Item {
+        self.session.continent_row(continent, self.clocks)
+    }
+}
+
 /// The time in each zone a render shows, worked out once per zone rather
 /// than once per row.
 struct Clocks {
@@ -738,22 +615,10 @@ fn row(label: &str, value: String) -> MetadataRow {
     }
 }
 
-/// `3,412`.
-fn grouped(number: usize) -> String {
-    let digits = number.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::places;
 
     /// 24-hour, as a test can predict: the platform's own is checked by
     /// running it.
@@ -1209,12 +1074,5 @@ mod tests {
             texts(&section(&list, "Cities").items[0])[0],
             ("Tomorrow".to_string(), false)
         );
-    }
-
-    #[test]
-    fn numbers_are_grouped_by_thousands() {
-        assert_eq!(grouped(7), "7");
-        assert_eq!(grouped(3412), "3,412");
-        assert_eq!(grouped(24_874_500), "24,874,500");
     }
 }

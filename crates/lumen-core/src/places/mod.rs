@@ -15,6 +15,7 @@
 //! time of never pays for it. [`catalogue`] reads it on first use and keeps
 //! it. Callers on the UI thread ask for it from the background executor.
 
+pub mod browse;
 mod favourites;
 mod find;
 
