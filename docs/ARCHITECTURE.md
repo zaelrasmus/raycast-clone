@@ -121,6 +121,7 @@ once Lumen was measured well inside them (7.36).
 | **F11** | Snippets, the rest of the way: a *Search Snippets* view with tags and a detail pane, pasting into the application the launcher was opened over, dynamic placeholders, and a *Create Snippet* form with a Markdown editor | **Done.** The view, pasting with the clipboard put back, Raycast's placeholders with arguments and `{cursor}`, and the form with a Markdown editor and a placeholder picker. Expansion is deferred. See F11 decisions |
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
+| **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **In progress.** See F14 decisions |
 
 ### F4 build order is not optional
 
@@ -1866,6 +1867,89 @@ The decisions:
   Clock's slices 2 to 4 the rest. The idle measurement after slice 5 was
   folded into this one: Weather schedules nothing either.
 
+### F14 decisions
+
+Raycast's calculator is SoulverCore, the engine of the Soulver app: a closed
+Swift framework for macOS, so its behaviour is the target and none of its
+code. What it answers in the root list, as typed: `sqrt(2)^pi / log(1000) *
+sin(45 deg)`, `5 km in mi`, `25% off 399`, `days until 25 dec`, `100 usd +
+20 eur in cad`, and a *Calculator History* of what was used.
+
+The decisions:
+
+- **The hard part is still declining.** F3's calculator banned every
+  letter, which kept `code` and `7-zip` out of it for free. Units,
+  functions and phrases bring letters in, so the gate becomes a recogniser
+  that classifies a query -- arithmetic, conversion, percentage, date --
+  or declines it, and a parse that leaves an unknown word declines. A
+  conversion needs an operator or an explicit `in`, `to` or `as`: `25m` is
+  still a timer's (F8) and `25m in s` is the calculator's. A corpus of
+  queries other answers own -- applications, timers, currencies, times,
+  weather -- is a test, written before the first unit.
+- **Our own engine, not a crate.** `fend` and `numbat` were read. Both
+  evaluate far more than this needs, and both lose the gate: thousands of
+  unit names, single letters among them, are thousands of ways to steal an
+  application's row. Neither reads `25% off 399` or `days until 25 dec`, so
+  that layer would be written anyway, and an arbitrary-precision
+  `2^10^7` is a keystroke that does not come back. The recursive-descent
+  parser F3 started grows instead, in `lumen_core::calc`; the unit table is
+  data, tested like data.
+- **A value has a unit.** A number, or a quantity: a magnitude, a unit, and
+  the unit's dimension. `sin(45 deg)` works because a degree is an angle.
+  Units are a table -- names, symbols, a factor to the base, and an offset
+  for temperature only -- so a new one is a row and a test. Symbols are
+  case-sensitive (`Mb` and `MB`, `m` and `M`), names are not. SI and IEC
+  data units are apart: `GB` is 10⁹ bytes and `GiB` 2³⁰.
+- **`%` is a percentage.** See 7.39.
+- **Dates are jiff's,** already in the build. `days until 25 dec`, `weeks
+  since 1 jan`, `today + 3 weeks`. A date without a year that has passed is
+  the next one. Numeric dates (`12/05`) are declined: which is the day
+  depends on where the reader lives. Today is passed in, so tests do not
+  depend on the day they run.
+- **Numbers are `f64`, rounded where they are written.** Ten significant
+  digits, trailing zeros dropped. Input is capped, nesting is capped,
+  `!` stops at 170, and a result that is not finite is no answer. This
+  runs on every keystroke, inside the 8 ms frame.
+- **History is what was used.** F10's rule: an entry is kept when a result
+  is copied or pasted, not as it is typed, or history would be `1`, `12`,
+  `12*` on the way to `12*7`. `calculator-history.json` in the data folder,
+  the newest first, a repeat moved to the top, at most
+  `calculator.history-limit` entries -- 20 by default, `0` for none.
+- **Currencies are a dimension, from the table in hand (last slice).** A
+  currency's factor is the cached table's rate, so `100 usd + 20 eur in
+  cad` and `25% off 399 usd in eur` are one grammar with `5 km in mi`.
+  The *Currency* view stays: browsing every currency is not one answer.
+  Which words are currencies is the static catalogue, so the gate's verdict
+  never depends on whether a table is loaded; only the value does. The
+  calculator asks for a table exactly as F9's root answer does --
+  `wants_rates`, once per showing, nothing held -- and replaces that
+  answer rather than doubling it; F9's root tests move to the calculator
+  and pass there before the old path goes. A table is used until it is
+  due, because the services publish once a day and asking sooner returns
+  the same one. The row always dates its rates. With no table it says
+  *Fetching exchange rates…*; if the fetch fails it falls back to the
+  table kept, dated, and with none it says it could not fetch them.
+- **The slices,** one acceptance criterion each:
+  0. This entry, and 7.39.
+  1. Measurement first: the calculator in the benchmark, and the corpus of
+     queries it must decline, passing against F3's calculator.
+  2. The engine moved to `calc`, behaviour unchanged.
+  3. Functions and constants: the screenshot's `0.700197505`.
+  4. Percentages, and `%` changes meaning.
+  5. Units: length, mass, time, temperature, data, angle; `in`, `to`, `as`.
+  6. More units, as data: frequency, power, energy, speed, area, volume,
+     pressure.
+  7. Dates.
+  8. History, kept.
+  9. The *Calculator History* view and a *Calculator* settings page.
+  10. The answer drawn as the screenshot's card, expression and result.
+  11. The close: measured against the baseline.
+  12. Currencies inside an expression.
+- **Measured, before slice 1.** With `scripts/measure-idle.ps1`, 60 s
+  hidden: 0.002 % CPU, 74.1 MB working set, 86.0 MB private, 32 threads.
+  Binary 20,970,496 bytes. Ranking (`cargo bench -p lumen-core`, saved as
+  `f14-before`): 451 µs for a typical query over 5,000 entries.
+
 ---
 
 ## 7. Deviations from the plan
@@ -2576,6 +2660,20 @@ but disabled (`if: false`), so turning it back on is one line. Until then
 R-4 is guarded by I-1 alone: `lumen-core` still has no `#[cfg]` and no
 direct system call, and review still holds it to that. The first thing F5
 does is re-enable the job and fix whatever it finds.
+
+### 7.39 `%` is a percentage, not the remainder
+
+F3's calculator read `%` as C does: `10 % 3` was `1`. Everyone who reaches
+for a launcher's calculator reads it as Soulver and Raycast do -- `20% of
+50`, `25% off 399`, `399 + 25%` -- and those cannot be written while `%`
+means something else. So from F14 `%` is a percentage, and the remainder is
+written `mod`: `10 mod 3`.
+
+It changes more than the root list. The *Currency* view's amount and the
+snippets' `{calculator}` and `| calculate` (F11) are the same arithmetic,
+and change with it; their tests change in the same commit. A bare `50%` is
+the number `0.5` where an amount is asked for, and no answer in the root
+list, where a lone number is none.
 
 ---
 
