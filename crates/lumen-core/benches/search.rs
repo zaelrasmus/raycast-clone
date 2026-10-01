@@ -16,6 +16,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lumen_core::frecency::Frecency;
 use lumen_core::item::{Action, Item, Kind};
 use lumen_core::search::{Candidate, Search};
+use lumen_core::{Providers, RootSearch};
 use lumen_platform::LaunchTarget;
 
 /// A synthetic index of `count` entries.
@@ -90,10 +91,49 @@ fn ranking(c: &mut Criterion) {
             let mut search = Search::new();
             b.iter(|| search.rank("vsc", &candidates, &frecency, 64));
         });
+
+        // The same two worst cases with no cap (F15): whether `MAX_RESULTS`
+        // is worth keeping is this figure against the capped one above.
+        group.bench_with_input(BenchmarkId::new("root-uncapped", count), &count, |b, _| {
+            let mut search = Search::new();
+            b.iter(|| search.rank("", &candidates, &frecency, usize::MAX));
+        });
+        group.bench_with_input(
+            BenchmarkId::new("one-char-uncapped", count),
+            &count,
+            |b, _| {
+                let mut search = Search::new();
+                b.iter(|| search.rank("c", &candidates, &frecency, usize::MAX));
+            },
+        );
     }
 
     group.finish();
 }
 
-criterion_group!(benches, ranking);
+/// The whole root pipeline per keystroke, not only the matcher: the built-in
+/// answers, the merge, the second sort and the fallbacks (F15). This is what
+/// the launcher calls, and what sections and the cap change.
+fn root_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("root-search");
+
+    for count in [500usize, 2000, 5000] {
+        let mut frecency = Frecency::new();
+        for i in 0..count / 10 {
+            frecency.record(&format!("app:{i}"));
+        }
+        let mut root = RootSearch::new(Providers::builtin(), frecency);
+        root.replace_index(index(count));
+
+        for (name, query) in [("empty", ""), ("one-char", "c"), ("typical", "vsc")] {
+            group.bench_with_input(BenchmarkId::new(name, count), &count, |b, _| {
+                b.iter(|| root.rank(query).len());
+            });
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, ranking, root_search);
 criterion_main!(benches);

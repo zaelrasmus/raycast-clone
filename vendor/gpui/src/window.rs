@@ -3729,7 +3729,12 @@ impl Window {
 
     fn dispatch_key_event(&mut self, event: &dyn Any, cx: &mut App) {
         if self.invalidator.is_dirty() {
-            self.draw(cx).clear();
+            // LUMEN PATCH (docs/ARCHITECTURE.md, F15): measured like the frame
+            // callback's draw. While keys arrive, most frames are drawn here,
+            // before the next key, and not by the frame callback: without
+            // this, ZED_MEASUREMENTS sees a fraction of the frames typing
+            // draws. Draw only; the frame callback presents it.
+            measure("frame duration", || self.draw(cx).clear());
         }
 
         let node_id = self.focus_node_id_in_rendered_frame(self.focus);

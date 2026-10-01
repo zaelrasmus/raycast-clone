@@ -2096,7 +2096,18 @@ The decisions:
 - **Measured first.** Ranking had a budget test; drawing had nothing. The
   frame cost while typing is taken with gpui's own frame measurement
   (`ZED_MEASUREMENTS`) by `scripts/measure-typing.ps1`, before anything
-  changes, and again at the close.
+  changes, and again at the close. gpui measured only the frames its frame
+  callback draws, and while keys arrive most are drawn by the key handler
+  instead, before it dispatches the next key: the first run counted 19
+  frames for 492 keystrokes. A second patch measures that draw too (7.35).
+- **The baseline,** `f15-before`, release build, the machine's own index
+  (260 applications, 5,000 files). Typing: 523 frames over six summonses,
+  p50 1.6 ms, p95 2.24 ms, max 6.1 ms, twice, against 8 ms. Idle: 0.000 %
+  CPU over 60 s, 73.8 MB working set, 86.1 MB private, 32 threads. Ranking
+  (`--bench search`, medians): the whole root pipeline 293 µs for an empty
+  query at 2,000 entries, 345 µs for one character; the matcher uncapped
+  within noise of capped at every size, 357 against 354 µs at 2,000 and
+  5.43 against 5.34 ms at 20,000 -- the cap saves nothing measurable.
 
 The style schema, version 1. Base values are the constants as F14 left them.
 
@@ -2776,6 +2787,12 @@ I-6 still holds. `[workspace.dependencies]` pins `=0.2.2`, and
 version. Upgrading gpui is now two deliberate steps: re-import the new
 release unmodified, then re-apply the marked patch and re-measure. If an
 upstream release parks the thread itself, the vendored copy is deleted.
+
+A second patch, in F15, measures nothing new and changes no behaviour: the
+draw `Window::dispatch_key_event` makes before handling a key is wrapped in
+the same `measure("frame duration", ...)` as the frame callback's, so
+`ZED_MEASUREMENTS` sees the frames typing actually draws. It is draw only;
+the frame callback's figure includes the present.
 
 ### 7.36 The budgets are tightened to guard what was measured
 
