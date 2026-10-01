@@ -392,6 +392,7 @@ impl Launcher {
             &paths.favorites_file(),
         ));
         root.set_visible_rows(config.window.visible_rows);
+        root.set_arrangement(config.root.clone());
         root.set_weather_units(config.weather.units);
         // `time in vancouver` is answered in the system's way of writing a
         // time, as the World Clock view is (F13).
@@ -826,8 +827,10 @@ impl Launcher {
 
         self.root.set_visible_rows(config.window.visible_rows);
         let units_changed = self.root.set_weather_units(config.weather.units);
+        let arranged = config.root != self.config.root;
+        self.root.set_arrangement(config.root.clone());
         self.config = config;
-        if units_changed && matches!(self.mode, Mode::Root) {
+        if (units_changed || arranged) && matches!(self.mode, Mode::Root) {
             self.rerank(cx);
         }
 

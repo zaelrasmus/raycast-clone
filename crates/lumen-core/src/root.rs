@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use lumen_platform::Platform;
+use serde::{Deserialize, Serialize};
 
 use crate::favorites::{Change, Favorites};
 use crate::frecency::Frecency;
@@ -99,6 +100,103 @@ pub enum Source {
     Fallback(usize),
 }
 
+/// What a section of the empty list can show (F15).
+///
+/// A closed set that grows in code, as the style's variants do: a name this
+/// build does not know is reported and skipped, so a configuration written
+/// for a later Lumen still loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shows {
+    /// The favourites, in the user's order.
+    Favorites,
+    /// Everything in the index that is not an application: Lumen's own
+    /// commands, scripts, quicklinks, presets, extensions' commands.
+    Commands,
+    Applications,
+}
+
+impl Shows {
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "favorites" => Shows::Favorites,
+            "commands" => Shows::Commands,
+            "applications" => Shows::Applications,
+            _ => return None,
+        })
+    }
+
+    /// Whether an item of `kind` belongs here. Favourites are claimed by id,
+    /// not by kind, so they match nothing by kind.
+    fn takes(self, kind: crate::item::Kind) -> bool {
+        use crate::item::Kind;
+        match self {
+            Shows::Favorites => false,
+            Shows::Commands => kind != Kind::Application,
+            Shows::Applications => kind == Kind::Application,
+        }
+    }
+}
+
+/// One section of the empty list, as `config.json` writes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct SectionConfig {
+    pub title: String,
+    /// What it shows, by name: `favorites`, `commands`, `applications`.
+    /// Strings rather than an enum here, so one unknown name drops itself and
+    /// not the whole configuration.
+    pub shows: Vec<String>,
+    /// Whether its header is drawn. Off, the section still orders the list.
+    #[serde(default = "yes")]
+    pub header: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// How the root list is arranged (F15): the sections of the empty list, in
+/// order, and whether the typed list has its header.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct RootConfig {
+    pub sections: Vec<SectionConfig>,
+    pub results_header: bool,
+}
+
+impl Default for RootConfig {
+    /// Raycast's: favourites, then commands, then applications.
+    fn default() -> Self {
+        let section = |title: &str, shows: &str| SectionConfig {
+            title: title.into(),
+            shows: vec![shows.into()],
+            header: true,
+        };
+        Self {
+            sections: vec![
+                section("Favorites", "favorites"),
+                section("Commands", "commands"),
+                section("Applications", "applications"),
+            ],
+            results_header: true,
+        }
+    }
+}
+
+/// A run of hits under one header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub title: String,
+    /// Where it starts in [`RootSearch::hits`], and how many it holds.
+    pub start: usize,
+    pub len: usize,
+    /// Whether the header is drawn. A section without one still groups.
+    pub header: bool,
+}
+
+/// The title of the one section a typed query is shown in.
+pub const RESULTS: &str = "Results";
+
 /// One result, held as an index into its list rather than a copy of it.
 ///
 /// Re-ranking happens on every keystroke; cloning several hundred items each
@@ -124,6 +222,14 @@ pub struct RootSearch {
     frecency: Frecency,
     /// The user's favourites, in their order (F15).
     favorites: Favorites,
+    /// The arrangement from `config.json` (F15).
+    arrangement: RootConfig,
+    /// The empty list, built once and kept until something it is built from
+    /// changes: the index, the frecency, the favourites or the arrangement.
+    /// It depends on no query, so opening the launcher ranks nothing.
+    home: Option<(Vec<Hit>, Vec<Section>)>,
+    /// The sections of the current hits.
+    sections: Vec<Section>,
     /// The searchable index. Empty until the first enumeration completes,
     /// which is why the root list is allowed to be empty rather than treated
     /// as a bug.
@@ -174,6 +280,9 @@ impl RootSearch {
             providers,
             frecency,
             favorites: Favorites::new(),
+            arrangement: RootConfig::default(),
+            home: None,
+            sections: Vec::new(),
             index: Arc::new(Vec::new()),
             asides: std::array::from_fn(|_| Arc::new(Vec::new())),
             answers: Vec::new(),
@@ -208,6 +317,7 @@ impl RootSearch {
     }
 
     pub fn replace_index(&mut self, index: Vec<Candidate>) {
+        self.home = None;
         self.index = Arc::new(index);
     }
 
@@ -317,6 +427,28 @@ impl RootSearch {
     /// score. Runs on the UI thread on every keystroke; nothing here waits on
     /// anything (I-3).
     pub fn rank(&mut self, query: &str) -> &[Hit] {
+        // Nothing typed: the sections, from the cache. Nothing answers an
+        // empty query and nothing falls back from one, so the list is the
+        // index alone, arranged.
+        if query.trim().is_empty() {
+            self.answers.clear();
+            self.fallbacks.clear();
+            self.conversion = false;
+            self.asks_places = false;
+            self.wants_weather = None;
+            let (hits, sections) = match &self.home {
+                Some(home) => home.clone(),
+                None => {
+                    let home = self.arrange();
+                    self.home = Some(home.clone());
+                    home
+                }
+            };
+            self.hits = hits;
+            self.sections = sections;
+            return &self.hits;
+        }
+
         // Providers are contractually instant (see `crate::providers`).
         self.answers = self.providers.answers(query);
         let trimmed = query.trim();
@@ -495,8 +627,109 @@ impl RootSearch {
             }),
         );
 
+        self.sections = if hits.is_empty() {
+            Vec::new()
+        } else {
+            vec![Section {
+                title: RESULTS.into(),
+                start: 0,
+                len: hits.len(),
+                header: self.arrangement.results_header,
+            }]
+        };
         self.hits = hits;
         &self.hits
+    }
+
+    /// The empty list: every section in order, each item once, in the first
+    /// section that claims it.
+    ///
+    /// Favourites keep the user's order; everything else keeps the order the
+    /// empty query always had, frecency then title. A section that shows
+    /// favourites and something else lists the favourites first. A section
+    /// that claims nothing is left out, header and all. Nothing is capped:
+    /// every application and command is browsable.
+    fn arrange(&mut self) -> (Vec<Hit>, Vec<Section>) {
+        let ordered = self
+            .search
+            .rank("", &self.index, &self.frecency, usize::MAX);
+        let at: std::collections::HashMap<&str, usize> = self
+            .index
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| (candidate.item.id.as_str(), index))
+            .collect();
+        let mut claimed = vec![false; self.index.len()];
+        let mut hits = Vec::new();
+        let mut sections = Vec::new();
+
+        for config in &self.arrangement.sections {
+            let shows: Vec<Shows> = config
+                .shows
+                .iter()
+                .filter_map(|name| {
+                    let shows = Shows::parse(name);
+                    if shows.is_none() {
+                        log::warn!(
+                            "section {:?} shows {name:?}, which this build does not know; skipping it",
+                            config.title
+                        );
+                    }
+                    shows
+                })
+                .collect();
+            let start = hits.len();
+
+            if shows.contains(&Shows::Favorites) {
+                for id in self.favorites.ids() {
+                    if let Some(&index) = at.get(id.as_str())
+                        && !claimed[index]
+                    {
+                        claimed[index] = true;
+                        hits.push(Hit {
+                            source: Source::Indexed(index),
+                            highlights: Vec::new(),
+                            score: u32::MAX,
+                        });
+                    }
+                }
+            }
+            for found in &ordered {
+                if !claimed[found.index] && shows.iter().any(|shows| shows.takes(found.item.kind)) {
+                    claimed[found.index] = true;
+                    hits.push(Hit {
+                        source: Source::Indexed(found.index),
+                        highlights: Vec::new(),
+                        score: found.score,
+                    });
+                }
+            }
+
+            if hits.len() > start {
+                sections.push(Section {
+                    title: config.title.clone(),
+                    start,
+                    len: hits.len() - start,
+                    header: config.header,
+                });
+            }
+        }
+
+        (hits, sections)
+    }
+
+    /// The sections of the current hits, in order, covering all of them.
+    pub fn sections(&self) -> &[Section] {
+        &self.sections
+    }
+
+    /// Arrange the root list as `config.json` says. The empty list is built
+    /// again the next time it is asked for.
+    pub fn set_arrangement(&mut self, arrangement: RootConfig) {
+        if arrangement != self.arrangement {
+            self.arrangement = arrangement;
+            self.home = None;
+        }
     }
 
     /// Put the indexed item `id` first among `hits`.
@@ -586,11 +819,13 @@ impl RootSearch {
     /// background thread, which is the caller's to choose.
     pub fn record_use(&mut self, id: &str) -> Frecency {
         self.frecency.record(id);
+        self.home = None;
         self.frecency.clone()
     }
 
     pub fn set_favorites(&mut self, favorites: Favorites) {
         self.favorites = favorites;
+        self.home = None;
     }
 
     /// The ids of the favourites that are drawn, in the user's order: those
@@ -629,9 +864,11 @@ impl RootSearch {
             .map(str::to_string)
             .collect();
         let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
-        self.favorites
-            .apply(change, id, &shown)
-            .then(|| self.favorites.clone())
+        let changed = self.favorites.apply(change, id, &shown);
+        if changed {
+            self.home = None;
+        }
+        changed.then(|| self.favorites.clone())
     }
 }
 
@@ -766,6 +1003,148 @@ mod tests {
             .iter()
             .map(|hit| root.item(hit).title.clone())
             .collect()
+    }
+
+    /// Two applications and two commands, as the sections are tested on.
+    fn mixed() -> RootSearch {
+        let mut index = apps(&["Code", "Slack"]);
+        index.extend(
+            ["Clipboard History", "Search Snippets"]
+                .map(|title| Candidate::new(item(title, title, Kind::Command))),
+        );
+        root(index)
+    }
+
+    fn sections(root: &RootSearch) -> Vec<(String, Vec<String>)> {
+        root.sections()
+            .iter()
+            .map(|section| {
+                let titles = root.hits()[section.start..section.start + section.len]
+                    .iter()
+                    .map(|hit| root.item(hit).title.clone())
+                    .collect();
+                (section.title.clone(), titles)
+            })
+            .collect()
+    }
+
+    fn owned(sections: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+        sections
+            .iter()
+            .map(|(title, items)| {
+                (
+                    title.to_string(),
+                    items.iter().map(|item| item.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Raycast's arrangement, and no favourites yet: their section is not
+    /// drawn at all, header included.
+    #[test]
+    fn the_empty_list_is_in_sections_and_an_empty_one_is_left_out() {
+        let mut root = mixed();
+        root.rank("");
+        assert_eq!(
+            sections(&root),
+            owned(&[
+                ("Commands", &["Clipboard History", "Search Snippets"]),
+                ("Applications", &["Code", "Slack"]),
+            ])
+        );
+    }
+
+    /// A favourite is listed once, in the first section that claims it, and
+    /// the favourites keep the user's order rather than the alphabet's.
+    #[test]
+    fn a_favourite_is_listed_once_in_the_users_order() {
+        let mut root = mixed();
+        root.change_favorite(Change::Add, "Slack");
+        root.change_favorite(Change::Add, "Search Snippets");
+        root.rank("");
+        assert_eq!(
+            sections(&root),
+            owned(&[
+                ("Favorites", &["Slack", "Search Snippets"]),
+                ("Commands", &["Clipboard History"]),
+                ("Applications", &["Code"]),
+            ])
+        );
+    }
+
+    /// Vicinae's arrangement: one section for both, in the order the empty
+    /// list always had -- frecency, then the alphabet -- not by kind.
+    #[test]
+    fn a_section_can_show_commands_and_applications_together() {
+        let mut root = mixed();
+        root.set_arrangement(RootConfig {
+            sections: vec![SectionConfig {
+                title: "All".into(),
+                shows: vec!["commands".into(), "applications".into()],
+                header: false,
+            }],
+            results_header: true,
+        });
+        root.record_use("Slack");
+        root.rank("");
+        assert_eq!(
+            sections(&root),
+            owned(&[(
+                "All",
+                &["Slack", "Clipboard History", "Code", "Search Snippets"]
+            )])
+        );
+        assert!(!root.sections()[0].header);
+    }
+
+    /// What no section claims is not browsed, and a name this build does not
+    /// know drops itself, not the section.
+    #[test]
+    fn unclaimed_items_are_not_browsed_and_unknown_names_are_skipped() {
+        let mut root = mixed();
+        root.set_arrangement(RootConfig {
+            sections: vec![SectionConfig {
+                title: "Commands".into(),
+                shows: vec!["commands".into(), "from-a-later-lumen".into()],
+                header: true,
+            }],
+            results_header: true,
+        });
+        root.rank("");
+        assert_eq!(
+            sections(&root),
+            owned(&[("Commands", &["Clipboard History", "Search Snippets"])])
+        );
+        // Still found by name.
+        root.rank("slack");
+        assert_eq!(titles(&root)[0], "Slack");
+    }
+
+    /// Typing collapses the sections into one ranked list (AD-03).
+    #[test]
+    fn a_typed_query_is_one_section_of_results() {
+        let mut root = mixed();
+        root.rank("s");
+        assert_eq!(root.sections().len(), 1);
+        assert_eq!(root.sections()[0].title, RESULTS);
+        assert_eq!(root.sections()[0].len, root.hits().len());
+        root.rank("qzxv");
+        assert!(root.sections().is_empty());
+    }
+
+    /// The empty list is kept between summonses and built again only when
+    /// something it is built from changes -- here, a use.
+    #[test]
+    fn the_empty_list_is_kept_until_what_it_is_built_from_changes() {
+        let mut root = mixed();
+        root.rank("");
+        assert_eq!(titles(&root)[2], "Code");
+        root.rank("");
+        assert_eq!(titles(&root)[2], "Code");
+        root.record_use("Slack");
+        root.rank("");
+        assert_eq!(titles(&root)[2], "Slack");
     }
 
     /// An application can be a favourite; an answer computed from the query

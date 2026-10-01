@@ -33,6 +33,9 @@ pub struct Config {
     /// File name (without `.json`) of the style in the styles folder (F15):
     /// the launcher's geometry and variants, chosen apart from its colours.
     pub style: String,
+    /// How the root list is arranged (F15): the empty list's sections, and
+    /// whether the typed list has a header.
+    pub root: crate::root::RootConfig,
     pub backdrop: BackdropMode,
     pub window: WindowConfig,
     pub clipboard: ClipboardConfig,
@@ -177,6 +180,7 @@ impl Default for Config {
             hotkey: Hotkey::default(),
             theme: "nocturne".into(),
             style: "lumen".into(),
+            root: crate::root::RootConfig::default(),
             backdrop: BackdropMode::default(),
             window: WindowConfig::default(),
             clipboard: ClipboardConfig::default(),
