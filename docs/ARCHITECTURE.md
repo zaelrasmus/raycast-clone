@@ -1773,6 +1773,21 @@ The decisions:
 - **Attribution.** Open-Meteo's data and GeoNames' are CC BY 4.0: the view
   says *Forecasts by Open-Meteo* over the home city, and the README names
   both.
+- **The report is a list, entered as one more level of the pill.** The
+  screenshots are a list -- a row for now, rows of details, a row a day --
+  so *Report* draws one in the list's place, with no new vocabulary: the
+  city joins the pill (`Europe › Spain › Madrid`), and `Escape` or
+  `Backspace` take it off exactly as they leave a country. Typing in a
+  report searches for another place, as the screenshot's field says.
+  Opening one empties the field and the search behind it, so coming back
+  never shows results for words no longer on screen. `weather in ...` from
+  the root list opens the report whatever the layout: one city is what
+  was asked for. Every row of a report acts for its city.
+- **The pane is the report, compact.** The same data beside the list,
+  following the selection: the selected city is asked for when the
+  selection settles, as typing is. The week is a line a day -- `Thu
+  ↑16° ↓9° Light rain` -- not the report's rows squeezed. In the pane
+  `Enter` copies, since the pane already shows what the report would.
 - **Nine condition glyphs, and metrics as words.** Clear by day and by
   night, partly cloudy, cloudy, fog, drizzle, rain, snow and storm, on the
   icon set's grid (7.23). The screenshots' small glyph beside every metric
