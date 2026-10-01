@@ -2708,6 +2708,25 @@ and change with it; their tests change in the same commit. A bare `50%` is
 the number `0.5` where an amount is asked for, and no answer in the root
 list, where a lone number is none.
 
+### 7.40 The calculator's answer is a card, in the place of two rows
+
+I-10 asks for one row height. F14's calculator answer is drawn the way
+Raycast draws it -- what was typed, an arrow, the result, each named
+beneath, in type large enough to read across the room -- and that does not
+fit in a row.
+
+So the answer is a card `layout::CARD_ROWS` rows tall, drawn above the list
+rather than in it: the list is a `uniform_list`, whose rows are one height
+by construction, and it stays that way. The card takes the room of those
+rows, not more: the window is as tall with a card as with the rows it
+replaced, so nothing outside the list moves when one appears. Inside it,
+the rest of the results start lower, which is what any answer appearing
+first does. The card is the first result for selection and for `Enter`;
+only the drawing and the scroll know it is not a row. Its height, its type
+size and its gap are tokens (`layout::CARD_ROWS`, `layout::text::CARD`,
+`layout::CARD_LABEL_GAP`), as I-5 asks. An answer in money names its
+result by the rates' date, so a stale table shows on the card itself.
+
 ---
 
 ## 8. Risk register

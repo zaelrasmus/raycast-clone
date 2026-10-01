@@ -12,6 +12,16 @@ use crate::currency::{Rates, format};
 use crate::item::{Action, Item, Kind, ViewSource};
 use crate::providers::Provider;
 
+/// Whether `item` is the calculator's answer -- a result, or money -- and
+/// not the command that opens its history: the launcher draws an answer as
+/// a card (F14).
+pub fn is_answer(item: &Item) -> bool {
+    item.id == RESULT || item.id == MONEY
+}
+
+const RESULT: &str = "calculator:result";
+const MONEY: &str = "calculator:money";
+
 /// How the table of exchange rates stands, for an answer in money.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Standing {
@@ -34,7 +44,7 @@ pub fn money(
     standing: Standing,
 ) -> Item {
     let row = |title: String, subtitle: String, actions: Vec<Action>| Item {
-        id: "calculator:money".into(),
+        id: MONEY.into(),
         title,
         subtitle: Some(subtitle),
         icon: None,
@@ -115,7 +125,7 @@ impl Provider for CalculatorProvider {
         let formatted = calc::format_value(value);
 
         vec![Item {
-            id: "calculator:result".into(),
+            id: RESULT.into(),
             title: formatted.clone(),
             subtitle: Some(query.trim().to_string()),
             icon: None,

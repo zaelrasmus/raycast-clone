@@ -17,6 +17,11 @@
 //! the right is drawn from a fixed vocabulary. Nothing in a row can change its
 //! own size in response to its content, which is what makes results replace each
 //! other without the list moving underneath the cursor.
+//!
+//! The calculator's answer is the one exception, and a bounded one (7.40): it
+//! is drawn as a card `layout::CARD_ROWS` rows tall, above the list and in the
+//! place of that many rows, so the window does not change height when one
+//! appears.
 
 use std::sync::Arc;
 
@@ -813,7 +818,23 @@ impl Launcher {
 
     /// How many result rows the window should currently be sized for.
     pub fn visible_rows(&self) -> usize {
-        self.hits().len().min(self.config.window.visible_rows)
+        (self.hits().len() + self.card_rows().saturating_sub(1))
+            .min(self.config.window.visible_rows)
+    }
+
+    /// How many rows the calculator's card takes (F14): `layout::CARD_ROWS`
+    /// when the first result is its answer, and none otherwise.
+    fn card_rows(&self) -> usize {
+        let answered = matches!(self.mode, Mode::Root)
+            && self
+                .hits()
+                .first()
+                .is_some_and(|hit| lumen_core::providers::calculator::is_answer(self.item(hit)));
+        if answered {
+            lumen_core::layout::CARD_ROWS
+        } else {
+            0
+        }
     }
 
     /// How tall the window should be for whatever it is currently showing.
@@ -2026,9 +2047,13 @@ impl Launcher {
         self.action_panel = None;
         // F2 acceptance criterion: the list jumps directly to the selection.
         // There is no smooth scrolling, because smooth scrolling in a list being
-        // driven by arrow keys is motion the user did not ask for.
-        self.scroll
-            .scroll_to_item(self.selected, ScrollStrategy::Top);
+        // driven by arrow keys is motion the user did not ask for. Under a
+        // card, the list starts at the second result (F14).
+        let row = match self.card_rows() {
+            0 => self.selected,
+            _ => self.selected.saturating_sub(1),
+        };
+        self.scroll.scroll_to_item(row, ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -3090,25 +3115,110 @@ impl Launcher {
             return div().h(gpui::px(0.0)).into_any_element();
         }
 
-        let count = self.hits().len();
+        // The card, when there is one, is the first result, drawn above the
+        // list in the place of `card_rows` rows; the list holds the rest.
+        let card = self.card_rows();
+        let first = usize::from(card > 0);
+        let count = self.hits().len() - first;
         let entity = cx.entity();
 
         div()
             .py(metrics::list_padding())
             .h(self.results_height())
-            .child(
-                uniform_list(
-                    "results",
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        range
-                            .map(|index| this.render_row(index, &entity, cx))
-                            .collect::<Vec<_>>()
-                    }),
+            .flex()
+            .flex_col()
+            .when(card > 0, |results| results.child(self.render_card(&entity)))
+            .when(count > 0, |results| {
+                results.child(
+                    uniform_list(
+                        "results",
+                        count,
+                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                            range
+                                .map(|index| this.render_row(index + first, &entity, cx))
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(self.scroll.clone())
+                    .flex_1(),
                 )
-                .track_scroll(self.scroll.clone())
-                .h_full(),
+            })
+            .into_any_element()
+    }
+
+    /// The calculator's answer, as the screenshot F14 was designed from
+    /// draws it: what was typed, an arrow, and the result, each named
+    /// beneath. `layout::CARD_ROWS` rows tall, always (7.40). For money,
+    /// the result is named by the rates' date, so a table a week old shows
+    /// on the card itself.
+    fn render_card(&self, entity: &Entity<Self>) -> gpui::AnyElement {
+        let colors = &self.theme.colors;
+        let item = self.item(&self.hits()[0]);
+        let selected = self.selected == 0;
+        let expression = self.query.trim().to_string();
+        let named = card_label(&expression, item.subtitle.as_deref());
+
+        let side = |value: String, label: String| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(gpui::px(lumen_core::layout::CARD_LABEL_GAP))
+                .child(
+                    div()
+                        .max_w_full()
+                        .text_size(type_scale::card())
+                        .text_color(color(colors.text_primary))
+                        .truncate()
+                        .child(value),
+                )
+                .child(
+                    div()
+                        .max_w_full()
+                        .text_size(type_scale::footer())
+                        .text_color(color(colors.text_muted))
+                        .truncate()
+                        .child(label),
+                )
+        };
+
+        let entity = entity.clone();
+        div()
+            .id("calculator-card")
+            .h(metrics::row_height() * lumen_core::layout::CARD_ROWS as f32)
+            .flex_none()
+            .mx(metrics::row_inset())
+            .px(metrics::gutter() - metrics::row_inset())
+            .flex()
+            .items_center()
+            .gap(metrics::gutter())
+            .rounded(metrics::row_radius())
+            .border_1()
+            .when(selected, |card| {
+                card.bg(color(colors.selection_background))
+                    .border_color(color(colors.selection_border))
+            })
+            // Reserved when not selected, as a row's is (I-10).
+            .when(!selected, |card| {
+                card.border_color(gpui::transparent_black())
+            })
+            .on_click(move |_event, window, cx| {
+                entity.update(cx, |this, cx| {
+                    this.selected = 0;
+                    this.activate(&Activate, window, cx);
+                });
+            })
+            .child(side(expression, "Expression".into()))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(type_scale::title())
+                    .text_color(color(colors.text_muted))
+                    .child("\u{2192}"),
             )
+            .child(side(item.title.clone(), named))
             .into_any_element()
     }
 
@@ -3451,6 +3561,20 @@ fn highlighted(
         .into_any_element()
 }
 
+/// What names the result in the calculator's card: *Result*, or what the
+/// answer's subtitle says after what was typed -- the rates' date, for money
+/// (F14).
+fn card_label(expression: &str, subtitle: Option<&str>) -> String {
+    let said = subtitle
+        .and_then(|subtitle| subtitle.strip_prefix(expression))
+        .and_then(|rest| rest.strip_prefix(" \u{b7} "));
+    let mut letters = said.unwrap_or_default().chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => "Result".into(),
+    }
+}
+
 /// What the daemon keeps when `action` runs on `item`: a calculation copied
 /// is one used (F14) -- what was typed, and what was copied.
 fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
@@ -3469,10 +3593,23 @@ fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
 #[cfg(test)]
 mod tests {
 
-    use super::{LauncherEvent, calculated};
+    use super::{LauncherEvent, calculated, card_label};
     use lumen_core::item::{Builtin, Kind};
     use lumen_core::providers::Provider;
     use lumen_core::{Action, Item};
+
+    #[test]
+    fn the_card_names_its_result_or_its_rates() {
+        assert_eq!(card_label("2+2", Some("2+2")), "Result");
+        assert_eq!(
+            card_label(
+                "10 usd in cad",
+                Some("10 usd in cad \u{b7} rates of 28 Sep 2026 \u{b7} updating\u{2026}")
+            ),
+            "Rates of 28 Sep 2026 \u{b7} updating\u{2026}"
+        );
+        assert_eq!(card_label("2+2", None), "Result");
+    }
 
     /// The calculator's own row, copied, is kept; anything else copied is not.
     #[test]

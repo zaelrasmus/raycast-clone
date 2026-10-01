@@ -25,6 +25,14 @@
 /// Height of one result row. Fixed, always (I-10).
 pub const ROW_HEIGHT: f32 = 44.0;
 
+/// The calculator's answer, drawn as a card above the list (F14): this many
+/// rows tall, and in their place, so the window keeps its height when one
+/// appears (7.40).
+pub const CARD_ROWS: usize = 2;
+
+/// Between a value in the card and the label beneath it.
+pub const CARD_LABEL_GAP: f32 = 6.0;
+
 /// Height of the search field.
 pub const SEARCH_HEIGHT: f32 = 56.0;
 
@@ -263,6 +271,8 @@ pub mod text {
     pub const TITLE: f32 = 13.5;
     pub const SUBTITLE: f32 = 12.0;
     pub const FOOTER: f32 = 11.5;
+    /// The expression and the result in the calculator's card (F14).
+    pub const CARD: f32 = 22.0;
 }
 
 /// Appearance animation, per F2: "fade plus a 0.98-to-1.0 scale over roughly

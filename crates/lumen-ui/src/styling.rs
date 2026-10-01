@@ -107,6 +107,10 @@ pub mod type_scale {
     pub fn footer() -> Pixels {
         px(layout::text::FOOTER)
     }
+
+    pub fn card() -> Pixels {
+        px(layout::text::CARD)
+    }
 }
 
 #[cfg(test)]
