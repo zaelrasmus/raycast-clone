@@ -25,6 +25,44 @@ pub fn page(id: impl Into<ElementId>) -> Stateful<Div> {
         .gap(px(metrics::CARD_GAP))
 }
 
+/// A list editor's page: the list's card beside the editor's, inside the
+/// content's padding.
+pub fn split_page() -> Div {
+    div()
+        .size_full()
+        .p(px(metrics::CONTENT_PADDING))
+        .flex()
+        .gap(px(metrics::CARD_GAP))
+        .overflow_hidden()
+}
+
+/// A list editor's list, as a card. Its buttons sit under a rule at the
+/// bottom, as before.
+pub fn list_card(colors: &Colors) -> Div {
+    div()
+        .w(px(metrics::LIST_WIDTH))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .py(px(metrics::LIST_INSET))
+        .rounded(px(metrics::CARD_RADIUS))
+        .bg(color(colors.surface_elevated))
+        .overflow_hidden()
+}
+
+/// A list editor's editor, as a card beside the list. A column, so the
+/// editor inside stretches across it: in a row, a form sizes to its text.
+pub fn editor_card(colors: &Colors) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(0.0))
+        .flex()
+        .flex_col()
+        .rounded(px(metrics::CARD_RADIUS))
+        .bg(color(colors.surface_elevated))
+        .overflow_hidden()
+}
+
 /// A section's title, above its card.
 pub fn section_title(text: impl Into<SharedString>, colors: &Colors) -> Div {
     div()

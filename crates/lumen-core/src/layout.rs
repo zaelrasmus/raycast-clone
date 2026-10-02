@@ -480,6 +480,12 @@ pub mod settings {
     pub const TOGGLE_KNOB: f32 = 14.0;
     pub const TOGGLE_INSET: f32 = 2.0;
 
+    /// A list editor's list: Quicklinks, Translation, Timers, Shortcut
+    /// Sheets. A card beside the editor's card, its rows inset from its
+    /// edges as the nav's are.
+    pub const LIST_WIDTH: f32 = 220.0;
+    pub const LIST_INSET: f32 = 4.0;
+
     /// The line under the content saying what was saved, or why not.
     pub const STATUS_HEIGHT: f32 = 30.0;
 

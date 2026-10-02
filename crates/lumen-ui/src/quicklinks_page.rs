@@ -39,6 +39,7 @@ use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
 use crate::settings::text_button;
+use crate::settings_ui as ui;
 use crate::styling::color;
 
 actions!(
@@ -608,12 +609,9 @@ impl Render for QuicklinksPage {
         }
         let colors = self.colors.clone();
 
-        div()
-            .size_full()
-            .flex()
-            .overflow_hidden()
+        ui::split_page()
             .child(self.render_list(&colors, cx))
-            .child(self.render_editor(&colors))
+            .child(ui::editor_card(&colors).child(self.render_editor(&colors)))
     }
 }
 
@@ -631,9 +629,11 @@ impl QuicklinksPage {
             rows.push(
                 div()
                     .id(SharedString::from(format!("quicklink-{index}")))
-                    .h(px(metrics::SIDEBAR_ROW_HEIGHT))
+                    .h(px(metrics::NAV_ROW_HEIGHT))
                     .flex_none()
-                    .px(px(metrics::PADDING))
+                    .mx(px(metrics::LIST_INSET))
+                    .rounded(px(metrics::NAV_RADIUS))
+                    .px(px(metrics::CARD_PADDING_X - metrics::LIST_INSET))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -709,53 +709,45 @@ impl QuicklinksPage {
                 .into_any_element(),
         };
 
-        div()
-            .w(px(metrics::SIDEBAR_WIDTH))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(color(colors.border_subtle))
-            .child(body)
-            .child(
-                div()
-                    .p(px(metrics::GAP))
-                    .flex()
-                    .flex_col()
-                    .gap(px(metrics::GAP))
-                    .border_t_1()
-                    .border_color(color(colors.border_subtle))
-                    // A file that does not parse cannot be written, so there
-                    // is nothing to offer until it is fixed.
-                    .when(self.problem.is_none(), |column| {
-                        column.child(text_button(
-                            "new-quicklink",
-                            "New quicklink",
-                            colors,
-                            cx.listener(|page, _, window, cx| page.new_link(window, cx)),
-                        ))
-                    })
-                    .when(deletable, |column| {
-                        column.child(text_button(
-                            "delete-quicklink",
-                            "Delete this quicklink",
-                            colors,
-                            cx.listener(|page, _, window, cx| page.ask_delete(window, cx)),
-                        ))
-                    })
-                    .when(!self.entries.is_empty(), |column| {
-                        column.child(text_button(
-                            "refresh-icons",
-                            if self.refreshing {
-                                "Fetching icons\u{2026}"
-                            } else {
-                                "Refresh icons"
-                            },
-                            colors,
-                            cx.listener(|page, _, _, cx| page.refresh_icons(cx)),
-                        ))
-                    }),
-            )
+        ui::list_card(colors).child(body).child(
+            div()
+                .p(px(metrics::GAP))
+                .flex()
+                .flex_col()
+                .gap(px(metrics::GAP))
+                .border_t_1()
+                .border_color(color(colors.border_subtle))
+                // A file that does not parse cannot be written, so there
+                // is nothing to offer until it is fixed.
+                .when(self.problem.is_none(), |column| {
+                    column.child(text_button(
+                        "new-quicklink",
+                        "New quicklink",
+                        colors,
+                        cx.listener(|page, _, window, cx| page.new_link(window, cx)),
+                    ))
+                })
+                .when(deletable, |column| {
+                    column.child(text_button(
+                        "delete-quicklink",
+                        "Delete this quicklink",
+                        colors,
+                        cx.listener(|page, _, window, cx| page.ask_delete(window, cx)),
+                    ))
+                })
+                .when(!self.entries.is_empty(), |column| {
+                    column.child(text_button(
+                        "refresh-icons",
+                        if self.refreshing {
+                            "Fetching icons\u{2026}"
+                        } else {
+                            "Refresh icons"
+                        },
+                        colors,
+                        cx.listener(|page, _, _, cx| page.refresh_icons(cx)),
+                    ))
+                }),
+        )
     }
 
     fn render_editor(&self, colors: &Colors) -> AnyElement {

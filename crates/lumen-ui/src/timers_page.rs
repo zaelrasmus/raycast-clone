@@ -43,6 +43,7 @@ use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, DIALOG_CONTEXT};
 use crate::select::{Choice, Select, SelectEvent};
 use crate::settings::text_button;
+use crate::settings_ui as ui;
 use crate::styling::{color, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::timer_form::{TimerForm, TimerFormEvent};
@@ -740,12 +741,9 @@ impl Render for TimersPage {
         }
         let colors = self.colors.clone();
 
-        div()
-            .size_full()
-            .flex()
-            .overflow_hidden()
+        ui::split_page()
             .child(self.render_list(&colors, cx))
-            .child(self.render_form(&colors, window, cx))
+            .child(ui::editor_card(&colors).child(self.render_form(&colors, window, cx)))
     }
 }
 
@@ -754,9 +752,11 @@ impl TimersPage {
         let row = |id: SharedString, label: String, detail: String, selected: bool| {
             div()
                 .id(id)
-                .h(px(metrics::SIDEBAR_ROW_HEIGHT))
+                .h(px(metrics::NAV_ROW_HEIGHT))
                 .flex_none()
-                .px(px(metrics::PADDING))
+                .mx(px(metrics::LIST_INSET))
+                .rounded(px(metrics::NAV_RADIUS))
+                .px(px(metrics::CARD_PADDING_X - metrics::LIST_INSET))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -860,39 +860,31 @@ impl TimersPage {
         };
 
         let deletable = matches!(self.selection, Selection::Preset(_));
-        div()
-            .w(px(metrics::SIDEBAR_WIDTH))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(color(colors.border_subtle))
-            .child(body)
-            .child(
-                div()
-                    .p(px(metrics::GAP))
-                    .flex()
-                    .flex_col()
-                    .gap(px(metrics::GAP))
-                    .border_t_1()
-                    .border_color(color(colors.border_subtle))
-                    .when(self.problem.is_none(), |column| {
-                        column.child(text_button(
-                            "new-timer-preset",
-                            "New preset",
-                            colors,
-                            cx.listener(|page, _, window, cx| page.new_preset(window, cx)),
-                        ))
-                    })
-                    .when(deletable, |column| {
-                        column.child(text_button(
-                            "delete-timer-preset",
-                            "Delete this preset",
-                            colors,
-                            cx.listener(|page, _, window, cx| page.ask_delete(window, cx)),
-                        ))
-                    }),
-            )
+        ui::list_card(colors).child(body).child(
+            div()
+                .p(px(metrics::GAP))
+                .flex()
+                .flex_col()
+                .gap(px(metrics::GAP))
+                .border_t_1()
+                .border_color(color(colors.border_subtle))
+                .when(self.problem.is_none(), |column| {
+                    column.child(text_button(
+                        "new-timer-preset",
+                        "New preset",
+                        colors,
+                        cx.listener(|page, _, window, cx| page.new_preset(window, cx)),
+                    ))
+                })
+                .when(deletable, |column| {
+                    column.child(text_button(
+                        "delete-timer-preset",
+                        "Delete this preset",
+                        colors,
+                        cx.listener(|page, _, window, cx| page.ask_delete(window, cx)),
+                    ))
+                }),
+        )
     }
 
     fn render_form(&self, colors: &Colors, window: &Window, cx: &mut Context<Self>) -> AnyElement {

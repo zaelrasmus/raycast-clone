@@ -972,12 +972,11 @@ impl Render for Settings {
         root = crate::styling::typography(root, &self.theme);
 
         let body = match self.page {
-            Page::Sheets => div()
-                .flex()
-                .flex_1()
-                .overflow_hidden()
+            Page::Sheets => crate::settings_ui::split_page()
                 .child(self.render_sidebar(&colors, cx))
-                .child(self.render_editor(&colors, cx))
+                .child(
+                    crate::settings_ui::editor_card(&colors).child(self.render_editor(&colors, cx)),
+                )
                 .into_any_element(),
             Page::Quicklinks => div()
                 .flex()
@@ -1240,13 +1239,7 @@ impl Settings {
         let seed = self.foreground.clone();
         let deletable = self.current().is_some_and(|draft| draft.path.is_some());
 
-        div()
-            .w(px(metrics::SIDEBAR_WIDTH))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(color(colors.border_subtle))
+        crate::settings_ui::list_card(colors)
             .child(
                 div().flex_1().overflow_hidden().child(
                     uniform_list(
@@ -1327,38 +1320,45 @@ impl Settings {
         let colors = &self.theme.colors;
         let entity = entity.clone();
 
+        // Inset by a wrapper's padding: `uniform_list` ignores an item's
+        // margins, as `list` does (F15).
         div()
-            .id(index)
-            .h(px(metrics::SIDEBAR_ROW_HEIGHT))
-            .px(px(metrics::PADDING))
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(metrics::GAP))
-            .text_size(px(metrics::text::LABEL))
-            .when(selected, |row| {
-                row.bg(color(colors.selection_background))
-                    .text_color(color(colors.text_primary))
-            })
-            .when(!selected, |row| row.text_color(color(colors.text_muted)))
-            .on_click(move |_event, _window, cx| {
-                entity.update(cx, |this, cx| this.select(index, cx));
-            })
-            .child(div().overflow_hidden().child(name))
+            .px(px(metrics::LIST_INSET))
             .child(
                 div()
-                    .flex_none()
-                    .text_size(px(metrics::text::HINT))
-                    .text_color(color(colors.text_muted))
-                    // "Generated" explains why the sheet cannot be edited before
-                    // the user clicks it and finds out.
-                    .child(if !editable {
-                        "generated"
-                    } else if dirty {
-                        "edited"
-                    } else {
-                        ""
-                    }),
+                    .id(index)
+                    .h(px(metrics::NAV_ROW_HEIGHT))
+                    .rounded(px(metrics::NAV_RADIUS))
+                    .px(px(metrics::CARD_PADDING_X - metrics::LIST_INSET))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(metrics::GAP))
+                    .text_size(px(metrics::text::LABEL))
+                    .when(selected, |row| {
+                        row.bg(color(colors.selection_background))
+                            .text_color(color(colors.text_primary))
+                    })
+                    .when(!selected, |row| row.text_color(color(colors.text_muted)))
+                    .on_click(move |_event, _window, cx| {
+                        entity.update(cx, |this, cx| this.select(index, cx));
+                    })
+                    .child(div().overflow_hidden().child(name))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(metrics::text::HINT))
+                            .text_color(color(colors.text_muted))
+                            // "Generated" explains why the sheet cannot be edited before
+                            // the user clicks it and finds out.
+                            .child(if !editable {
+                                "generated"
+                            } else if dirty {
+                                "edited"
+                            } else {
+                                ""
+                            }),
+                    ),
             )
             .into_any_element()
     }
@@ -1557,12 +1557,14 @@ impl Settings {
     }
 }
 
+/// A label over a group of the sheet editor's fields, as the cards' section
+/// titles read (F15): muted, as written.
 fn section_label(text: &'static str, colors: &Colors) -> impl IntoElement {
     div()
         .pt(px(metrics::GAP))
-        .text_size(px(metrics::text::SECTION))
-        .text_color(color(colors.accent))
-        .child(text.to_uppercase())
+        .text_size(px(metrics::text::ROW_DESCRIPTION))
+        .text_color(color(colors.text_muted))
+        .child(text)
 }
 
 /// A button.
