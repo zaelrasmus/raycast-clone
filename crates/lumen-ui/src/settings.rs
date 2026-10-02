@@ -65,18 +65,39 @@ enum Page {
 }
 
 impl Page {
+    /// The nav's order: Lumen's own pages, then the features', by name, as
+    /// Raycast lists its extensions (F15).
     const ALL: [Page; 10] = [
         Page::Appearance,
         Page::Sheets,
-        Page::Quicklinks,
-        Page::Translation,
-        Page::Timers,
         Page::Calculator,
-        Page::Currency,
-        Page::Clock,
-        Page::Weather,
         Page::Clipboard,
+        Page::Currency,
+        Page::Quicklinks,
+        Page::Timers,
+        Page::Translation,
+        Page::Weather,
+        Page::Clock,
     ];
+
+    /// How many of [`Page::ALL`] are Lumen's own, before the gap in the nav.
+    const OWN: usize = 2;
+
+    /// The glyph beside its name in the nav.
+    fn icon(self) -> &'static str {
+        match self {
+            Page::Appearance => "icons/palette.svg",
+            Page::Sheets => "icons/keyboard.svg",
+            Page::Quicklinks => "icons/link.svg",
+            Page::Translation => "icons/text.svg",
+            Page::Timers => "icons/timer.svg",
+            Page::Currency => "icons/currency.svg",
+            Page::Clock => "icons/clock.svg",
+            Page::Weather => "icons/weather-partly-cloudy.svg",
+            Page::Clipboard => "icons/clipboard.svg",
+            Page::Calculator => "icons/calculator.svg",
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -118,6 +139,10 @@ actions!(
         DiscardChanges,
         /// Close the settings window.
         CloseSettings,
+        /// The next page in the nav (F15).
+        NextPage,
+        /// The previous page in the nav (F15).
+        PreviousPage,
     ]
 );
 
@@ -247,6 +272,9 @@ pub struct Settings {
     status: Option<SharedString>,
     list_scroll: UniformListScrollHandle,
     page: Page,
+    /// The nav's search over the pages, and what it holds (F15).
+    nav_search: Entity<TextField>,
+    nav_query: String,
     quicklinks: Entity<QuicklinksPage>,
     translation: Entity<TranslatePage>,
     timers: Entity<TimersPage>,
@@ -342,6 +370,18 @@ impl Settings {
         })
         .detach();
 
+        let nav_search = {
+            let colors = theme.colors.clone();
+            cx.new(|cx| TextField::search("Search settings\u{2026}", colors, cx))
+        };
+        cx.subscribe(&nav_search, |settings, _, event: &TextFieldEvent, cx| {
+            if let TextFieldEvent::Changed(text) = event {
+                settings.nav_query = text.trim().to_lowercase();
+                cx.notify();
+            }
+        })
+        .detach();
+
         Self {
             focus_handle,
             theme,
@@ -353,6 +393,8 @@ impl Settings {
             list_scroll: UniformListScrollHandle::new(),
             // The first page, as it is first in the list.
             page: Page::Appearance,
+            nav_search,
+            nav_query: String::new(),
             quicklinks,
             translation,
             timers,
@@ -438,6 +480,38 @@ impl Settings {
         self.page = page;
         self.focus(window, cx);
         cx.notify();
+    }
+
+    /// The pages the nav's search leaves, in order.
+    fn shown_pages(&self) -> Vec<Page> {
+        Page::ALL
+            .into_iter()
+            .filter(|page| {
+                self.nav_query.is_empty() || page.label().to_lowercase().contains(&self.nav_query)
+            })
+            .collect()
+    }
+
+    fn step_page(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let pages = self.shown_pages();
+        if pages.is_empty() {
+            return;
+        }
+        let at = pages.iter().position(|page| *page == self.page);
+        let next = match (at, forward) {
+            (Some(at), true) => (at + 1) % pages.len(),
+            (Some(at), false) => (at + pages.len() - 1) % pages.len(),
+            (None, _) => 0,
+        };
+        self.show_page(pages[next], window, cx);
+    }
+
+    fn next_page(&mut self, _: &NextPage, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_page(true, window, cx);
+    }
+
+    fn previous_page(&mut self, _: &PreviousPage, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_page(false, window, cx);
     }
 
     /// Load the library into the editor, discarding any working copies.
@@ -884,6 +958,8 @@ impl Render for Settings {
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::discard))
             .on_action(cx.listener(Self::close))
+            .on_action(cx.listener(Self::next_page))
+            .on_action(cx.listener(Self::previous_page))
             .size_full()
             .flex()
             .flex_col()
@@ -973,45 +1049,176 @@ impl Render for Settings {
         };
 
         root.relative()
-            .child(self.render_header(&colors, cx))
-            .child(body)
-            .child(self.render_footer(&colors, cx))
+            .child(self.render_title_bar(&colors, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(self.render_nav(&colors, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .child(body)
+                            .child(self.render_footer(&colors, cx)),
+                    ),
+            )
             .children(dialog)
     }
 }
 
 impl Settings {
-    fn render_header(&self, colors: &Colors, cx: &mut Context<Self>) -> impl IntoElement {
-        let current = self.page;
+    /// The window's name, and the way out. The system draws no decoration
+    /// for this window, so the application does.
+    fn render_title_bar(&self, colors: &Colors, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h(px(metrics::HEADER_HEIGHT))
-            .px(px(metrics::PADDING))
+            .h(px(metrics::TITLE_HEIGHT))
+            .flex_none()
             .flex()
             .items_center()
-            .justify_between()
             .border_b_1()
             .border_color(color(colors.border_subtle))
             .child(
                 div()
+                    .w(px(metrics::NAV_WIDTH))
+                    .h_full()
+                    .flex_none()
+                    .px(px(metrics::NAV_PADDING + metrics::CARD_PADDING_X / 2.0))
                     .flex()
-                    .gap(px(metrics::TAB_GAP))
-                    .children(Page::ALL.map(|page| {
-                        choice_button(
-                            page.label(),
-                            page == current,
-                            colors,
-                            cx.listener(move |this, _event, window, cx| {
-                                this.show_page(page, window, cx)
-                            }),
-                        )
-                    })),
+                    .items_center()
+                    .border_r_1()
+                    .border_color(color(colors.border_subtle))
+                    .text_size(px(metrics::text::WINDOW))
+                    .text_color(color(colors.text_muted))
+                    .child("Settings"),
             )
             .child(
                 div()
-                    .text_size(px(metrics::text::HINT))
+                    .flex_1()
+                    .px(px(metrics::CONTENT_PADDING + metrics::CARD_PADDING_X))
+                    .text_size(px(metrics::text::WINDOW))
                     .text_color(color(colors.text_muted))
-                    .child(current.hint()),
+                    .truncate()
+                    .child(self.page.hint()),
             )
+            .child(
+                div()
+                    .id("close-settings")
+                    .h_full()
+                    .px(px(metrics::CONTENT_PADDING))
+                    .flex()
+                    .items_center()
+                    .text_size(px(metrics::text::SECTION_TITLE))
+                    .text_color(color(colors.text_muted))
+                    .cursor_pointer()
+                    .hover(|close| close.text_color(color(colors.text_primary)))
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        this.close(&CloseSettings, window, cx)
+                    }))
+                    .child("\u{2715}"),
+            )
+    }
+
+    /// The pages down the left: a search over them, then a row each with
+    /// its icon, Lumen's own first and a gap before the features'.
+    fn render_nav(&self, colors: &Colors, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.page;
+        let shown = self.shown_pages();
+        let rows: Vec<gpui::AnyElement> = shown
+            .iter()
+            .enumerate()
+            .map(|(index, &page)| {
+                let selected = page == current;
+                // The gap falls where Lumen's own pages end, wherever the
+                // search leaves that.
+                let after_own = index > 0
+                    && Page::ALL.iter().position(|each| *each == page).unwrap_or(0) >= Page::OWN
+                    && Page::ALL
+                        .iter()
+                        .position(|each| *each == shown[index - 1])
+                        .unwrap_or(0)
+                        < Page::OWN;
+                div()
+                    .id(("nav", index))
+                    .h(px(metrics::NAV_ROW_HEIGHT))
+                    .flex_none()
+                    .when(after_own, |row| row.mt(px(metrics::CARD_GAP)))
+                    .px(px(metrics::CARD_PADDING_X / 2.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(metrics::NAV_ICON_GAP))
+                    .rounded(px(metrics::NAV_RADIUS))
+                    .text_size(px(metrics::text::NAV))
+                    .text_color(color(if selected {
+                        colors.text_primary
+                    } else {
+                        colors.text_muted
+                    }))
+                    .when(selected, |row| row.bg(color(colors.selection_background)))
+                    .cursor_pointer()
+                    .hover(|row| row.text_color(color(colors.text_primary)))
+                    .on_click(
+                        cx.listener(move |this, _event, window, cx| {
+                            this.show_page(page, window, cx)
+                        }),
+                    )
+                    .child(
+                        gpui::svg()
+                            .path(page.icon())
+                            .flex_none()
+                            .size(px(metrics::NAV_ICON_SIZE))
+                            .text_color(color(colors.icon)),
+                    )
+                    .child(div().truncate().child(page.label()))
+                    .into_any_element()
+            })
+            .collect();
+
+        div()
+            .w(px(metrics::NAV_WIDTH))
+            .flex_none()
+            .p(px(metrics::NAV_PADDING))
+            .flex()
+            .flex_col()
+            .gap(px(metrics::NAV_ROW_GAP))
+            .border_r_1()
+            .border_color(color(colors.border_subtle))
+            .child(
+                div()
+                    .h(px(metrics::NAV_SEARCH_HEIGHT))
+                    .flex_none()
+                    .mb(px(metrics::CARD_GAP))
+                    .px(px(metrics::CARD_PADDING_X / 2.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(metrics::NAV_ICON_GAP))
+                    .rounded(px(metrics::NAV_RADIUS))
+                    .bg(color(colors.surface_elevated))
+                    .border_1()
+                    .border_color(color(colors.border_subtle))
+                    .text_size(px(metrics::text::NAV))
+                    .child(
+                        gpui::svg()
+                            .path(crate::icons::SEARCH)
+                            .flex_none()
+                            .size(px(metrics::NAV_ICON_SIZE))
+                            .text_color(color(colors.text_muted)),
+                    )
+                    .child(self.nav_search.clone()),
+            )
+            .children(rows)
+            .when(shown.is_empty(), |nav| {
+                nav.child(
+                    div()
+                        .px(px(metrics::CARD_PADDING_X / 2.0))
+                        .text_size(px(metrics::text::ROW_DESCRIPTION))
+                        .text_color(color(colors.text_muted))
+                        .child("No page by that name"),
+                )
+            })
     }
 
     fn render_sidebar(&self, colors: &Colors, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1321,9 +1528,12 @@ impl Settings {
             Page::Appearance => (self.appearance.read(cx).status(), false),
         };
 
+        // The content column's status: what was saved, or why not, and the
+        // keys. Under the content, not the nav, which has nothing to save.
         div()
-            .h(px(metrics::FOOTER_HEIGHT))
-            .px(px(metrics::PADDING))
+            .h(px(metrics::STATUS_HEIGHT))
+            .flex_none()
+            .px(px(metrics::CONTENT_PADDING + metrics::CARD_PADDING_X))
             .flex()
             .items_center()
             .justify_between()
@@ -1340,6 +1550,7 @@ impl Settings {
                 div()
                     .flex()
                     .gap(px(metrics::GROUP_GAP))
+                    .child("Pages  Ctrl+Tab")
                     .child("Save  Ctrl+S")
                     .child("Close  Esc"),
             )

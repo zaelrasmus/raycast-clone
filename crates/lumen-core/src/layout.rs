@@ -381,7 +381,9 @@ pub mod settings {
     /// Logical size of the window. Fixed: the content is a two-pane editor whose
     /// proportions are calibrated, not something that benefits from resizing.
     pub const WIDTH: f32 = 900.0;
-    pub const HEIGHT: f32 = 620.0;
+    /// 674 measured in Raycast's; 672 is the nearest whole number of the
+    /// nav's 35-point pitch above the title bar and the search field.
+    pub const HEIGHT: f32 = 672.0;
 
     /// Width of the sheet list down the left-hand side.
     pub const SIDEBAR_WIDTH: f32 = 240.0;
@@ -432,14 +434,75 @@ pub mod settings {
     /// Between the page tabs in the header.
     pub const TAB_GAP: f32 = 4.0;
 
+    // F15's redesign, measured from Raycast's settings window at 1.22
+    // screen pixels to the point.
+
+    /// The title bar: the window's name, and a close button.
+    pub const TITLE_HEIGHT: f32 = 41.0;
+
+    /// The navigation down the left: a search over the pages, then a row
+    /// per page with its icon.
+    pub const NAV_WIDTH: f32 = 237.0;
+    pub const NAV_PADDING: f32 = 11.0;
+    pub const NAV_SEARCH_HEIGHT: f32 = 33.0;
+    pub const NAV_ROW_HEIGHT: f32 = 32.0;
+    pub const NAV_ROW_GAP: f32 = 3.0;
+    pub const NAV_RADIUS: f32 = 7.0;
+    pub const NAV_ICON_SIZE: f32 = 18.0;
+    pub const NAV_ICON_GAP: f32 = 10.0;
+
+    /// The content column: cards of rows under section titles.
+    pub const CONTENT_PADDING: f32 = 16.0;
+    pub const CARD_RADIUS: f32 = 8.0;
+    pub const CARD_GAP: f32 = 12.0;
+    pub const CARD_PADDING_X: f32 = 13.0;
+    /// A row with a title; one with a description under it too.
+    pub const CARD_ROW_HEIGHT: f32 = 48.0;
+    pub const CARD_ROW_TALL_HEIGHT: f32 = 58.0;
+    /// Between a row's text and its control.
+    pub const CARD_ROW_GAP: f32 = 16.0;
+    /// Between a row's title and its description.
+    pub const CARD_ROW_LINE_GAP: f32 = 2.0;
+    /// A section's title, above its card.
+    pub const SECTION_TITLE_HEIGHT: f32 = 30.0;
+    /// A control at a row's right edge: a field that would otherwise run the
+    /// row's whole width, a compact dropdown's list.
+    pub const CONTROL_WIDTH: f32 = 240.0;
+
+    /// A toggle: a track, and the knob inside it.
+    pub const TOGGLE_WIDTH: f32 = 32.0;
+    pub const TOGGLE_HEIGHT: f32 = 18.0;
+    pub const TOGGLE_KNOB: f32 = 14.0;
+    pub const TOGGLE_INSET: f32 = 2.0;
+
+    /// The line under the content saying what was saved, or why not.
+    pub const STATUS_HEIGHT: f32 = 30.0;
+
     pub mod text {
         pub const TITLE: f32 = 15.0;
         pub const SECTION: f32 = 11.0;
         pub const FIELD: f32 = 12.5;
         pub const LABEL: f32 = 12.0;
         pub const HINT: f32 = 11.5;
+        /// F15: the window's name, a page's row in the nav, a card row's
+        /// title and description, a section's title.
+        pub const WINDOW: f32 = 12.5;
+        pub const NAV: f32 = 13.5;
+        pub const ROW_TITLE: f32 = 13.5;
+        pub const ROW_DESCRIPTION: f32 = 11.5;
+        pub const SECTION_TITLE: f32 = 13.5;
     }
 }
+
+/// The toggle's knob fits its track with the inset either side.
+const _: () =
+    assert!(settings::TOGGLE_KNOB + 2.0 * settings::TOGGLE_INSET <= settings::TOGGLE_HEIGHT);
+const _: () = assert!(settings::TOGGLE_HEIGHT < settings::CARD_ROW_HEIGHT);
+/// A dialog still fits the content column beside the nav.
+const _: () = assert!(
+    settings::DIALOG_WIDTH
+        < settings::WIDTH - settings::NAV_WIDTH - settings::CONTENT_PADDING * 2.0
+);
 
 /// The snippet form's right column -- three labelled fields and the line
 /// that says why a save was refused -- fits beside the editor.

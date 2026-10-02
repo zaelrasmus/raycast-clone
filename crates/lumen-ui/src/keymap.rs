@@ -36,7 +36,7 @@ use crate::launcher::{
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
 use crate::select::{CloseSelect, ConfirmSelect, SelectDown, SelectUp, ToggleSelect};
-use crate::settings::{CloseSettings, SaveSheet};
+use crate::settings::{CloseSettings, NextPage, PreviousPage, SaveSheet};
 use crate::text_area;
 use crate::text_field::{
     Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
@@ -438,6 +438,9 @@ pub fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-s", SaveSheet, Some(SETTINGS_CONTEXT)),
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_CONTEXT)),
+        // Between pages, as a browser goes between tabs (F15).
+        KeyBinding::new("ctrl-tab", NextPage, Some(SETTINGS_CONTEXT)),
+        KeyBinding::new("ctrl-shift-tab", PreviousPage, Some(SETTINGS_CONTEXT)),
     ]);
 
     // Text editing, identical in the launcher's query and in every settings

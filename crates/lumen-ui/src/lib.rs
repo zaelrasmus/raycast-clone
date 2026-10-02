@@ -31,6 +31,7 @@ pub mod quicklink_form;
 pub mod quicklinks_page;
 pub mod select;
 pub mod settings;
+pub mod settings_ui;
 pub mod snippet_form;
 pub mod styling;
 pub mod text_area;
@@ -69,6 +70,7 @@ mod invariants {
         ("quicklinks_page.rs", include_str!("quicklinks_page.rs")),
         ("select.rs", include_str!("select.rs")),
         ("settings.rs", include_str!("settings.rs")),
+        ("settings_ui.rs", include_str!("settings_ui.rs")),
         ("styling.rs", include_str!("styling.rs")),
         ("text_field.rs", include_str!("text_field.rs")),
         ("view.rs", include_str!("view.rs")),

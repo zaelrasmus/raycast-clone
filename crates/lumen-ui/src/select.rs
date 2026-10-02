@@ -144,6 +144,9 @@ pub struct Select {
     open: Option<usize>,
     /// Whether the list opens above the field rather than below it.
     upward: bool,
+    /// Drawn as a settings row's control (F15): its value and a chevron, no
+    /// box, at the row's right edge, the list hanging from that edge.
+    compact: bool,
     scroll: ScrollHandle,
     colors: Colors,
 }
@@ -156,6 +159,7 @@ impl Select {
             choices,
             open: None,
             upward: false,
+            compact: false,
             scroll: ScrollHandle::new(),
             colors,
         }
@@ -167,6 +171,12 @@ impl Select {
     /// lays it over the field it belongs to.
     pub fn open_upward(&mut self, upward: bool) {
         self.upward = upward;
+    }
+
+    /// Draw as a settings row's control: no box, at the right edge (F15).
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     pub fn value(&self) -> Option<&str> {
@@ -266,15 +276,32 @@ impl Render for Select {
             .px(px(layout::settings::FIELD_PADDING))
             .flex()
             .items_center()
-            .justify_between()
             .rounded(px(layout::settings::FIELD_RADIUS))
             .border_1()
-            .border_color(color(if focused {
-                colors.accent
-            } else {
-                colors.border_subtle
-            }))
-            .bg(color(colors.surface_elevated))
+            .map(|trigger| {
+                if self.compact {
+                    // No box: the value and its chevron, lit when focused.
+                    trigger
+                        .gap(px(layout::settings::FIELD_PADDING))
+                        .border_color(if focused {
+                            color(colors.accent)
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .when(focused || self.open.is_some(), |trigger| {
+                            trigger.bg(color(colors.selection_background))
+                        })
+                } else {
+                    trigger
+                        .justify_between()
+                        .border_color(color(if focused {
+                            colors.accent
+                        } else {
+                            colors.border_subtle
+                        }))
+                        .bg(color(colors.surface_elevated))
+                }
+            })
             .text_size(type_scale::subtitle())
             .text_color(color(colors.text_primary))
             .cursor_pointer()
@@ -303,7 +330,7 @@ impl Render for Select {
             .on_action(cx.listener(Self::close))
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
-            .w_full()
+            .when(!self.compact, |select| select.w_full())
             .relative()
             .child(trigger)
             .when_some(self.open, |select, highlighted| {
@@ -348,15 +375,19 @@ impl Select {
         // Drawn after everything else, so the form's later rows do not paint
         // over it. Anchored at the field's top-left corner: from there the
         // list hangs below the field, or stands on top of it.
-        let (corner, offset) = if self.upward {
-            (Corner::BottomLeft, -layout::select::GAP)
-        } else {
-            (
-                Corner::TopLeft,
+        let (corner, offset) = match (self.upward, self.compact) {
+            (true, false) => (Corner::BottomLeft, -layout::select::GAP),
+            (true, true) => (Corner::BottomRight, -layout::select::GAP),
+            (false, compact) => (
+                if compact {
+                    Corner::TopRight
+                } else {
+                    Corner::TopLeft
+                },
                 layout::settings::FIELD_HEIGHT + layout::select::GAP,
-            )
+            ),
         };
-        deferred(
+        let menu = deferred(
             anchored()
                 .anchor(corner)
                 .offset(point(px(0.0), px(offset)))
@@ -383,7 +414,15 @@ impl Select {
                         .children(rows),
                 ),
         )
-        .with_priority(1)
+        .with_priority(1);
+        // Compact, the list hangs from the trigger's right edge: anchored
+        // from a point laid out there, since an anchor's origin is its own.
+        div()
+            .absolute()
+            .top_0()
+            .when(self.compact, |anchor| anchor.right_0())
+            .when(!self.compact, |anchor| anchor.left_0())
+            .child(menu)
     }
 }
 

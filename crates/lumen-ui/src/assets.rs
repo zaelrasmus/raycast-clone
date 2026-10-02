@@ -61,6 +61,15 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/window.svg",
         include_bytes!("../../../assets/icons/window.svg"),
     ),
+    // The settings window's navigation (F15).
+    (
+        "icons/palette.svg",
+        include_bytes!("../../../assets/icons/palette.svg"),
+    ),
+    (
+        "icons/keyboard.svg",
+        include_bytes!("../../../assets/icons/keyboard.svg"),
+    ),
     // The search field's and the footer's, when a style asks (F15).
     (
         "icons/search.svg",
