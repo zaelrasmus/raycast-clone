@@ -146,12 +146,13 @@ pub fn item(typed: &Typed) -> Option<Item> {
         keywords: Vec::new(),
         actions: vec![
             Action::OpenLink(open.clone()),
-            Action::CopyToClipboard(typed.url.clone()),
+            // Ctrl+Enter runs the second action: the private window.
             Action::OpenLink(OpenLink {
                 private: true,
                 ..open.clone()
             }),
             Action::ChooseBrowser(open),
+            Action::CopyToClipboard(typed.url.clone()),
             Action::SaveAsQuicklink {
                 name: typed.host.trim_start_matches("www.").to_string(),
                 link: typed.url.clone(),
@@ -257,8 +258,13 @@ mod tests {
         assert_eq!(row.title, "Open www.github.com");
         assert_eq!(row.kind, Kind::Website);
         assert!(matches!(&row.actions[0], Action::OpenLink(open) if !open.private));
-        assert!(matches!(&row.actions[2], Action::OpenLink(open) if open.private));
-        assert!(matches!(row.actions[3], Action::ChooseBrowser(_)));
+        // Ctrl+Enter runs the second: the private window.
+        assert!(matches!(&row.actions[1], Action::OpenLink(open) if open.private));
+        assert!(matches!(row.actions[2], Action::ChooseBrowser(_)));
+        assert_eq!(
+            row.actions[3],
+            Action::CopyToClipboard(row.subtitle.clone().unwrap())
+        );
         assert_eq!(
             row.actions[4],
             Action::SaveAsQuicklink {

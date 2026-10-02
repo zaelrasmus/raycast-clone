@@ -181,16 +181,13 @@ impl Quicklink {
         Action::OpenLink(self.open(query))
     }
 
-    /// What the action panel adds to opening the link: the same link in a
-    /// private window, and in a browser chosen there and then.
-    fn other_ways_to_open(&self, query: &str) -> [Action; 2] {
-        [
-            Action::OpenLink(OpenLink {
-                private: true,
-                ..self.open(query)
-            }),
-            Action::ChooseBrowser(self.open(query)),
-        ]
+    /// The same link in a private window. Second in every link's actions, so
+    /// that Ctrl+Enter is the private open.
+    fn private_open(&self, query: &str) -> Action {
+        Action::OpenLink(OpenLink {
+            private: true,
+            ..self.open(query)
+        })
     }
 
     /// The link itself, as a catalogue entry.
@@ -206,13 +203,24 @@ impl Quicklink {
                 name: self.name.clone(),
             }));
         }
-        actions.push(self.action(""));
-        // Copying needs the rendered link, which a clipboard placeholder would
-        // only have once opened.
-        if !self.link.reads_clipboard() && !self.link.takes_query() {
-            actions.push(Action::CopyToClipboard(self.link.render("", "")));
+        // The private window comes right after the primary, which is what
+        // Ctrl+Enter runs. A link that asks for its argument cannot ask for it
+        // in a private window, so there it opens empty, and the plain empty
+        // open follows.
+        if self.link.takes_query() {
+            actions.push(self.private_open(""));
+            actions.push(self.action(""));
+            actions.push(Action::ChooseBrowser(self.open("")));
+        } else {
+            actions.push(self.action(""));
+            actions.push(self.private_open(""));
+            actions.push(Action::ChooseBrowser(self.open("")));
+            // Copying needs the rendered link, which a clipboard placeholder
+            // would only have once opened.
+            if !self.link.reads_clipboard() {
+                actions.push(Action::CopyToClipboard(self.link.render("", "")));
+            }
         }
-        actions.extend(self.other_ways_to_open(""));
 
         let mut keywords = self.keywords.clone();
         keywords.extend(self.alias.clone());
@@ -233,11 +241,14 @@ impl Quicklink {
     /// Shares the catalogue entry's id, so using the answer also raises the
     /// link in the root list: they are the same link.
     fn query_item(&self, query: &str) -> Item {
-        let mut actions = vec![self.action(query)];
+        let mut actions = vec![
+            self.action(query),
+            self.private_open(query),
+            Action::ChooseBrowser(self.open(query)),
+        ];
         if !self.link.reads_clipboard() {
             actions.push(Action::CopyToClipboard(self.link.render(query, "")));
         }
-        actions.extend(self.other_ways_to_open(query));
 
         Item {
             id: self.id(),
@@ -539,9 +550,11 @@ impl QuicklinkProvider {
                 subtitle: Some(link.source.clone()),
                 icon: link.icon(),
                 keywords: Vec::new(),
-                actions: std::iter::once(link.action(""))
-                    .chain(link.other_ways_to_open(""))
-                    .collect(),
+                actions: vec![
+                    link.action(""),
+                    link.private_open(""),
+                    Action::ChooseBrowser(link.open("")),
+                ],
                 kind: Kind::Quicklink,
             });
         }
@@ -747,10 +760,9 @@ mod tests {
             "https://www.youtube.com/@veritasium"
         );
         // Copying the link is the one other thing people want from it.
-        assert_eq!(
-            items[0].actions[1],
-            Action::CopyToClipboard("https://www.youtube.com/@veritasium".into())
-        );
+        assert!(items[0].actions.contains(&Action::CopyToClipboard(
+            "https://www.youtube.com/@veritasium".into()
+        )));
     }
 
     #[test]
@@ -802,7 +814,28 @@ mod tests {
                 name: "Google".into(),
             })
         );
-        assert!(matches!(item.actions[1], Action::OpenLink(_)));
+        // Ctrl+Enter: the private window, empty, as the plain open is one step
+        // further down.
+        assert!(matches!(&item.actions[1], Action::OpenLink(open) if open.private));
+        assert!(matches!(&item.actions[2], Action::OpenLink(open) if !open.private));
+    }
+
+    /// Ctrl+Enter runs the second action: for every link row, the private open.
+    #[test]
+    fn the_second_action_of_a_link_is_the_private_window() {
+        let provider = QuicklinkProvider::new(vec![channel(), google()]);
+
+        let rows = provider
+            .catalogue()
+            .into_iter()
+            .chain(provider.answer("g lofi"));
+        for row in rows {
+            assert!(
+                matches!(&row.actions[1], Action::OpenLink(open) if open.private),
+                "{}",
+                row.title
+            );
+        }
     }
 
     #[test]
