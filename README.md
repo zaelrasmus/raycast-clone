@@ -479,7 +479,7 @@ the family's OpenType features (`"font_features": { "cv11": 1 }`). The rest
 of the look is a style's.
 
 A font that is not installed can be dropped into
-`%APPDATA%\Lumen\configonts\` as `.ttf`, `.otf` or `.ttc`; it is loaded
+`%APPDATA%\Lumen\config\fonts\` as `.ttf`, `.otf` or `.ttc`; it is loaded
 at startup, so `lumen quit` then `lumen` after adding one. Raycast and
 Vicinae both set their interface in Inter, which Lumen bundles: what differs
 on screen is the renderer -- a web view's against DirectWrite -- not the
