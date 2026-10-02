@@ -336,6 +336,14 @@ impl Config {
         ((self.list_height(metrics) / metrics.row_height).floor() as usize).max(1)
     }
 
+    /// How tall a full root list is: [`Config::visible_rows`] whole rows.
+    /// Where the window's top edge is placed from, and how tall a view is
+    /// whose height does not follow its rows -- a list beside its detail pane,
+    /// a detail view -- so a style's height reaches views too (F15).
+    pub fn full_list_height(&self, metrics: &Metrics) -> f32 {
+        self.visible_rows(metrics) as f32 * metrics.row_height
+    }
+
     /// Total window height for a given number of visible rows.
     ///
     /// Computed from the active style's metrics rather than configured
@@ -432,11 +440,13 @@ mod tests {
         assert_eq!(config.width(&metrics), 764.0);
         assert_eq!(config.list_height(&metrics), 371.0);
         assert_eq!(config.visible_rows(&metrics), 9);
+        assert_eq!(config.full_list_height(&metrics), 9.0 * 38.0);
 
         config.window.width = Some(5000.0);
         config.window.visible_rows = Some(1);
         assert_eq!(config.width(&metrics), 1000.0);
         assert_eq!(config.list_height(&metrics), 3.0 * 38.0);
+        assert_eq!(config.full_list_height(&metrics), 3.0 * 38.0);
     }
 
     /// A config written before the setting existed must keep the launcher

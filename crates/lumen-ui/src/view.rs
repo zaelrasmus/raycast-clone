@@ -96,6 +96,73 @@ pub fn row_height(row: &Row, metrics: &Metrics) -> f32 {
     }
 }
 
+/// What a view's body is, as far as its height goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// A list on its own: as tall as its rows.
+    List,
+    /// A list with the detail pane beside it (F10).
+    Pane,
+    /// A detail view, which has no rows at all.
+    Detail,
+}
+
+/// How tall a view's rows are, rounded down to a whole row.
+///
+/// `cap` is how tall the list may grow, `Config::list_height`, the root
+/// list's own; `full` is how tall a full root list is,
+/// `Config::full_list_height`. A list ends on whole rows within `cap`, as the
+/// root list does (7.29). A view whose height does not follow its rows -- a
+/// pane, while its rows fit, and a detail view -- is as tall as a full root
+/// list, so a style's height reaches views the way it reaches the root list.
+///
+/// Not `total.min(cap)`. A view's rows are not all the same height -- a
+/// section header is shorter than an item -- so capping the sum lands
+/// wherever it lands, which for the bundled example is two thirds of the
+/// way through the last row it shows. Accumulating whole rows until the
+/// next one would not fit is what keeps I-10's promise here: a partial row
+/// is never left clipped at the bottom edge.
+pub fn rows_height(rows: &[Row], shape: Shape, metrics: &Metrics, cap: f32, full: f32) -> f32 {
+    if shape == Shape::Detail {
+        return full;
+    }
+    // A list with nothing in it still has something to say, and needs room
+    // to say it. Without this the window is sized to zero rows and the
+    // empty state spills over the footer.
+    if rows.is_empty() {
+        return metrics.empty_height();
+    }
+
+    let mut used = 0.0;
+    let mut all_fit = true;
+    for row in rows {
+        let height = row_height(row, metrics);
+        if used + height > cap {
+            all_fit = false;
+            break;
+        }
+        used += height;
+    }
+
+    // A list with a detail pane is as tall as the window allows, however
+    // few rows it has (F10): the pane holds sentences, and sizing the
+    // window to two senses would leave it no room to show either. As tall
+    // as a full root list, not the cap itself, which need not be a whole
+    // number of rows; taller only when headers make the rows that fit so.
+    // When the rows overflow, they still end on a whole row.
+    if all_fit && shape == Shape::Pane {
+        return used.max(full);
+    }
+
+    // A single row taller than the whole cap is shown anyway: an empty
+    // window is worse than one row that does not quite fit.
+    if used == 0.0 {
+        return row_height(&rows[0], metrics);
+    }
+
+    used
+}
+
 /// Where a list's scroll should start so that `row` is fully visible in a
 /// viewport `viewport` tall, given where it starts now, as (row, offset in it).
 ///
@@ -870,6 +937,79 @@ mod tests {
         assert_eq!(reveal(&rows, &Metrics::BASE, (9, 0.0), 7, 200.0), (6, 0.0));
         // And back to the very first item: its header too.
         assert_eq!(reveal(&rows, &Metrics::BASE, (9, 0.0), 1, 200.0), (0, 0.0));
+    }
+
+    /// Carbon's numbers: a list 371 tall holds nine 38 px rows, 342.
+    fn carbon() -> (Metrics, f32, f32) {
+        let metrics = Metrics {
+            row_height: 38.0,
+            section_height: 32.0,
+            list_height: 371.0,
+            ..Metrics::BASE
+        };
+        (metrics, 371.0, 9.0 * 38.0)
+    }
+
+    #[test]
+    fn a_pane_whose_rows_fit_is_as_tall_as_a_full_root_list() {
+        let (metrics, cap, full) = carbon();
+        let rows = vec![Row::Section("Today".into(), None), Row::Item(0)];
+
+        assert_eq!(rows_height(&rows, Shape::Pane, &metrics, cap, full), full);
+    }
+
+    #[test]
+    fn a_detail_view_is_as_tall_as_a_full_root_list() {
+        let (metrics, cap, full) = carbon();
+
+        assert_eq!(rows_height(&[], Shape::Detail, &metrics, cap, full), full);
+    }
+
+    /// Two headers and eight rows fit in 371 and are taller than nine rows:
+    /// the pane grows to them rather than clipping the last.
+    #[test]
+    fn a_pane_never_clips_rows_that_fit() {
+        let (metrics, cap, full) = carbon();
+        let mut rows = vec![Row::Section("Today".into(), None)];
+        rows.extend((0..4).map(Row::Item));
+        rows.push(Row::Section("Yesterday".into(), None));
+        rows.extend((4..8).map(Row::Item));
+
+        let height = rows_height(&rows, Shape::Pane, &metrics, cap, full);
+
+        assert_eq!(height, 2.0 * 32.0 + 8.0 * 38.0);
+        assert!(height > full && height <= cap);
+    }
+
+    /// Rows that overflow end on a whole row within the style's height, in a
+    /// list and in a pane alike: what the root list does.
+    #[test]
+    fn overflowing_rows_end_on_a_whole_row_within_the_cap() {
+        let (metrics, cap, full) = carbon();
+        let mut rows = vec![Row::Section("Today".into(), None)];
+        rows.extend((0..20).map(Row::Item));
+
+        for shape in [Shape::List, Shape::Pane] {
+            assert_eq!(
+                rows_height(&rows, shape, &metrics, cap, full),
+                32.0 + 8.0 * 38.0
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_list_is_as_tall_as_its_rows_and_an_empty_one_has_room_to_say_so() {
+        let (metrics, cap, full) = carbon();
+        let rows = vec![Row::Item(0), Row::Item(1)];
+
+        assert_eq!(
+            rows_height(&rows, Shape::List, &metrics, cap, full),
+            2.0 * 38.0
+        );
+        assert_eq!(
+            rows_height(&[], Shape::List, &metrics, cap, full),
+            metrics.empty_height()
+        );
     }
 
     #[test]

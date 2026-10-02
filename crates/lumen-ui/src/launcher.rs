@@ -1131,58 +1131,24 @@ impl Launcher {
         }
     }
 
-    /// How much vertical space a view's rows take, rounded down to a whole row.
-    ///
-    /// Not `total.min(cap)`. A view's rows are not all the same height -- a
-    /// section header is shorter than an item -- so capping the sum lands
-    /// wherever it lands, which for the bundled example is two thirds of the
-    /// way through the last row it shows. Accumulating whole rows until the
-    /// next one would not fit is what keeps I-10's promise here: a partial row
-    /// is never left clipped at the bottom edge.
+    /// How much vertical space a view's rows take: the style's list height,
+    /// as the root list's is, through `view::rows_height`.
     fn view_rows_height(&self, state: &ViewState) -> f32 {
-        // A list with nothing in it still has something to say, and needs room
-        // to say it. Without this the window is sized to zero rows and the
-        // empty state spills over the footer.
+        use crate::view::Shape;
+
         let metrics = self.metrics();
-        if state.rows.is_empty() && !state.loading {
-            return metrics.empty_height();
-        }
-
-        let cap = self.config.list_height(metrics);
-
-        let mut used = 0.0;
-        let mut all_fit = true;
-        for row in &state.rows {
-            let height = crate::view::row_height(row, metrics);
-            if used + height > cap {
-                all_fit = false;
-                break;
-            }
-            used += height;
-        }
-
-        // A list with a detail pane is as tall as the window allows, however
-        // few rows it has (F10): the pane holds sentences, and sizing the
-        // window to two senses would leave it no room to show either. When
-        // the rows overflow, they still end on a whole row.
-        if all_fit
-            && let lumen_core::view::View::List(list) = &state.view
-            && list.showing_detail
-        {
-            return cap;
-        }
-
-        // A single row taller than the whole cap is shown anyway: an empty
-        // window is worse than one row that does not quite fit.
-        if used == 0.0 {
-            return state
-                .rows
-                .first()
-                .map(|row| crate::view::row_height(row, metrics))
-                .unwrap_or_default();
-        }
-
-        used
+        let shape = match &state.view {
+            lumen_core::view::View::List(list) if list.showing_detail => Shape::Pane,
+            lumen_core::view::View::List(_) => Shape::List,
+            lumen_core::view::View::Detail(_) => Shape::Detail,
+        };
+        crate::view::rows_height(
+            &state.rows,
+            shape,
+            metrics,
+            self.config.list_height(metrics),
+            self.config.full_list_height(metrics),
+        )
     }
 
     /// Ask for a resize, but only when the height actually changed.
@@ -1468,7 +1434,7 @@ impl Launcher {
         let metrics = self.metrics();
         metrics.search_height
             + metrics.list_padding * 2.0
-            + self.config.visible_rows(metrics) as f32 * metrics.row_height
+            + self.config.full_list_height(metrics)
             + metrics.footer_height
     }
 
@@ -3382,25 +3348,32 @@ impl Render for Launcher {
             (None, Mode::View(state)) => self.render_view(state, cx),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
         };
-        let body = match self.render_action_panel(cx) {
-            // The wrapper is what gives the popover something to be placed in:
-            // the region's own height, which is the window's less the search
-            // field and the footer, stated outright rather than left for the
-            // layout to derive. It gives way, not the chrome around it, while
-            // the window is still catching up with the height it asked for.
-            Some(popover) => div()
-                .relative()
-                .flex_shrink()
-                .min_h(gpui::px(0.0))
-                .h(gpui::px(self.region_height()))
-                .child(body)
-                .child(popover)
-                .into_any_element(),
-            None => body,
-        };
+        // The region between the search field and the footer, and the one
+        // part of the window that gives: it takes whatever height the window
+        // has once those two have theirs, which is never exactly what was
+        // asked for -- the window's border is inside it, the platform rounds
+        // its size to whole pixels, and it catches up with a new height a
+        // frame late. The body keeps its own height inside and is clipped to
+        // the region, so a body that cannot shrink, as a list beside its
+        // detail pane cannot, never pushes the footer out (I-10). The popover
+        // floats over it, unclipped, so its shadow is not cut.
+        let region = div()
+            .relative()
+            .flex_1()
+            .min_h(gpui::px(0.0))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(body),
+            )
+            .children(self.render_action_panel(cx));
 
         root.child(self.render_search_field(cx))
-            .child(body)
+            .child(region)
             .child(self.render_footer())
             // F2: a fade over roughly 120 ms. Nothing more.
             //
@@ -3688,18 +3661,12 @@ impl Launcher {
             self.underlying_height() - self.metrics().search_height - self.metrics().footer_height,
         );
 
+        // The loading state and the empty state are given the same room, the
+        // whole region, so the window does not jump when the first render
+        // turns out to be an empty list.
         if state.loading {
             return crate::view::render_loading(&self.theme, height);
         }
-
-        // The loading state and the empty state are given the same room, so
-        // the window does not jump when the first render turns out to be an
-        // empty list.
-        let height = if state.rows.is_empty() {
-            gpui::px(self.metrics().empty_height())
-        } else {
-            height
-        };
 
         match &state.view {
             lumen_core::view::View::List(list) => crate::view::render_list(
@@ -4193,8 +4160,8 @@ impl Launcher {
     /// floating element: `Config::panel_height` now grows it when the list is
     /// too short to stand the popover in. And an absolutely positioned element
     /// with only `right` and `bottom` gives taffy nothing to derive a height
-    /// from, so it laid out at zero: the popover, and the backdrop behind it,
-    /// are given theirs.
+    /// from, so it laid out at zero: the popover is given its own, and the
+    /// backdrop behind it the region's.
     ///
     /// What is returned fills the region. Its transparent backdrop takes the
     /// mouse so that a click on the list behind closes the popover instead of
@@ -4380,8 +4347,7 @@ impl Launcher {
                 .absolute()
                 .top_0()
                 .left_0()
-                .w_full()
-                .h(gpui::px(self.region_height()))
+                .size_full()
                 .occlude()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -4796,6 +4762,42 @@ mod tests {
         assert!(
             offenders.is_empty(),
             "these clear the action panel without a resize: {offenders:?}"
+        );
+    }
+
+    /// The search field and the footer never give, and the region between
+    /// them is the one element that does. A body that cannot shrink -- a list
+    /// beside its detail pane -- once pushed the footer out of the window,
+    /// because the region was not flexible and the window is never exactly the
+    /// height asked for (its border is inside it).
+    #[test]
+    fn the_region_between_the_chrome_is_the_only_part_that_gives() {
+        let source = include_str!("launcher.rs");
+        let code = source.split("\n#[cfg(test)]\n").next().unwrap_or(source);
+        let body = |name: &str| {
+            let start = code
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("`{name}` is gone"));
+            let rest = &code[start..];
+            let end = rest[3..]
+                .find("\n    fn ")
+                .map_or(rest.len(), |end| end + 3);
+            &rest[..end]
+        };
+
+        for chrome in ["render_search_field", "render_footer"] {
+            assert!(
+                body(chrome).contains(".flex_none()"),
+                "`{chrome}` must not shrink"
+            );
+        }
+        let render = body("render");
+        let region = &render[render.find("let region = div()").expect("the region")..];
+        let region = &region[..region.find(';').expect("one statement")];
+        assert!(region.contains(".flex_1()") && region.contains(".min_h("));
+        assert!(
+            !region.contains(".h("),
+            "the region takes the window's height, not one of its own"
         );
     }
 
