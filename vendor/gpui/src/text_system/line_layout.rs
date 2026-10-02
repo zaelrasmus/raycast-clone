@@ -1,4 +1,7 @@
-use crate::{FontId, GlyphId, Pixels, PlatformTextSystem, Point, SharedString, Size, point, px};
+use crate::{
+    FontId, GlyphId, LetterSpacing, Pixels, PlatformTextSystem, Point, SharedString, Size, point,
+    px,
+};
 use collections::FxHashMap;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::SmallVec;
@@ -577,6 +580,10 @@ impl LineLayoutCache {
                 }
             }
 
+            // LUMEN PATCH (docs/LETTER-SPACING.md): after shaping and after
+            // force_width, so both see the unspaced positions.
+            apply_letter_spacing(&mut layout, runs);
+
             let key = Arc::new(CacheKey {
                 text,
                 font_size,
@@ -592,11 +599,43 @@ impl LineLayoutCache {
     }
 }
 
+// LUMEN PATCH (docs/LETTER-SPACING.md)
+/// Adds each run's letter spacing after the glyphs of a shaped line: a glyph
+/// moves right by the spacing of every glyph before it, and the line grows by
+/// the spacing of every glyph. A ligature is one glyph, so it moves as one.
+fn apply_letter_spacing(layout: &mut LineLayout, font_runs: &[FontRun]) {
+    if font_runs.iter().all(|run| run.letter_spacing.is_zero()) {
+        return;
+    }
+
+    let font_size = layout.font_size;
+    let mut end = 0;
+    let ends: SmallVec<[(usize, Pixels); 4]> = font_runs
+        .iter()
+        .map(|run| {
+            end += run.len;
+            (end, run.letter_spacing.to_pixels(font_size))
+        })
+        .collect();
+    let mut offset = px(0.);
+    for glyph in layout.runs.iter_mut().flat_map(|run| run.glyphs.iter_mut()) {
+        glyph.position.x += offset;
+        let run_ix = ends.partition_point(|(end, _)| *end <= glyph.index);
+        if let Some((_, spacing)) = ends.get(run_ix) {
+            offset += *spacing;
+        }
+    }
+    layout.width += offset;
+}
+
 /// A run of text with a single font.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct FontRun {
     pub(crate) len: usize,
     pub(crate) font_id: FontId,
+    // LUMEN PATCH (docs/LETTER-SPACING.md): part of the cache key, so a line
+    // laid out at one spacing is never served for another.
+    pub(crate) letter_spacing: LetterSpacing,
 }
 
 trait AsCacheKeyRef {
@@ -668,5 +707,103 @@ impl<'a> Borrow<dyn AsCacheKeyRef + 'a> for Arc<CacheKey> {
 impl AsCacheKeyRef for CacheKeyRef<'_> {
     fn as_cache_key_ref(&self) -> CacheKeyRef<'_> {
         *self
+    }
+}
+
+// LUMEN PATCH (docs/LETTER-SPACING.md)
+#[cfg(test)]
+mod letter_spacing_tests {
+    use super::*;
+    use crate::{
+        Font, Hsla, LetterSpacing, TestAppContext, TestDispatcher, TextRun, WindowTextSystem, font,
+    };
+    use rand::prelude::*;
+
+    const SIZE: f32 = 20.;
+
+    fn text_system() -> WindowTextSystem {
+        let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
+        let cx = TestAppContext::build(dispatcher, None);
+        WindowTextSystem::new(cx.text_system().clone())
+    }
+
+    fn run(len: usize, em: f32) -> TextRun {
+        TextRun {
+            len,
+            font: Font { ..font(".ZedMono") },
+            color: Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+            letter_spacing: LetterSpacing::em(em),
+        }
+    }
+
+    fn glyph_xs(layout: &LineLayout) -> Vec<f32> {
+        layout
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.position.x.0))
+            .collect()
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn spacing_widens_the_line_and_shifts_each_glyph() {
+        let system = text_system();
+        let base = system.layout_line("hello", px(SIZE), &[run(5, 0.)], None);
+        let spaced = system.layout_line("hello", px(SIZE), &[run(5, 0.1)], None);
+
+        let step = 0.1 * SIZE;
+        assert_close(spaced.width.0, base.width.0 + 5. * step);
+        for (k, (spaced_x, base_x)) in glyph_xs(&spaced).iter().zip(glyph_xs(&base)).enumerate() {
+            assert_close(*spaced_x, base_x + k as f32 * step);
+        }
+    }
+
+    #[test]
+    fn spacing_accumulates_across_runs() {
+        let system = text_system();
+        let base = system.layout_line("abcd", px(SIZE), &[run(4, 0.)], None);
+        // Two glyphs untracked, then two at 0.5 em.
+        let mixed = system.layout_line("abcd", px(SIZE), &[run(2, 0.), run(2, 0.5)], None);
+
+        let step = 0.5 * SIZE;
+        let xs = glyph_xs(&mixed);
+        let base_xs = glyph_xs(&base);
+        assert_close(xs[0], base_xs[0]);
+        assert_close(xs[1], base_xs[1]);
+        assert_close(xs[2], base_xs[2]);
+        assert_close(xs[3], base_xs[3] + step);
+        assert_close(mixed.width.0, base.width.0 + 2. * step);
+    }
+
+    #[test]
+    fn two_spacings_are_two_cache_entries() {
+        let system = text_system();
+        let a = system.layout_line("hello", px(SIZE), &[run(5, 0.)], None);
+        let b = system.layout_line("hello", px(SIZE), &[run(5, 0.1)], None);
+        let b_again = system.layout_line("hello", px(SIZE), &[run(5, 0.1)], None);
+
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert!(b.width > a.width);
+        assert!(Arc::ptr_eq(&b, &b_again));
+    }
+
+    #[test]
+    fn negative_zero_is_no_spacing() {
+        assert_eq!(LetterSpacing::em(-0.), LetterSpacing::NONE);
+        let hash = |s: LetterSpacing| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(hash(LetterSpacing::em(-0.)), hash(LetterSpacing::NONE));
     }
 }

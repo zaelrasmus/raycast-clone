@@ -1,4 +1,6 @@
-use crate::{FontId, FontRun, Pixels, PlatformTextSystem, SharedString, TextRun, px};
+use crate::{
+    FontId, FontRun, LetterSpacing, Pixels, PlatformTextSystem, SharedString, TextRun, px,
+};
 use collections::HashMap;
 use std::{iter, sync::Arc};
 
@@ -9,6 +11,9 @@ pub struct LineWrapper {
     pub(crate) font_size: Pixels,
     cached_ascii_char_widths: [Option<Pixels>; 128],
     cached_other_char_widths: HashMap<char, Pixels>,
+    // LUMEN PATCH (docs/LETTER-SPACING.md): added on top of the cached widths,
+    // which stay unspaced, so the caches need no key for it.
+    letter_spacing: LetterSpacing,
 }
 
 impl LineWrapper {
@@ -26,7 +31,14 @@ impl LineWrapper {
             font_size,
             cached_ascii_char_widths: [None; 128],
             cached_other_char_widths: HashMap::default(),
+            letter_spacing: LetterSpacing::NONE, // LUMEN PATCH (docs/LETTER-SPACING.md)
         }
+    }
+
+    // LUMEN PATCH (docs/LETTER-SPACING.md)
+    /// Sets the extra space added to every character this wrapper measures.
+    pub fn set_letter_spacing(&mut self, letter_spacing: LetterSpacing) {
+        self.letter_spacing = letter_spacing;
     }
 
     /// Wrap a line of text to the given width with this wrapper's font and font size.
@@ -189,8 +201,14 @@ impl LineWrapper {
         matches!(c, '⋯')
     }
 
+    // LUMEN PATCH (docs/LETTER-SPACING.md)
     #[inline(always)]
     fn width_for_char(&mut self, c: char) -> Pixels {
+        self.unspaced_width_for_char(c) + self.letter_spacing.to_pixels(self.font_size)
+    }
+
+    #[inline(always)]
+    fn unspaced_width_for_char(&mut self, c: char) -> Pixels {
         if (c as u32) < 128 {
             if let Some(cached_width) = self.cached_ascii_char_widths[c as usize] {
                 cached_width
@@ -218,6 +236,7 @@ impl LineWrapper {
                 &[FontRun {
                     len: buffer.len(),
                     font_id: self.font_id,
+                    letter_spacing: LetterSpacing::NONE, // LUMEN PATCH (docs/LETTER-SPACING.md)
                 }],
             )
             .width
@@ -344,6 +363,7 @@ mod tests {
                 background_color: None,
                 underline: None,
                 strikethrough: None,
+                letter_spacing: LetterSpacing::NONE, // LUMEN PATCH (docs/LETTER-SPACING.md)
             })
             .collect()
     }
@@ -693,6 +713,7 @@ mod tests {
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,
+                letter_spacing: LetterSpacing::NONE, // LUMEN PATCH (docs/LETTER-SPACING.md)
                 background_color: None,
             };
             let bold = TextRun {
@@ -701,6 +722,7 @@ mod tests {
                 color: Default::default(),
                 underline: Default::default(),
                 strikethrough: None,
+                letter_spacing: LetterSpacing::NONE, // LUMEN PATCH (docs/LETTER-SPACING.md)
                 background_color: None,
             };
 
@@ -739,5 +761,68 @@ mod tests {
                 ],
             );
         });
+    }
+}
+
+// LUMEN PATCH (docs/LETTER-SPACING.md)
+#[cfg(test)]
+mod letter_spacing_tests {
+    use super::*;
+    use crate::{
+        Font, FontFeatures, FontStyle, FontWeight, Hsla, TestAppContext, TestDispatcher, font,
+    };
+    use rand::prelude::*;
+
+    fn wrapper_with(spacing: LetterSpacing) -> LineWrapper {
+        let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
+        let cx = TestAppContext::build(dispatcher, None);
+        let id = cx.text_system().resolve_font(&font(".ZedMono"));
+        let mut wrapper =
+            LineWrapper::new(id, px(16.), cx.text_system().platform_text_system.clone());
+        wrapper.set_letter_spacing(spacing);
+        wrapper
+    }
+
+    fn truncate(wrapper: &mut LineWrapper, text: &'static str, width: Pixels) -> SharedString {
+        let mut runs = vec![TextRun {
+            len: text.len(),
+            font: Font {
+                family: "Dummy".into(),
+                features: FontFeatures::default(),
+                fallbacks: None,
+                weight: FontWeight::default(),
+                style: FontStyle::Normal,
+            },
+            color: Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+            letter_spacing: wrapper.letter_spacing,
+        }];
+        wrapper.truncate_line(text.into(), width, "…", &mut runs)
+    }
+
+    #[test]
+    fn spacing_adds_to_every_measured_character() {
+        let mut plain = wrapper_with(LetterSpacing::NONE);
+        let mut spaced = wrapper_with(LetterSpacing::em(0.25));
+        // 0.25 em at 16 px.
+        let step = 4.;
+        for c in ['a', ' ', 'é', '中'] {
+            let expected = plain.width_for_char(c).0 + step;
+            assert!((spaced.width_for_char(c).0 - expected).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn truncate_cuts_earlier_with_spacing() {
+        let text = "aa bbb cccc ddddd eeee ffff gggg";
+        let plain = truncate(&mut wrapper_with(LetterSpacing::NONE), text, px(220.));
+        let spaced = truncate(&mut wrapper_with(LetterSpacing::em(0.25)), text, px(220.));
+
+        assert!(
+            spaced.len() < plain.len(),
+            "spaced {spaced:?} should be shorter than plain {plain:?}"
+        );
     }
 }

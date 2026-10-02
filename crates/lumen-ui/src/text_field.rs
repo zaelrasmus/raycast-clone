@@ -663,6 +663,7 @@ impl Element for TextLine {
             background_color: None,
             underline: None,
             strikethrough: None,
+            letter_spacing: style.letter_spacing,
         };
 
         // What the input method is still composing is underlined, which is

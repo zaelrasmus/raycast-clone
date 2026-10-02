@@ -7,9 +7,9 @@ use std::{
 use crate::{
     AbsoluteLength, App, Background, BackgroundTag, BorderStyle, Bounds, ContentMask, Corners,
     CornersRefinement, CursorStyle, DefiniteLength, DevicePixels, Edges, EdgesRefinement, Font,
-    FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Hsla, Length, Pixels, Point,
-    PointRefinement, Rgba, SharedString, Size, SizeRefinement, Styled, TextRun, Window, black, phi,
-    point, quad, rems, size,
+    FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Hsla, Length, LetterSpacing,
+    Pixels, Point, PointRefinement, Rgba, SharedString, Size, SizeRefinement, Styled, TextRun,
+    Window, black, phi, point, quad, rems, size,
 };
 use collections::HashSet;
 use refineable::Refineable;
@@ -364,6 +364,10 @@ pub struct TextStyle {
     /// The fallback fonts to use
     pub font_fallbacks: Option<FontFallbacks>,
 
+    // LUMEN PATCH (docs/LETTER-SPACING.md)
+    /// Extra space after every glyph, in em
+    pub letter_spacing: LetterSpacing,
+
     /// The font size to use, in pixels or rems.
     pub font_size: AbsoluteLength,
 
@@ -406,6 +410,7 @@ impl Default for TextStyle {
             font_family: ".SystemUIFont".into(),
             font_features: FontFeatures::default(),
             font_fallbacks: None,
+            letter_spacing: LetterSpacing::NONE, // LUMEN PATCH (docs/LETTER-SPACING.md)
             font_size: rems(1.).into(),
             line_height: phi(),
             font_weight: FontWeight::default(),
@@ -486,6 +491,7 @@ impl TextStyle {
             background_color: self.background_color,
             underline: self.underline,
             strikethrough: self.strikethrough,
+            letter_spacing: self.letter_spacing, // LUMEN PATCH (docs/LETTER-SPACING.md)
         }
     }
 }

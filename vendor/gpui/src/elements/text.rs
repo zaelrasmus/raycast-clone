@@ -377,7 +377,12 @@ impl TextLayout {
                     return text_layout.size.unwrap();
                 }
 
-                let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
+                // LUMEN PATCH (docs/LETTER-SPACING.md)
+                let mut line_wrapper = cx.text_system().line_wrapper_with_letter_spacing(
+                    text_style.font(),
+                    font_size,
+                    text_style.letter_spacing,
+                );
                 let text = if let Some(truncate_width) = truncate_width {
                     line_wrapper.truncate_line(
                         text.clone(),

@@ -290,14 +290,29 @@ impl TextSystem {
 
     /// Returns a handle to a line wrapper, for the given font and font size.
     pub fn line_wrapper(self: &Arc<Self>, font: Font, font_size: Pixels) -> LineWrapperHandle {
+        // LUMEN PATCH (docs/LETTER-SPACING.md)
+        self.line_wrapper_with_letter_spacing(font, font_size, LetterSpacing::NONE)
+    }
+
+    // LUMEN PATCH (docs/LETTER-SPACING.md)
+    /// Like [`Self::line_wrapper`], measuring every character with the extra
+    /// `letter_spacing` that shaping adds.
+    pub fn line_wrapper_with_letter_spacing(
+        self: &Arc<Self>,
+        font: Font,
+        font_size: Pixels,
+        letter_spacing: LetterSpacing,
+    ) -> LineWrapperHandle {
         let lock = &mut self.wrapper_pool.lock();
         let font_id = self.resolve_font(&font);
         let wrappers = lock
             .entry(FontIdWithSize { font_id, font_size })
             .or_default();
-        let wrapper = wrappers.pop().unwrap_or_else(|| {
+        let mut wrapper = wrappers.pop().unwrap_or_else(|| {
             LineWrapper::new(font_id, font_size, self.platform_text_system.clone())
         });
+        // LUMEN PATCH (docs/LETTER-SPACING.md): pooled wrappers are reused across spacings.
+        wrapper.set_letter_spacing(letter_spacing);
 
         LineWrapperHandle {
             wrapper: Some(wrapper),
@@ -457,6 +472,7 @@ impl WindowTextSystem {
                 let font_id = self.resolve_font(&run.font);
                 if let Some(font_run) = font_runs.last_mut()
                     && font_id == font_run.font_id
+                    && font_run.letter_spacing == run.letter_spacing // LUMEN PATCH (docs/LETTER-SPACING.md)
                     && !decoration_changed
                 {
                     font_run.len += run_len_within_line;
@@ -464,6 +480,7 @@ impl WindowTextSystem {
                     font_runs.push(FontRun {
                         len: run_len_within_line,
                         font_id,
+                        letter_spacing: run.letter_spacing, // LUMEN PATCH (docs/LETTER-SPACING.md)
                     });
                 }
 
@@ -560,6 +577,7 @@ impl WindowTextSystem {
 
             if let Some(font_run) = font_runs.last_mut()
                 && Some(font_run.font_id) == last_font
+                && font_run.letter_spacing == run.letter_spacing // LUMEN PATCH (docs/LETTER-SPACING.md)
                 && !decoration_changed
             {
                 font_run.len += run.len;
@@ -569,6 +587,7 @@ impl WindowTextSystem {
                 font_runs.push(FontRun {
                     len: run.len,
                     font_id,
+                    letter_spacing: run.letter_spacing, // LUMEN PATCH (docs/LETTER-SPACING.md)
                 });
             }
         }
@@ -743,6 +762,57 @@ pub struct TextRun {
     pub underline: Option<UnderlineStyle>,
     /// The strikethrough style (if any)
     pub strikethrough: Option<StrikethroughStyle>,
+    // LUMEN PATCH (docs/LETTER-SPACING.md)
+    /// Extra space after every glyph of this run, in em
+    pub letter_spacing: LetterSpacing,
+}
+
+// LUMEN PATCH (docs/LETTER-SPACING.md)
+/// Extra space added after every glyph, as a multiple of the font size (em).
+/// Zero means no change. Stored as a float, but compared and hashed so that it
+/// can be part of the line layout cache key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LetterSpacing(f32);
+
+// LUMEN PATCH (docs/LETTER-SPACING.md)
+impl LetterSpacing {
+    /// No extra spacing.
+    pub const NONE: Self = Self(0.);
+
+    /// Spacing of `value` em. A NaN is treated as no spacing.
+    pub fn em(value: f32) -> Self {
+        if value.is_nan() {
+            Self::NONE
+        } else {
+            Self(value)
+        }
+    }
+
+    /// The spacing in em.
+    pub fn as_em(self) -> f32 {
+        self.0
+    }
+
+    /// Whether this spacing changes nothing.
+    pub fn is_zero(self) -> bool {
+        self.0 == 0.
+    }
+
+    /// The spacing in pixels at the given font size.
+    pub fn to_pixels(self, font_size: Pixels) -> Pixels {
+        font_size * self.0
+    }
+}
+
+// LUMEN PATCH (docs/LETTER-SPACING.md)
+impl Eq for LetterSpacing {}
+
+// LUMEN PATCH (docs/LETTER-SPACING.md)
+impl Hash for LetterSpacing {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // `+ 0.` folds -0. into 0., which compare equal.
+        (self.0 + 0.).to_bits().hash(state);
+    }
 }
 
 #[cfg(all(target_os = "macos", test))]

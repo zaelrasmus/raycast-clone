@@ -1263,6 +1263,7 @@ impl Element for TextBlock {
             background_color: None,
             underline: None,
             strikethrough: None,
+            letter_spacing: style.letter_spacing,
         };
         let (text, runs) = if placeholder {
             let text = area.placeholder.clone();
