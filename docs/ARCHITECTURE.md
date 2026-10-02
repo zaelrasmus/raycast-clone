@@ -3216,8 +3216,35 @@ being a place to reach a second action (`Ctrl+Enter` is).
 The popover is opaque whatever the theme's `surface.elevated` alpha, since it
 floats over text. It adds no colour token: its outline is `border.strong`, the
 rules `border.subtle`, the highlight `selection.background`. Its geometry is in
-`layout::action_panel`, shared with the picker's rows. Room for a search field
-at its bottom is not reserved yet.
+`layout::action_panel`, shared with the picker's rows.
+
+### 7.46 The action panel searches its own actions
+
+Under the rows, below a rule, the popover has its own field, "Search for
+actions…": a second `TextField`, not the query borrowed. Ctrl+K moves focus
+into it, empty; the query keeps its text, and since the query field no longer
+has focus nothing typed reaches `rerank`. The panel's field is subscribed apart
+and only narrows the panel. Focus comes back to the query in one place,
+`settle_panel_focus`, called at the top of `render`: whenever the panel is
+closed, by whichever of its many paths (Escape, Ctrl+K, an action run, a click
+outside, a re-rank), the query is refocused and the panel's search emptied. A
+new way of closing it therefore cannot leave the keys going to a hidden field.
+The root still has no `track_focus`; the field sits inside the
+`Launcher` context, so Up, Down, Enter, Escape and Ctrl+K resolve there as
+they do from the query.
+
+The search uses the root list's matcher (`RootSearch::filter`, as the picker
+does) on the rows' titles, but keeps the panel's order, not the ranking: the
+groups decide the rules, and a rule is drawn only between two shown rows of
+different groups. Each change puts the highlight on the first row left; no
+match shows a muted "No matching actions" row, and Enter does nothing. The
+browser page is searched by the same field, from empty. Escape closes the panel
+in one press; it does not clear the search first.
+
+The popover's height is still computed from every row, plus
+`layout::action_panel::SEARCH_HEIGHT`, so typing never resizes the window:
+the rows area keeps the unfiltered height (capped at `MAX_ROWS`) and the rows
+left sit at its top.
 
 ## 8. Risk register
 

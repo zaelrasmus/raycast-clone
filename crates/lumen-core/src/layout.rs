@@ -127,6 +127,10 @@ pub mod action_panel {
     /// is empty (I-10).
     pub const HEADER_HEIGHT: f32 = 30.0;
 
+    /// The panel's own search field, under the rows: Raycast's "Search for
+    /// actions...". Its rule above is drawn inside it (border-box).
+    pub const SEARCH_HEIGHT: f32 = 48.0;
+
     /// The rule where the group changes, and the air above and below it.
     pub const SEPARATOR_HEIGHT: f32 = 1.0;
     pub const SEPARATOR_MARGIN: f32 = 4.0;
@@ -162,10 +166,12 @@ pub mod action_panel {
     }
 
     /// The popover's height for rows of these groups: the header, the padding
-    /// and outline, and the rows that are shown with the rules among them.
+    /// and outline, the rows that are shown with the rules among them, and the
+    /// search field under them.
     ///
     /// Capped at [`MAX_ROWS`]; only the rules among the rows shown count, since
-    /// the others are reached by scrolling.
+    /// the others are reached by scrolling. Given every row, not the ones a
+    /// search leaves, so typing in the field never resizes the window.
     pub fn height(groups: &[ActionGroup]) -> f32 {
         let shown = &groups[..groups.len().min(MAX_ROWS)];
         let rules = breaks(shown).into_iter().filter(|rule| *rule).count();
@@ -175,6 +181,7 @@ pub mod action_panel {
             + BORDER * 2.0
             + shown.len() as f32 * ROW_HEIGHT
             + rules as f32 * (SEPARATOR_HEIGHT + SEPARATOR_MARGIN * 2.0)
+            + SEARCH_HEIGHT
     }
 }
 
@@ -654,9 +661,11 @@ mod tests {
     }
 
     #[test]
-    fn the_popover_is_a_header_and_its_rows_and_rules() {
-        let chrome =
-            action_panel::HEADER_HEIGHT + action_panel::PADDING * 2.0 + action_panel::BORDER * 2.0;
+    fn the_popover_is_a_header_and_its_rows_and_rules_and_its_field() {
+        let chrome = action_panel::HEADER_HEIGHT
+            + action_panel::PADDING * 2.0
+            + action_panel::BORDER * 2.0
+            + action_panel::SEARCH_HEIGHT;
         let rule = action_panel::SEPARATOR_HEIGHT + action_panel::SEPARATOR_MARGIN * 2.0;
 
         assert_eq!(

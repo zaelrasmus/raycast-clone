@@ -111,6 +111,9 @@ const FIND: &str = "Search...";
 /// What the search field says while it holds a quicklink's argument.
 const ARGUMENT_PLACEHOLDER: &str = "Type what to search for...";
 
+/// What the action panel's own field says while it is empty.
+const ACTIONS_PLACEHOLDER: &str = "Search for actions\u{2026}";
+
 /// A view's item, prepared for the host's matcher.
 ///
 /// The same `Candidate` the root list uses, so that filtering a view is the
@@ -192,6 +195,54 @@ fn root_panel_entries(actions: Vec<Action>, shortcuts: &Shortcuts) -> Vec<PanelE
             group: action.group(),
         })
         .collect()
+}
+
+/// Which of the panel's rows `query` keeps, by their place in the panel and
+/// in its order; `None` when nothing is typed, which keeps every row.
+///
+/// `rank` is the root list's matcher, so `cop` finds *Copy* as it would an
+/// app. It ranks best first; the panel keeps its own order instead, because
+/// its groups are what the rules between rows are drawn from.
+fn panel_matches<'a>(
+    titles: impl Iterator<Item = &'a str>,
+    query: &str,
+    rank: impl FnOnce(&str, &[Candidate]) -> Vec<usize>,
+) -> Option<Vec<usize>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return None;
+    }
+    let candidates: Vec<Candidate> = titles
+        .map(|title| {
+            Candidate::new(Item {
+                id: title.to_string(),
+                title: title.to_string(),
+                subtitle: None,
+                icon: None,
+                keywords: Vec::new(),
+                actions: Vec::new(),
+                kind: lumen_core::Kind::Command,
+            })
+        })
+        .collect();
+    let mut matches = rank(query, &candidates);
+    matches.sort_unstable();
+    Some(matches)
+}
+
+/// The panel's rows as drawn: places in its entries, in order. Every row
+/// with no search; a match that no longer exists is dropped.
+fn visible_panel_rows(count: usize, matches: Option<&[usize]>) -> Vec<usize> {
+    match matches {
+        Some(matches) => matches.iter().copied().filter(|row| *row < count).collect(),
+        None => (0..count).collect(),
+    }
+}
+
+/// Where the highlight goes when the panel's search changes: to the first
+/// row that is left, whichever it was on. A closed panel stays closed.
+fn refiltered_selection(open: Option<usize>) -> Option<usize> {
+    open.map(|_| 0)
 }
 
 /// What Ctrl+Enter runs: the second action, when there is one.
@@ -321,6 +372,12 @@ pub struct Launcher {
     query_field: Entity<TextField>,
     /// Kept alive so edits keep arriving; never read.
     _query_changes: Subscription,
+    /// The action panel's own search, under its rows. Focused while the
+    /// panel is open, so typing narrows the actions and leaves the query --
+    /// and the list ranked from it -- as they were.
+    action_field: Entity<TextField>,
+    /// Kept alive so the panel's edits keep arriving; never read.
+    _action_changes: Subscription,
     platform: Arc<dyn Platform>,
     paths: Paths,
     config: Config,
@@ -387,6 +444,10 @@ pub struct Launcher {
     /// actions: the link to open, waiting for one to be chosen. Only
     /// meaningful while the panel is open.
     browser_menu: Option<lumen_core::providers::quicklinks::OpenLink>,
+    /// The rows the panel's search keeps, by their place among its entries;
+    /// `None` when nothing is typed there. `action_panel` indexes the rows
+    /// shown, not the entries.
+    panel_search: Option<Vec<usize>>,
     /// The installed browsers' names, read with the index so that "Open
     /// With..." shows them without a registry walk while the user waits.
     browsers: Vec<String>,
@@ -458,6 +519,16 @@ impl Launcher {
             }
         });
 
+        let action_field =
+            cx.new(|cx| TextField::search(ACTIONS_PLACEHOLDER, theme.colors.clone(), cx));
+        // Only the panel hears this field: what is typed here is never a
+        // query, so it never re-ranks the list behind the popover.
+        let action_changes = cx.subscribe(&action_field, |launcher, _, event, cx| {
+            if let TextFieldEvent::Changed(text) = event {
+                launcher.refilter_panel(text, cx);
+            }
+        });
+
         let mut root = RootSearch::new(Providers::builtin(), frecency);
         root.set_favorites(lumen_core::favorites::Favorites::load(
             &paths.favorites_file(),
@@ -477,6 +548,8 @@ impl Launcher {
         let mut launcher = Self {
             query_field,
             _query_changes: query_changes,
+            action_field,
+            _action_changes: action_changes,
             platform,
             paths,
             config,
@@ -500,6 +573,7 @@ impl Launcher {
             action_panel: None,
             panel_scroll: ScrollHandle::new(),
             browser_menu: None,
+            panel_search: None,
             browsers: Vec::new(),
             picker: None,
             appearances: 0,
@@ -863,6 +937,8 @@ impl Launcher {
                 FormKind::Snippet(form) => form.update(cx, |form, cx| form.set_colors(colors, cx)),
             }
         }
+        self.action_field
+            .update(cx, |field, cx| field.set_colors(colors.clone(), cx));
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
         let restyled = theme.style != self.theme.style;
@@ -2243,9 +2319,72 @@ impl Launcher {
         };
         self.panel_scroll
             .scroll_to_item(layout::action_panel::child_index(
-                &self.panel_groups(),
+                &self.shown_panel_groups(),
                 selected,
             ));
+    }
+
+    /// The panel's rows as drawn, by their place among its entries: every
+    /// one, or those its search keeps.
+    fn panel_rows(&self) -> Vec<usize> {
+        visible_panel_rows(self.panel_entries().len(), self.panel_search.as_deref())
+    }
+
+    /// The groups of the rows drawn, which is where the rules go: only
+    /// between two shown rows of different groups.
+    fn shown_panel_groups(&self) -> Vec<ActionGroup> {
+        let groups = self.panel_groups();
+        self.panel_rows()
+            .into_iter()
+            .map(|row| groups[row])
+            .collect()
+    }
+
+    /// The entry the highlight is on, by its place among all of them; `None`
+    /// when the panel is closed or its search left nothing.
+    fn panel_choice(&self) -> Option<usize> {
+        self.action_panel
+            .and_then(|at| self.panel_rows().get(at).copied())
+    }
+
+    /// Narrow the panel to what its field says, with the root list's matcher,
+    /// and put the highlight on the first row left.
+    fn refilter_panel(&mut self, text: &str, cx: &mut Context<Self>) {
+        let entries = self.panel_entries();
+        let matches = panel_matches(
+            entries.iter().map(|entry| entry.title.as_str()),
+            text,
+            |query, candidates| self.root.filter(query, candidates),
+        );
+        self.panel_search = matches;
+        self.action_panel = refiltered_selection(self.action_panel);
+        self.reveal_panel_selection();
+        cx.notify();
+    }
+
+    /// Empty the panel's field without treating it as an edit.
+    fn reset_panel_search(&mut self, cx: &mut Context<Self>) {
+        self.panel_search = None;
+        self.action_field
+            .update(cx, |field, cx| field.set_text(String::new(), cx));
+    }
+
+    /// Once the panel has closed, give the query its focus back and forget the
+    /// panel's search.
+    ///
+    /// Settled where the launcher is drawn rather than at each way of closing
+    /// it -- Escape, Ctrl+K, an action run, a click outside, a re-rank -- so
+    /// that a new way cannot leave the keys going to a field nobody can see.
+    fn settle_panel_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.action_panel.is_some() {
+            return;
+        }
+        if self.action_field.focus_handle(cx).is_focused(window) {
+            self.query_field.read(cx).focus(window);
+        }
+        if self.panel_search.is_some() || !self.action_field.read(cx).text().is_empty() {
+            self.reset_panel_search(cx);
+        }
     }
 
     /// Whether the open panel lists browsers rather than actions.
@@ -2266,6 +2405,8 @@ impl Launcher {
             return;
         }
         let previous_height = self.content_height();
+        // The same field searches the browsers, from nothing typed.
+        self.reset_panel_search(cx);
         self.browser_menu = Some(open);
         self.action_panel = Some(0);
         self.reveal_panel_selection();
@@ -2276,7 +2417,7 @@ impl Launcher {
     fn toggle_action_panel(
         &mut self,
         _: &ToggleActionPanel,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // The panel and the picker share the list's place; the panel wins.
@@ -2285,11 +2426,19 @@ impl Launcher {
         // Ctrl+K from the browser list closes the panel altogether, like
         // from the actions: it is one panel, on two pages.
         self.browser_menu = None;
+        self.reset_panel_search(cx);
 
         self.action_panel = match self.action_panel {
             Some(_) => None,
             None => opening_selection(self.panel_entries().len()),
         };
+        // Opening moves the keys to the panel's field, empty; the query keeps
+        // its text. Closing gives them back: see `settle_panel_focus`.
+        if self.action_panel.is_some() {
+            self.action_field.read(cx).focus(window);
+        } else {
+            self.settle_panel_focus(window, cx);
+        }
         self.reveal_panel_selection();
 
         self.resize_if_needed(previous_height, cx);
@@ -2304,7 +2453,7 @@ impl Launcher {
         // While the panel is open the arrow keys move within it. Two lists on
         // screen and one set of arrow keys: whichever is in front wins.
         if let Some(selected) = self.action_panel {
-            let count = self.panel_entries().len();
+            let count = self.panel_rows().len();
             if count > 0 {
                 self.action_panel = Some((selected + 1) % count);
                 self.reveal_panel_selection();
@@ -2334,7 +2483,7 @@ impl Launcher {
             return;
         }
         if let Some(selected) = self.action_panel {
-            let count = self.panel_entries().len();
+            let count = self.panel_rows().len();
             if count > 0 {
                 self.action_panel = Some(selected.checked_sub(1).unwrap_or(count - 1));
                 self.reveal_panel_selection();
@@ -2437,6 +2586,12 @@ impl Launcher {
             self.choose_in_picker(cx);
             return;
         }
+        // The panel's search left nothing: there is nothing for Enter to run,
+        // and running the row's primary instead would be a surprise.
+        let choice = self.panel_choice();
+        if self.action_panel.is_some() && choice.is_none() {
+            return;
+        }
         if matches!(self.mode, Mode::View(_)) {
             self.activate_in_view(cx);
             return;
@@ -2451,7 +2606,7 @@ impl Launcher {
         // closed. Falling back to the primary rather than doing nothing means a
         // panel left open on a row whose actions have changed still does the
         // obvious thing. On the browser page, the link in the chosen browser.
-        let action = match (self.action_panel, menu) {
+        let action = match (choice, menu) {
             (Some(index), Some(open)) => match self.browsers.get(index) {
                 Some(name) => Action::OpenLink(lumen_core::providers::quicklinks::OpenLink {
                     browser: Some(name.clone()),
@@ -2923,7 +3078,7 @@ impl Launcher {
         };
 
         let actions = state.view.actions(state.selected);
-        let action = match self.action_panel {
+        let action = match self.panel_choice() {
             Some(index) => actions.get(index).or_else(|| actions.first()),
             None => actions.first(),
         };
@@ -2980,6 +3135,7 @@ impl Launcher {
         // The browser page backs up to the actions, on the row it came from.
         if self.showing_browsers() {
             let previous_height = self.content_height();
+            self.reset_panel_search(cx);
             self.browser_menu = None;
             self.action_panel = self
                 .available_actions()
@@ -3166,7 +3322,8 @@ impl Focusable for Launcher {
 }
 
 impl Render for Launcher {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.settle_panel_focus(window, cx);
         let colors = &self.theme.colors;
 
         // The surface must stay translucent for the system backdrop to be
@@ -4047,11 +4204,39 @@ impl Launcher {
         let colors = &self.theme.colors;
         let geometry = self.geometry();
         let entity = cx.entity();
+        // Sized from every row, not the ones the search leaves: typing in the
+        // panel's field never moves the window (I-10).
         let groups: Vec<_> = entries.iter().map(|entry| entry.group).collect();
         let height = panel::height(&groups);
 
-        let mut rows = Vec::with_capacity(entries.len());
-        for (index, (entry, rule)) in entries.into_iter().zip(panel::breaks(&groups)).enumerate() {
+        let shown = self.panel_rows();
+        let shown_groups: Vec<_> = shown.iter().map(|row| groups[*row]).collect();
+        let mut entries: Vec<Option<PanelEntry>> = entries.into_iter().map(Some).collect();
+        let mut rows = Vec::with_capacity(shown.len() + 1);
+        // A search that matches nothing keeps a row, and says so, as the
+        // picker does.
+        if shown.is_empty() {
+            rows.push(
+                div()
+                    .flex_none()
+                    .h(gpui::px(panel::ROW_HEIGHT))
+                    .px(geometry.gutter())
+                    .flex()
+                    .items_center()
+                    .text_size(type_scale::title())
+                    .text_color(color(colors.text_muted))
+                    .child("No matching actions")
+                    .into_any_element(),
+            );
+        }
+        for (index, (row, rule)) in shown
+            .into_iter()
+            .zip(panel::breaks(&shown_groups))
+            .enumerate()
+        {
+            let Some(entry) = entries[row].take() else {
+                continue;
+            };
             if rule {
                 rows.push(
                     div()
@@ -4118,7 +4303,6 @@ impl Launcher {
             .occlude()
             .flex()
             .flex_col()
-            .p(gpui::px(panel::PADDING))
             .rounded(gpui::px(panel::RADIUS))
             // One pixel, which is `panel::BORDER`: GPUI names the width, not
             // takes it.
@@ -4130,26 +4314,50 @@ impl Launcher {
             .shadow_md()
             .child(
                 div()
-                    .flex_none()
-                    .h(gpui::px(panel::HEADER_HEIGHT))
-                    .px(geometry.gutter())
-                    .flex()
-                    .items_center()
-                    .truncate()
-                    .text_size(type_scale::footer())
-                    .text_color(color(colors.text_muted))
-                    .child(self.panel_header()),
-            )
-            .child(
-                div()
-                    .id("action-rows")
                     .flex_1()
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.panel_scroll)
-                    .children(rows),
+                    .p(gpui::px(panel::PADDING))
+                    .child(
+                        div()
+                            .flex_none()
+                            .h(gpui::px(panel::HEADER_HEIGHT))
+                            .px(geometry.gutter())
+                            .flex()
+                            .items_center()
+                            .truncate()
+                            .text_size(type_scale::footer())
+                            .text_color(color(colors.text_muted))
+                            .child(self.panel_header()),
+                    )
+                    // As tall as every row needs, whatever the search leaves:
+                    // the rows left sit at its top, and nothing jumps.
+                    .child(
+                        div()
+                            .id("action-rows")
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.panel_scroll)
+                            .children(rows),
+                    ),
+            )
+            // The panel's own field, the width of the popover under a rule,
+            // its text where the rows' icons start.
+            .child(
+                div()
+                    .flex_none()
+                    .h(gpui::px(panel::SEARCH_HEIGHT))
+                    .px(gpui::px(panel::PADDING) + geometry.gutter())
+                    .flex()
+                    .items_center()
+                    .map(|field| rule_above(field, &geometry))
+                    .border_color(color(colors.border_subtle))
+                    .text_size(type_scale::title())
+                    .child(self.action_field.clone()),
             );
 
         Some(
@@ -4401,7 +4609,7 @@ mod tests {
 
     use super::{
         LauncherEvent, calculated, card_extent, card_label, opening_selection, operator_ranges,
-        root_panel_entries, second_action,
+        panel_matches, refiltered_selection, root_panel_entries, second_action, visible_panel_rows,
     };
     use lumen_core::favorites::Change as FavoriteChange;
     use lumen_core::item::{ActionGroup, Builtin, Kind};
@@ -4670,6 +4878,90 @@ mod tests {
             None
         );
         assert_eq!(second_action(Vec::new()), None);
+    }
+
+    fn match_actions(titles: &[&str], query: &str) -> Option<Vec<usize>> {
+        let mut root = lumen_core::RootSearch::new(
+            lumen_core::Providers::builtin(),
+            lumen_core::Frecency::default(),
+        );
+        panel_matches(titles.iter().copied(), query, |query, candidates| {
+            root.filter(query, candidates)
+        })
+    }
+
+    /// Nothing typed keeps every row; a search keeps the matches in the
+    /// panel's order, not the matcher's, with the root list's matcher.
+    #[test]
+    fn the_panels_search_keeps_its_matches_in_order() {
+        let titles = [
+            "Open Application",
+            "Copy Path",
+            "Copy Name",
+            "Add to Favorites",
+        ];
+
+        assert_eq!(match_actions(&titles, ""), None);
+        assert_eq!(match_actions(&titles, "  "), None);
+        assert_eq!(match_actions(&titles, "name"), Some(vec![2]));
+        assert_eq!(match_actions(&titles, "copy"), Some(vec![1, 2]));
+        assert_eq!(match_actions(&titles, "zzqx"), Some(Vec::new()));
+    }
+
+    /// The rules are drawn from the rows that are left: one only between two
+    /// shown rows of different groups.
+    #[test]
+    fn the_rules_follow_the_rows_a_search_leaves() {
+        use lumen_core::layout::action_panel::breaks;
+
+        let groups = [
+            ActionGroup::Primary,
+            ActionGroup::Alternate,
+            ActionGroup::Copy,
+            ActionGroup::Copy,
+            ActionGroup::Favorite,
+        ];
+        let shown = |matches: Option<&[usize]>| -> Vec<bool> {
+            let rows = visible_panel_rows(groups.len(), matches);
+            breaks(&rows.iter().map(|row| groups[*row]).collect::<Vec<_>>())
+        };
+
+        assert_eq!(visible_panel_rows(3, None), [0, 1, 2]);
+        assert_eq!(visible_panel_rows(3, Some(&[0, 2, 7])), [0, 2]);
+        assert_eq!(shown(None), [false, true, true, false, true]);
+        assert_eq!(shown(Some(&[2, 3])), [false, false]);
+        assert_eq!(shown(Some(&[0, 3])), [false, true]);
+        assert!(shown(Some(&[])).is_empty());
+    }
+
+    /// Every change of the search puts the highlight back on the first row
+    /// left, and never opens a closed panel.
+    #[test]
+    fn a_new_search_highlights_the_first_match() {
+        assert_eq!(refiltered_selection(Some(3)), Some(0));
+        assert_eq!(refiltered_selection(Some(0)), Some(0));
+        assert_eq!(refiltered_selection(None), None);
+    }
+
+    /// The popover is sized from every row, so a search that leaves fewer
+    /// does not move the window (I-10): what is drawn while filtering fits in
+    /// the room the unfiltered rows took.
+    #[test]
+    fn the_popover_keeps_its_height_while_its_rows_are_searched() {
+        use lumen_core::layout::action_panel::height;
+
+        let groups = [
+            ActionGroup::Primary,
+            ActionGroup::Alternate,
+            ActionGroup::Copy,
+            ActionGroup::Favorite,
+        ];
+        let every = height(&groups);
+        let rows = visible_panel_rows(groups.len(), Some(&[1]));
+        let left: Vec<_> = rows.iter().map(|row| groups[*row]).collect();
+
+        assert!(height(&left) < every);
+        assert!(height(&[]) < every);
     }
 
     #[test]

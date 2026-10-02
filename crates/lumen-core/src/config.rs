@@ -630,6 +630,33 @@ mod tests {
         );
     }
 
+    /// The panel's own search field is part of the popover the window stands
+    /// it in: a short list grows by the field's height too.
+    #[test]
+    fn the_popover_s_room_includes_its_search_field() {
+        use crate::item::ActionGroup;
+        use crate::layout::action_panel;
+
+        let config = Config::default();
+        let list = config.window_height(&Metrics::BASE, 0);
+        let groups = [ActionGroup::Primary; 3];
+        let rows = 3.0 * action_panel::ROW_HEIGHT;
+
+        let height = config.panel_height(&Metrics::BASE, list, action_panel::height(&groups));
+
+        assert_eq!(
+            height,
+            Metrics::BASE.search_height
+                + action_panel::INSET * 2.0
+                + action_panel::HEADER_HEIGHT
+                + action_panel::PADDING * 2.0
+                + action_panel::BORDER * 2.0
+                + rows
+                + action_panel::SEARCH_HEIGHT
+                + Metrics::BASE.footer_height
+        );
+    }
+
     #[test]
     fn the_window_is_never_shorter_than_the_list_while_the_popover_is_open() {
         let config = Config::default();
