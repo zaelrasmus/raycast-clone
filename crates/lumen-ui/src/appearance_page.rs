@@ -14,13 +14,14 @@ use std::path::PathBuf;
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, Entity, FocusHandle, SharedString, Window, div, px};
 use lumen_core::appearance::{self, Appearance, Arrangement};
-use lumen_core::layout::{self, settings as metrics};
+use lumen_core::layout::settings as metrics;
 use lumen_core::root::{RESULTS, RootConfig};
 use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{NextField, PreviousField, TOGGLE_CONTEXT, ToggleFallback};
 use crate::select::{Choice, Select, SelectEvent};
-use crate::styling::{color, type_scale};
+use crate::settings_ui as ui;
+use crate::styling::color;
 use crate::translate_page::FORM_CONTEXT;
 
 /// The value of the *Custom* arrangement choice, which writes nothing.
@@ -336,8 +337,13 @@ impl AppearancePage {
         cx.notify();
     }
 
+    /// What was applied, or why it could not be; the window's status line
+    /// shows it.
     pub fn status(&self) -> Option<SharedString> {
-        self.status.clone()
+        self.error
+            .clone()
+            .map(SharedString::from)
+            .or_else(|| self.status.clone())
     }
 }
 
@@ -349,155 +355,83 @@ impl Render for AppearancePage {
         let colors = self.colors.clone();
 
         if let Some(problem) = &self.problem {
-            return div()
-                .flex_1()
-                .p(px(metrics::PADDING))
-                .text_size(px(metrics::text::HINT))
-                .text_color(color(colors.text_error))
-                .child(format!(
-                    "{problem}\n\nFix config.json, and this page comes back by itself."
-                ))
+            return ui::page("appearance")
+                .child(
+                    div()
+                        .text_size(px(metrics::text::HINT))
+                        .text_color(color(colors.text_error))
+                        .child(format!(
+                            "{problem}
+
+Fix config.json, and this page comes back by itself."
+                        )),
+                )
                 .into_any_element();
         }
 
-        let label = |text: SharedString| {
-            div()
-                .w(px(layout::form::LABEL_WIDTH))
-                .flex_none()
-                .text_size(type_scale::subtitle())
-                .text_color(color(colors.text_muted))
-                .child(text)
-        };
-        let row = |text: &'static str, control: AnyElement| {
-            div()
-                .h(px(layout::form::ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .child(label(text.into()))
-                .child(div().flex_1().child(control))
-        };
-
+        let entity = cx.entity();
         let headers: Vec<AnyElement> = self
             .headers
             .clone()
             .into_iter()
             .enumerate()
             .map(|(index, (header, focus))| {
-                let on = self.header_on(header);
-                let focused = focus.is_focused(window);
-                let checkbox = div()
-                    .size(px(layout::form::CHECKBOX_SIZE))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(layout::form::CHECKBOX_RADIUS))
-                    .border_1()
-                    .border_color(color(if focused || on {
-                        colors.accent
-                    } else {
-                        colors.border_strong
-                    }))
-                    .when(on, |checkbox| {
-                        checkbox
-                            .bg(color(colors.accent))
-                            .text_color(color(colors.text_on_accent))
-                            .text_size(type_scale::footer())
-                            .child("\u{2713}")
-                    });
-                div()
-                    .h(px(layout::form::ROW_HEIGHT))
-                    .flex()
-                    .items_center()
-                    // The label once, on the first; the rest line up under it.
-                    .child(label(if index == 0 {
-                        "Headers".into()
-                    } else {
-                        SharedString::default()
-                    }))
-                    .child(
-                        div()
-                            .id(("header", index))
-                            .key_context(TOGGLE_CONTEXT)
-                            .track_focus(&focus)
-                            .flex()
-                            .items_center()
-                            .gap(px(layout::form::CHECKBOX_GAP))
-                            .cursor_pointer()
-                            .on_click(cx.listener(
-                                move |page, event: &gpui::ClickEvent, window, cx| {
-                                    // The mouse only; Space is the keymap's
-                                    // (I-14), and gpui would also turn it into
-                                    // a click when the key comes up.
-                                    if event.is_keyboard() {
-                                        return;
-                                    }
-                                    window.focus(&focus);
-                                    page.flip(header, cx);
-                                },
-                            ))
-                            .child(checkbox)
-                            .child(
-                                div()
-                                    .text_size(type_scale::subtitle())
-                                    .text_color(color(if focused {
-                                        colors.text_primary
-                                    } else {
-                                        colors.text_muted
-                                    }))
-                                    .child(self.header_title(header)),
-                            ),
-                    )
-                    .into_any_element()
+                let entity = entity.clone();
+                let (title, description) = match header {
+                    Header::Section(_) => (format!("{} header", self.header_title(header)), None),
+                    Header::Results => (
+                        format!("{RESULTS} header"),
+                        Some("Over the list while you type".into()),
+                    ),
+                };
+                ui::toggle_row(
+                    ("header", index),
+                    title,
+                    description,
+                    self.header_on(header),
+                    &focus,
+                    TOGGLE_CONTEXT,
+                    window,
+                    &colors,
+                    move |_window, cx| entity.update(cx, |page, cx| page.flip(header, cx)),
+                )
             })
             .collect();
 
-        let (message, is_error) = match &self.error {
-            Some(error) => (error.clone(), true),
-            None => (
-                "Applied as you choose. Palettes and styles are files in the themes and \
-                 styles folders."
-                    .to_string(),
-                false,
-            ),
-        };
-
-        div()
-            .flex_1()
-            .py(px(metrics::PADDING))
-            .child(
-                div()
-                    .key_context(FORM_CONTEXT)
-                    .on_action(cx.listener(Self::next_field))
-                    .on_action(cx.listener(Self::previous_field))
-                    .on_action(cx.listener(Self::toggle))
-                    .w_full()
-                    .px(crate::styling::metrics::gutter())
-                    .py(px(layout::form::PADDING_Y))
-                    .flex()
-                    .flex_col()
-                    .child(row("Palette", self.theme.clone().into_any_element()))
-                    .child(row("Style", self.style.clone().into_any_element()))
-                    .child(row(
-                        "Arrangement",
-                        self.arrangement.clone().into_any_element(),
-                    ))
-                    .children(headers)
-                    .child(
-                        div()
-                            .h(px(layout::form::MESSAGE_HEIGHT))
-                            .pl(px(layout::form::LABEL_WIDTH))
-                            .flex()
-                            .items_center()
-                            .text_size(type_scale::footer())
-                            .text_color(color(if is_error {
-                                colors.text_error
-                            } else {
-                                colors.text_muted
-                            }))
-                            .child(div().truncate().child(message)),
+        ui::page("appearance")
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::previous_field))
+            .on_action(cx.listener(Self::toggle))
+            .child(ui::section_title("Look", &colors))
+            .child(ui::card(
+                [
+                    ui::row(
+                        "Palette",
+                        Some("Colours and the typeface, from the themes folder".into()),
+                        self.theme.clone(),
+                        &colors,
                     ),
-            )
+                    ui::row(
+                        "Style",
+                        Some("Sizes, spacing and layout, from the styles folder".into()),
+                        self.style.clone(),
+                        &colors,
+                    ),
+                ],
+                &colors,
+            ))
+            .child(ui::section_title("Root list", &colors))
+            .child(ui::card(
+                [ui::row(
+                    "Arrangement",
+                    Some("What the list shows before you type".into()),
+                    self.arrangement.clone(),
+                    &colors,
+                )],
+                &colors,
+            ))
+            .child(ui::card(headers, &colors))
             .into_any_element()
     }
 }
@@ -528,7 +462,7 @@ fn named_select(
         .iter()
         .position(|choice| choice.value.as_deref() == Some(current))
         .unwrap_or(choices.len().saturating_sub(1));
-    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
+    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact())
 }
 
 fn arrangement_select(root: &RootConfig, colors: &Colors, cx: &mut App) -> Entity<Select> {
@@ -552,5 +486,5 @@ fn arrangement_select(root: &RootConfig, colors: &Colors, cx: &mut App) -> Entit
             choices.len() - 1
         }
     };
-    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
+    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact())
 }
