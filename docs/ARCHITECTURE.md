@@ -3142,6 +3142,34 @@ The answer gained a second action, *Copy Expression*, and its first reads
 *Copy Answer*: the footer advertises the action panel only when there is a
 second action to reach.
 
+### 7.44 Actions carry their group and glyph; the panel's keys come from the keymap
+
+The action panel is to look like Raycast's: an icon and keycaps on every row,
+and a rule between runs of related rows. What a row *is* belongs to the action,
+so `item::Action` answers it: `group()` returns an `ActionGroup` -- *Primary*,
+*Alternate*, *Copy*, *Manage*, *Favorite*, declared in the order the panel
+shows them -- and `glyph()` names a bundled icon, by the name an extension's
+`Icon::Glyph` uses, so `core` knows no path (AD-03). The UI's table is checked
+against every name an action can return. A view's action may name an icon too
+(`icon`, optional, so views already written still load: I-12, I-13); its
+rows are one run, and a row without an icon keeps the square empty (I-10).
+
+Shortcuts are not a field of the action. A displayed shortcut that is written
+beside the row can disagree with what the key does, so the panel asks the
+keymap which binding performs the action (`keymap::Shortcuts`, read from the
+bindings `install` puts in place, rendered as keycap labels) and a row with no
+binding shows none (I-14). A favourite shows the chord that names it; the first
+row shows `Enter`, the second `Ctrl+Enter`.
+
+`Ctrl+Enter` is a binding of its own, `RunSecondaryAction`: it runs the second
+of the selected row's actions -- a new window for an application, a private
+one for a link -- and does nothing when there is none, outside the root list or
+while a picker, a browser list or a quicklink's argument is open. The panel
+still opens on that second action, which is why the key and the panel agree.
+
+Three verbs changed to say what they open: *Open Application*, *New
+Application Window* and *Open Command*. The footer reads the first one's.
+
 ## 8. Risk register
 
 | # | Risk | Phase | Status |

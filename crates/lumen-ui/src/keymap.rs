@@ -30,8 +30,8 @@ use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::launcher::{
     Activate, AskArgument, ClearQuery, Dismiss, MoveFavoriteDown, MoveFavoriteUp, NextScope,
-    PreviousScope, SCOPE_CONTEXT, SelectFirst, SelectLast, SelectNext, SelectPrevious,
-    ToggleActionPanel, ToggleFavorite,
+    PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast, SelectNext,
+    SelectPrevious, ToggleActionPanel, ToggleFavorite,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
@@ -156,6 +156,11 @@ const BINDINGS: &[Binding] = &[
         keys: "enter",
         group: "Actions",
         description: Some("Open the selection"),
+    },
+    Binding {
+        keys: "ctrl-enter",
+        group: "Actions",
+        description: Some("Run the second action"),
     },
     Binding {
         keys: "tab",
@@ -324,7 +329,18 @@ const BINDINGS: &[Binding] = &[
 /// The keys here and in [`BINDINGS`] are the same strings, kept together so the
 /// pairing is checkable by eye and by [`the_table_and_the_bindings_agree`].
 pub fn install(cx: &mut App) {
-    cx.bind_keys([
+    cx.bind_keys(launcher_bindings());
+    bind_other_contexts(cx);
+}
+
+/// The launcher's own bindings.
+///
+/// A function of its own, and not a block inside [`install`], so that what the
+/// action panel shows beside a row can be read from the very bindings that are
+/// installed -- see [`Shortcuts`] -- and so a test can ask the same list
+/// whether a chord is taken.
+pub(crate) fn launcher_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("down", SelectNext, Some(CONTEXT)),
         KeyBinding::new("up", SelectPrevious, Some(CONTEXT)),
         // The Emacs-style pair as well: the hands are already on the home row
@@ -337,6 +353,11 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("pagedown", SelectLast, Some(CONTEXT)),
         KeyBinding::new("pageup", SelectFirst, Some(CONTEXT)),
         KeyBinding::new("enter", Activate, Some(CONTEXT)),
+        // The row's second action, as in Raycast: a new window for an
+        // application, a private one for a link. Nothing else in the launcher
+        // or in its query field takes the chord; the snippet form does, but
+        // it is deeper and has no list to run anything on.
+        KeyBinding::new("ctrl-enter", RunSecondaryAction, Some(CONTEXT)),
         // Tab, as in Raycast: the selected quicklink takes what is typed next
         // as its argument. Enter on the same row does it too; Tab is for when
         // the row is not the first thing Enter would run.
@@ -351,8 +372,12 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("ctrl-shift-f", ToggleFavorite, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-up", MoveFavoriteUp, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-down", MoveFavoriteDown, Some(CONTEXT)),
-    ]);
+    ]
+}
 
+/// Everything else: the view's scope, the forms, the settings window, text
+/// editing.
+fn bind_other_contexts(cx: &mut App) {
     // A view's scope -- the translator's presets (F7). Only in the search row
     // of a view that has one, which is deeper than `Launcher`, so these win
     // there and `Tab` keeps its meaning everywhere else.
@@ -525,6 +550,94 @@ pub fn install(cx: &mut App) {
     ]);
 }
 
+/// The keys the action panel shows beside its rows, as keycap labels.
+///
+/// Read from the keymap rather than written beside the rows (I-14): the panel
+/// names a key by asking which binding performs the action, so a displayed
+/// shortcut cannot disagree with what the key does. Read once, when the
+/// launcher is made, from the bindings [`install`] has put in place; a keymap
+/// the user can change will read it again when it does.
+///
+/// An action with no binding reads as no caps at all.
+#[derive(Debug, Clone, Default)]
+pub struct Shortcuts {
+    /// What runs the first action: `Enter`.
+    pub primary: Vec<String>,
+    /// What runs the second: `Ctrl+Enter`.
+    pub secondary: Vec<String>,
+    pub toggle_favorite: Vec<String>,
+    pub move_up: Vec<String>,
+    pub move_down: Vec<String>,
+}
+
+impl Shortcuts {
+    pub fn read(keymap: &gpui::Keymap) -> Self {
+        Self {
+            primary: keys_of(keymap, &Activate),
+            secondary: keys_of(keymap, &RunSecondaryAction),
+            toggle_favorite: keys_of(keymap, &ToggleFavorite),
+            move_up: keys_of(keymap, &MoveFavoriteUp),
+            move_down: keys_of(keymap, &MoveFavoriteDown),
+        }
+    }
+}
+
+/// The caps of the binding that performs `action`.
+///
+/// The last one added: GPUI's own rule for which of several to display. A
+/// chord of more than one keystroke has no single row of caps, and none of the
+/// launcher's is one.
+fn keys_of(keymap: &gpui::Keymap, action: &dyn gpui::Action) -> Vec<String> {
+    keymap
+        .bindings_for_action(action)
+        .next_back()
+        .and_then(|binding| match binding.keystrokes() {
+            [keystroke] => Some(caps(keystroke)),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// One cap per modifier, then the key: `ctrl-shift-f` is `Ctrl`, `Shift`,
+/// `F`.
+///
+/// The keys that have a symbol are written as it, so the panel reads `\u{21b5}`
+/// where the keymap says `enter`.
+fn caps(chord: &gpui::KeybindingKeystroke) -> Vec<String> {
+    let modifiers = chord.modifiers();
+    let mut caps = Vec::new();
+    if modifiers.control {
+        caps.push("Ctrl".to_string());
+    }
+    if modifiers.alt {
+        caps.push("Alt".to_string());
+    }
+    if modifiers.shift {
+        caps.push("Shift".to_string());
+    }
+    if modifiers.platform {
+        caps.push("Win".to_string());
+    }
+    caps.push(match chord.key() {
+        "enter" => "\u{21b5}".to_string(),
+        "up" => "\u{2191}".to_string(),
+        "down" => "\u{2193}".to_string(),
+        "left" => "\u{2190}".to_string(),
+        "right" => "\u{2192}".to_string(),
+        "escape" => "Esc".to_string(),
+        "pageup" => "PgUp".to_string(),
+        "pagedown" => "PgDn".to_string(),
+        other => {
+            let mut characters = other.chars();
+            match characters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+                None => String::new(),
+            }
+        }
+    });
+    caps
+}
+
 /// The shortcut sheet shown while Lumen itself is in front.
 ///
 /// Generated from [`BINDINGS`], so adding a binding adds a line to the overlay
@@ -658,6 +771,64 @@ mod tests {
         assert_eq!(pretty_keys("down"), "Down");
         assert_eq!(pretty_keys("pageup"), "PgUp");
         assert_eq!(pretty_keys("ctrl-shift-p"), "Ctrl+Shift+P");
+    }
+
+    fn caps_of(keys: &str) -> Vec<String> {
+        caps(&gpui::KeybindingKeystroke::from_keystroke(
+            gpui::Keystroke::parse(keys).unwrap(),
+        ))
+    }
+
+    /// What the panel draws beside a row: one cap per modifier, then the key,
+    /// the keys that have a symbol written as it.
+    #[test]
+    fn a_chord_becomes_one_cap_per_key() {
+        assert_eq!(caps_of("ctrl-shift-f"), ["Ctrl", "Shift", "F"]);
+        assert_eq!(caps_of("enter"), ["\u{21b5}"]);
+        assert_eq!(caps_of("ctrl-enter"), ["Ctrl", "\u{21b5}"]);
+        assert_eq!(caps_of("ctrl-alt-up"), ["Ctrl", "Alt", "\u{2191}"]);
+        assert_eq!(caps_of("ctrl-alt-down"), ["Ctrl", "Alt", "\u{2193}"]);
+        assert_eq!(caps_of("pageup"), ["PgUp"]);
+    }
+
+    /// The point of reading the shortcuts from the bindings: what the panel
+    /// shows is what the key does, because it is the same table.
+    #[test]
+    fn the_panels_shortcuts_are_read_from_the_launchers_bindings() {
+        let keymap = gpui::Keymap::new(launcher_bindings());
+        let shortcuts = Shortcuts::read(&keymap);
+
+        assert_eq!(shortcuts.primary, ["\u{21b5}"]);
+        assert_eq!(shortcuts.secondary, ["Ctrl", "\u{21b5}"]);
+        assert_eq!(shortcuts.toggle_favorite, ["Ctrl", "Shift", "F"]);
+        assert_eq!(shortcuts.move_up, ["Ctrl", "Alt", "\u{2191}"]);
+        assert_eq!(shortcuts.move_down, ["Ctrl", "Alt", "\u{2193}"]);
+    }
+
+    /// A binding the panel cannot find draws no keys, rather than the keys it
+    /// would have had.
+    #[test]
+    fn an_unbound_action_shows_no_shortcut() {
+        let shortcuts = Shortcuts::read(&gpui::Keymap::new(Vec::new()));
+        assert!(shortcuts.primary.is_empty());
+        assert!(shortcuts.secondary.is_empty());
+    }
+
+    /// Ctrl+Enter is the second action's alone, in the launcher.
+    #[test]
+    fn no_other_launcher_binding_takes_ctrl_enter() {
+        let ctrl_enter = gpui::Keystroke::parse("ctrl-enter").unwrap();
+        let taken = launcher_bindings()
+            .iter()
+            .filter(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(|keystroke| keystroke.inner())
+                    .eq([&ctrl_enter])
+            })
+            .count();
+        assert_eq!(taken, 1);
     }
 
     /// The two lists in this file must describe the same keys. If someone adds

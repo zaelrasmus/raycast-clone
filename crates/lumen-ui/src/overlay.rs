@@ -293,7 +293,7 @@ fn render_shortcut(shortcut: &Shortcut, colors: &Colors) -> impl IntoElement {
 /// application's shortcut, which Lumen has no way to parse or validate. So this
 /// splits on `+` and otherwise leaves the text exactly as written: an author who
 /// writes "Hold Right Ctrl" gets one cap saying that, rather than an error.
-fn keycaps(keys: &str) -> Vec<String> {
+pub(crate) fn keycaps(keys: &str) -> Vec<String> {
     let caps: Vec<String> = keys
         .split('+')
         .map(|part| part.trim())

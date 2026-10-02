@@ -32,6 +32,7 @@ use gpui::{
     actions, div, ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::favorites::Change as FavoriteChange;
+use lumen_core::item::ActionGroup;
 use lumen_core::providers::QuicklinkProvider;
 use lumen_core::root::{Aside, Hit};
 use lumen_core::style::{
@@ -44,6 +45,7 @@ use lumen_core::{
 use lumen_platform::Platform;
 
 use crate::icons::IconCache;
+use crate::keymap::Shortcuts;
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
 use crate::snippet_form::{SnippetForm, SnippetFormEvent};
 use crate::styling::{Geometry, color, rule_above, rule_below, type_scale};
@@ -63,6 +65,9 @@ actions!(
         SelectLast,
         /// Run the selected row's primary action.
         Activate,
+        /// Run the selected row's second action: another way of doing what
+        /// `Enter` does.
+        RunSecondaryAction,
         /// Hide the launcher, restoring focus to where it came from.
         Dismiss,
         /// Clear the whole query.
@@ -138,9 +143,56 @@ fn option_candidate(option: &lumen_core::view::ScopeOption) -> Candidate {
 /// One row of the action panel, whichever mode produced it.
 struct PanelEntry {
     title: String,
-    /// The key combination shown beside it, when there is one. Shown, never
-    /// bound -- see `lumen_core::view::Action::shortcut`.
-    shortcut: Option<String>,
+    /// The keys shown beside it, one label per keycap, when it has any.
+    ///
+    /// For a root row they are read from the keymap -- see
+    /// [`crate::keymap::Shortcuts`] -- and for a view's they are what the
+    /// extension asked to have shown, which is displayed, never bound: see
+    /// `lumen_core::view::Action::shortcut`.
+    shortcut: Vec<String>,
+    /// The icon drawn at its start. The square is reserved whether or not
+    /// there is one (I-10).
+    #[allow(dead_code)] // Drawn by the panel's redesign; filled in every mode.
+    glyph: Option<lumen_core::view::Icon>,
+    /// Which run of rows it belongs to; the panel draws a rule where this
+    /// changes. A view's actions and the browsers are one run each.
+    #[allow(dead_code)] // Drawn by the panel's redesign; filled in every mode.
+    group: ActionGroup,
+}
+
+/// The root list's panel rows for `actions`, with the keys the keymap gives
+/// them.
+///
+/// A favourite shows the chord that names it, wherever it falls; otherwise the
+/// first row shows what `Enter` is bound to and the second what Ctrl+Enter
+/// is. Free of the launcher so it can be checked without standing one up.
+fn root_panel_entries(actions: Vec<Action>, shortcuts: &Shortcuts) -> Vec<PanelEntry> {
+    actions
+        .into_iter()
+        .enumerate()
+        .map(|(index, action)| PanelEntry {
+            title: action.verb().to_string(),
+            shortcut: match (&action, index) {
+                (Action::Favorite(FavoriteChange::Add | FavoriteChange::Remove), _) => {
+                    shortcuts.toggle_favorite.clone()
+                }
+                (Action::Favorite(FavoriteChange::MoveUp), _) => shortcuts.move_up.clone(),
+                (Action::Favorite(FavoriteChange::MoveDown), _) => shortcuts.move_down.clone(),
+                (_, 0) => shortcuts.primary.clone(),
+                (_, 1) => shortcuts.secondary.clone(),
+                _ => Vec::new(),
+            },
+            glyph: Some(lumen_core::view::Icon::Glyph {
+                name: action.glyph().into(),
+            }),
+            group: action.group(),
+        })
+        .collect()
+}
+
+/// What Ctrl+Enter runs: the second action, when there is one.
+fn second_action(actions: Vec<Action>) -> Option<Action> {
+    actions.into_iter().nth(1)
 }
 
 /// What the launcher is currently showing.
@@ -363,6 +415,9 @@ pub struct Launcher {
     active: bool,
     /// Bumped by every tick asked for; a superseded one does nothing.
     tick: u64,
+    /// The keys the action panel shows beside its rows, read from the keymap
+    /// when the launcher was made (I-14).
+    shortcuts: Shortcuts,
 }
 
 impl Launcher {
@@ -445,6 +500,7 @@ impl Launcher {
             timers: None,
             active: false,
             tick: 0,
+            shortcuts: Shortcuts::read(&cx.key_bindings().borrow()),
         };
 
         launcher.start_indexing(cx);
@@ -2095,38 +2151,29 @@ impl Launcher {
                 .iter()
                 .map(|name| PanelEntry {
                     title: name.clone(),
-                    shortcut: None,
+                    shortcut: Vec::new(),
+                    glyph: Some(lumen_core::view::Icon::Glyph {
+                        name: "globe".into(),
+                    }),
+                    group: ActionGroup::Primary,
                 })
                 .collect();
         }
         match &self.mode {
-            Mode::Root => self
-                .available_actions()
-                .into_iter()
-                .map(|action| PanelEntry {
-                    title: action.verb().to_string(),
-                    // The keymap's chords, written out for show (I-14).
-                    shortcut: match action {
-                        Action::Favorite(FavoriteChange::Add | FavoriteChange::Remove) => {
-                            Some("Ctrl+Shift+F".into())
-                        }
-                        Action::Favorite(FavoriteChange::MoveUp) => {
-                            Some("Ctrl+Alt+\u{2191}".into())
-                        }
-                        Action::Favorite(FavoriteChange::MoveDown) => {
-                            Some("Ctrl+Alt+\u{2193}".into())
-                        }
-                        _ => None,
-                    },
-                })
-                .collect(),
+            Mode::Root => root_panel_entries(self.available_actions(), &self.shortcuts),
             Mode::View(state) => state
                 .view
                 .actions(state.selected)
                 .iter()
                 .map(|action| PanelEntry {
                     title: action.title.clone(),
-                    shortcut: action.shortcut.clone(),
+                    shortcut: action
+                        .shortcut
+                        .as_deref()
+                        .map(crate::overlay::keycaps)
+                        .unwrap_or_default(),
+                    glyph: action.icon.clone(),
+                    group: ActionGroup::Primary,
                 })
                 .collect(),
             Mode::Form(_) => Vec::new(),
@@ -2353,6 +2400,35 @@ impl Launcher {
             (None, _) => item.primary(),
         };
 
+        self.run_action(action, window, cx);
+    }
+
+    /// Ctrl+Enter: the second of the selected row's actions, which is what the
+    /// panel's second row says it does. Nothing when the row has no second
+    /// action, and nothing outside the root list: a view's actions are the
+    /// extension's to name, and a form or a picker has no row to act on.
+    fn run_secondary_action(
+        &mut self,
+        _: &RunSecondaryAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.mode, Mode::Root)
+            || self.picker.is_some()
+            || self.argument.is_some()
+            || self.browser_menu.is_some()
+        {
+            return;
+        }
+        let Some(action) = second_action(self.available_actions()) else {
+            return;
+        };
+        self.run_action(action, window, cx);
+    }
+
+    /// Carry out `action` on the selected row: what `Enter` does with the
+    /// primary, whichever way the action was reached.
+    fn run_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         // A favourite is changed in place: nothing opens, nothing is
         // recorded as used, and the launcher stays.
         if let Action::Favorite(change) = action {
@@ -2360,6 +2436,9 @@ impl Launcher {
             self.change_favorite(change, cx);
             return;
         }
+        let Some(item) = self.selected_item() else {
+            return;
+        };
         let id = item.id.clone();
         let calculated = calculated(item, &action);
         let blocked = self
@@ -3042,6 +3121,7 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::select_first))
             .on_action(cx.listener(Self::select_last))
             .on_action(cx.listener(Self::activate))
+            .on_action(cx.listener(Self::run_secondary_action))
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::clear_query))
             .on_action(cx.listener(Self::toggle_action_panel))
@@ -3869,7 +3949,6 @@ impl Launcher {
 
         let colors = &self.theme.colors;
         let entity = cx.entity();
-        let browsers = self.showing_browsers();
 
         // The panel takes the list's place rather than floating over it.
         //
@@ -3913,27 +3992,17 @@ impl Launcher {
                             });
                         })
                         .child(entry.title)
-                        // What the extension asked to have shown beside it, when
-                        // it asked. Shown, never bound: see
-                        // `lumen_core::view::Action::shortcut`.
-                        .when_some(entry.shortcut, |row, shortcut| {
+                        // The keys beside it, as plain text for now: the first
+                        // action says what Enter already does, which is what
+                        // stops the panel looking like a list of things Enter
+                        // cannot reach. A root row's come from the keymap; a
+                        // view's are what the extension asked to have shown.
+                        .when(!entry.shortcut.is_empty(), |row| {
                             row.child(
                                 div()
                                     .text_size(type_scale::footer())
                                     .text_color(color(colors.text_muted))
-                                    .child(shortcut),
-                            )
-                        })
-                        // The first action is what Enter already does; saying so
-                        // is what stops the panel looking like a list of things
-                        // Enter cannot reach. Not on the browser page, where
-                        // Enter takes whichever is highlighted.
-                        .when(index == 0 && !browsers, |row| {
-                            row.child(
-                                div()
-                                    .text_size(type_scale::footer())
-                                    .text_color(color(colors.text_muted))
-                                    .child("⏎"),
+                                    .child(entry.shortcut.join(" ")),
                             )
                         })
                 }))
@@ -4139,8 +4208,12 @@ fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
 #[cfg(test)]
 mod tests {
 
-    use super::{LauncherEvent, calculated, card_extent, card_label, operator_ranges};
-    use lumen_core::item::{Builtin, Kind};
+    use super::{
+        LauncherEvent, calculated, card_extent, card_label, operator_ranges, root_panel_entries,
+        second_action,
+    };
+    use lumen_core::favorites::Change as FavoriteChange;
+    use lumen_core::item::{ActionGroup, Builtin, Kind};
     use lumen_core::providers::Provider;
     use lumen_core::style::{CardHeader, Metrics, Variants};
     use lumen_core::{Action, Item};
@@ -4324,6 +4397,102 @@ mod tests {
         }
     }
 
+    fn firefox_actions() -> Vec<Action> {
+        use lumen_platform::{AppEntry, LaunchTarget};
+
+        let mut actions = Item::from_app(AppEntry {
+            id: "app:x".into(),
+            name: "Firefox".into(),
+            detail: None,
+            target: LaunchTarget::ShellExecute("x".into()),
+            icon: None,
+            keywords: Vec::new(),
+        })
+        .actions;
+        actions.push(Action::Favorite(FavoriteChange::Add));
+        actions
+    }
+
+    /// What the panel shows for an application, row by row: the title, the
+    /// keys read from the bindings, the group that decides where the rules go
+    /// and the glyph.
+    #[test]
+    fn an_applications_panel_rows_carry_their_keys_groups_and_glyphs() {
+        let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
+        let shortcuts = crate::keymap::Shortcuts::read(&keymap);
+
+        let rows = root_panel_entries(firefox_actions(), &shortcuts);
+
+        let titles: Vec<_> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Open Application",
+                "New Application Window",
+                "Copy",
+                "Add to Favorites"
+            ]
+        );
+        assert_eq!(rows[0].shortcut, ["\u{21b5}"]);
+        assert_eq!(rows[1].shortcut, ["Ctrl", "\u{21b5}"]);
+        // No key of its own: Enter and Ctrl+Enter are spoken for.
+        assert!(rows[2].shortcut.is_empty());
+        assert_eq!(rows[3].shortcut, ["Ctrl", "Shift", "F"]);
+
+        let groups: Vec<_> = rows.iter().map(|row| row.group).collect();
+        assert_eq!(
+            groups,
+            [
+                ActionGroup::Primary,
+                ActionGroup::Alternate,
+                ActionGroup::Copy,
+                ActionGroup::Favorite
+            ]
+        );
+        assert_eq!(
+            rows[0].glyph,
+            Some(lumen_core::view::Icon::Glyph {
+                name: "open".into()
+            })
+        );
+    }
+
+    /// A favourite in second place shows its own chord, not Ctrl+Enter: a
+    /// command's second action *is* the favourite, and the chord that names
+    /// it is the one the user can also press from the list.
+    #[test]
+    fn a_favourite_in_second_place_shows_its_own_chord() {
+        let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
+        let shortcuts = crate::keymap::Shortcuts::read(&keymap);
+
+        let rows = root_panel_entries(
+            vec![
+                Action::Builtin(Builtin::OpenSettings),
+                Action::Favorite(FavoriteChange::Add),
+            ],
+            &shortcuts,
+        );
+
+        assert_eq!(rows[1].shortcut, ["Ctrl", "Shift", "F"]);
+    }
+
+    /// Ctrl+Enter runs the second action, and does nothing when there is
+    /// none: a row with one action has no second way of doing it.
+    #[test]
+    fn the_secondary_action_is_the_second_one_when_there_is_one() {
+        assert_eq!(
+            second_action(firefox_actions()),
+            Some(Action::LaunchNew(
+                lumen_platform::LaunchTarget::ShellExecute("x".into())
+            ))
+        );
+        assert_eq!(
+            second_action(vec![Action::Builtin(Builtin::OpenSettings)]),
+            None
+        );
+        assert_eq!(second_action(Vec::new()), None);
+    }
+
     #[test]
     fn an_application_offers_a_second_action_for_the_panel_to_show() {
         use lumen_platform::{AppEntry, LaunchTarget};
@@ -4341,7 +4510,7 @@ mod tests {
 
         // Enter reuses a running copy; a fresh one is a deliberate second
         // choice, and copying the name is the third.
-        assert_eq!(item.primary().verb(), "Open");
+        assert_eq!(item.primary().verb(), "Open Application");
         assert_eq!(
             item.actions[1],
             Action::LaunchNew(LaunchTarget::ShellExecute("x".into()))
