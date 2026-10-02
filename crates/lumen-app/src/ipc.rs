@@ -22,6 +22,17 @@ use serde::{Deserialize, Serialize};
 /// The namespaced socket name, identical on both platforms.
 const SOCKET: &str = "lumen-launcher.sock";
 
+/// The socket's name: [`SOCKET`], or a separate one when `LUMEN_HOME` keeps
+/// this daemon's files apart, so a test daemon runs beside the installed one
+/// instead of answering for it (F15).
+fn socket() -> &'static str {
+    if lumen_core::paths::home_override().is_some() {
+        "lumen-launcher-test.sock"
+    } else {
+        SOCKET
+    }
+}
+
 /// What a client can ask the daemon to do.
 ///
 /// Newline-delimited JSON rather than a packed binary encoding: this carries a
@@ -115,7 +126,7 @@ pub enum Message {
 /// `Ok(false)` means no daemon is listening, which is the normal first-run case
 /// and not an error.
 pub fn send(message: Message) -> Result<bool> {
-    let name = SOCKET
+    let name = socket()
         .to_ns_name::<GenericNamespaced>()
         .context("building the socket name")?;
 
@@ -142,7 +153,7 @@ pub fn send(message: Message) -> Result<bool> {
 /// `handler` runs on that thread, so it must not block: it forwards to the UI
 /// thread and returns, exactly like the gesture sink does (I-15).
 pub fn serve(handler: impl Fn(Message) + Send + 'static) -> Result<()> {
-    let name = SOCKET
+    let name = socket()
         .to_ns_name::<GenericNamespaced>()
         .context("building the socket name")?;
 

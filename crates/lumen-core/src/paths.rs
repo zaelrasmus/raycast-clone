@@ -15,8 +15,28 @@ pub struct Paths {
     pub cache_dir: PathBuf,
 }
 
+/// A folder to keep everything in instead of the system's (F15): its
+/// `config`, `data` and `cache`. For test runs, which must never read or
+/// write the files of the Lumen a person is using. A daemon started with it
+/// listens on its own socket too, so it runs beside the installed one.
+pub const HOME_VAR: &str = "LUMEN_HOME";
+
+/// The folder [`HOME_VAR`] names, when it names one.
+pub fn home_override() -> Option<PathBuf> {
+    std::env::var_os(HOME_VAR)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 impl Paths {
     pub fn discover() -> Result<Self> {
+        if let Some(home) = home_override() {
+            return Ok(Self {
+                config_dir: home.join("config"),
+                data_dir: home.join("data"),
+                cache_dir: home.join("cache"),
+            });
+        }
         let dirs = ProjectDirs::from("", "", "Lumen")
             .context("could not determine this platform's configuration directory")?;
 
