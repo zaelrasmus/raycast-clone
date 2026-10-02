@@ -389,7 +389,7 @@ impl Launcher {
             TextFieldEvent::DeletedPastStart => {
                 if launcher.argument.is_some() {
                     launcher.leave_argument(cx);
-                } else if launcher.back_out_of_path() {
+                } else if launcher.back_out_of_path(cx) {
                     // A view's pill, one level at a time (F13).
                     cx.notify();
                 }
@@ -1048,6 +1048,20 @@ impl Launcher {
                 width: self.width(),
             });
         }
+    }
+
+    /// Close the action panel, and the browser page that shares it, and give
+    /// the window back the height the list needs. `false` when it was not open.
+    ///
+    /// The one way to close the panel from outside a function that resizes
+    /// anyway: the panel is a different height from the list, so closing it
+    /// without this leaves the list drawn into the panel's window.
+    fn close_action_panel(&mut self, cx: &mut Context<Self>) -> bool {
+        let previous_height = self.content_height();
+        let was_open = self.action_panel.take().is_some();
+        self.browser_menu = None;
+        self.resize_if_needed(previous_height, cx);
+        was_open
     }
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
@@ -1772,11 +1786,11 @@ impl Launcher {
     /// Take the innermost level off the view's pill, if it has one: the view
     /// is told, and answers with the level above. `false` with no pill, so
     /// the key means what it meant before.
-    fn back_out_of_path(&mut self) -> bool {
+    fn back_out_of_path(&mut self, cx: &mut Context<Self>) -> bool {
         if self.view_path().is_empty() || self.picker.is_some() {
             return false;
         }
-        self.action_panel = None;
+        self.close_action_panel(cx);
         self.tell_extension(lumen_core::view::Event::Back);
         true
     }
@@ -2271,7 +2285,7 @@ impl Launcher {
     fn reveal_selection(&mut self, cx: &mut Context<Self>) {
         // Moving the row selection closes the panel: it belonged to the row the
         // user has just moved off.
-        self.action_panel = None;
+        self.close_action_panel(cx);
         // F2 acceptance criterion: the list jumps directly to the selection.
         // There is no smooth scrolling, because smooth scrolling in a list being
         // driven by arrow keys is motion the user did not ask for.
@@ -2342,7 +2356,7 @@ impl Launcher {
         // A favourite is changed in place: nothing opens, nothing is
         // recorded as used, and the launcher stays.
         if let Action::Favorite(change) = action {
-            self.action_panel = None;
+            self.close_action_panel(cx);
             self.change_favorite(change, cx);
             return;
         }
@@ -2352,7 +2366,7 @@ impl Launcher {
             .focus
             .as_ref()
             .and_then(|guard| guard.blocks(item, &action));
-        self.action_panel = None;
+        self.close_action_panel(cx);
 
         // Focus is on and this is on its list (F8): the daemon shows why, in
         // place of the list, with the way through. Nothing is recorded: it
@@ -2515,7 +2529,7 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) {
         self.argument = Some(request);
-        self.action_panel = None;
+        self.close_action_panel(cx);
         self.clear_query_text(cx);
         self.rerank(cx);
         cx.notify();
@@ -2792,7 +2806,7 @@ impl Launcher {
             None => log::info!("the example view has nowhere to send {event:?}"),
         }
 
-        self.action_panel = None;
+        self.close_action_panel(cx);
         cx.notify();
     }
 
@@ -2829,8 +2843,7 @@ impl Launcher {
             cx.notify();
             return;
         }
-        if self.action_panel.take().is_some() {
-            self.browser_menu = None;
+        if self.close_action_panel(cx) {
             cx.notify();
             return;
         }
@@ -2842,7 +2855,7 @@ impl Launcher {
         if matches!(self.mode, Mode::View(_)) {
             // A pill is one more layer: its text, then each level, then the
             // view (F13).
-            if self.query.is_empty() && self.back_out_of_path() {
+            if self.query.is_empty() && self.back_out_of_path(cx) {
                 cx.notify();
             } else if self.query.is_empty() {
                 self.leave_view(cx);
@@ -4247,6 +4260,58 @@ mod tests {
     #[test]
     fn an_item_with_no_actions_does_not_open_a_panel() {
         assert_eq!(opening_selection(0), None);
+    }
+
+    /// The panel is a different height from the list, so every path that
+    /// closes it owes the window a resize. Standing up a `Launcher` needs a
+    /// platform and a GPUI test app, so this guards the rule at the source: the
+    /// panel is only cleared in a function that resizes (or re-reads the height)
+    /// afterwards. A new site has to be added here, which is the moment to
+    /// decide how it restores the height -- Escape once did not (it left the
+    /// list rendering into the panel's window).
+    #[test]
+    fn only_functions_that_resize_clear_the_action_panel() {
+        // Each of these captures the height before it clears the panel and
+        // resizes after, or hands the height to the daemon (`on_shown`).
+        const RESIZES: &[&str] = &[
+            "close_action_panel",
+            "on_shown",
+            "rerank",
+            "open_view",
+            "begin_view",
+            "leave_view",
+            "open_picker",
+            "open_form",
+            "open_timer_form",
+            "open_snippet_form",
+        ];
+
+        let source = include_str!("launcher.rs");
+        let code = source.split("\n#[cfg(test)]\n").next().unwrap_or(source);
+
+        let mut current = "";
+        let mut offenders = Vec::new();
+        for (number, line) in code.lines().enumerate() {
+            if let Some(at) = line.find("fn ")
+                && line[..at]
+                    .trim_start()
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '(' || c == ')' || c.is_whitespace())
+                && let Some(name) = line[at + 3..].split(['(', '<']).next()
+            {
+                current = name;
+            }
+            let clears =
+                line.contains("action_panel = None") || line.contains("action_panel.take()");
+            if clears && !line.trim_start().starts_with("//") && !RESIZES.contains(&current) {
+                offenders.push(format!("line {} in `{current}`", number + 1));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these clear the action panel without a resize: {offenders:?}"
+        );
     }
 
     /// Mirrors `toggle_action_panel`'s choice of starting index, kept beside it
