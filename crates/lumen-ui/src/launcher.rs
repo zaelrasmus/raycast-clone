@@ -3467,7 +3467,7 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(gpui::px(lumen_core::layout::CARD_LABEL_GAP))
+                .gap(geometry.card_label_gap())
                 .child(
                     div()
                         .max_w_full()

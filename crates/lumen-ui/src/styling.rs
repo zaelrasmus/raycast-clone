@@ -233,6 +233,10 @@ impl Geometry {
     pub fn rule_width(&self) -> Pixels {
         px(self.metrics.rule_width)
     }
+
+    pub fn card_label_gap(&self) -> Pixels {
+        px(self.metrics.card_label_gap)
+    }
 }
 
 /// Geometry tokens, pre-converted to `Pixels`.

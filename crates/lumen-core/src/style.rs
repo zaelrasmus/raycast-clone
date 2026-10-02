@@ -97,6 +97,8 @@ pub struct Metrics {
     /// How many rows the calculator's card takes. A float so it sits in the
     /// table with the rest; read as whole rows through [`Metrics::card_rows`].
     pub card_rows: f32,
+    /// Between each of the card's values and its label.
+    pub card_label_gap: f32,
 }
 
 impl Metrics {
@@ -141,6 +143,7 @@ impl Metrics {
         weight_card: 400.0,
         rule_width: 1.0,
         card_rows: layout::CARD_ROWS as f32,
+        card_label_gap: layout::CARD_LABEL_GAP,
     };
 
     /// The token names a style may set, each with where it lands and its
@@ -182,6 +185,7 @@ impl Metrics {
             "weight.section" => (&mut self.weight_section, 400.0, 600.0),
             "weight.card" => (&mut self.weight_card, 400.0, 600.0),
             "rule.width" => (&mut self.rule_width, 1.0, 2.0),
+            "card.label-gap" => (&mut self.card_label_gap, 2.0, 24.0),
             "card.rows" => (&mut self.card_rows, 2.0, 4.0),
             _ => return None,
         })
@@ -287,10 +291,16 @@ impl Metrics {
                 &["keycap.height", "footer.height", "text.footer"],
             ),
             (
-                line(self.text_card) + layout::CARD_LABEL_GAP + line(self.text_footer) + chip
+                line(self.text_card) + self.card_label_gap + line(self.text_footer) + chip
                     <= self.row_height * self.card_rows().max(1) as f32,
                 "the card's value and label fit in its rows",
-                &["text.card", "text.footer", "row.height", "card.rows"],
+                &[
+                    "text.card",
+                    "text.footer",
+                    "row.height",
+                    "card.rows",
+                    "card.label-gap",
+                ],
             ),
         ];
         checks
@@ -663,7 +673,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 33;
+const TOKEN_COUNT: usize = 34;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -751,6 +761,7 @@ mod tests {
             "weight.card",
             "rule.width",
             "card.rows",
+            "card.label-gap",
         ];
         assert_eq!(names.len(), TOKEN_COUNT);
         let mut metrics = Metrics::BASE;
@@ -828,6 +839,7 @@ mod tests {
         assert_eq!(metrics.weight_card, 400.0);
         assert_eq!(metrics.card_rows, layout::CARD_ROWS as f32);
         assert_eq!(metrics.card_rows(), layout::CARD_ROWS);
+        assert_eq!(metrics.card_label_gap, layout::CARD_LABEL_GAP);
     }
 
     #[test]
@@ -837,9 +849,13 @@ mod tests {
                 ("rule.width", 2.0),
                 ("weight.card", 600.0),
                 ("card.rows", 3.0),
+                ("card.label-gap", 20.0),
             ],
             &[],
         ));
+        assert_eq!(set.metrics.card_label_gap, 20.0);
+        let wide = Style::resolve(&file(&[("card.label-gap", 99.0)], &[]));
+        assert_eq!(wide.metrics.card_label_gap, 24.0);
         assert_eq!(set.metrics.rule_width, 2.0);
         assert_eq!(set.metrics.weight_card, 600.0);
         assert_eq!(set.metrics.card_rows(), 3);
