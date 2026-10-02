@@ -32,7 +32,11 @@
     "card.rows": 3,
     "text.card": 24.5,
     "weight.card": 600,
-    "card.label-gap": 21
+    "card.label-gap": 21,
+    "actions.width": 440,
+    "actions.offset-x": 8,
+    "actions.offset-y": 8,
+    "actions.max-rows": 7
   },
   "variants": {
     "row.subtitle": "inline",
@@ -47,6 +51,7 @@
     "card.header": "shown",
     "card.labels": "chips",
     "card.divider": "line",
-    "card.operators": "dimmed"
+    "card.operators": "dimmed",
+    "actions.anchor": "bottom-right"
   }
 }
