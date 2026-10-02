@@ -3386,10 +3386,12 @@ impl Render for Launcher {
             // The wrapper is what gives the popover something to be placed in:
             // the region's own height, which is the window's less the search
             // field and the footer, stated outright rather than left for the
-            // layout to derive.
+            // layout to derive. It gives way, not the chrome around it, while
+            // the window is still catching up with the height it asked for.
             Some(popover) => div()
                 .relative()
-                .flex_none()
+                .flex_shrink()
+                .min_h(gpui::px(0.0))
                 .h(gpui::px(self.region_height()))
                 .child(body)
                 .child(popover)
@@ -3431,6 +3433,7 @@ impl Launcher {
         if let Mode::Form(state) = &self.mode {
             return div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .h(geometry.search_height())
                 .px(geometry.gutter())
@@ -3510,6 +3513,7 @@ impl Launcher {
 
         div()
             .flex()
+            .flex_none()
             .items_center()
             .h(geometry.search_height())
             .px(geometry.gutter())
@@ -4108,8 +4112,11 @@ impl Launcher {
             verb
         };
 
+        // Fixed: the window grows for the popover a frame after the layout is
+        // asked for it, and in that frame a footer that can shrink does (I-10).
         div()
             .flex()
+            .flex_none()
             .items_center()
             .justify_between()
             .h(geometry.footer_height())
