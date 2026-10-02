@@ -122,7 +122,7 @@ once Lumen was measured well inside them (7.36).
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
-| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 30 bounded tokens and nine variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); the presets keep 0 until measured. See F15 decisions |
+| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 30 bounded tokens and nine variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 
 ### F4 build order is not optional
 
@@ -3099,12 +3099,15 @@ the query, rows, headers and footer inherit it, and keycaps reset to none
 (`styling::untracked`). It is not in `styling::typography`: settings and the
 overlay do not read a style (7.41).
 
-Not finished. Carbon, Graphite and Ink keep tracking 0: the reference
-captures and `target/sample.ps1` the plan relied on are gone from `target/`,
-and the values are to be measured, not guessed. The typing frame cost with
-tracking set is not measured either (`scripts/measure-typing.ps1` needs an
-attended desktop); at tracking 0 the patch exits early, so the base style's
-path adds one check.
+The presets were measured against new captures of their references, and the
+gap was mostly type size, not tracking: Carbon moves to 13 pt for title,
+subtitle and accessory, 11 for section headers and 12 for the footer, and
+Graphite's titles to 12.8 pt. Only Graphite tracks, at -0.02; Carbon and Ink
+keep 0. Measured words land within about a pixel of Raycast and 1.5-2.3 px of
+Asyar; Ink stays 1.7-4.6 px wide of Vicinae, a size question left open.
+Typing with tracking set costs nothing measurable: Graphite at -0.02 against
+the same style at 0, alternated twice, p95 2.31 and 2.27 ms against 2.29 and
+2.29 ms.
 
 ---
 

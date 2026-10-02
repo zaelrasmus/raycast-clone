@@ -1,9 +1,8 @@
 # Letter spacing
 
-**Status: built, presets pending measurement.** The gpui patch is commit
-`8412ea5` and the `text.tracking` style token is `5907c17`. Carbon, Graphite
-and Ink keep tracking 0 until their values are measured (see "What was done
-differently"). The rest of this file is the plan as it was written, kept as
+**Status: done.** The gpui patch is commit `8412ea5`, the `text.tracking`
+style token `5907c17`, Graphite's tracking `f62234f` and the presets' type
+sizes `515919b` (see "What was done differently"). The rest of this file is the plan as it was written, kept as
 history; the section below says where the build departed from it.
 
 **Why.** Raycast and Vicinae set their interface in Inter, the face Lumen
@@ -46,12 +45,16 @@ token and the presets. The patch is larger than the two Lumen already carries
   footer. Keycaps are reset to none (`styling::untracked`). It is not in
   `styling::typography`: settings and the overlay do not read a style (7.41).
   The style schema now has 30 tokens.
-- **Presets deferred.** The reference captures and `target/sample.ps1` the
-  plan relied on are no longer in `target/`, and the values must be measured,
-  not guessed.
-- **Not yet measured:** typing frame cost with tracking set
-  (`scripts/measure-typing.ps1`, which needs an attended desktop). At tracking
-  0 the patch returns early, so the base style's path adds one check.
+- **Presets: the gap was size, not tracking.** Measured against new captures
+  of Raycast, Asyar and Vicinae (1.25 scale, whole-word fits), the presets'
+  type was larger than the references. Carbon moves to 13 pt for title,
+  subtitle and accessory, 11 for section headers and 12 for the footer;
+  Graphite's titles to 12.8 pt with tracking -0.02. Measured words then land
+  within about a pixel of Raycast and 1.5-2.3 px of Asyar. Carbon and Ink keep
+  tracking 0; Ink's words remain 1.7-4.6 px wide of Vicinae, unchanged here.
+- **Typing frame cost,** Graphite with -0.02 against the same style at 0,
+  alternated twice in an isolated daemon: p95 2.31 and 2.27 ms against 2.29
+  and 2.29 ms. No difference outside noise; the budget is 8 ms.
 
 ---
 
