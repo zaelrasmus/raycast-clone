@@ -19,7 +19,7 @@
 //! other without the list moving underneath the cursor.
 //!
 //! The calculator's answer is the one exception, and a bounded one (7.40): it
-//! is drawn as a card `layout::CARD_ROWS` rows tall, above the list and in the
+//! is drawn as a card `card.rows` rows tall, above the list and in the
 //! place of that many rows, so the window does not change height when one
 //! appears.
 
@@ -27,13 +27,16 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, ScrollStrategy,
-    Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div, ease_out_quint, img,
-    svg, uniform_list,
+    Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, HighlightStyle,
+    ScrollStrategy, Styled, StyledText, Subscription, Task, UniformListScrollHandle, Window,
+    actions, div, ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::favorites::Change as FavoriteChange;
 use lumen_core::providers::QuicklinkProvider;
 use lumen_core::root::{Aside, Hit};
+use lumen_core::style::{
+    CardDivider, CardHeader, CardLabels, CardOperators, Metrics, SectionCase, Variants,
+};
 use lumen_core::theme::Appearance;
 use lumen_core::{
     Action, Candidate, Config, Frecency, Item, Paths, Providers, RootSearch, Theme, layout,
@@ -43,7 +46,7 @@ use lumen_platform::Platform;
 use crate::icons::IconCache;
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
 use crate::snippet_form::{SnippetForm, SnippetFormEvent};
-use crate::styling::{Geometry, color, type_scale};
+use crate::styling::{Geometry, color, rule_above, rule_below, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::timer_form::{TimerForm, TimerFormEvent};
 
@@ -870,7 +873,6 @@ impl Launcher {
     /// the card would otherwise leave its header alone beneath it.
     fn rebuild_rows(&mut self) {
         use crate::view::Row;
-        use lumen_core::style::SectionCase;
 
         let first = usize::from(self.card_rows() > 0);
         let case = self.theme.style.variants.section_case;
@@ -904,8 +906,7 @@ impl Launcher {
     /// leave a row cut through at the bottom edge.
     fn rows_height(&self) -> f32 {
         let metrics = self.metrics();
-        let card = self.card_rows() as f32 * metrics.row_height;
-        let cap = self.config.list_height(metrics) - card;
+        let cap = self.config.list_height(metrics) - self.card_height();
         let mut used = 0.0;
         for row in &self.rows {
             let height = crate::view::row_height(row, metrics);
@@ -917,8 +918,8 @@ impl Launcher {
         used
     }
 
-    /// How many rows the calculator's card takes (F14): `layout::CARD_ROWS`
-    /// when the first result is its answer, and none otherwise.
+    /// How many rows the calculator's card takes (F14): the style's
+    /// `card.rows` when the first result is its answer, and none otherwise.
     fn card_rows(&self) -> usize {
         let answered = matches!(self.mode, Mode::Root)
             && self
@@ -926,10 +927,16 @@ impl Launcher {
                 .first()
                 .is_some_and(|hit| lumen_core::providers::calculator::is_answer(self.item(hit)));
         if answered {
-            lumen_core::layout::CARD_ROWS
+            self.metrics().card_rows()
         } else {
             0
         }
+    }
+
+    /// How tall the card's place is: its rows, and its header when the style
+    /// draws one. Nothing at all when there is no answer.
+    fn card_height(&self) -> f32 {
+        card_extent(self.card_rows(), self.metrics(), &self.theme.style.variants)
     }
 
     /// How tall the window should be for whatever it is currently showing.
@@ -958,7 +965,7 @@ impl Launcher {
             Mode::Root => {
                 metrics.search_height
                     + metrics.list_padding * 2.0
-                    + self.card_rows() as f32 * metrics.row_height
+                    + self.card_height()
                     + self.rows_height()
                     + metrics.footer_height
             }
@@ -3099,7 +3106,7 @@ impl Launcher {
                 .items_center()
                 .h(geometry.search_height())
                 .px(geometry.gutter())
-                .border_b_1()
+                .map(|bar| rule_below(bar, &geometry))
                 .border_color(color(colors.border_subtle))
                 .text_size(geometry.text_query())
                 .font_weight(geometry.weight_query())
@@ -3178,7 +3185,7 @@ impl Launcher {
             .items_center()
             .h(geometry.search_height())
             .px(geometry.gutter())
-            .border_b_1()
+            .map(|bar| rule_below(bar, &geometry))
             .border_color(color(colors.border_subtle))
             .text_size(geometry.text_query())
             .font_weight(geometry.weight_query())
@@ -3337,9 +3344,7 @@ impl Launcher {
     /// cannot disagree and the window never has to resize to swap between them.
     fn results_height(&self) -> gpui::Pixels {
         let geometry = self.geometry();
-        geometry.row_height() * self.card_rows() as f32
-            + gpui::px(self.rows_height())
-            + geometry.list_padding() * 2.0
+        gpui::px(self.card_height()) + gpui::px(self.rows_height()) + geometry.list_padding() * 2.0
     }
 
     /// Draw the open view (F4, step 2).
@@ -3399,6 +3404,9 @@ impl Launcher {
             .h(self.results_height())
             .flex()
             .flex_col()
+            .when(card > 0 && self.card_header_shown(), |results| {
+                results.child(self.render_card_header())
+            })
             .when(card > 0, |results| results.child(self.render_card(&entity)))
             .when(count > 0, |results| {
                 results.child(
@@ -3414,20 +3422,45 @@ impl Launcher {
             .into_any_element()
     }
 
+    fn card_header_shown(&self) -> bool {
+        self.theme.style.variants.card_header == CardHeader::Shown
+    }
+
+    /// *Calculator* over the card, as any section's header is drawn and in
+    /// its height (`card.header`).
+    fn render_card_header(&self) -> gpui::AnyElement {
+        let title = match self.theme.style.variants.section_case {
+            SectionCase::Title => CARD_HEADER.to_string(),
+            SectionCase::Upper => CARD_HEADER.to_uppercase(),
+        };
+        div()
+            .flex_none()
+            .child(crate::view::render_section(
+                title.into(),
+                None,
+                &self.theme.colors,
+                &self.geometry(),
+            ))
+            .into_any_element()
+    }
+
     /// The calculator's answer, as the screenshot F14 was designed from
     /// draws it: what was typed, an arrow, and the result, each named
-    /// beneath. `layout::CARD_ROWS` rows tall, always (7.40). For money,
+    /// beneath. `card.rows` rows tall, always (7.40). For money,
     /// the result is named by the rates' date, so a table a week old shows
     /// on the card itself.
     fn render_card(&self, entity: &Entity<Self>) -> gpui::AnyElement {
         let colors = &self.theme.colors;
         let geometry = self.geometry();
+        let variants = *geometry.variants();
         let item = self.item(&self.hits()[0]);
         let selected = self.selected == 0;
         let expression = self.query.trim().to_string();
         let named = card_label(&expression, item.subtitle.as_deref());
+        let chips = variants.card_labels == CardLabels::Chips;
+        let divided = variants.card_divider == CardDivider::Line;
 
-        let side = |value: String, label: String| {
+        let side = |value: gpui::AnyElement, label: String| {
             div()
                 .flex_1()
                 .min_w_0()
@@ -3439,6 +3472,7 @@ impl Launcher {
                     div()
                         .max_w_full()
                         .text_size(geometry.text_card())
+                        .font_weight(geometry.weight_card())
                         .text_color(color(colors.text_primary))
                         .truncate()
                         .child(value),
@@ -3447,16 +3481,80 @@ impl Launcher {
                     div()
                         .max_w_full()
                         .text_size(geometry.text_footer())
-                        .text_color(color(colors.text_muted))
                         .truncate()
+                        .map(|label_box| {
+                            if chips {
+                                label_box
+                                    .px(gpui::px(lumen_core::layout::CARD_CHIP_PADDING_X))
+                                    .py(gpui::px(lumen_core::layout::CARD_CHIP_PADDING_Y))
+                                    .rounded(gpui::px(lumen_core::layout::CARD_CHIP_RADIUS))
+                                    .bg(color(colors.border_strong))
+                                    .text_color(color(colors.text_primary))
+                            } else {
+                                label_box.text_color(color(colors.text_muted))
+                            }
+                        })
                         .child(label),
                 )
+        };
+
+        let expression_value = match variants.card_operators {
+            CardOperators::Plain => expression.clone().into_any_element(),
+            CardOperators::Dimmed => {
+                let muted = HighlightStyle {
+                    color: Some(color(colors.text_muted)),
+                    ..Default::default()
+                };
+                StyledText::new(expression.clone())
+                    .with_highlights(
+                        operator_ranges(&expression)
+                            .into_iter()
+                            .map(|range| (range, muted)),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        // With the line, the arrow is what interrupts it, and is drawn to be
+        // read; without, it is the quiet mark it was.
+        let arrow = div()
+            .flex_none()
+            .text_size(geometry.text_title())
+            .text_color(color(if divided {
+                colors.text_primary
+            } else {
+                colors.text_muted
+            }))
+            .child("\u{2192}");
+        let between = if divided {
+            let rule = || {
+                div()
+                    .flex_1()
+                    .w(geometry.rule_width())
+                    .bg(color(colors.border_subtle))
+            };
+            div()
+                .flex_none()
+                .h_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(rule())
+                .child(
+                    div()
+                        .py(gpui::px(lumen_core::layout::CARD_ARROW_GAP))
+                        .child(arrow),
+                )
+                .child(rule())
+                .into_any_element()
+        } else {
+            arrow.into_any_element()
         };
 
         let entity = entity.clone();
         div()
             .id("calculator-card")
-            .h(geometry.row_height() * lumen_core::layout::CARD_ROWS as f32)
+            .h(geometry.row_height() * self.card_rows() as f32)
             .flex_none()
             .mx(geometry.row_inset())
             .px(geometry.gutter() - geometry.row_inset())
@@ -3479,15 +3577,9 @@ impl Launcher {
                     this.activate(&Activate, window, cx);
                 });
             })
-            .child(side(expression, "Expression".into()))
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(geometry.text_title())
-                    .text_color(color(colors.text_muted))
-                    .child("\u{2192}"),
-            )
-            .child(side(item.title.clone(), named))
+            .child(side(expression_value, "Expression".into()))
+            .child(between)
+            .child(side(item.title.clone().into_any_element(), named))
             .into_any_element()
     }
 
@@ -3693,7 +3785,7 @@ impl Launcher {
             .justify_between()
             .h(geometry.footer_height())
             .px(geometry.gutter())
-            .border_t_1()
+            .map(|footer| rule_above(footer, &geometry))
             .border_color(color(colors.border_subtle))
             // Its own surface when the palette gives it one, rounded with
             // the window's bottom corners. The window's radius rather than
@@ -3967,6 +4059,36 @@ fn highlighted(
         .into_any_element()
 }
 
+/// The header over the calculator's card when the style draws one.
+const CARD_HEADER: &str = "Calculator";
+
+/// The characters the card's expression draws as operators: the ones the
+/// calculator reads, in the forms people type them.
+const OPERATORS: [char; 9] = ['+', '-', '\u{2212}', '*', '\u{d7}', '/', '\u{f7}', '^', '%'];
+
+/// Where the operators are in `expression`, as byte ranges: one per
+/// operator, so a styled run never touches an operand.
+fn operator_ranges(expression: &str) -> Vec<std::ops::Range<usize>> {
+    expression
+        .char_indices()
+        .filter(|(_, c)| OPERATORS.contains(c))
+        .map(|(start, c)| start..start + c.len_utf8())
+        .collect()
+}
+
+/// The room the card's place takes: its rows and, when the style shows one,
+/// the header over them; none when the card is not drawn (I-10).
+fn card_extent(rows: usize, metrics: &Metrics, variants: &Variants) -> f32 {
+    if rows == 0 {
+        return 0.0;
+    }
+    let header = match variants.card_header {
+        CardHeader::Hidden => 0.0,
+        CardHeader::Shown => metrics.section_height,
+    };
+    rows as f32 * metrics.row_height + header
+}
+
 /// What names the result in the calculator's card: *Result*, or what the
 /// answer's subtitle says after what was typed -- the rates' date, for money
 /// (F14).
@@ -3999,9 +4121,10 @@ fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
 #[cfg(test)]
 mod tests {
 
-    use super::{LauncherEvent, calculated, card_label};
+    use super::{LauncherEvent, calculated, card_extent, card_label, operator_ranges};
     use lumen_core::item::{Builtin, Kind};
     use lumen_core::providers::Provider;
+    use lumen_core::style::{CardHeader, Metrics, Variants};
     use lumen_core::{Action, Item};
 
     #[test]
@@ -4015,6 +4138,53 @@ mod tests {
             "Rates of 28 Sep 2026 \u{b7} updating\u{2026}"
         );
         assert_eq!(card_label("2+2", None), "Result");
+    }
+
+    fn operators_in(expression: &str) -> Vec<&str> {
+        operator_ranges(expression)
+            .into_iter()
+            .map(|range| &expression[range])
+            .collect()
+    }
+
+    /// Each operator is its own run, so a digit between two is never swept
+    /// into the dimmed text; the ranges are byte ranges, safe to slice on.
+    #[test]
+    fn operators_are_found_apart_from_their_operands() {
+        assert_eq!(operators_in("2+2"), ["+"]);
+        assert_eq!(operators_in("12 * (3 - 4) / 5"), ["*", "-", "/"]);
+        assert_eq!(operators_in("2^10 % 3"), ["^", "%"]);
+        // The ones the lexer reads besides the ASCII: the multiplication and
+        // division signs, and the true minus.
+        assert_eq!(
+            operators_in("6\u{d7}7 \u{f7} 2 \u{2212} 1"),
+            ["\u{d7}", "\u{f7}", "\u{2212}"]
+        );
+    }
+
+    #[test]
+    fn the_cards_place_counts_its_header() {
+        let metrics = Metrics::BASE;
+        let hidden = Variants::default();
+        let shown = Variants {
+            card_header: CardHeader::Shown,
+            ..Variants::default()
+        };
+        assert_eq!(card_extent(0, &metrics, &shown), 0.0);
+        assert_eq!(card_extent(2, &metrics, &hidden), 2.0 * metrics.row_height);
+        assert_eq!(
+            card_extent(3, &metrics, &shown),
+            3.0 * metrics.row_height + metrics.section_height
+        );
+    }
+
+    #[test]
+    fn words_and_numbers_are_not_operators() {
+        assert!(operator_ranges("sqrt 16").is_empty());
+        assert!(operator_ranges("3.14").is_empty());
+        assert!(operator_ranges("").is_empty());
+        // Multi-byte text around an operator does not shift the ranges.
+        assert_eq!(operators_in("\u{3c0} + \u{3c0}"), ["+"]);
     }
 
     /// The calculator's own row, copied, is kept; anything else copied is not.

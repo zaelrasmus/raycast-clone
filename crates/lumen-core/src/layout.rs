@@ -33,6 +33,16 @@ pub const CARD_ROWS: usize = 2;
 /// Between a value in the card and the label beneath it.
 pub const CARD_LABEL_GAP: f32 = 6.0;
 
+/// A card's label drawn as a chip (`card.labels`): the room around the text,
+/// and the corner of the fill.
+pub const CARD_CHIP_PADDING_X: f32 = 8.0;
+pub const CARD_CHIP_PADDING_Y: f32 = 2.0;
+pub const CARD_CHIP_RADIUS: f32 = 4.0;
+
+/// Above and below the arrow where the card's divider leaves a gap for it
+/// (`card.divider`).
+pub const CARD_ARROW_GAP: f32 = 8.0;
+
 /// Height of the search field.
 pub const SEARCH_HEIGHT: f32 = 56.0;
 

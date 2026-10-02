@@ -90,6 +90,13 @@ pub struct Metrics {
     pub weight_query: f32,
     pub weight_title: f32,
     pub weight_section: f32,
+    /// The weight of the card's two values.
+    pub weight_card: f32,
+    /// The thickness of the line under the search field and over the footer.
+    pub rule_width: f32,
+    /// How many rows the calculator's card takes. A float so it sits in the
+    /// table with the rest; read as whole rows through [`Metrics::card_rows`].
+    pub card_rows: f32,
 }
 
 impl Metrics {
@@ -131,6 +138,9 @@ impl Metrics {
         weight_query: 400.0,
         weight_title: 400.0,
         weight_section: 400.0,
+        weight_card: 400.0,
+        rule_width: 1.0,
+        card_rows: layout::CARD_ROWS as f32,
     };
 
     /// The token names a style may set, each with where it lands and its
@@ -170,8 +180,16 @@ impl Metrics {
             "weight.query" => (&mut self.weight_query, 400.0, 600.0),
             "weight.title" => (&mut self.weight_title, 400.0, 600.0),
             "weight.section" => (&mut self.weight_section, 400.0, 600.0),
+            "weight.card" => (&mut self.weight_card, 400.0, 600.0),
+            "rule.width" => (&mut self.rule_width, 1.0, 2.0),
+            "card.rows" => (&mut self.card_rows, 2.0, 4.0),
             _ => return None,
         })
+    }
+
+    /// The rows the card takes, whole.
+    pub fn card_rows(&self) -> usize {
+        self.card_rows.round() as usize
     }
 
     /// How much room a view's empty state is given: three rows, as
@@ -202,6 +220,11 @@ impl Metrics {
         let row_text = match variants.row_subtitle {
             RowSubtitle::Stacked => line(self.text_title) + line(self.text_subtitle),
             RowSubtitle::Inline => line(self.text_title.max(self.text_subtitle)),
+        };
+        // A chip's padding is part of the label it holds.
+        let chip = match variants.card_labels {
+            CardLabels::Plain => 0.0,
+            CardLabels::Chips => layout::CARD_CHIP_PADDING_Y * 2.0,
         };
         let checks: [(bool, &'static str, &'static [&'static str]); 12] = [
             (
@@ -264,10 +287,10 @@ impl Metrics {
                 &["keycap.height", "footer.height", "text.footer"],
             ),
             (
-                line(self.text_card) + layout::CARD_LABEL_GAP + line(self.text_footer)
-                    <= self.row_height * layout::CARD_ROWS as f32,
+                line(self.text_card) + layout::CARD_LABEL_GAP + line(self.text_footer) + chip
+                    <= self.row_height * self.card_rows().max(1) as f32,
                 "the card's value and label fit in its rows",
-                &["text.card", "text.footer", "row.height"],
+                &["text.card", "text.footer", "row.height", "card.rows"],
             ),
         ];
         checks
@@ -365,6 +388,43 @@ pub enum SectionCase {
     Upper,
 }
 
+/// Whether the calculator's card has a section header over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardHeader {
+    #[default]
+    Hidden,
+    /// *Calculator*, drawn as a section's header is.
+    Shown,
+}
+
+/// How the card names its two values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardLabels {
+    /// Muted text.
+    #[default]
+    Plain,
+    /// Primary text on a small rounded fill.
+    Chips,
+}
+
+/// Whether a line runs between the card's two values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardDivider {
+    #[default]
+    None,
+    /// Down the middle, interrupted where the arrow sits.
+    Line,
+}
+
+/// How the operators in the card's expression are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardOperators {
+    #[default]
+    Plain,
+    /// Muted, so the operands read first.
+    Dimmed,
+}
+
 /// The launcher's structural choices, resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Variants {
@@ -379,6 +439,10 @@ pub struct Variants {
     pub footer_count: Shown,
     /// The *Dismiss* or *Back* hint for Escape.
     pub footer_escape: Shown,
+    pub card_header: CardHeader,
+    pub card_labels: CardLabels,
+    pub card_divider: CardDivider,
+    pub card_operators: CardOperators,
 }
 
 impl Variants {
@@ -432,6 +496,34 @@ impl Variants {
             }
             "footer.count" => self.footer_count = Shown::parse(value)?,
             "footer.escape" => self.footer_escape = Shown::parse(value)?,
+            "card.header" => {
+                self.card_header = match value {
+                    "hidden" => CardHeader::Hidden,
+                    "shown" => CardHeader::Shown,
+                    _ => return None,
+                }
+            }
+            "card.labels" => {
+                self.card_labels = match value {
+                    "plain" => CardLabels::Plain,
+                    "chips" => CardLabels::Chips,
+                    _ => return None,
+                }
+            }
+            "card.divider" => {
+                self.card_divider = match value {
+                    "none" => CardDivider::None,
+                    "line" => CardDivider::Line,
+                    _ => return None,
+                }
+            }
+            "card.operators" => {
+                self.card_operators = match value {
+                    "plain" => CardOperators::Plain,
+                    "dimmed" => CardOperators::Dimmed,
+                    _ => return None,
+                }
+            }
             "section.case" => {
                 self.section_case = match value {
                     "title" => SectionCase::Title,
@@ -571,7 +663,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 30;
+const TOKEN_COUNT: usize = 33;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -608,6 +700,11 @@ mod tests {
             };
             assert_eq!(Metrics::BASE.broken(&variants), None);
         }
+        let chips = Variants {
+            card_labels: CardLabels::Chips,
+            ..Variants::default()
+        };
+        assert_eq!(Metrics::BASE.broken(&chips), None);
     }
 
     /// I-12 for styles: a style that sets nothing is the launcher as it was.
@@ -651,6 +748,9 @@ mod tests {
             "weight.query",
             "weight.title",
             "weight.section",
+            "weight.card",
+            "rule.width",
+            "card.rows",
         ];
         assert_eq!(names.len(), TOKEN_COUNT);
         let mut metrics = Metrics::BASE;
@@ -717,6 +817,118 @@ mod tests {
         let style = Style::resolve(&file);
         assert_eq!(style.metrics.row_height, 48.0);
         assert_eq!(style.metrics.text_tracking, 0.0);
+    }
+
+    /// The card's tokens are the card's as it was: a style that sets none of
+    /// them draws what F14 drew, and the base is inside every range (I-12).
+    #[test]
+    fn the_card_and_rule_tokens_default_to_what_was_drawn() {
+        let metrics = Style::resolve(&file(&[], &[])).metrics;
+        assert_eq!(metrics.rule_width, 1.0);
+        assert_eq!(metrics.weight_card, 400.0);
+        assert_eq!(metrics.card_rows, layout::CARD_ROWS as f32);
+        assert_eq!(metrics.card_rows(), layout::CARD_ROWS);
+    }
+
+    #[test]
+    fn the_card_and_rule_tokens_are_set_and_clamped() {
+        let set = Style::resolve(&file(
+            &[
+                ("rule.width", 2.0),
+                ("weight.card", 600.0),
+                ("card.rows", 3.0),
+            ],
+            &[],
+        ));
+        assert_eq!(set.metrics.rule_width, 2.0);
+        assert_eq!(set.metrics.weight_card, 600.0);
+        assert_eq!(set.metrics.card_rows(), 3);
+
+        let high = Style::resolve(&file(&[("rule.width", 9.0), ("card.rows", 9.0)], &[]));
+        assert_eq!(high.metrics.rule_width, 2.0);
+        assert_eq!(high.metrics.card_rows(), 4);
+        let low = Style::resolve(&file(&[("rule.width", 0.0), ("card.rows", 1.0)], &[]));
+        assert_eq!(low.metrics.rule_width, 1.0);
+        assert_eq!(low.metrics.card_rows(), 2);
+
+        // The weight snaps to a face the typeface has, as the others do.
+        let snapped = Style::resolve(&file(&[("weight.card", 540.0)], &[]));
+        assert_eq!(snapped.metrics.weight_card, 500.0);
+    }
+
+    /// Rows are whole: a fraction rounds, it does not draw half a row.
+    #[test]
+    fn card_rows_round_to_whole_rows() {
+        let style = Style::resolve(&file(&[("card.rows", 2.6)], &[]));
+        assert_eq!(style.metrics.card_rows(), 3);
+    }
+
+    #[test]
+    fn the_card_variants_are_the_base_until_set() {
+        let variants = Style::resolve(&file(&[], &[])).variants;
+        assert_eq!(variants.card_header, CardHeader::Hidden);
+        assert_eq!(variants.card_labels, CardLabels::Plain);
+        assert_eq!(variants.card_divider, CardDivider::None);
+        assert_eq!(variants.card_operators, CardOperators::Plain);
+    }
+
+    #[test]
+    fn the_card_variants_parse_and_reject_what_they_do_not_know() {
+        let set = Style::resolve(&file(
+            &[],
+            &[
+                ("card.header", "shown"),
+                ("card.labels", "chips"),
+                ("card.divider", "line"),
+                ("card.operators", "dimmed"),
+            ],
+        ));
+        assert_eq!(set.variants.card_header, CardHeader::Shown);
+        assert_eq!(set.variants.card_labels, CardLabels::Chips);
+        assert_eq!(set.variants.card_divider, CardDivider::Line);
+        assert_eq!(set.variants.card_operators, CardOperators::Dimmed);
+
+        let mut variants = Variants::default();
+        for name in [
+            "card.header",
+            "card.labels",
+            "card.divider",
+            "card.operators",
+        ] {
+            assert!(variants.apply(name, "glow").is_none(), "{name}");
+        }
+        assert_eq!(variants, Variants::default());
+    }
+
+    /// The card's value and label are checked against its rows, and a chip's
+    /// padding is part of the label.
+    #[test]
+    fn the_card_must_fit_its_rows() {
+        let too_large = [("text.card", 48.0), ("row.height", 28.0)];
+        let style = Style::resolve(&file(&too_large, &[]));
+        assert_eq!(style.metrics.row_height, Metrics::BASE.row_height);
+        assert_eq!(style.metrics.text_card, Metrics::BASE.text_card);
+        // The same card in more rows fits.
+        let roomy = Style::resolve(&file(&[("text.card", 48.0), ("card.rows", 4.0)], &[]));
+        assert_eq!(roomy.metrics.text_card, 48.0);
+        assert_eq!(roomy.metrics.card_rows(), 4);
+    }
+
+    /// I-12: a style file written before these existed loads unchanged.
+    #[test]
+    fn a_style_without_the_card_tokens_still_loads() {
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Old",
+            "metrics": { "row.height": 48 },
+            "variants": { "selection": "fill" }
+        }"#;
+        let file: StyleFile = serde_json::from_str(json).unwrap();
+        let style = Style::resolve(&file);
+        assert_eq!(style.metrics.row_height, 48.0);
+        assert_eq!(style.metrics.rule_width, 1.0);
+        assert_eq!(style.metrics.card_rows(), layout::CARD_ROWS);
+        assert_eq!(style.variants.card_header, CardHeader::Hidden);
     }
 
     #[test]

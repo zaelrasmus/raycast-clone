@@ -52,6 +52,19 @@ pub fn tracking<E: gpui::Styled>(element: E, geometry: &Geometry) -> E {
     }
 }
 
+/// The line under an element, as thick as the style's rule: what `border_b_1`
+/// was, at the width a style may set. The colour stays the caller's.
+pub fn rule_below<E: gpui::Styled>(mut element: E, geometry: &Geometry) -> E {
+    element.style().border_widths.bottom = Some(geometry.rule_width().into());
+    element
+}
+
+/// The line over an element; see [`rule_below`].
+pub fn rule_above<E: gpui::Styled>(mut element: E, geometry: &Geometry) -> E {
+    element.style().border_widths.top = Some(geometry.rule_width().into());
+    element
+}
+
 /// No tracking on an element, whatever it inherits: for the text that does
 /// not track well, such as the one or two letters on a keycap.
 pub fn untracked<E: gpui::Styled>(mut element: E) -> E {
@@ -212,6 +225,14 @@ impl Geometry {
     pub fn weight_section(&self) -> FontWeight {
         FontWeight(self.metrics.weight_section)
     }
+
+    pub fn weight_card(&self) -> FontWeight {
+        FontWeight(self.metrics.weight_card)
+    }
+
+    pub fn rule_width(&self) -> Pixels {
+        px(self.metrics.rule_width)
+    }
 }
 
 /// Geometry tokens, pre-converted to `Pixels`.
@@ -298,6 +319,30 @@ mod tests {
     fn tracking_is_set_in_em() {
         let spacing = spacing_of(tracking(div(), &geometry_with_tracking(0.02)));
         assert_eq!(spacing, Some(gpui::LetterSpacing::em(0.02)));
+    }
+
+    fn widths_of(mut element: gpui::Div) -> gpui::EdgesRefinement<gpui::AbsoluteLength> {
+        element.style().border_widths.clone()
+    }
+
+    /// The base rule is the one pixel `border_b_1` drew; a style sets it, and
+    /// only the named edge carries it.
+    #[test]
+    fn the_rule_follows_the_style_on_its_own_edge_only() {
+        let mut theme = Theme::default();
+        let base = Geometry::of(&theme);
+        assert_eq!(
+            widths_of(rule_below(div(), &base)).bottom,
+            Some(px(1.0).into())
+        );
+        theme.style.metrics.rule_width = 2.0;
+        let thick = Geometry::of(&theme);
+        let below = widths_of(rule_below(div(), &thick));
+        assert_eq!(below.bottom, Some(px(2.0).into()));
+        assert_eq!(below.top, None);
+        let above = widths_of(rule_above(div(), &thick));
+        assert_eq!(above.top, Some(px(2.0).into()));
+        assert_eq!(above.bottom, None);
     }
 
     #[test]
