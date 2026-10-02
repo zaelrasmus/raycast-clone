@@ -4728,8 +4728,9 @@ mod tests {
             "open_snippet_form",
         ];
 
-        let source = include_str!("launcher.rs");
-        let code = source.split("\n#[cfg(test)]\n").next().unwrap_or(source);
+        // Normalised: a checkout with `core.autocrlf` has CRLF line ends.
+        let source = include_str!("launcher.rs").replace("\r\n", "\n");
+        let code = source.split("\n#[cfg(test)]\n").next().unwrap_or(&source);
 
         let mut current = "";
         let mut offenders = Vec::new();
@@ -4763,8 +4764,9 @@ mod tests {
     /// height asked for (its border is inside it).
     #[test]
     fn the_region_between_the_chrome_is_the_only_part_that_gives() {
-        let source = include_str!("launcher.rs");
-        let code = source.split("\n#[cfg(test)]\n").next().unwrap_or(source);
+        // Normalised: a checkout with `core.autocrlf` has CRLF line ends.
+        let source = include_str!("launcher.rs").replace("\r\n", "\n");
+        let code = source.split("\n#[cfg(test)]\n").next().unwrap_or(&source);
         let body = |name: &str| {
             let start = code
                 .find(&format!("fn {name}("))
