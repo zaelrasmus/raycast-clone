@@ -893,9 +893,7 @@ impl Render for Settings {
             .bg(color(colors.surface_background))
             .text_color(color(colors.text_primary));
 
-        if let Some(family) = &self.theme.font_family {
-            root = root.font_family(SharedString::from(family.clone()));
-        }
+        root = crate::styling::typography(root, &self.theme);
 
         let body = match self.page {
             Page::Sheets => div()

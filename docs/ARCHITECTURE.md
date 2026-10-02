@@ -2216,6 +2216,19 @@ What was decided while building it:
   Enter; this one has nothing to save, because seeing the launcher change is
   the point of choosing a look. An arrangement written by hand is shown as
   *Custom* and left alone.
+- **Typography stays the palette's, and opens up.** Any installed family by
+  name already worked -- gpui searches the system collection -- so what was
+  added is a `fonts` folder for families that are not installed, read at
+  startup, and `font_features` for a family's OpenType features. Raycast and
+  Vicinae were checked rather than guessed: both set their interface in
+  Inter, Raycast in a web view (its own engineering blog) and Vicinae
+  bundling it since its pull request 1071. The difference on screen is the
+  rasteriser, which no setting reaches. Letter spacing would be the next
+  lever, and gpui 0.2.2 has none.
+- **No gap between sections.** Measured before adding a token for it: in
+  Raycast the band a later header occupies is the first's, 40 screen
+  pixels, and in Vicinae it is tighter. The extra air the captures seem to
+  show is the first header sitting against the separator.
 - **The size is the style's, the config can override it.** Measured against
   full-screen captures, all three references were about 6 % wider and 17 %
   taller than Lumen. Part of the height was a bug: the list's budget was a

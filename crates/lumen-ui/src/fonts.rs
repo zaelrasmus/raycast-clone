@@ -49,6 +49,43 @@ pub fn register(cx: &App) {
     }
 }
 
+/// Register the font files in `dir` (F15): every `.ttf`, `.otf` and `.ttc`.
+///
+/// So a palette can name a family that is not installed on the system --
+/// one shipped with a theme, or one the user prefers. Installed families
+/// need nothing: the platform's collection is searched by name already.
+/// Read once at startup; a file that does not load is reported and skipped.
+pub fn register_folder(dir: &std::path::Path, cx: &App) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let faces: Vec<Cow<'static, [u8]>> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    ["ttf", "otf", "ttc"].contains(&extension.to_ascii_lowercase().as_str())
+                })
+        })
+        .filter_map(|path| match std::fs::read(&path) {
+            Ok(bytes) => Some(Cow::Owned(bytes)),
+            Err(error) => {
+                log::warn!("could not read the font {}: {error}", path.display());
+                None
+            }
+        })
+        .collect();
+    if faces.is_empty() {
+        return;
+    }
+    let count = faces.len();
+    match cx.text_system().add_fonts(faces) {
+        Ok(()) => log::info!("loaded {count} font files from {}", dir.display()),
+        Err(error) => log::warn!("could not load the fonts in {}: {error:#}", dir.display()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

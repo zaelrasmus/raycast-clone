@@ -218,6 +218,7 @@ fn run_daemon() -> Result<()> {
 
 fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()> {
     lumen_ui::fonts::register(cx);
+    lumen_ui::fonts::register_folder(&paths.fonts_dir(), cx);
     keymap::install(cx);
     keymap::verify_against_registry(cx);
 

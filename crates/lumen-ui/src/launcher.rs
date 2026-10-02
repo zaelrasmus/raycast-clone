@@ -28,8 +28,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, ScrollStrategy,
-    SharedString, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div,
-    ease_out_quint, img, svg, uniform_list,
+    Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div, ease_out_quint, img,
+    svg, uniform_list,
 };
 use lumen_core::favorites::Change as FavoriteChange;
 use lumen_core::providers::QuicklinkProvider;
@@ -3040,9 +3040,7 @@ impl Render for Launcher {
             .bg(color(background))
             .text_color(color(colors.text_primary));
 
-        if let Some(family) = &self.theme.font_family {
-            root = root.font_family(SharedString::from(family.clone()));
-        }
+        root = crate::styling::typography(root, &self.theme);
 
         // One region, three possible occupants, in order of precedence: the
         // action panel over whatever it was opened from, then an extension's

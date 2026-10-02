@@ -21,6 +21,23 @@ pub fn color(value: Color) -> Hsla {
     .into()
 }
 
+/// The palette's typography on an element: its family and its OpenType
+/// features (F15). One place, so the launcher, the overlay and settings
+/// cannot set it differently.
+pub fn typography<E: gpui::Styled>(mut element: E, theme: &Theme) -> E {
+    if let Some(family) = &theme.font_family {
+        element = element.font_family(gpui::SharedString::from(family.clone()));
+    }
+    if !theme.font_features.is_empty() {
+        let features = gpui::FontFeatures(std::sync::Arc::new(theme.font_features.clone()));
+        element
+            .text_style()
+            .get_or_insert_with(Default::default)
+            .font_features = Some(features);
+    }
+    element
+}
+
 /// The active style's geometry, in GPUI's units (F15).
 ///
 /// What the launcher's surface draws with: the search field, the rows, the

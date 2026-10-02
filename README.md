@@ -473,8 +473,17 @@ The `icon` token colours the bundled glyphs. It sits between `text.primary` and
 `text.muted` on purpose: a 20-px glyph carries less ink than a word, so muted
 makes it vanish and primary makes it shout over the title beside it.
 
-A theme -- a *palette* -- sets **colour and type family only**. The rest of
-the look is a style's.
+A theme -- a *palette* -- sets **colour and typography only**: its family,
+any font installed on the system by name (`"font_family": "Segoe UI"`), and
+the family's OpenType features (`"font_features": { "cv11": 1 }`). The rest
+of the look is a style's.
+
+A font that is not installed can be dropped into
+`%APPDATA%\Lumen\configonts\` as `.ttf`, `.otf` or `.ttc`; it is loaded
+at startup, so `lumen quit` then `lumen` after adding one. Raycast and
+Vicinae both set their interface in Inter, which Lumen bundles: what differs
+on screen is the renderer -- a web view's against DirectWrite -- not the
+typeface. Letter spacing is not available: gpui does not support it.
 
 ### Styles
 

@@ -37,6 +37,12 @@ impl Paths {
         self.config_dir.join("themes")
     }
 
+    /// Font files the user adds (F15): every `.ttf`, `.otf` and `.ttc` here
+    /// is loaded at startup, and a palette can name its family.
+    pub fn fonts_dir(&self) -> PathBuf {
+        self.config_dir.join("fonts")
+    }
+
     /// Styles: the launcher's geometry and variants (F15). Installed like
     /// themes, by dropping a file in, and chosen apart from them.
     pub fn styles_dir(&self) -> PathBuf {
@@ -147,6 +153,7 @@ impl Paths {
             &self.data_dir,
             &self.themes_dir(),
             &self.styles_dir(),
+            &self.fonts_dir(),
             &self.sheets_dir(),
             &self.scripts_dir(),
         ] {

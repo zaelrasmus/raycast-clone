@@ -191,9 +191,7 @@ impl Render for Overlay {
             .bg(color(colors.surface_background))
             .text_color(color(colors.text_primary));
 
-        if let Some(family) = &self.theme.font_family {
-            panel = panel.font_family(SharedString::from(family.clone()));
-        }
+        panel = crate::styling::typography(panel, &self.theme);
 
         let panel = panel
             .child(

@@ -147,6 +147,11 @@ pub struct ThemeFile {
     /// deliberately not a size: sizes are geometry (AD-13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_family: Option<String>,
+    /// OpenType features of the family, by their four-letter tags: Inter's
+    /// `cv11` (a single-storey a), `ss03` (rounded quotes), `tnum` (figures
+    /// of one width). 1 turns one on, 0 off (F15). Typography, not geometry.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub font_features: BTreeMap<String, u32>,
 }
 
 /// A fully resolved theme: every token present, nothing left to fall back on.
@@ -162,6 +167,8 @@ pub struct Theme {
     pub name: String,
     pub appearance: Appearance,
     pub font_family: Option<String>,
+    /// OpenType features, as (tag, value); empty is the family's defaults.
+    pub font_features: Vec<(String, u32)>,
     pub colors: Colors,
     /// The launcher's geometry and variants, from the style file `style` in
     /// `config.json` names. The base style until one is loaded.
@@ -248,6 +255,7 @@ impl Theme {
             // on Hyprland. A palette may name a different family; sizes are
             // the style's (AD-13, I-11).
             font_family: Some(BUNDLED_FONT.into()),
+            font_features: Vec::new(),
             style: Style::base(),
             colors: Colors {
                 // Alpha below 255 on purpose: this surface sits over the system
@@ -281,6 +289,7 @@ impl Theme {
             name: "Daylight".into(),
             appearance: Appearance::Light,
             font_family: Some(BUNDLED_FONT.into()),
+            font_features: Vec::new(),
             style: Style::base(),
             colors: Colors {
                 surface_background: Color::rgba(0xF7, 0xF7, 0xFA, 0xDE),
@@ -320,6 +329,23 @@ impl Theme {
         if let Some(family) = &file.font_family {
             theme.font_family = Some(family.clone());
         }
+        // A tag is four printable ASCII characters; anything else would be
+        // handed to the shaper as garbage, so it is reported and dropped.
+        theme.font_features = file
+            .font_features
+            .iter()
+            .filter(|(tag, _)| {
+                let valid = tag.len() == 4 && tag.bytes().all(|byte| byte.is_ascii_graphic());
+                if !valid {
+                    log::warn!(
+                        "theme {:?} sets font feature {tag:?}, which is not a four-letter tag; ignoring it",
+                        file.name
+                    );
+                }
+                valid
+            })
+            .map(|(tag, value)| (tag.clone(), *value))
+            .collect();
 
         // The window's edge follows the separators unless it is set apart.
         if !file.colors.contains_key("border.window") {
@@ -418,6 +444,7 @@ mod tests {
             appearance: Appearance::Dark,
             colors: BTreeMap::from([("accent".to_string(), Color::rgb(1, 2, 3))]),
             font_family: None,
+            font_features: BTreeMap::new(),
         };
 
         let theme = Theme::resolve(&file);
@@ -440,6 +467,7 @@ mod tests {
             appearance: Appearance::Dark,
             colors: BTreeMap::from([("border.subtle".to_string(), Color::rgb(1, 2, 3))]),
             font_family: None,
+            font_features: BTreeMap::new(),
         };
         assert_eq!(
             Theme::resolve(&file).colors.border_window,
@@ -459,6 +487,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn font_features_keep_valid_tags_only() {
+        let json = r##"{
+            "schema_version": 1,
+            "name": "Featured",
+            "font_features": { "cv11": 1, "ss03": 1, "toolong": 1 }
+        }"##;
+        let file: ThemeFile = serde_json::from_str(json).unwrap();
+        let theme = Theme::resolve(&file);
+        assert_eq!(
+            theme.font_features,
+            [("cv11".to_string(), 1), ("ss03".to_string(), 1)]
+        );
+    }
+
     /// A theme written against a future, wider palette must still load today.
     #[test]
     fn unknown_tokens_are_ignored_not_fatal() {
@@ -471,6 +514,7 @@ mod tests {
                 ("token.invented.later".to_string(), Color::rgb(1, 1, 1)),
             ]),
             font_family: None,
+            font_features: BTreeMap::new(),
         };
 
         let theme = Theme::resolve(&file);
@@ -487,6 +531,7 @@ mod tests {
             appearance: Appearance::Light,
             colors: BTreeMap::new(),
             font_family: None,
+            font_features: BTreeMap::new(),
         };
 
         let theme = Theme::resolve(&file);
