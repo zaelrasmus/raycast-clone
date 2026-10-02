@@ -43,6 +43,10 @@ pub const CARD_CHIP_RADIUS: f32 = 4.0;
 /// (`card.divider`).
 pub const CARD_ARROW_GAP: f32 = 8.0;
 
+/// The card's divider: a hairline, not a rule. It does not follow
+/// `rule.width`, which thickens the bars between the window's regions.
+pub const CARD_DIVIDER_WIDTH: f32 = 1.0;
+
 /// Height of the search field.
 pub const SEARCH_HEIGHT: f32 = 56.0;
 

@@ -3530,8 +3530,10 @@ impl Launcher {
             let rule = || {
                 div()
                     .flex_1()
-                    .w(geometry.rule_width())
-                    .bg(color(colors.border_subtle))
+                    .w(gpui::px(lumen_core::layout::CARD_DIVIDER_WIDTH))
+                    // Strong, not subtle: it is drawn on the card's fill,
+                    // which a palette may give the subtle border's colour.
+                    .bg(color(colors.border_strong))
             };
             div()
                 .flex_none()
