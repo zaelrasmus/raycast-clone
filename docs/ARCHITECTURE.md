@@ -122,7 +122,7 @@ once Lumen was measured well inside them (7.36).
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
-| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 34 bounded tokens and thirteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
+| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 
 ### F4 build order is not optional
 
@@ -3278,6 +3278,52 @@ There is no height token. The popover's height is still computed from its rows
 can give it a height that clips a row (I-10). The rows themselves, the header,
 the field and the padding keep their constants: they are the picker's too, and
 a style chooses where the popover stands, not what it is (I-11).
+
+### 7.48 The region between the chrome gives, and every view's height is the style's
+
+**One flexible part.** The window is never exactly the height the launcher
+asks for: its border is inside it, the platform rounds its size to whole
+pixels, and it catches up with a new height a frame late. Something has to
+take up the difference, and it must not be the chrome. The search field and
+the footer are `flex_none`; the region between them is the one element that
+gives, `flex_1` with no height of its own, and the body inside it keeps its
+height and is clipped to it. The popover floats over the region, unclipped,
+so its shadow is not cut.
+
+The chrome was made rigid first (db02304), so that the footer kept its
+height while the window grew for the popover; but only the popover's wrapper
+was allowed to shrink, and only while the popover was open. In a view the
+region was then rigid too, and a body that cannot shrink -- a list beside its
+detail pane -- was taller than the room the window actually had, and pushed
+the footer out of it. A test now reads the source and fails if the search
+field or the footer can shrink, or if the region is given a height.
+
+**A view's height follows the style.** A view no longer hugs a fixed number
+of rows; its height comes from the same tokens as the root list's
+(`view::rows_height`, a pure function):
+
+- A list is as tall as its rows, accumulated whole up to `list.height`
+  (`Config::list_height`), as the root list is (7.29): a short list still
+  shrinks to its rows.
+- A detail view, and a list beside its detail pane while its rows fit, are as
+  tall as a full root list (`Config::full_list_height`, the whole rows that
+  fit in the list's height), not a fixed three rows or the raw cap, which
+  need not be whole rows.
+- A view that is loading, and one whose list is empty -- nothing sent, or a
+  search that matched nothing -- are as tall as a full root list too. Both
+  were three rows; Clipboard History therefore opened short, said
+  *Starting…*, and grew when its rows arrived, and a search inside a view
+  that matched nothing shrank the window under the user's typing. A loading
+  view has no rows, so it takes the empty rule and needs no height of its
+  own.
+
+So a view never jumps between loading and loaded, and a style's height
+reaches views the way it reaches the root list.
+
+The root list keeps its own rule: with nothing found it collapses to the
+search field and the footer. That is not the same jump. The root list has no
+loading state, and its height already follows its results as they change;
+collapsing when there are none is deliberate, and unchanged.
 
 ## 8. Risk register
 
