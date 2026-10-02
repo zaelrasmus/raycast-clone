@@ -15,14 +15,15 @@ use gpui::{
 };
 use lumen_core::calc::history::{CalculatorConfig, History, MAX_LIMIT, NumberFormat};
 use lumen_core::calc::settings;
-use lumen_core::layout::{self, settings as metrics};
+use lumen_core::layout::settings as metrics;
 use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, DIALOG_CONTEXT};
 use crate::select::{Choice, Select, SelectEvent};
 use crate::settings::text_button;
-use crate::styling::{color, type_scale};
+use crate::settings_ui as ui;
+use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::translate_page::FORM_CONTEXT;
 
@@ -424,7 +425,7 @@ fn format_select(current: NumberFormat, colors: &Colors, cx: &mut App) -> Entity
         .iter()
         .position(|(format, _, _)| *format == current)
         .unwrap_or(0);
-    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
+    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact())
 }
 
 fn chosen_format(value: Option<&str>) -> NumberFormat {
@@ -459,33 +460,8 @@ impl Render for CalculatorPage {
 impl CalculatorPage {
     fn render_form(&self, colors: &Colors, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(problem) = &self.problem {
-            return div()
-                .flex_1()
-                .p(px(metrics::PADDING))
-                .text_size(px(metrics::text::HINT))
-                .text_color(color(colors.text_error))
-                .child(format!(
-                    "{problem}\n\nFix config.json, and this page comes back by itself."
-                ))
-                .into_any_element();
+            return ui::problem("calculator", problem, colors);
         }
-
-        let label = |text: &'static str| {
-            div()
-                .w(px(layout::form::LABEL_WIDTH))
-                .flex_none()
-                .text_size(type_scale::subtitle())
-                .text_color(color(colors.text_muted))
-                .child(text)
-        };
-        let row = |text: &'static str, control: AnyElement| {
-            div()
-                .h(px(layout::form::ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .child(label(text))
-                .child(div().flex_1().child(control))
-        };
 
         let clear = text_button(
             "clear-calculator-history",
@@ -512,39 +488,41 @@ impl CalculatorPage {
             (None, false) => ("Enter or Ctrl+S saves. Esc undoes.".to_string(), false),
         };
 
-        div()
-            .flex_1()
-            .py(px(metrics::PADDING))
-            .child(
-                div()
-                    .key_context(FORM_CONTEXT)
-                    .on_action(cx.listener(Self::next_field))
-                    .on_action(cx.listener(Self::previous_field))
-                    .on_action(cx.listener(Self::submit))
-                    .on_action(cx.listener(Self::cancel))
-                    .w_full()
-                    .px(crate::styling::metrics::gutter())
-                    .py(px(layout::form::PADDING_Y))
-                    .flex()
-                    .flex_col()
-                    .child(row("Keep at most", self.limit.clone().into_any_element()))
-                    .child(row("Numbers", self.format.clone().into_any_element()))
-                    .child(row("History", clear))
-                    .child(
-                        div()
-                            .h(px(layout::form::MESSAGE_HEIGHT))
-                            .pl(px(layout::form::LABEL_WIDTH))
-                            .flex()
-                            .items_center()
-                            .text_size(type_scale::footer())
-                            .text_color(color(if is_error {
-                                colors.text_error
-                            } else {
-                                colors.text_muted
-                            }))
-                            .child(div().truncate().child(message)),
+        ui::page("calculator")
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::previous_field))
+            .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::cancel))
+            .child(ui::section_title("History", colors))
+            .child(ui::card(
+                [
+                    ui::row(
+                        "Keep at most",
+                        Some("Calculations used, newest first; 0 keeps none".into()),
+                        ui::narrow(self.limit.clone()),
+                        colors,
                     ),
-            )
+                    ui::row(
+                        "Clear history",
+                        Some("Delete every calculation kept".into()),
+                        clear,
+                        colors,
+                    ),
+                ],
+                colors,
+            ))
+            .child(ui::section_title("Numbers", colors))
+            .child(ui::card(
+                [ui::row(
+                    "Format",
+                    Some("How answers are written and read".into()),
+                    self.format.clone(),
+                    colors,
+                )],
+                colors,
+            ))
+            .child(ui::note(message, is_error, colors))
             .into_any_element()
     }
 }

@@ -468,6 +468,11 @@ pub mod settings {
     /// A control at a row's right edge: a field that would otherwise run the
     /// row's whole width, a compact dropdown's list.
     pub const CONTROL_WIDTH: f32 = 240.0;
+    /// A field for a number or a time.
+    pub const CONTROL_NARROW_WIDTH: f32 = 96.0;
+    /// The line under a page's cards: what the focused row means, or why a
+    /// save was refused.
+    pub const NOTE_HEIGHT: f32 = 24.0;
 
     /// A toggle: a track, and the knob inside it.
     pub const TOGGLE_WIDTH: f32 = 32.0;

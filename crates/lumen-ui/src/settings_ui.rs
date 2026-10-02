@@ -109,6 +109,47 @@ pub fn control(child: impl IntoElement) -> Div {
     div().w(px(metrics::CONTROL_WIDTH)).child(child)
 }
 
+/// A control for a number or a time.
+pub fn narrow(child: impl IntoElement) -> Div {
+    div().w(px(metrics::CONTROL_NARROW_WIDTH)).child(child)
+}
+
+/// The line under a page's cards: what the focused row means, or, in the
+/// error colour, why a save was refused. Always there, so a refusal does not
+/// move the cards above it (I-10).
+pub fn note(text: impl Into<SharedString>, error: bool, colors: &Colors) -> Div {
+    div()
+        .h(px(metrics::NOTE_HEIGHT))
+        .flex_none()
+        .px(px(metrics::CARD_PADDING_X))
+        .flex()
+        .items_center()
+        .text_size(px(metrics::text::ROW_DESCRIPTION))
+        .text_color(color(if error {
+            colors.text_error
+        } else {
+            colors.text_muted
+        }))
+        .child(div().truncate().child(text.into()))
+}
+
+/// A page whose file could not be read, in place of its cards.
+pub fn problem(id: impl Into<ElementId>, problem: &str, colors: &Colors) -> AnyElement {
+    page(id)
+        .child(
+            div()
+                .px(px(metrics::CARD_PADDING_X))
+                .text_size(px(metrics::text::ROW_DESCRIPTION))
+                .text_color(color(colors.text_error))
+                .child(format!(
+                    "{problem}
+
+Fix config.json, and this page comes back by itself."
+                )),
+        )
+        .into_any_element()
+}
+
 /// A toggle's track and knob, on or off; `focused` rings it in the accent.
 ///
 /// Drawing only. The host makes it focusable and clickable, and binds Space

@@ -15,17 +15,14 @@
 use std::path::PathBuf;
 
 use gpui::prelude::*;
-use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div, px,
-};
+use gpui::{AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div};
 use lumen_core::currency::{CurrencyConfig, Service, store};
-use lumen_core::layout::{self, settings as metrics};
 use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::select::{Choice, Select, SelectEvent};
 use crate::settings::text_button;
-use crate::styling::{color, type_scale};
+use crate::settings_ui as ui;
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::translate_page::FORM_CONTEXT;
 
@@ -322,7 +319,7 @@ fn form(
         None => "Paste your API key".into(),
     };
     (
-        cx.new(|cx| Select::new(choices, selected, colors.clone(), cx)),
+        cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact()),
         cx.new(|cx| TextField::new(String::new(), placeholder, colors.clone(), cx)),
     )
 }
@@ -346,53 +343,35 @@ impl Render for CurrencyPage {
 impl CurrencyPage {
     fn render_form(&self, colors: &Colors, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(problem) = &self.problem {
-            return div()
-                .flex_1()
-                .p(px(metrics::PADDING))
-                .text_size(px(metrics::text::HINT))
-                .text_color(color(colors.text_error))
-                .child(format!(
-                    "{problem}\n\nFix config.json, and this page comes back by itself."
-                ))
-                .into_any_element();
+            return ui::problem("currency", problem, colors);
         }
 
-        let label = |text: &'static str| {
-            div()
-                .w(px(layout::form::LABEL_WIDTH))
-                .flex_none()
-                .text_size(type_scale::subtitle())
-                .text_color(color(colors.text_muted))
-                .child(text)
-        };
-        let field_row = |text: &'static str, control: AnyElement| {
-            div()
-                .h(px(layout::form::ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .child(label(text))
-                .child(div().flex_1().child(control))
-        };
-
         let mut rows = vec![
-            field_row("Service", self.service.clone().into_any_element()).into_any_element(),
-            field_row("API key", self.key.clone().into_any_element()).into_any_element(),
+            ui::row(
+                "Service",
+                Some("Who is asked for rates, once a day".into()),
+                self.service.clone(),
+                colors,
+            ),
+            ui::row(
+                "API key",
+                Some("For the services that need one".into()),
+                ui::control(self.key.clone()),
+                colors,
+            ),
         ];
         if self.config.key().is_some() {
-            rows.push(
-                div()
-                    .h(px(layout::form::ROW_HEIGHT))
-                    .pl(px(layout::form::LABEL_WIDTH))
-                    .flex()
-                    .items_center()
-                    .child(text_button(
-                        "remove-currency-key",
-                        "Remove saved key",
-                        colors,
-                        cx.listener(|page, _, _, cx| page.remove_key(cx)),
-                    ))
-                    .into_any_element(),
-            );
+            rows.push(ui::row(
+                "Saved key",
+                Some("Kept until it is removed".into()),
+                text_button(
+                    "remove-currency-key",
+                    "Remove",
+                    colors,
+                    cx.listener(|page, _, _, cx| page.remove_key(cx)),
+                ),
+                colors,
+            ));
         }
         let hints = [
             "Who is asked for rates, once a day. Never another: a failure is shown, not retried elsewhere.",
@@ -405,37 +384,15 @@ impl CurrencyPage {
             (None, None) => ("Enter or Ctrl+S saves. Esc undoes.".to_string(), false),
         };
 
-        div()
-            .flex_1()
-            .py(px(metrics::PADDING))
-            .child(
-                div()
-                    .key_context(FORM_CONTEXT)
-                    .on_action(cx.listener(Self::next_field))
-                    .on_action(cx.listener(Self::previous_field))
-                    .on_action(cx.listener(Self::submit))
-                    .on_action(cx.listener(Self::cancel))
-                    .w_full()
-                    .px(crate::styling::metrics::gutter())
-                    .py(px(layout::form::PADDING_Y))
-                    .flex()
-                    .flex_col()
-                    .children(rows)
-                    .child(
-                        div()
-                            .h(px(layout::form::MESSAGE_HEIGHT))
-                            .pl(px(layout::form::LABEL_WIDTH))
-                            .flex()
-                            .items_center()
-                            .text_size(type_scale::footer())
-                            .text_color(color(if is_error {
-                                colors.text_error
-                            } else {
-                                colors.text_muted
-                            }))
-                            .child(div().truncate().child(message)),
-                    ),
-            )
+        ui::page("currency")
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::previous_field))
+            .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::cancel))
+            .child(ui::section_title("Exchange rates", colors))
+            .child(ui::card(rows, colors))
+            .child(ui::note(message, is_error, colors))
             .into_any_element()
     }
 }

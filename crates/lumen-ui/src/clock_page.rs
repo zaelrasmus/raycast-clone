@@ -20,12 +20,13 @@ use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div, px,
 };
 use lumen_core::clock::{ClockConfig, DifferenceFormat, Overlap, RowLayout, store};
-use lumen_core::layout::{self, settings as metrics};
+use lumen_core::layout;
 use lumen_core::places::{Favourites, store as places_store};
 use lumen_core::theme::Colors;
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::select::{Choice, Select, SelectEvent};
+use crate::settings_ui as ui;
 use crate::styling::{color, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::translate_page::FORM_CONTEXT;
@@ -377,7 +378,7 @@ fn select<T: PartialEq + Copy>(
         .iter()
         .position(|(option, _, _)| *option == current)
         .unwrap_or(0);
-    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
+    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact())
 }
 
 fn form(
@@ -389,7 +390,7 @@ fn form(
 ) -> Form {
     let (choices, selected) = crate::home_choice::choices(home, mine);
     Form {
-        home: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx)),
+        home: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact()),
         row: select(&ROWS, config.row, colors, cx),
         format: select(&FORMATS, config.difference_format, colors, cx),
         overlap: select(&OVERLAP, config.overlap.enabled, colors, cx),
@@ -416,89 +417,69 @@ impl Render for ClockPage {
 impl ClockPage {
     fn render_form(&self, colors: &Colors, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(problem) = &self.problem {
-            return div()
-                .flex_1()
-                .p(px(metrics::PADDING))
-                .text_size(px(metrics::text::HINT))
-                .text_color(color(colors.text_error))
-                .child(format!(
-                    "{problem}\n\nFix config.json, and this page comes back by itself."
-                ))
-                .into_any_element();
+            return ui::problem("clock", problem, colors);
         }
 
-        let label = |text: &'static str| {
-            div()
-                .w(px(layout::form::LABEL_WIDTH))
-                .flex_none()
-                .text_size(type_scale::subtitle())
-                .text_color(color(colors.text_muted))
-                .child(text)
-        };
-        let field_row = |text: &'static str, control: AnyElement| {
-            div()
-                .h(px(layout::form::ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .child(label(text))
-                .child(div().flex_1().child(control))
-                .into_any_element()
-        };
-        // A field not offered, saying why in its place.
-        let not_offered = |text: &'static str, why: &'static str| {
-            field_row(
-                text,
-                div()
-                    .text_size(type_scale::subtitle())
-                    .text_color(color(colors.text_muted))
-                    .child(why)
-                    .into_any_element(),
-            )
-        };
-
         let mut rows = vec![
-            field_row("Home", self.form.home.clone().into_any_element()),
-            field_row("Row", self.form.row.clone().into_any_element()),
-            field_row("Difference", self.form.format.clone().into_any_element()),
+            ui::row(
+                "Home",
+                Some("The city your time is compared from".into()),
+                self.form.home.clone(),
+                colors,
+            ),
+            ui::row(
+                "Row",
+                Some("Which value leads a row: how far away, or what time".into()),
+                self.form.row.clone(),
+                colors,
+            ),
+            ui::row(
+                "Difference",
+                Some("How the difference from your time is written".into()),
+                self.form.format.clone(),
+                colors,
+            ),
         ];
+        // The note under the cards follows the focused field, in this order.
         let mut hints = vec![
             crate::home_choice::HINT,
             "Which value leads a row, drawn like its title: how far away, or what time.",
             "How the difference from your time is written.",
         ];
         if self.offers_overlap(cx) {
-            rows.push(field_row(
+            rows.push(ui::row(
                 "Overlap",
-                self.form.overlap.clone().into_any_element(),
+                Some("When your working day and theirs meet".into()),
+                self.form.overlap.clone(),
+                colors,
             ));
             hints.push("Shows, on each row, when your working day and theirs meet.");
         } else {
-            rows.push(not_offered("Overlap", "Only with Difference first"));
+            // Not offered, saying why in its place.
+            rows.push(ui::row(
+                "Overlap",
+                Some("Only with the difference leading a row".into()),
+                gpui::Empty,
+                colors,
+            ));
         }
         if self.asks_hours(cx) {
-            rows.push(field_row(
+            rows.push(ui::row(
                 "Working hours",
+                Some("Yours, 24-hour; the same hours are assumed there".into()),
                 div()
                     .flex()
                     .items_center()
                     .gap(px(layout::form::DURATION_GAP))
-                    .child(
-                        div()
-                            .w(px(layout::form::DURATION_FIELD_WIDTH))
-                            .child(self.form.start.clone()),
-                    )
+                    .child(ui::narrow(self.form.start.clone()))
                     .child(
                         div()
                             .text_size(type_scale::subtitle())
                             .text_color(color(colors.text_muted))
                             .child("to"),
                     )
-                    .child(
-                        div()
-                            .w(px(layout::form::DURATION_FIELD_WIDTH))
-                            .child(self.form.end.clone()),
-                    )
-                    .into_any_element(),
+                    .child(ui::narrow(self.form.end.clone())),
+                colors,
             ));
             hints.push("When your day starts, 24-hour: the same hours are assumed there.");
             hints.push("When your day ends, 24-hour.");
@@ -510,37 +491,15 @@ impl ClockPage {
             (None, None) => ("Enter or Ctrl+S saves. Esc undoes.".to_string(), false),
         };
 
-        div()
-            .flex_1()
-            .py(px(metrics::PADDING))
-            .child(
-                div()
-                    .key_context(FORM_CONTEXT)
-                    .on_action(cx.listener(Self::next_field))
-                    .on_action(cx.listener(Self::previous_field))
-                    .on_action(cx.listener(Self::submit))
-                    .on_action(cx.listener(Self::cancel))
-                    .w_full()
-                    .px(crate::styling::metrics::gutter())
-                    .py(px(layout::form::PADDING_Y))
-                    .flex()
-                    .flex_col()
-                    .children(rows)
-                    .child(
-                        div()
-                            .h(px(layout::form::MESSAGE_HEIGHT))
-                            .pl(px(layout::form::LABEL_WIDTH))
-                            .flex()
-                            .items_center()
-                            .text_size(type_scale::footer())
-                            .text_color(color(if is_error {
-                                colors.text_error
-                            } else {
-                                colors.text_muted
-                            }))
-                            .child(div().truncate().child(message)),
-                    ),
-            )
+        ui::page("clock")
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::previous_field))
+            .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::cancel))
+            .child(ui::section_title("World Clock", colors))
+            .child(ui::card(rows, colors))
+            .child(ui::note(message, is_error, colors))
             .into_any_element()
     }
 }

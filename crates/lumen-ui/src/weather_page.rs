@@ -11,15 +11,14 @@
 use std::path::PathBuf;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Context, Entity, FocusHandle, SharedString, Window, div, px};
-use lumen_core::layout::{self, settings as metrics};
+use gpui::{AnyElement, App, Context, Entity, FocusHandle, SharedString, Window, div};
 use lumen_core::places::{Favourites, store as places_store};
 use lumen_core::theme::Colors;
 use lumen_core::weather::{Layout, Units, WeatherConfig, store};
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::select::{Choice, Select, SelectEvent};
-use crate::styling::{color, type_scale};
+use crate::settings_ui as ui;
 use crate::translate_page::FORM_CONTEXT;
 
 const UNITS: [(Units, &str, &str); 2] = [
@@ -298,7 +297,7 @@ fn select<T: PartialEq + Copy>(
         .iter()
         .position(|(option, _, _)| *option == current)
         .unwrap_or(0);
-    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx))
+    cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact())
 }
 
 fn form(
@@ -312,7 +311,7 @@ fn form(
     Form {
         units: select(&UNITS, config.units, colors, cx),
         layout: select(&LAYOUTS, config.layout, colors, cx),
-        home: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx)),
+        home: cx.new(|cx| Select::new(choices, selected, colors.clone(), cx).compact()),
     }
 }
 
@@ -333,37 +332,28 @@ impl Render for WeatherPage {
 impl WeatherPage {
     fn render_form(&self, colors: &Colors, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(problem) = &self.problem {
-            return div()
-                .flex_1()
-                .p(px(metrics::PADDING))
-                .text_size(px(metrics::text::HINT))
-                .text_color(color(colors.text_error))
-                .child(format!(
-                    "{problem}\n\nFix config.json, and this page comes back by itself."
-                ))
-                .into_any_element();
+            return ui::problem("weather", problem, colors);
         }
 
-        let field_row = |text: &'static str, control: AnyElement| {
-            div()
-                .h(px(layout::form::ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .w(px(layout::form::LABEL_WIDTH))
-                        .flex_none()
-                        .text_size(type_scale::subtitle())
-                        .text_color(color(colors.text_muted))
-                        .child(text),
-                )
-                .child(div().flex_1().child(control))
-                .into_any_element()
-        };
         let rows = vec![
-            field_row("Units", self.form.units.clone().into_any_element()),
-            field_row("Report", self.form.layout.clone().into_any_element()),
-            field_row("Home", self.form.home.clone().into_any_element()),
+            ui::row(
+                "Units",
+                Some("Temperature, wind and rain".into()),
+                self.form.units.clone(),
+                colors,
+            ),
+            ui::row(
+                "Report",
+                Some("Where a city's full report is shown".into()),
+                self.form.layout.clone(),
+                colors,
+            ),
+            ui::row(
+                "Home",
+                Some("The city forecasts are for unless one is named".into()),
+                self.form.home.clone(),
+                colors,
+            ),
         ];
         let hints = [
             "How temperatures, wind and rain are written. Forecasts are kept in metric.",
@@ -376,37 +366,15 @@ impl WeatherPage {
             (None, None) => ("Enter or Ctrl+S saves. Esc undoes.".to_string(), false),
         };
 
-        div()
-            .flex_1()
-            .py(px(metrics::PADDING))
-            .child(
-                div()
-                    .key_context(FORM_CONTEXT)
-                    .on_action(cx.listener(Self::next_field))
-                    .on_action(cx.listener(Self::previous_field))
-                    .on_action(cx.listener(Self::submit))
-                    .on_action(cx.listener(Self::cancel))
-                    .w_full()
-                    .px(crate::styling::metrics::gutter())
-                    .py(px(layout::form::PADDING_Y))
-                    .flex()
-                    .flex_col()
-                    .children(rows)
-                    .child(
-                        div()
-                            .h(px(layout::form::MESSAGE_HEIGHT))
-                            .pl(px(layout::form::LABEL_WIDTH))
-                            .flex()
-                            .items_center()
-                            .text_size(type_scale::footer())
-                            .text_color(color(if is_error {
-                                colors.text_error
-                            } else {
-                                colors.text_muted
-                            }))
-                            .child(div().truncate().child(message)),
-                    ),
-            )
+        ui::page("weather")
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::previous_field))
+            .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::cancel))
+            .child(ui::section_title("Weather", colors))
+            .child(ui::card(rows, colors))
+            .child(ui::note(message, is_error, colors))
             .into_any_element()
     }
 }

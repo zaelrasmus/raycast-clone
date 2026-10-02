@@ -15,14 +15,15 @@ use gpui::{
 };
 use lumen_core::clipboard::{History, MAX_ENTRIES_LIMIT, Summary, images, settings};
 use lumen_core::config::ClipboardConfig;
-use lumen_core::layout::{self, settings as metrics};
+use lumen_core::layout::settings as metrics;
 use lumen_core::theme::Colors;
 use parking_lot::Mutex;
 
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, DIALOG_CONTEXT};
 use crate::settings::text_button;
-use crate::styling::{color, type_scale};
+use crate::settings_ui as ui;
+use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::translate_page::FORM_CONTEXT;
 
@@ -416,33 +417,8 @@ impl Render for ClipboardPage {
 impl ClipboardPage {
     fn render_form(&self, colors: &Colors, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(problem) = &self.problem {
-            return div()
-                .flex_1()
-                .p(px(metrics::PADDING))
-                .text_size(px(metrics::text::HINT))
-                .text_color(color(colors.text_error))
-                .child(format!(
-                    "{problem}\n\nFix config.json, and this page comes back by itself."
-                ))
-                .into_any_element();
+            return ui::problem("clipboard", problem, colors);
         }
-
-        let label = |text: &'static str| {
-            div()
-                .w(px(layout::form::LABEL_WIDTH))
-                .flex_none()
-                .text_size(type_scale::subtitle())
-                .text_color(color(colors.text_muted))
-                .child(text)
-        };
-        let row = |text: &'static str, control: AnyElement| {
-            div()
-                .h(px(layout::form::ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .child(label(text))
-                .child(div().flex_1().child(control))
-        };
 
         let clear = text_button(
             "clear-clipboard-history",
@@ -466,38 +442,37 @@ impl ClipboardPage {
             (None, false) => ("Enter or Ctrl+S saves. Esc undoes.".to_string(), false),
         };
 
-        div()
-            .flex_1()
-            .py(px(metrics::PADDING))
-            .child(
-                div()
-                    .key_context(FORM_CONTEXT)
-                    .on_action(cx.listener(Self::next_field))
-                    .on_action(cx.listener(Self::previous_field))
-                    .on_action(cx.listener(Self::submit))
-                    .on_action(cx.listener(Self::cancel))
-                    .w_full()
-                    .px(crate::styling::metrics::gutter())
-                    .py(px(layout::form::PADDING_Y))
-                    .flex()
-                    .flex_col()
-                    .child(row("Keep at most", self.limit.clone().into_any_element()))
-                    .child(row("History", clear))
-                    .child(
-                        div()
-                            .h(px(layout::form::MESSAGE_HEIGHT))
-                            .pl(px(layout::form::LABEL_WIDTH))
-                            .flex()
-                            .items_center()
-                            .text_size(type_scale::footer())
-                            .text_color(color(if is_error {
-                                colors.text_error
-                            } else {
-                                colors.text_muted
-                            }))
-                            .child(div().truncate().child(message)),
+        ui::page("clipboard")
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(Self::next_field))
+            .on_action(cx.listener(Self::previous_field))
+            .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::cancel))
+            .child(ui::section_title("History", colors))
+            .child(ui::card(
+                [
+                    ui::row(
+                        "Keep at most",
+                        Some(
+                            format!(
+                                "Entries, newest first, for up to {} days",
+                                self.config.retention.max_age_days
+                            )
+                            .into(),
+                        ),
+                        ui::narrow(self.limit.clone()),
+                        colors,
                     ),
-            )
+                    ui::row(
+                        "Clear history",
+                        Some("Delete everything copied so far".into()),
+                        clear,
+                        colors,
+                    ),
+                ],
+                colors,
+            ))
+            .child(ui::note(message, is_error, colors))
             .into_any_element()
     }
 }
