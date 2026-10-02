@@ -32,6 +32,8 @@
     "row.subtitle": "inline",
     "selection": "fill",
     "footer.hints": "keycaps",
-    "section.case": "title"
+    "section.case": "title",
+    "footer.count": "hidden",
+    "footer.escape": "hidden"
   }
 }

@@ -36,6 +36,8 @@
     "keycap": "outline",
     "section.case": "title",
     "search.icon": "logo",
-    "footer.icon": "logo"
+    "footer.icon": "logo",
+    "footer.count": "hidden",
+    "footer.escape": "hidden"
   }
 }

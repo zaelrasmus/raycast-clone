@@ -33,6 +33,8 @@
     "row.subtitle": "inline",
     "selection": "fill-border",
     "footer.hints": "keycaps",
-    "section.case": "upper"
+    "section.case": "upper",
+    "footer.count": "hidden",
+    "footer.escape": "hidden"
   }
 }

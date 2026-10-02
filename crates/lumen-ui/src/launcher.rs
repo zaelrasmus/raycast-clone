@@ -3674,6 +3674,9 @@ impl Launcher {
                 let titles: Vec<&str> = scopes.iter().map(|scope| scope.title.as_str()).collect();
                 format!("{}  Tab", titles.join(" / "))
             }
+            _ if self.theme.style.variants.footer_count == lumen_core::style::Shown::Hidden => {
+                String::new()
+            }
             (_, 1) => "1 result".to_string(),
             (_, count) => format!("{count} results"),
         };
@@ -3727,7 +3730,9 @@ impl Launcher {
                     Mode::Root if self.argument.is_none() => "Dismiss",
                     Mode::Root | Mode::View(_) | Mode::Form(_) => "Back",
                 };
-                hints.push((leave.into(), &["Esc"]));
+                if geometry.variants().footer_escape == lumen_core::style::Shown::Shown {
+                    hints.push((leave.into(), &["Esc"]));
+                }
 
                 div()
                     .flex()

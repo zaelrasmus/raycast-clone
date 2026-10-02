@@ -2149,6 +2149,8 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `keycap` | `filled`, `outline` | A keycap filled, or an outline the footer shows through (Raycast's) |
 | `search.icon` | `none`, `search`, `logo` | Before the query: nothing, a magnifying glass, or Lumen's mark; at the rows' icon size and gap, so the query starts where their titles do |
 | `footer.icon` | `none`, `logo` | Lumen's mark before the footer's status |
+| `footer.count` | `shown`, `hidden` | *313 results*, where the footer has nothing else to say; none of the references shows it |
+| `footer.escape` | `shown`, `hidden` | The *Dismiss* or *Back* hint for Escape; none of the references shows it |
 
 Two colour tokens joined the palette with them: `surface.footer`, behind the
 footer (transparent in the base themes), and `border.window`, the window's

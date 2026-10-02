@@ -331,6 +331,25 @@ pub enum FooterIcon {
     Logo,
 }
 
+/// Whether the footer says something the references leave out (F15): how
+/// many results there are, and that Escape dismisses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Shown {
+    #[default]
+    Shown,
+    Hidden,
+}
+
+impl Shown {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "shown" => Some(Shown::Shown),
+            "hidden" => Some(Shown::Hidden),
+            _ => None,
+        }
+    }
+}
+
 /// How a section's title is cased.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SectionCase {
@@ -351,6 +370,10 @@ pub struct Variants {
     pub section_case: SectionCase,
     pub search_icon: SearchIcon,
     pub footer_icon: FooterIcon,
+    /// The result count, where the footer has nothing else to say.
+    pub footer_count: Shown,
+    /// The *Dismiss* or *Back* hint for Escape.
+    pub footer_escape: Shown,
 }
 
 impl Variants {
@@ -402,6 +425,8 @@ impl Variants {
                     _ => return None,
                 }
             }
+            "footer.count" => self.footer_count = Shown::parse(value)?,
+            "footer.escape" => self.footer_escape = Shown::parse(value)?,
             "section.case" => {
                 self.section_case = match value {
                     "title" => SectionCase::Title,
