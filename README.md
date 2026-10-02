@@ -36,7 +36,10 @@ an aesthetic worth looking at fifty times a day.
   the keyboard path at all, so it cannot swallow the keystroke that follows it.
 - **A settings window** for writing those sheets, so configuring the overlay
   does not mean hand-editing JSON. It offers to start a sheet for whichever
-  application you were just using.
+  application you were just using. Since F15 it is laid out after Raycast's:
+  pages down the left with a search over them (`Ctrl+Tab` steps through
+  them), and settings in cards of rows with toggles and compact dropdowns,
+  in the active palette's colours and typeface.
 - **Inline calculator** (F14). Type a calculation and the answer is the first
   thing in the list, drawn as a card -- what you typed, and the result --
   ready to copy with `Enter`:
@@ -337,6 +340,12 @@ Then run the binary once to start the daemon:
 | `lumen settings`        | Open the settings window                      |
 | `lumen reload`          | Re-read the configuration, sheets, scripts, snippets and files |
 | `lumen quit`            | Stop the daemon                               |
+
+`LUMEN_HOME` keeps a daemon's files and socket apart from the installed one:
+its `config`, `data` and `cache` live under that folder, and it listens on a
+socket of its own, so it runs beside your everyday Lumen without reading or
+writing anything of it. The capture and test scripts use it; it is how to try
+a change without risking your configuration.
 
 ### Keys
 
@@ -770,7 +779,7 @@ rebuilds it.
 
 ### Translation
 
-The **Translation** tab of the settings window (`lumen settings`) chooses the
+The **Translation** page of the settings window (`lumen settings`) chooses the
 service, keeps the DeepL key, and adds, edits and deletes presets, with the
 languages in dropdowns. It writes the `translate` section of `config.json`
 and leaves the rest of the file as it was; the launcher follows at once. The

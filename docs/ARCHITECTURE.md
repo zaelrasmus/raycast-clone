@@ -2258,6 +2258,24 @@ What was decided while building it:
   - **The list editors are adapted, not copied.** Quicklinks, Translation,
     Timers and Shortcut Sheets keep a list and its editor; they take the
     cards' look inside the content column, under the sidebar's navigation.
+    The forms inside them are unchanged, because the quicklink form is also
+    the launcher's *Create Quicklink*.
+  - **Built.** The nav replaces the tabs, with a search over the pages and
+    `Ctrl+Tab` through them (keymap, I-14); Appearance, Calculator,
+    Clipboard, Currency, Weather and World Clock are cards of rows, each
+    field's old hint now its row's description; the list editors are a list
+    card beside an editor card. Checked on screen in Carbon and in Daylight.
+    The launcher was not measured again: nothing in its render path changed,
+    and the one shared part, the dropdown, keeps its old drawing unless asked
+    to be compact.
+- **Test runs never touch the user's Lumen.** A capture script that swapped
+  the theme in the real `config.json` and put it back had an escaping bug,
+  wrote the file empty, and restored nothing; it was recovered from a copy
+  some hours old. Since then `LUMEN_HOME` gives a daemon a folder of its own
+  for `config`, `data` and `cache`, and a socket of its own, so a test daemon
+  runs beside the installed one and reads and writes nothing of it. Scripts
+  that check a look start one that way, and say at the end whether the
+  user's config and daemon are as they were.
 - **Measured, at the close.** Release build, both builds alternated. Typing:
   p95 2.00--2.01 ms against 2.24 ms. Gesture: p50 8 ms, p95 19 ms. Idle:
   0.002--0.009 % against 0.004 %, one to four 15.6 ms ticks either way;
