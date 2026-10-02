@@ -22,8 +22,9 @@
 //!
 //! Only the launcher's surface reads a style: the search field, the rows, the
 //! section headers, the calculator's card and the footer, in the root list and
-//! in views. The action panel, the forms, the overlay and the settings window
-//! keep the constants (7.41).
+//! in views, and where the action panel's popover stands, how wide it is and
+//! how many rows it shows (7.47). The popover's rows, the forms, the overlay
+//! and the settings window keep the constants (7.41).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -99,6 +100,21 @@ pub struct Metrics {
     pub card_rows: f32,
     /// Between each of the card's values and its label.
     pub card_label_gap: f32,
+    /// The action panel's popover, before the window narrows it: see
+    /// [`Metrics::actions_width`].
+    pub actions_width: f32,
+    /// How far the popover stands in from the edges its anchor names, across
+    /// and down. Always inward: from a right edge it moves left, from a bottom
+    /// edge up. On an axis the anchor centres, it moves the popover right or
+    /// down from the centre. The window keeps this much clear on both sides
+    /// of the popover, whatever the anchor (`Config::panel_height`).
+    pub actions_offset_x: f32,
+    pub actions_offset_y: f32,
+    /// How many of the popover's rows are shown before the rest scroll. A
+    /// float so it sits in the table; read as whole rows through
+    /// [`Metrics::actions_rows`]. The popover's height is computed from it,
+    /// never set (I-10).
+    pub actions_max_rows: f32,
 }
 
 impl Metrics {
@@ -144,6 +160,10 @@ impl Metrics {
         rule_width: 1.0,
         card_rows: layout::CARD_ROWS as f32,
         card_label_gap: layout::CARD_LABEL_GAP,
+        actions_width: layout::action_panel::WIDTH,
+        actions_offset_x: layout::action_panel::INSET,
+        actions_offset_y: layout::action_panel::INSET,
+        actions_max_rows: layout::action_panel::MAX_ROWS as f32,
     };
 
     /// The token names a style may set, each with where it lands and its
@@ -187,6 +207,10 @@ impl Metrics {
             "rule.width" => (&mut self.rule_width, 1.0, 2.0),
             "card.label-gap" => (&mut self.card_label_gap, 2.0, 24.0),
             "card.rows" => (&mut self.card_rows, 2.0, 4.0),
+            "actions.width" => (&mut self.actions_width, 280.0, 720.0),
+            "actions.offset-x" => (&mut self.actions_offset_x, 0.0, 64.0),
+            "actions.offset-y" => (&mut self.actions_offset_y, 0.0, 64.0),
+            "actions.max-rows" => (&mut self.actions_max_rows, 3.0, 12.0),
             _ => return None,
         })
     }
@@ -194,6 +218,21 @@ impl Metrics {
     /// The rows the card takes, whole.
     pub fn card_rows(&self) -> usize {
         self.card_rows.round() as usize
+    }
+
+    /// The action panel's rows shown before it scrolls, whole.
+    pub fn actions_rows(&self) -> usize {
+        self.actions_max_rows.round() as usize
+    }
+
+    /// The popover's width in a window this wide: the style's, but never so
+    /// wide that it leaves less than its horizontal offset either side. The
+    /// window's width can come from `config.json`, so this is not a relation
+    /// checked when the style loads.
+    pub fn actions_width(&self, window_width: f32) -> f32 {
+        self.actions_width
+            .min(window_width - self.actions_offset_x * 2.0)
+            .max(0.0)
     }
 
     /// How much room a view's empty state is given: three rows, as
@@ -435,6 +474,62 @@ pub enum CardOperators {
     Dimmed,
 }
 
+/// Where the action panel's popover stands in the region between the search
+/// field and the footer (7.47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActionsAnchor {
+    /// Raycast's: over the list's bottom-right, just above the footer.
+    #[default]
+    BottomRight,
+    BottomLeft,
+    BottomCenter,
+    /// Just under the search field.
+    TopRight,
+    TopLeft,
+    TopCenter,
+    /// In the middle of the region.
+    Center,
+}
+
+impl ActionsAnchor {
+    /// The popover's top-left corner within a region of `region` (width,
+    /// height), for a popover of `size` standing `offset` (across, down) in
+    /// from the edges this anchor names.
+    ///
+    /// The offset always moves the popover inward from an anchored edge --
+    /// left from the right edge, up from the bottom -- and right or down on an
+    /// axis this anchor centres. So with an offset of `o`, the popover fits in
+    /// any region at least its size plus `2 * o` on that axis, whichever the
+    /// anchor: the room `Config::panel_height` gives it.
+    pub fn origin(self, region: [f32; 2], size: [f32; 2], offset: [f32; 2]) -> [f32; 2] {
+        use ActionsAnchor::*;
+
+        let place = |edge: Edge, axis: usize| match edge {
+            Edge::Start => offset[axis],
+            Edge::Middle => (region[axis] - size[axis]) / 2.0 + offset[axis],
+            Edge::End => region[axis] - size[axis] - offset[axis],
+        };
+        let (across, down) = match self {
+            BottomRight => (Edge::End, Edge::End),
+            BottomLeft => (Edge::Start, Edge::End),
+            BottomCenter => (Edge::Middle, Edge::End),
+            TopRight => (Edge::End, Edge::Start),
+            TopLeft => (Edge::Start, Edge::Start),
+            TopCenter => (Edge::Middle, Edge::Start),
+            Center => (Edge::Middle, Edge::Middle),
+        };
+        [place(across, 0), place(down, 1)]
+    }
+}
+
+/// Where on one axis an anchor holds the popover.
+#[derive(Clone, Copy)]
+enum Edge {
+    Start,
+    Middle,
+    End,
+}
+
 /// The launcher's structural choices, resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Variants {
@@ -453,6 +548,7 @@ pub struct Variants {
     pub card_labels: CardLabels,
     pub card_divider: CardDivider,
     pub card_operators: CardOperators,
+    pub actions_anchor: ActionsAnchor,
 }
 
 impl Variants {
@@ -531,6 +627,18 @@ impl Variants {
                 self.card_operators = match value {
                     "plain" => CardOperators::Plain,
                     "dimmed" => CardOperators::Dimmed,
+                    _ => return None,
+                }
+            }
+            "actions.anchor" => {
+                self.actions_anchor = match value {
+                    "bottom-right" => ActionsAnchor::BottomRight,
+                    "bottom-left" => ActionsAnchor::BottomLeft,
+                    "bottom-center" => ActionsAnchor::BottomCenter,
+                    "top-right" => ActionsAnchor::TopRight,
+                    "top-left" => ActionsAnchor::TopLeft,
+                    "top-center" => ActionsAnchor::TopCenter,
+                    "center" => ActionsAnchor::Center,
                     _ => return None,
                 }
             }
@@ -673,7 +781,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 34;
+const TOKEN_COUNT: usize = 38;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -762,6 +870,10 @@ mod tests {
             "rule.width",
             "card.rows",
             "card.label-gap",
+            "actions.width",
+            "actions.offset-x",
+            "actions.offset-y",
+            "actions.max-rows",
         ];
         assert_eq!(names.len(), TOKEN_COUNT);
         let mut metrics = Metrics::BASE;
@@ -945,6 +1057,152 @@ mod tests {
         assert_eq!(style.metrics.rule_width, 1.0);
         assert_eq!(style.metrics.card_rows(), layout::CARD_ROWS);
         assert_eq!(style.variants.card_header, CardHeader::Hidden);
+    }
+
+    /// I-12: a style written before the action panel was opened to it loads,
+    /// and places the popover where it always was.
+    #[test]
+    fn a_style_without_the_action_panel_tokens_draws_it_as_it_was() {
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Old",
+            "metrics": { "row.height": 48 }
+        }"#;
+        let file: StyleFile = serde_json::from_str(json).unwrap();
+        let style = Style::resolve(&file);
+        assert_eq!(style.metrics.actions_width, layout::action_panel::WIDTH);
+        assert_eq!(style.metrics.actions_offset_x, layout::action_panel::INSET);
+        assert_eq!(style.metrics.actions_offset_y, layout::action_panel::INSET);
+        assert_eq!(style.metrics.actions_rows(), layout::action_panel::MAX_ROWS);
+        assert_eq!(style.variants.actions_anchor, ActionsAnchor::BottomRight);
+    }
+
+    #[test]
+    fn the_action_panel_tokens_are_set_and_clamped() {
+        let set = Style::resolve(&file(
+            &[
+                ("actions.width", 520.0),
+                ("actions.offset-x", 16.0),
+                ("actions.offset-y", 0.0),
+                ("actions.max-rows", 10.0),
+            ],
+            &[("actions.anchor", "top-left")],
+        ));
+        assert_eq!(set.metrics.actions_width, 520.0);
+        assert_eq!(set.metrics.actions_offset_x, 16.0);
+        assert_eq!(set.metrics.actions_offset_y, 0.0);
+        assert_eq!(set.metrics.actions_rows(), 10);
+        assert_eq!(set.variants.actions_anchor, ActionsAnchor::TopLeft);
+
+        let high = Style::resolve(&file(
+            &[
+                ("actions.width", 2000.0),
+                ("actions.offset-x", 500.0),
+                ("actions.offset-y", 99.0),
+                ("actions.max-rows", 40.0),
+            ],
+            &[],
+        ));
+        assert_eq!(high.metrics.actions_width, 720.0);
+        assert_eq!(high.metrics.actions_offset_x, 64.0);
+        assert_eq!(high.metrics.actions_offset_y, 64.0);
+        assert_eq!(high.metrics.actions_rows(), 12);
+
+        let low = Style::resolve(&file(
+            &[
+                ("actions.width", 10.0),
+                ("actions.offset-x", -8.0),
+                ("actions.offset-y", -1.0),
+                ("actions.max-rows", 1.0),
+            ],
+            &[],
+        ));
+        assert_eq!(low.metrics.actions_width, 280.0);
+        assert_eq!(low.metrics.actions_offset_x, 0.0);
+        assert_eq!(low.metrics.actions_offset_y, 0.0);
+        assert_eq!(low.metrics.actions_rows(), 3);
+
+        // Rows are whole.
+        let half = Style::resolve(&file(&[("actions.max-rows", 8.6)], &[]));
+        assert_eq!(half.metrics.actions_rows(), 9);
+    }
+
+    #[test]
+    fn the_anchor_parses_every_value_and_ignores_what_it_does_not_know() {
+        for (value, anchor) in [
+            ("bottom-right", ActionsAnchor::BottomRight),
+            ("bottom-left", ActionsAnchor::BottomLeft),
+            ("bottom-center", ActionsAnchor::BottomCenter),
+            ("top-right", ActionsAnchor::TopRight),
+            ("top-left", ActionsAnchor::TopLeft),
+            ("top-center", ActionsAnchor::TopCenter),
+            ("center", ActionsAnchor::Center),
+        ] {
+            let style = Style::resolve(&file(&[], &[("actions.anchor", value)]));
+            assert_eq!(style.variants.actions_anchor, anchor, "{value}");
+        }
+
+        let unknown = Style::resolve(&file(&[], &[("actions.anchor", "middle-ish")]));
+        assert_eq!(unknown.variants.actions_anchor, ActionsAnchor::BottomRight);
+    }
+
+    /// Where the popover's top-left corner lands in a 720 x 300 region, for a
+    /// 440 x 200 popover 8 from its edges.
+    #[test]
+    fn the_popover_is_placed_by_its_anchor_and_offsets() {
+        let region = [720.0, 300.0];
+        let size = [440.0, 200.0];
+        let offset = [8.0, 8.0];
+        let at = |anchor: ActionsAnchor| anchor.origin(region, size, offset);
+
+        assert_eq!(at(ActionsAnchor::BottomRight), [272.0, 92.0]);
+        assert_eq!(at(ActionsAnchor::BottomLeft), [8.0, 92.0]);
+        assert_eq!(at(ActionsAnchor::BottomCenter), [148.0, 92.0]);
+        assert_eq!(at(ActionsAnchor::TopRight), [272.0, 8.0]);
+        assert_eq!(at(ActionsAnchor::TopLeft), [8.0, 8.0]);
+        assert_eq!(at(ActionsAnchor::TopCenter), [148.0, 8.0]);
+        // On a centred axis the offset moves it right and down.
+        assert_eq!(at(ActionsAnchor::Center), [148.0, 58.0]);
+        assert_eq!(
+            ActionsAnchor::Center.origin(region, size, [0.0, 0.0]),
+            [140.0, 50.0]
+        );
+    }
+
+    /// Within a region exactly as tall as the popover and twice its vertical
+    /// offset -- what a short list grows the window to -- every anchor keeps
+    /// it inside, with the offset clear of whichever edge it is anchored to.
+    #[test]
+    fn every_anchor_fits_the_popover_in_the_room_the_window_gives_it() {
+        let size = [440.0, 200.0];
+        let offset = [12.0, 10.0];
+        let region = [720.0, size[1] + offset[1] * 2.0];
+        for anchor in [
+            ActionsAnchor::BottomRight,
+            ActionsAnchor::BottomLeft,
+            ActionsAnchor::BottomCenter,
+            ActionsAnchor::TopRight,
+            ActionsAnchor::TopLeft,
+            ActionsAnchor::TopCenter,
+            ActionsAnchor::Center,
+        ] {
+            let [x, y] = anchor.origin(region, size, offset);
+            assert!(x >= 0.0 && x + size[0] <= region[0], "{anchor:?}");
+            assert!(y >= 0.0 && y + size[1] <= region[1], "{anchor:?}");
+        }
+    }
+
+    /// The width never leaves less than the horizontal offset either side.
+    #[test]
+    fn the_popover_is_never_wider_than_the_window_less_its_offsets() {
+        let metrics = Metrics {
+            actions_width: 720.0,
+            actions_offset_x: 20.0,
+            ..Metrics::BASE
+        };
+        assert_eq!(metrics.actions_width(600.0), 560.0);
+        assert_eq!(metrics.actions_width(1000.0), 720.0);
+        assert_eq!(Metrics::BASE.actions_width(720.0), 440.0);
     }
 
     #[test]

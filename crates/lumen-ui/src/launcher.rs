@@ -437,8 +437,8 @@ pub struct Launcher {
     /// `None` means the panel is closed. Holding the selection here rather than
     /// a separate `bool` plus index makes the two impossible to disagree.
     action_panel: Option<usize>,
-    /// The popover's rows scroll past [`layout::action_panel::MAX_ROWS`]; this
-    /// is what keeps the highlighted one in view.
+    /// The popover's rows scroll past the style's `actions.max-rows`; this is
+    /// what keeps the highlighted one in view.
     panel_scroll: ScrollHandle,
     /// The panel is showing browsers for "Open With..." rather than the row's
     /// actions: the link to open, waiting for one to be chosen. Only
@@ -1099,7 +1099,7 @@ impl Launcher {
             return self.config.panel_height(
                 self.metrics(),
                 list,
-                lumen_core::layout::action_panel::height(&groups),
+                lumen_core::layout::action_panel::height(&groups, self.metrics().actions_rows()),
             );
         }
         list
@@ -4180,7 +4180,8 @@ impl Launcher {
     }
 
     /// The action panel, when it is open: a popover floating over the list,
-    /// anchored to the bottom-right just above the footer (7.45).
+    /// anchored where the style puts it -- the bottom-right just above the
+    /// footer unless it says otherwise (7.45, 7.47).
     ///
     /// Drawn inside the launcher's own window rather than given one of its own:
     /// unlike the shortcut overlay it is an ordinary part of the list's
@@ -4214,7 +4215,14 @@ impl Launcher {
         // Sized from every row, not the ones the search leaves: typing in the
         // panel's field never moves the window (I-10).
         let groups: Vec<_> = entries.iter().map(|entry| entry.group).collect();
-        let height = panel::height(&groups);
+        let metrics = self.metrics();
+        let height = panel::height(&groups, metrics.actions_rows());
+        let width = metrics.actions_width(self.width());
+        let [left, top] = geometry.variants().actions_anchor.origin(
+            [self.width(), self.region_height()],
+            [width, height],
+            [metrics.actions_offset_x, metrics.actions_offset_y],
+        );
 
         let shown = self.panel_rows();
         let shown_groups: Vec<_> = shown.iter().map(|row| groups[*row]).collect();
@@ -4302,9 +4310,9 @@ impl Launcher {
 
         let popover = div()
             .absolute()
-            .right(gpui::px(panel::INSET))
-            .bottom(gpui::px(panel::INSET))
-            .w(gpui::px(panel::WIDTH))
+            .left(gpui::px(left))
+            .top(gpui::px(top))
+            .w(gpui::px(width))
             .h(gpui::px(height))
             // Over the backdrop, which would otherwise take a click on a row.
             .occlude()
@@ -4963,12 +4971,13 @@ mod tests {
             ActionGroup::Copy,
             ActionGroup::Favorite,
         ];
-        let every = height(&groups);
+        let cap = lumen_core::layout::action_panel::MAX_ROWS;
+        let every = height(&groups, cap);
         let rows = visible_panel_rows(groups.len(), Some(&[1]));
         let left: Vec<_> = rows.iter().map(|row| groups[*row]).collect();
 
-        assert!(height(&left) < every);
-        assert!(height(&[]) < every);
+        assert!(height(&left, cap) < every);
+        assert!(height(&[], cap) < every);
     }
 
     #[test]

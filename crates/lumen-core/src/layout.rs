@@ -94,11 +94,13 @@ pub const ROW_RADIUS: f32 = 7.0;
 /// Inset of the selected row's highlight from the window edge.
 pub const ROW_INSET: f32 = 7.0;
 
-/// The action panel, opened with Ctrl+K: a popover floating over the bottom-right
-/// of the list, just above the footer (7.45).
+/// The action panel, opened with Ctrl+K: a popover floating over the list,
+/// by default at its bottom-right just above the footer (7.45).
 ///
 /// Its rows and padding are also the scope picker's, which is drawn the same
-/// way but in the list's place.
+/// way but in the list's place. Where it stands, how wide it is and how many
+/// rows it shows are the style's (`actions.*`, 7.47); the constants for those
+/// here are the base they resolve from.
 pub mod action_panel {
     use crate::item::ActionGroup;
 
@@ -110,12 +112,14 @@ pub mod action_panel {
 
     pub const ROW_RADIUS: f32 = 5.0;
 
-    /// The popover's width. Fixed rather than the window's share, so a wider
-    /// window shows the same popover and a narrower one is never covered by it.
+    /// The popover's width in the base style (`actions.width`). Fixed rather
+    /// than the window's share, so a wider window shows the same popover and a
+    /// narrower one is never covered by it.
     pub const WIDTH: f32 = 440.0;
 
     /// How far the popover stands from the window's right edge and from the
-    /// footer; also the gap kept above it, so it never touches the search row.
+    /// footer in the base style (`actions.offset-x`, `actions.offset-y`); also
+    /// the gap kept above it, so it never touches the search row.
     pub const INSET: f32 = 8.0;
 
     /// The popover's outline. Part of its height, which is border-box.
@@ -135,7 +139,8 @@ pub mod action_panel {
     pub const SEPARATOR_HEIGHT: f32 = 1.0;
     pub const SEPARATOR_MARGIN: f32 = 4.0;
 
-    /// How many rows are shown before the rest scroll.
+    /// How many rows are shown before the rest scroll, in the base style
+    /// (`actions.max-rows`).
     pub const MAX_ROWS: usize = 7;
 
     /// The icon at the start of a row: smaller than a result's, because the
@@ -169,11 +174,13 @@ pub mod action_panel {
     /// and outline, the rows that are shown with the rules among them, and the
     /// search field under them.
     ///
-    /// Capped at [`MAX_ROWS`]; only the rules among the rows shown count, since
-    /// the others are reached by scrolling. Given every row, not the ones a
-    /// search leaves, so typing in the field never resizes the window.
-    pub fn height(groups: &[ActionGroup]) -> f32 {
-        let shown = &groups[..groups.len().min(MAX_ROWS)];
+    /// Capped at `max_rows`, the style's; only the rules among the rows shown
+    /// count, since the others are reached by scrolling. Given every row, not
+    /// the ones a search leaves, so typing in the field never resizes the
+    /// window. Always computed, never set: a height of its own could clip a
+    /// row (I-10).
+    pub fn height(groups: &[ActionGroup], max_rows: usize) -> f32 {
+        let shown = &groups[..groups.len().min(max_rows)];
         let rules = breaks(shown).into_iter().filter(|rule| *rule).count();
 
         HEADER_HEIGHT
@@ -669,11 +676,11 @@ mod tests {
         let rule = action_panel::SEPARATOR_HEIGHT + action_panel::SEPARATOR_MARGIN * 2.0;
 
         assert_eq!(
-            action_panel::height(&[Primary, Primary, Copy]),
+            action_panel::height(&[Primary, Primary, Copy], action_panel::MAX_ROWS),
             chrome + 3.0 * action_panel::ROW_HEIGHT + rule
         );
         assert_eq!(
-            action_panel::height(&[Primary]),
+            action_panel::height(&[Primary], action_panel::MAX_ROWS),
             chrome + action_panel::ROW_HEIGHT
         );
     }
@@ -685,7 +692,10 @@ mod tests {
         let many = vec![Primary; action_panel::MAX_ROWS + 5];
         let capped = vec![Primary; action_panel::MAX_ROWS];
 
-        assert_eq!(action_panel::height(&many), action_panel::height(&capped));
+        assert_eq!(
+            action_panel::height(&many, action_panel::MAX_ROWS),
+            action_panel::height(&capped, action_panel::MAX_ROWS)
+        );
     }
 
     /// Only the rules among the rows that are shown cost height; one further
@@ -696,8 +706,24 @@ mod tests {
         groups.push(Copy);
 
         assert_eq!(
-            action_panel::height(&groups),
-            action_panel::height(&groups[..action_panel::MAX_ROWS])
+            action_panel::height(&groups, action_panel::MAX_ROWS),
+            action_panel::height(&groups[..action_panel::MAX_ROWS], action_panel::MAX_ROWS)
+        );
+    }
+
+    /// The cap is the style's: a higher one lets the same menu show more
+    /// rows before it scrolls, a row's height for each.
+    #[test]
+    fn the_row_cap_is_given_not_fixed() {
+        let many = vec![Primary; 20];
+
+        assert_eq!(
+            action_panel::height(&many, 10) - action_panel::height(&many, 7),
+            3.0 * action_panel::ROW_HEIGHT
+        );
+        assert_eq!(
+            action_panel::height(&many, 3),
+            action_panel::height(&many[..3], 12)
         );
     }
 }

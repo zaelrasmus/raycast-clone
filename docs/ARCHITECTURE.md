@@ -2144,6 +2144,9 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `rule.width` | 1 | 1--2 | The line under the search field and over the footer (7.43) |
 | `card.rows` | 2 | 2--4 | Rows the calculator's card takes, read as whole rows (7.43) |
 | `card.label-gap` | 6 | 2--24 | Between each of the card's values and its label (7.43) |
+| `actions.width` | 440 | 280--720 | The action panel's popover; never wider than the window less `actions.offset-x` either side (7.47) |
+| `actions.offset-x`, `actions.offset-y` | 8 | 0--64 | In from the edges `actions.anchor` names, across and down; right or down from the centre on a centred axis. The window keeps `actions.offset-y` clear above and below the popover (7.47) |
+| `actions.max-rows` | 7 | 3--12 | The popover's rows shown before it scrolls, read as whole rows; its height is computed from them (7.47) |
 
 | Variant | Values (base first) | What it changes |
 | --- | --- | --- |
@@ -2159,6 +2162,7 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `card.labels` | `plain`, `chips` | *Expression* and *Result* as muted text, or on a filled chip in `border.strong` |
 | `card.divider` | `none`, `line` | A hairline in `border.strong` between the card's halves, broken around the arrow |
 | `card.operators` | `plain`, `dimmed` | The expression's operators in the muted colour |
+| `actions.anchor` | `bottom-right`, `bottom-left`, `bottom-center`, `top-right`, `top-left`, `top-center`, `center` | Where the action panel's popover stands between the search field and the footer (7.47) |
 
 Two colour tokens joined the palette with them: `surface.footer`, behind the
 footer (transparent in the base themes), and `border.window`, the window's
@@ -3245,6 +3249,35 @@ The popover's height is still computed from every row, plus
 `layout::action_panel::SEARCH_HEIGHT`, so typing never resizes the window:
 the rows area keeps the unfiltered height (capped at `MAX_ROWS`) and the rows
 left sit at its top.
+
+### 7.47 The action panel's placement is the style's
+
+Raycast puts the popover at the bottom-right; other launchers put theirs
+under the search field or in the middle. Where it stands, how wide it is and
+how many rows it shows before scrolling are now style tokens, with the
+constants of 7.45 as their base: `actions.anchor` (a variant: `bottom-right`,
+`bottom-left`, `bottom-center`, `top-right`, `top-left`, `top-center`,
+`center`), `actions.offset-x` and `actions.offset-y` (0--64, base 8),
+`actions.width` (280--720, base 440) and `actions.max-rows` (3--12, base 7).
+They clamp and fall back as every other token does; a style that sets none
+places the popover as it was (I-12).
+
+The offsets always point inward: from a right edge the popover moves left,
+from a bottom edge up, and on an axis the anchor centres it moves right or
+down. With one convention for every anchor, the popover fits in any region its
+size plus twice the offset on each axis, so `Config::panel_height` keeps
+`actions.offset-y` above and below it whatever the anchor -- a top anchor is as
+clear of the search field as a bottom one is of the footer -- and the width is
+narrowed to the window less `actions.offset-x` either side
+(`Metrics::actions_width`), since `config.json` can set the window's width.
+The corner is computed by a pure function, `ActionsAnchor::origin`, and set as
+`left` and `top`.
+
+There is no height token. The popover's height is still computed from its rows
+(`layout::action_panel::height`, now given the style's row cap), so no style
+can give it a height that clips a row (I-10). The rows themselves, the header,
+the field and the padding keep their constants: they are the picker's too, and
+a style chooses where the popover stands, not what it is (I-11).
 
 ## 8. Risk register
 

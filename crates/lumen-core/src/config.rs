@@ -361,14 +361,15 @@ impl Config {
     /// list is tall enough to stand it in -- the window then does not change at
     /// all, which is what keeps the list from being re-laid out beneath it. It
     /// grows only when the list is shorter: the search row, the popover with
-    /// the inset kept above and below it, and the footer (7.45). The popover is
-    /// given an explicit height because the window is sized exactly to its
-    /// content and an absolutely positioned element has no way to derive one.
+    /// the style's vertical offset kept above and below it, and the footer
+    /// (7.45). Both sides whatever the anchor, which is what any anchor needs
+    /// to stand the popover clear of its edge (`ActionsAnchor::origin`, 7.47).
+    /// The popover is given an explicit height because the window is sized
+    /// exactly to its content and an absolutely positioned element has no way
+    /// to derive one.
     pub fn panel_height(&self, metrics: &Metrics, list: f32, popover: f32) -> f32 {
-        use crate::layout;
-
         let needed = metrics.search_height
-            + layout::action_panel::INSET * 2.0
+            + metrics.actions_offset_y * 2.0
             + popover
             + metrics.footer_height;
         list.max(needed)
@@ -602,7 +603,10 @@ mod tests {
 
         let config = Config::default();
         let list = config.window_height(&Metrics::BASE, 8);
-        let popover = crate::layout::action_panel::height(&[ActionGroup::Primary; 4]);
+        let popover = crate::layout::action_panel::height(
+            &[ActionGroup::Primary; 4],
+            Metrics::BASE.actions_rows(),
+        );
 
         assert_eq!(config.panel_height(&Metrics::BASE, list, popover), list);
     }
@@ -616,7 +620,10 @@ mod tests {
 
         let config = Config::default();
         let list = config.window_height(&Metrics::BASE, 1);
-        let popover = crate::layout::action_panel::height(&[ActionGroup::Primary; 6]);
+        let popover = crate::layout::action_panel::height(
+            &[ActionGroup::Primary; 6],
+            Metrics::BASE.actions_rows(),
+        );
 
         let height = config.panel_height(&Metrics::BASE, list, popover);
 
@@ -642,7 +649,11 @@ mod tests {
         let groups = [ActionGroup::Primary; 3];
         let rows = 3.0 * action_panel::ROW_HEIGHT;
 
-        let height = config.panel_height(&Metrics::BASE, list, action_panel::height(&groups));
+        let height = config.panel_height(
+            &Metrics::BASE,
+            list,
+            action_panel::height(&groups, Metrics::BASE.actions_rows()),
+        );
 
         assert_eq!(
             height,
@@ -654,6 +665,33 @@ mod tests {
                 + rows
                 + action_panel::SEARCH_HEIGHT
                 + Metrics::BASE.footer_height
+        );
+    }
+
+    /// The room kept around the popover is the style's vertical offset, on
+    /// both sides whatever the anchor, so a top anchor is as clear of the
+    /// search field as a bottom one is of the footer.
+    #[test]
+    fn a_short_list_grows_by_the_style_s_vertical_offset() {
+        use crate::item::ActionGroup;
+        use crate::layout::action_panel;
+
+        let config = Config::default();
+        let metrics = Metrics {
+            actions_offset_y: 20.0,
+            actions_max_rows: 3.0,
+            ..Metrics::BASE
+        };
+        let list = config.window_height(&metrics, 0);
+        let popover = action_panel::height(&[ActionGroup::Primary; 9], metrics.actions_rows());
+
+        assert_eq!(
+            popover,
+            action_panel::height(&[ActionGroup::Primary; 3], action_panel::MAX_ROWS)
+        );
+        assert_eq!(
+            config.panel_height(&metrics, list, popover),
+            metrics.search_height + 20.0 * 2.0 + popover + metrics.footer_height
         );
     }
 

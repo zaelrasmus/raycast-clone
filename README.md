@@ -519,6 +519,29 @@ Vicinae).
 }
 ```
 
+The action panel (Ctrl+K) is placed by the style too. `actions.anchor` is one
+of `bottom-right` (the default), `bottom-left`, `bottom-center`, `top-right`,
+`top-left`, `top-center` or `center`, within the space between the search
+field and the footer. `actions.offset-x` and `actions.offset-y` (0 to 64,
+default 8) move it in from the edges it is anchored to, or right and down from
+the centre on a centred axis. `actions.width` is 280 to 720 (default 440), and
+`actions.max-rows` 3 to 12 (default 7) is how many actions show before the
+rest scroll; its height follows from them.
+
+```json
+{
+  "schema_version": 1,
+  "name": "Top Actions",
+  "metrics": {
+    "actions.width": 520,
+    "actions.offset-x": 0,
+    "actions.offset-y": 12,
+    "actions.max-rows": 9
+  },
+  "variants": { "actions.anchor": "top-center" }
+}
+```
+
 The shipped palettes and styles follow Lumen's releases for as long as you
 leave them as they were: Lumen remembers what it wrote, and a file you have
 edited is never touched again. To make one your own without that question,
