@@ -52,9 +52,9 @@ pub const WEIGHTS: [f32; 3] = [400.0, 500.0, 600.0];
 
 /// The launcher's geometry, resolved: every token present.
 ///
-/// Logical pixels, except the weights. Read by the renderer as it draws, so
-/// a field here is a token a style may set; the table in [`Metrics::slot`] is
-/// what makes it settable.
+/// Logical pixels, except the weights and the tracking, which is in em. Read by
+/// the renderer as it draws, so a field here is a token a style may set; the
+/// table in [`Metrics::slot`] is what makes it settable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics {
     pub window_width: f32,
@@ -84,6 +84,9 @@ pub struct Metrics {
     pub text_section: f32,
     pub text_footer: f32,
     pub text_card: f32,
+    /// Extra space after every glyph, in em: a multiple of the type size, so
+    /// one number holds at every size. Zero adds none.
+    pub text_tracking: f32,
     pub weight_query: f32,
     pub weight_title: f32,
     pub weight_section: f32,
@@ -124,6 +127,7 @@ impl Metrics {
         text_section: layout::text::FOOTER,
         text_footer: layout::text::FOOTER,
         text_card: layout::text::CARD,
+        text_tracking: 0.0,
         weight_query: 400.0,
         weight_title: 400.0,
         weight_section: 400.0,
@@ -162,6 +166,7 @@ impl Metrics {
             "text.section" => (&mut self.text_section, 10.0, 16.0),
             "text.footer" => (&mut self.text_footer, 10.0, 16.0),
             "text.card" => (&mut self.text_card, 14.0, 48.0),
+            "text.tracking" => (&mut self.text_tracking, -0.05, 0.1),
             "weight.query" => (&mut self.weight_query, 400.0, 600.0),
             "weight.title" => (&mut self.weight_title, 400.0, 600.0),
             "weight.section" => (&mut self.weight_section, 400.0, 600.0),
@@ -566,7 +571,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 29;
+const TOKEN_COUNT: usize = 30;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -642,6 +647,7 @@ mod tests {
             "text.section",
             "text.footer",
             "text.card",
+            "text.tracking",
             "weight.query",
             "weight.title",
             "weight.section",
@@ -673,6 +679,44 @@ mod tests {
         let style = Style::resolve(&file(&[("row.height", 400.0), ("gutter", -3.0)], &[]));
         assert_eq!(style.metrics.row_height, 72.0);
         assert_eq!(style.metrics.gutter, 8.0);
+    }
+
+    /// Tracking is a token like the others: base zero, set from a style, and
+    /// clamped to its range, so a style written for a later Lumen still loads.
+    #[test]
+    fn tracking_is_zero_in_the_base_and_set_by_a_style() {
+        assert_eq!(Metrics::BASE.text_tracking, 0.0);
+        assert_eq!(Style::resolve(&file(&[], &[])).metrics.text_tracking, 0.0);
+        let style = Style::resolve(&file(&[("text.tracking", 0.02)], &[]));
+        assert_eq!(style.metrics.text_tracking, 0.02);
+        let tighter = Style::resolve(&file(&[("text.tracking", -0.03)], &[]));
+        assert_eq!(tighter.metrics.text_tracking, -0.03);
+    }
+
+    #[test]
+    fn tracking_is_clamped_to_its_range() {
+        let wide = Style::resolve(&file(&[("text.tracking", 2.0)], &[]));
+        assert_eq!(wide.metrics.text_tracking, 0.1);
+        let tight = Style::resolve(&file(&[("text.tracking", -1.0)], &[]));
+        assert_eq!(tight.metrics.text_tracking, -0.05);
+        // What is not a number leaves the base.
+        let nan = Style::resolve(&file(&[("text.tracking", f32::NAN)], &[]));
+        assert_eq!(nan.metrics.text_tracking, 0.0);
+    }
+
+    /// I-12: a style file written before the token existed loads, and draws
+    /// with no tracking.
+    #[test]
+    fn a_style_without_tracking_still_loads() {
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Old",
+            "metrics": { "row.height": 48 }
+        }"#;
+        let file: StyleFile = serde_json::from_str(json).unwrap();
+        let style = Style::resolve(&file);
+        assert_eq!(style.metrics.row_height, 48.0);
+        assert_eq!(style.metrics.text_tracking, 0.0);
     }
 
     #[test]

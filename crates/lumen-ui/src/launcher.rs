@@ -3041,6 +3041,9 @@ impl Render for Launcher {
             .text_color(color(colors.text_primary));
 
         root = crate::styling::typography(root, &self.theme);
+        // The style's tracking, here and nowhere lower: the query, the rows,
+        // the headers and the footer inherit it (7.41).
+        root = crate::styling::tracking(root, &self.geometry());
 
         // One region, three possible occupants, in order of precedence: the
         // action panel over whatever it was opened from, then an extension's
@@ -3901,7 +3904,8 @@ fn render_hint(
                     .child(label),
             )
             .children(keys.iter().map(|key| {
-                let cap = div()
+                // A key is one or two letters, which tracking does not suit.
+                let cap = crate::styling::untracked(div())
                     .h(geometry.keycap_height())
                     .min_w(geometry.keycap_height())
                     .px(geometry.keycap_padding())

@@ -38,6 +38,30 @@ pub fn typography<E: gpui::Styled>(mut element: E, theme: &Theme) -> E {
     element
 }
 
+/// The style's tracking on an element, inherited by everything beneath it.
+///
+/// Only the launcher's surface reads a style (7.41), so this is not part of
+/// [`typography`], which the overlay and settings share. A zero sets nothing,
+/// so a style without tracking draws exactly as it did before there was any.
+pub fn tracking<E: gpui::Styled>(element: E, geometry: &Geometry) -> E {
+    let em = geometry.metrics().text_tracking;
+    if em == 0.0 {
+        element
+    } else {
+        element.letter_spacing(em)
+    }
+}
+
+/// No tracking on an element, whatever it inherits: for the text that does
+/// not track well, such as the one or two letters on a keycap.
+pub fn untracked<E: gpui::Styled>(mut element: E) -> E {
+    element
+        .text_style()
+        .get_or_insert_with(Default::default)
+        .letter_spacing = Some(gpui::LetterSpacing::NONE);
+    element
+}
+
 /// The active style's geometry, in GPUI's units (F15).
 ///
 /// What the launcher's surface draws with: the search field, the rows, the
@@ -246,6 +270,43 @@ pub mod type_scale {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Styled as _, div};
+
+    fn geometry_with_tracking(em: f32) -> Geometry {
+        let mut theme = Theme::default();
+        theme.style.metrics.text_tracking = em;
+        Geometry::of(&theme)
+    }
+
+    fn spacing_of(mut element: gpui::Div) -> Option<gpui::LetterSpacing> {
+        element
+            .text_style()
+            .get_or_insert_with(Default::default)
+            .letter_spacing
+    }
+
+    /// A style with no tracking draws as before: nothing is set at all.
+    #[test]
+    fn zero_tracking_sets_nothing() {
+        assert_eq!(
+            spacing_of(tracking(div(), &geometry_with_tracking(0.0))),
+            None
+        );
+    }
+
+    #[test]
+    fn tracking_is_set_in_em() {
+        let spacing = spacing_of(tracking(div(), &geometry_with_tracking(0.02)));
+        assert_eq!(spacing, Some(gpui::LetterSpacing::em(0.02)));
+    }
+
+    #[test]
+    fn untracked_resets_to_none() {
+        assert_eq!(
+            spacing_of(untracked(div())),
+            Some(gpui::LetterSpacing::NONE)
+        );
+    }
 
     #[test]
     fn converts_opaque_colours() {
