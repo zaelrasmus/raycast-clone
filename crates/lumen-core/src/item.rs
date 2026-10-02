@@ -106,6 +106,11 @@ pub enum Action {
     /// "open Zed" cannot mean both things.
     LaunchNew(LaunchTarget),
     CopyToClipboard(String),
+    /// Copy the calculator's answer: [`Action::CopyToClipboard`] under a name
+    /// that says which of the answer's two copies it is.
+    CopyAnswer(String),
+    /// Copy what was typed into the calculator, beside its answer.
+    CopyExpression(String),
     /// Something Lumen does to itself. Carried back to the daemon as an event
     /// rather than performed in the view, because opening a window or quitting
     /// is the shell's business and not the list's.
@@ -239,6 +244,8 @@ impl Action {
             Action::Launch(_) => "Open",
             Action::LaunchNew(_) => "Open New Window",
             Action::CopyToClipboard(_) => "Copy",
+            Action::CopyAnswer(_) => "Copy Answer",
+            Action::CopyExpression(_) => "Copy Expression",
             Action::Builtin(Builtin::OpenSettings) => "Open Settings",
             Action::Builtin(Builtin::ReloadSheets) => "Reload",
             Action::Builtin(Builtin::Quit) => "Quit",
@@ -287,7 +294,9 @@ impl Action {
         match self {
             Action::Launch(target) => platform.launch(target, LaunchMode::Reuse),
             Action::LaunchNew(target) => platform.launch(target, LaunchMode::Fresh),
-            Action::CopyToClipboard(text) => platform.set_clipboard_text(text),
+            Action::CopyToClipboard(text)
+            | Action::CopyAnswer(text)
+            | Action::CopyExpression(text) => platform.set_clipboard_text(text),
             Action::RunScript(run) => run.run(platform),
             Action::OpenLink(open) => open.run(platform),
             Action::Builtin(_)
@@ -373,6 +382,15 @@ mod tests {
 
         assert_eq!(title, "Couldn't copy");
         assert_eq!(body, "writing the clipboard: the clipboard is locked");
+    }
+
+    /// Only the calculator's answer names what it copies; every other copy
+    /// (a path, the clipboard history's entries) keeps the plain verb.
+    #[test]
+    fn only_the_calculators_copies_are_named() {
+        assert_eq!(Action::CopyToClipboard("x".into()).verb(), "Copy");
+        assert_eq!(Action::CopyAnswer("x".into()).verb(), "Copy Answer");
+        assert_eq!(Action::CopyExpression("x".into()).verb(), "Copy Expression");
     }
 
     #[test]

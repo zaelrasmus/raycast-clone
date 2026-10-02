@@ -4107,7 +4107,10 @@ fn card_label(expression: &str, subtitle: Option<&str>) -> String {
 /// is one used (F14) -- what was typed, and what was copied.
 fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
     match (&item.kind, action) {
-        (lumen_core::item::Kind::Calculation, Action::CopyToClipboard(result)) => item
+        (
+            lumen_core::item::Kind::Calculation,
+            Action::CopyToClipboard(result) | Action::CopyAnswer(result),
+        ) => item
             .subtitle
             .clone()
             .map(|expression| LauncherEvent::Calculated {
@@ -4199,6 +4202,9 @@ mod tests {
                 result: "299.25".into(),
             })
         );
+
+        // Copying what was typed is not using an answer.
+        assert_eq!(calculated(row, &row.actions[1]), None);
 
         let other = item_with(vec![Action::CopyToClipboard("x".into())]);
         assert_eq!(calculated(&other, &other.primary()), None);

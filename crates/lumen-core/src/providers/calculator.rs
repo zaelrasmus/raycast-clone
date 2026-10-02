@@ -128,8 +128,12 @@ impl Provider for CalculatorProvider {
             icon: None,
             keywords: Vec::new(),
             // Copying is the only sensible thing to do with a number, and it is
-            // what the user reached for the calculator to get.
-            actions: vec![Action::CopyToClipboard(calc::copied_value(value))],
+            // what the user reached for the calculator to get; what was typed
+            // is the second copy, as in Raycast.
+            actions: vec![
+                Action::CopyAnswer(calc::copied_value(value)),
+                Action::CopyExpression(query.trim().to_string()),
+            ],
             kind: Kind::Calculation,
         }]
     }
@@ -146,7 +150,19 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "4");
         assert_eq!(items[0].subtitle.as_deref(), Some("2+2"));
-        assert_eq!(items[0].primary(), Action::CopyToClipboard("4".to_string()));
+        assert_eq!(items[0].primary(), Action::CopyAnswer("4".to_string()));
+    }
+
+    /// Like Raycast: the answer, then what was typed (the footer then offers
+    /// the action panel).
+    #[test]
+    fn the_answer_copies_the_answer_or_the_expression() {
+        let items = CalculatorProvider.answer("  12*7 ");
+        let verbs: Vec<_> = items[0].actions.iter().map(Action::verb).collect();
+
+        assert_eq!(verbs, ["Copy Answer", "Copy Expression"]);
+        assert_eq!(items[0].actions[0], Action::CopyAnswer("84".into()));
+        assert_eq!(items[0].actions[1], Action::CopyExpression("12*7".into()));
     }
 
     fn money_row(input: &str, rates: Option<&Rates>, due: bool, failed: bool) -> Item {
