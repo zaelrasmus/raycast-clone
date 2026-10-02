@@ -2238,6 +2238,26 @@ What was decided while building it:
   (I-10). `window.width` and `window.visible-rows` in `config.json` became
   optional overrides, bounded to 560--1000 and 3--20: a person's screen is
   theirs to fit, and a preset should arrive the size it was measured at.
+- **The settings window, redesigned after Raycast's.** Ten tabs no longer
+  fitted 900 pixels, and each page drew its own label column. Now: a title
+  bar; a sidebar with a search over the pages and an icon for each; and
+  content in rounded cards of rows -- title and description on the left, the
+  control on the right -- under section titles. Toggles replace checkboxes,
+  dropdowns sit compact at a row's right edge. Measured from the reference
+  at 1.22 screen pixels to the point: about 900 by 674, a 237-point sidebar,
+  32-point page rows, cards 16 in from the edges, rows of 48 or 58.
+  - **Palette and typography only.** Settings follows the active palette --
+    colours, family, OpenType features -- so it always matches the
+    launcher, and its geometry stays the project's (`layout::settings`). A
+    launcher style is about a list; a form has far more parts than a style
+    should own, and making them themeable would double the token surface
+    for a window opened once a week.
+  - **One set of components** (`settings_ui`): the card, the row, the
+    section title, the toggle. A page composes them and draws nothing of its
+    own geometry, so no page can drift from the others.
+  - **The list editors are adapted, not copied.** Quicklinks, Translation,
+    Timers and Shortcut Sheets keep a list and its editor; they take the
+    cards' look inside the content column, under the sidebar's navigation.
 - **Measured, at the close.** Release build, both builds alternated. Typing:
   p95 2.00--2.01 ms against 2.24 ms. Gesture: p50 8 ms, p95 19 ms. Idle:
   0.002--0.009 % against 0.004 %, one to four 15.6 ms ticks either way;
