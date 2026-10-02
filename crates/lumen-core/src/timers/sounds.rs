@@ -62,11 +62,13 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
                     id: PLAY.into(),
                     title: "Play".into(),
                     shortcut: None,
+                    icon: None,
                 },
                 Action {
                     id: USE.into(),
                     title: "Use as Alert Sound".into(),
                     shortcut: None,
+                    icon: None,
                 },
             ],
         })

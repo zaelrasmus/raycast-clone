@@ -450,6 +450,7 @@ impl Session {
                             id: id.into(),
                             title,
                             shortcut: None,
+                            icon: None,
                         };
                         Item {
                             detail: None,
@@ -593,6 +594,7 @@ impl Session {
             id: id.into(),
             title: title.into(),
             shortcut: None,
+            icon: None,
         };
         let mut actions = match row {
             Row::Done(_) => {
@@ -630,6 +632,7 @@ impl Session {
                         id: format!("{PRESET}{index}"),
                         title: format!("Switch to {}", preset.name),
                         shortcut: None,
+                        icon: None,
                     }),
             );
         }

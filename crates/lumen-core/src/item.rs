@@ -185,6 +185,29 @@ pub enum Action {
     Timer(crate::timers::Command),
 }
 
+/// A run of the action panel's rows, between two rules.
+///
+/// Declared in the order the panel shows them, so the derived ordering is the
+/// panel's: what the row is for, then the other ways of doing it, then
+/// copying, then changing what is saved, then the favourites. A small closed
+/// set on purpose -- every row of every provider has to fall into one, and a
+/// group with a single member in most menus is a rule drawn for nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ActionGroup {
+    /// What the row is for: what `Enter` runs.
+    Primary,
+    /// The same thing done another way: a new window, a private one, another
+    /// browser.
+    Alternate,
+    /// Putting something on the clipboard.
+    Copy,
+    /// Making, editing or saving something Lumen keeps: a quicklink from a
+    /// typed address, a timer preset.
+    Manage,
+    /// Adding the row to the favourites, or moving it among them (F15).
+    Favorite,
+}
+
 /// Commands Lumen provides for itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
@@ -241,8 +264,8 @@ impl Action {
     pub fn verb(&self) -> &'static str {
         match self {
             Action::Favorite(change) => change.verb(),
-            Action::Launch(_) => "Open",
-            Action::LaunchNew(_) => "Open New Window",
+            Action::Launch(_) => "Open Application",
+            Action::LaunchNew(_) => "New Application Window",
             Action::CopyToClipboard(_) => "Copy",
             Action::CopyAnswer(_) => "Copy Answer",
             Action::CopyExpression(_) => "Copy Expression",
@@ -250,7 +273,7 @@ impl Action {
             Action::Builtin(Builtin::ReloadSheets) => "Reload",
             Action::Builtin(Builtin::Quit) => "Quit",
             Action::ArrangeWindow(_) => "Arrange",
-            Action::OpenView(_) => "Open",
+            Action::OpenView(_) => "Open Command",
             Action::RunScript(_) => "Run",
             Action::OpenLink(open) if open.private => "Open in Private Window",
             Action::OpenLink(_) => "Open",
@@ -275,6 +298,84 @@ impl Action {
                 "Start Repeating"
             }
             Action::Timer(crate::timers::Command::StartCycle { .. }) => "Start One Set",
+        }
+    }
+
+    /// Which run of the action panel this action belongs to.
+    ///
+    /// The panel draws a rule wherever the group changes between two
+    /// neighbouring rows, so the group is a property of the action rather
+    /// than of the panel: the panel cannot be told the wrong thing about what
+    /// kind of action it is drawing, and an extension's view, which has no
+    /// groups of its own, is left as a single run.
+    ///
+    /// Decided by what the action *does*, not by where a provider happened
+    /// to put it in its list.
+    pub fn group(&self) -> ActionGroup {
+        match self {
+            Action::Favorite(_) => ActionGroup::Favorite,
+            Action::LaunchNew(_) | Action::ChooseBrowser(_) => ActionGroup::Alternate,
+            Action::OpenLink(open) if open.private => ActionGroup::Alternate,
+            Action::CopyToClipboard(_) | Action::CopyAnswer(_) | Action::CopyExpression(_) => {
+                ActionGroup::Copy
+            }
+            Action::SaveAsQuicklink { .. } => ActionGroup::Manage,
+            // A preset's form is a creation when it starts empty, and
+            // housekeeping when it edits or saves one that exists.
+            Action::OpenTimerForm {
+                replacing: Some(_), ..
+            } => ActionGroup::Manage,
+            Action::OpenTimerForm { preset, .. } if !preset.duration.is_empty() => {
+                ActionGroup::Manage
+            }
+            Action::Launch(_)
+            | Action::Builtin(_)
+            | Action::ArrangeWindow(_)
+            | Action::OpenView(_)
+            | Action::RunScript(_)
+            | Action::OpenLink(_)
+            | Action::AskArgument(_)
+            | Action::CreateQuicklink
+            | Action::CreateSnippet
+            | Action::OpenTimerForm { .. }
+            | Action::Timer(_) => ActionGroup::Primary,
+        }
+    }
+
+    /// The bundled glyph drawn beside the action in the panel, by the name an
+    /// extension's [`Icon::Glyph`](crate::view::Icon) would use: `icons/{name}.svg`.
+    ///
+    /// A name rather than a path, so that `core` stays free of where the
+    /// assets live (AD-03); the UI owns the table the names are checked
+    /// against, and a test there fails if one is missing.
+    pub fn glyph(&self) -> &'static str {
+        use crate::favorites::Change;
+
+        match self {
+            Action::Favorite(Change::Add) => "star",
+            Action::Favorite(Change::Remove) => "star-off",
+            Action::Favorite(Change::MoveUp) => "arrow-up",
+            Action::Favorite(Change::MoveDown) => "arrow-down",
+            Action::Launch(_) | Action::OpenLink(_) => "open",
+            Action::LaunchNew(_) | Action::ArrangeWindow(_) => "window",
+            Action::CopyToClipboard(_) | Action::CopyAnswer(_) | Action::CopyExpression(_) => {
+                "copy"
+            }
+            Action::Builtin(_) | Action::OpenView(_) => "command",
+            Action::RunScript(_) => "script",
+            Action::AskArgument(_) => "search",
+            Action::ChooseBrowser(_) => "globe",
+            Action::CreateQuicklink | Action::CreateSnippet | Action::SaveAsQuicklink { .. } => {
+                "plus"
+            }
+            Action::OpenTimerForm { preset, replacing } => {
+                if replacing.is_none() && preset.duration.is_empty() {
+                    "plus"
+                } else {
+                    "timer"
+                }
+            }
+            Action::Timer(_) => "timer",
         }
     }
 
@@ -420,7 +521,7 @@ mod tests {
 
         assert_eq!(item.title, "Firefox");
         assert_eq!(item.kind_label(), "Application");
-        assert_eq!(item.primary().verb(), "Open");
+        assert_eq!(item.primary().verb(), "Open Application");
         // The id must survive the conversion, or frecency resets on reindex.
         assert_eq!(item.id, "app:Firefox.lnk");
     }
@@ -440,6 +541,80 @@ mod tests {
         };
 
         assert_eq!(item.primary(), Action::CopyToClipboard("Broken".into()));
+    }
+
+    fn firefox() -> Item {
+        Item::from_app(AppEntry {
+            id: "app:Firefox.lnk".into(),
+            name: "Firefox".into(),
+            detail: None,
+            target: LaunchTarget::ShellExecute("shell:AppsFolder\\Firefox.lnk".into()),
+            icon: None,
+            keywords: Vec::new(),
+        })
+    }
+
+    /// The verbs the action panel reads: what Raycast calls them, so the
+    /// panel's first rows say what the footer will.
+    #[test]
+    fn the_first_actions_of_an_application_and_a_command_have_their_own_names() {
+        let item = firefox();
+        let verbs: Vec<_> = item.actions.iter().map(Action::verb).collect();
+        assert_eq!(
+            verbs,
+            ["Open Application", "New Application Window", "Copy"]
+        );
+        assert_eq!(Action::OpenView(ViewSource::Example).verb(), "Open Command");
+    }
+
+    /// The panel draws a rule wherever the group changes, so an application's
+    /// own actions have to arrive already in the order the groups are
+    /// declared in: the ways of opening it, then the copy, then what can be
+    /// done to it as a favourite.
+    #[test]
+    fn an_applications_actions_fall_into_groups_in_panel_order() {
+        let item = firefox();
+        let mut groups: Vec<_> = item.actions.iter().map(Action::group).collect();
+        groups.push(Action::Favorite(crate::favorites::Change::Add).group());
+
+        assert_eq!(
+            groups,
+            [
+                ActionGroup::Primary,
+                ActionGroup::Alternate,
+                ActionGroup::Copy,
+                ActionGroup::Favorite,
+            ]
+        );
+        assert!(groups.is_sorted(), "declaration order is panel order");
+    }
+
+    /// A private window and a chosen browser are other ways of opening the
+    /// link, not the way Enter opens it.
+    #[test]
+    fn a_private_window_is_an_alternate_and_the_plain_link_is_not() {
+        let link = |private| {
+            Action::OpenLink(crate::providers::quicklinks::OpenLink {
+                link: crate::providers::quicklinks::Template::parse("https://x.com").unwrap(),
+                query: String::new(),
+                browser: None,
+                private,
+            })
+        };
+        assert_eq!(link(false).group(), ActionGroup::Primary);
+        assert_eq!(link(true).group(), ActionGroup::Alternate);
+    }
+
+    /// Creating something from nothing is what the row is for; saving what
+    /// is already there as a new thing is housekeeping, set apart.
+    #[test]
+    fn saving_what_exists_is_managing_it() {
+        let save = Action::SaveAsQuicklink {
+            name: "x".into(),
+            link: "https://x.com".into(),
+        };
+        assert_eq!(save.group(), ActionGroup::Manage);
+        assert_eq!(Action::CreateQuicklink.group(), ActionGroup::Primary);
     }
 
     #[test]

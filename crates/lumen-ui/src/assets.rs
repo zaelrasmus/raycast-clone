@@ -147,6 +147,39 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/metric-coordinates.svg",
         include_bytes!("../../../assets/icons/metric-coordinates.svg"),
     ),
+    // The action panel's rows (F2): what an action does, drawn beside its name.
+    (
+        "icons/open.svg",
+        include_bytes!("../../../assets/icons/open.svg"),
+    ),
+    (
+        "icons/star.svg",
+        include_bytes!("../../../assets/icons/star.svg"),
+    ),
+    (
+        "icons/star-off.svg",
+        include_bytes!("../../../assets/icons/star-off.svg"),
+    ),
+    (
+        "icons/copy.svg",
+        include_bytes!("../../../assets/icons/copy.svg"),
+    ),
+    (
+        "icons/arrow-up.svg",
+        include_bytes!("../../../assets/icons/arrow-up.svg"),
+    ),
+    (
+        "icons/arrow-down.svg",
+        include_bytes!("../../../assets/icons/arrow-down.svg"),
+    ),
+    (
+        "icons/plus.svg",
+        include_bytes!("../../../assets/icons/plus.svg"),
+    ),
+    (
+        "icons/globe.svg",
+        include_bytes!("../../../assets/icons/globe.svg"),
+    ),
 ];
 
 pub struct Assets;
@@ -193,6 +226,84 @@ mod tests {
             assert!(
                 Assets.load(path).unwrap().is_some(),
                 "{kind:?} asks for {path}, which is not bundled"
+            );
+        }
+    }
+
+    /// Every glyph an action can name has to be bundled, or its row in the
+    /// action panel draws an empty square. One of each way `glyph` answers,
+    /// so a new name that is not in the table fails here rather than on
+    /// somebody's screen.
+    #[test]
+    fn every_actions_glyph_is_bundled() {
+        use lumen_core::favorites::Change;
+        use lumen_core::item::{Action, Builtin, ViewSource};
+        use lumen_core::providers::quicklinks::{ArgumentRequest, OpenLink, Template};
+        use lumen_core::providers::{ScriptMode, ScriptRun};
+        use lumen_core::timers::{Command, PresetConfig};
+        use lumen_platform::{LaunchTarget, WindowLayout};
+
+        let target = || LaunchTarget::ShellExecute("x".into());
+        let link = |private| OpenLink {
+            link: Template::parse("https://x.com").unwrap(),
+            query: String::new(),
+            browser: None,
+            private,
+        };
+        let filled = PresetConfig {
+            duration: "25m".into(),
+            ..PresetConfig::default()
+        };
+        let actions = [
+            Action::Favorite(Change::Add),
+            Action::Favorite(Change::Remove),
+            Action::Favorite(Change::MoveUp),
+            Action::Favorite(Change::MoveDown),
+            Action::Launch(target()),
+            Action::LaunchNew(target()),
+            Action::CopyToClipboard("x".into()),
+            Action::CopyAnswer("x".into()),
+            Action::CopyExpression("x".into()),
+            Action::Builtin(Builtin::Quit),
+            Action::ArrangeWindow(WindowLayout::Maximize),
+            Action::OpenView(ViewSource::Example),
+            Action::RunScript(ScriptRun {
+                path: "x".into(),
+                mode: ScriptMode::Silent,
+            }),
+            Action::OpenLink(link(false)),
+            Action::OpenLink(link(true)),
+            Action::AskArgument(ArgumentRequest {
+                id: "x".into(),
+                name: "x".into(),
+            }),
+            Action::ChooseBrowser(link(false)),
+            Action::SaveAsQuicklink {
+                name: "x".into(),
+                link: "https://x.com".into(),
+            },
+            Action::CreateQuicklink,
+            Action::CreateSnippet,
+            Action::OpenTimerForm {
+                preset: PresetConfig::default(),
+                replacing: None,
+            },
+            Action::OpenTimerForm {
+                preset: filled.clone(),
+                replacing: None,
+            },
+            Action::OpenTimerForm {
+                preset: filled,
+                replacing: Some("x".into()),
+            },
+            Action::Timer(Command::StopNearest),
+        ];
+
+        for action in &actions {
+            let path = format!("icons/{}.svg", action.glyph());
+            assert!(
+                Assets.load(&path).unwrap().is_some(),
+                "{action:?} asks for {path}, which is not bundled"
             );
         }
     }

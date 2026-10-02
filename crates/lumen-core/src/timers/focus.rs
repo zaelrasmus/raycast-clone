@@ -158,6 +158,7 @@ pub fn refusal(what: &str, timer: Option<&Timer>, now: Millis) -> View {
         id: id.into(),
         title: title.into(),
         shortcut: None,
+        icon: None,
     };
     View::List(List {
         showing_detail: false,

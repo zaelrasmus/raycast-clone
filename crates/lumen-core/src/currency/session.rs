@@ -432,6 +432,7 @@ fn action(id: &str, title: &str) -> Action {
         id: id.into(),
         title: title.into(),
         shortcut: None,
+        icon: None,
     }
 }
 

@@ -294,6 +294,7 @@ impl Session {
                 id: id.into(),
                 title: title.into(),
                 shortcut: None,
+                icon: None,
             }],
             detail: Some(self.detail(snippet)),
         };
@@ -387,11 +388,13 @@ impl Session {
                 id: NEXT.into(),
                 title: verb.into(),
                 shortcut: None,
+                icon: None,
             },
             Action {
                 id: BACK.into(),
                 title: "Back to Snippets".into(),
                 shortcut: None,
+                icon: None,
             },
         ];
         // What the pane shows if `answer` is given for this argument.
@@ -609,31 +612,37 @@ impl Session {
                     id: PASTE.into(),
                     title: "Paste".into(),
                     shortcut: None,
+                    icon: None,
                 },
                 Action {
                     id: COPY.into(),
                     title: "Copy to Clipboard".into(),
                     shortcut: None,
+                    icon: None,
                 },
                 Action {
                     id: EDIT.into(),
                     title: "Edit Snippet".into(),
                     shortcut: None,
+                    icon: None,
                 },
                 Action {
                     id: DUPLICATE.into(),
                     title: "Duplicate Snippet".into(),
                     shortcut: None,
+                    icon: None,
                 },
                 Action {
                     id: CREATE.into(),
                     title: "Create Snippet".into(),
                     shortcut: None,
+                    icon: None,
                 },
                 Action {
                     id: DELETE.into(),
                     title: "Delete Snippet".into(),
                     shortcut: None,
+                    icon: None,
                 },
             ],
             detail: Some(self.detail(snippet)),

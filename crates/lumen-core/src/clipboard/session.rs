@@ -444,6 +444,7 @@ fn action(id: &str, title: &str, shortcut: Option<&str>) -> Action {
         id: id.into(),
         title: title.into(),
         shortcut: shortcut.map(Into::into),
+        icon: None,
     }
 }
 

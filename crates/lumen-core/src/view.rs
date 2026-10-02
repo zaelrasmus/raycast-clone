@@ -374,6 +374,14 @@ pub struct Action {
     /// what is installed is a keymap nobody can learn. Binding arrives, if it
     /// arrives, as something the *user* configures.
     pub shortcut: Option<String>,
+    /// The icon drawn beside it in the action panel, in the same vocabulary as
+    /// a row's.
+    ///
+    /// Optional, and absent from every view written before it existed: an
+    /// action without one still gets its square in the panel, empty, so the
+    /// titles line up (I-10). Additive on the wire, which is what I-12 asks
+    /// of anything an extension may already be sending.
+    pub icon: Option<Icon>,
 }
 
 /// What to show when a list has nothing in it.
@@ -452,6 +460,31 @@ pub fn from_json(source: &str) -> Result<View, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An action written before actions had icons still loads, with none; one
+    /// that names a glyph keeps it. A picture by path is refused here as it
+    /// is on a row (I-7).
+    #[test]
+    fn an_actions_icon_is_optional_on_the_wire() {
+        let old: Action = serde_json::from_str(r#"{ "id": "open", "title": "Open" }"#).unwrap();
+        assert_eq!(old.icon, None);
+
+        let new: Action = serde_json::from_str(
+            r#"{ "id": "open", "title": "Open", "icon": { "type": "glyph", "name": "open" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            new.icon,
+            Some(Icon::Glyph {
+                name: "open".into()
+            })
+        );
+
+        let picture: Result<Action, _> = serde_json::from_str(
+            r#"{ "id": "x", "icon": { "type": "image", "path": "C:\\secret.png" } }"#,
+        );
+        assert!(picture.is_err());
+    }
 
     /// I-7: a picture by path is the host's alone. An extension that names
     /// one is refused, and one it puts in a pane is dropped, so the host
@@ -580,6 +613,9 @@ mod tests {
                         id: "open".into(),
                         title: "Open in Browser".into(),
                         shortcut: Some("Ctrl+O".into()),
+                        icon: Some(Icon::Glyph {
+                            name: "open".into(),
+                        }),
                     }],
                 }],
             }],
