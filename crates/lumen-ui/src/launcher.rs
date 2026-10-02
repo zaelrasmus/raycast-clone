@@ -1121,7 +1121,9 @@ impl Launcher {
                     + metrics.footer_height
             }
             Mode::Form(state) => metrics.search_height + state.height + metrics.footer_height,
-            Mode::View(state) if state.loading => self.loading_height(),
+            // Loading too: a view that has not arrived has no rows, and a view
+            // with no rows is as tall as a full list, so arriving resizes
+            // nothing (7.48).
             Mode::View(state) => {
                 metrics.search_height
                     + metrics.list_padding * 2.0
@@ -1411,23 +1413,6 @@ impl Launcher {
         cx.notify();
     }
 
-    /// Take over the list for an extension that is starting (F4, step 3).
-    ///
-    /// Called before the extension has said anything. The launcher shows that
-    /// it is loading rather than freezing or staying on the root list: the user
-    /// pressed Enter and something has to acknowledge it.
-    /// How tall a view is while it is still starting.
-    ///
-    /// The same as an empty state's, so that a view which turns out to have
-    /// nothing in it does not resize the window on arrival.
-    pub fn loading_height(&self) -> f32 {
-        let metrics = self.metrics();
-        metrics.search_height
-            + metrics.list_padding * 2.0
-            + metrics.empty_height()
-            + metrics.footer_height
-    }
-
     /// How tall the window is with a full root list: where its top edge is
     /// placed from, so the search field stays still as the results change.
     pub fn anchor_height(&self) -> f32 {
@@ -1453,6 +1438,12 @@ impl Launcher {
         Geometry::of(&self.theme)
     }
 
+    /// Take over the list for an extension that is starting (F4, step 3).
+    ///
+    /// Called before the extension has said anything. The launcher shows that
+    /// it is loading rather than freezing or staying on the root list: the user
+    /// pressed Enter and something has to acknowledge it. As tall as a full
+    /// list, as the view will be if it turns out empty (7.48).
     pub fn begin_view(&mut self, sink: ViewSink, cx: &mut Context<Self>) {
         let previous_height = self.content_height();
 
@@ -3662,8 +3653,8 @@ impl Launcher {
         );
 
         // The loading state and the empty state are given the same room, the
-        // whole region, so the window does not jump when the first render
-        // turns out to be an empty list.
+        // whole region, as tall as a full list: the window does not jump when
+        // the first render arrives, empty or not (7.48).
         if state.loading {
             return crate::view::render_loading(&self.theme, height);
         }

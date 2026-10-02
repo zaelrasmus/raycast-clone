@@ -113,8 +113,9 @@ pub enum Shape {
 /// list's own; `full` is how tall a full root list is,
 /// `Config::full_list_height`. A list ends on whole rows within `cap`, as the
 /// root list does (7.29). A view whose height does not follow its rows -- a
-/// pane, while its rows fit, and a detail view -- is as tall as a full root
-/// list, so a style's height reaches views the way it reaches the root list.
+/// pane, while its rows fit, a detail view, and a view with no rows, loading
+/// or empty -- is as tall as a full root list, so a style's height reaches
+/// views the way it reaches the root list (7.48).
 ///
 /// Not `total.min(cap)`. A view's rows are not all the same height -- a
 /// section header is shorter than an item -- so capping the sum lands
@@ -127,10 +128,11 @@ pub fn rows_height(rows: &[Row], shape: Shape, metrics: &Metrics, cap: f32, full
         return full;
     }
     // A list with nothing in it still has something to say, and needs room
-    // to say it. Without this the window is sized to zero rows and the
-    // empty state spills over the footer.
+    // to say it: the whole list's, not a few rows'. A view is empty while it
+    // loads and when its search matches nothing, and anything shorter would
+    // make the window grow when the rows arrive and shrink as the user types.
     if rows.is_empty() {
-        return metrics.empty_height();
+        return full;
     }
 
     let mut used = 0.0;
@@ -998,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_list_is_as_tall_as_its_rows_and_an_empty_one_has_room_to_say_so() {
+    fn a_short_list_is_as_tall_as_its_rows() {
         let (metrics, cap, full) = carbon();
         let rows = vec![Row::Item(0), Row::Item(1)];
 
@@ -1006,10 +1008,19 @@ mod tests {
             rows_height(&rows, Shape::List, &metrics, cap, full),
             2.0 * 38.0
         );
-        assert_eq!(
-            rows_height(&[], Shape::List, &metrics, cap, full),
-            metrics.empty_height()
-        );
+    }
+
+    /// A view that is still loading has no rows yet, and neither has one whose
+    /// search matched nothing: both are as tall as a full root list, so the
+    /// window does not grow when the rows arrive or shrink when a search
+    /// empties the list.
+    #[test]
+    fn a_loading_or_empty_view_is_as_tall_as_a_full_root_list() {
+        let (metrics, cap, full) = carbon();
+
+        for shape in [Shape::List, Shape::Pane] {
+            assert_eq!(rows_height(&[], shape, &metrics, cap, full), full);
+        }
     }
 
     #[test]
