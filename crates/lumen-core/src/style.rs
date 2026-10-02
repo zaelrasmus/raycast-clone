@@ -57,6 +57,9 @@ pub const WEIGHTS: [f32; 3] = [400.0, 500.0, 600.0];
 /// what makes it settable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics {
+    pub window_width: f32,
+    /// How tall the list may grow before it scrolls; it ends on whole rows.
+    pub list_height: f32,
     pub window_radius: f32,
     pub search_height: f32,
     pub gutter: f32,
@@ -89,6 +92,9 @@ pub struct Metrics {
 impl Metrics {
     /// The constants as F14 left them. The base every style resolves from.
     pub const BASE: Metrics = Metrics {
+        // The config's defaults before F15: 720 wide, eight rows.
+        window_width: 720.0,
+        list_height: 8.0 * layout::ROW_HEIGHT,
         window_radius: layout::WINDOW_RADIUS,
         search_height: layout::SEARCH_HEIGHT,
         gutter: layout::GUTTER,
@@ -130,6 +136,8 @@ impl Metrics {
     /// as [`crate::theme`] does for colours: two lists would drift.
     fn slot(&mut self, name: &str) -> Option<(&mut f32, f32, f32)> {
         Some(match name {
+            "window.width" => (&mut self.window_width, 560.0, 1000.0),
+            "list.height" => (&mut self.list_height, 200.0, 640.0),
             "window.radius" => (&mut self.window_radius, 0.0, 16.0),
             "search.height" => (&mut self.search_height, 40.0, 96.0),
             "gutter" => (&mut self.gutter, 8.0, 32.0),
@@ -190,7 +198,12 @@ impl Metrics {
             RowSubtitle::Stacked => line(self.text_title) + line(self.text_subtitle),
             RowSubtitle::Inline => line(self.text_title.max(self.text_subtitle)),
         };
-        let checks: [(bool, &'static str, &'static [&'static str]); 11] = [
+        let checks: [(bool, &'static str, &'static [&'static str]); 12] = [
+            (
+                self.list_height >= self.row_height * 3.0,
+                "the list holds at least three rows",
+                &["list.height", "row.height"],
+            ),
             (
                 self.row_radius * 2.0 <= self.row_height,
                 "a row's corner fits in the row",
@@ -528,7 +541,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 27;
+const TOKEN_COUNT: usize = 29;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -578,6 +591,8 @@ mod tests {
     #[test]
     fn every_token_in_the_table_is_counted() {
         let names = [
+            "window.width",
+            "list.height",
             "window.radius",
             "search.height",
             "gutter",

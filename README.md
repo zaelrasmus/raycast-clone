@@ -388,8 +388,8 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
   },
   "backdrop": "system-acrylic",
   "window": {
-    "width": 720.0,
-    "visible-rows": 8,
+    "width": null,
+    "visible-rows": null,
     "horizontal-bias": 0.5,
     "vertical-bias": 0.22,
     "dismiss-on-focus-loss": true
@@ -509,6 +509,11 @@ Beyond geometry, a style can put an icon in the search field
 (`"search.icon": "search"` or `"logo"`) and Lumen's mark in the footer
 (`"footer.icon": "logo"`); a palette can give the footer its own
 `surface.footer` and the window's edge its own `border.window`.
+
+A style also sizes the window: `window.width` and `list.height`, the list's
+height before it scrolls. `width` and `visible-rows` under `window` in
+`config.json` override them for your own screen (560 to 1000 pixels wide, 3
+to 20 rows); `null` leaves them to the style.
 
 A style sets numbers from a closed list and picks variants from a closed
 list; it cannot describe a layout. Every number has a range, and the relations

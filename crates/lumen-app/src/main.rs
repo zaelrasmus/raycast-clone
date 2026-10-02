@@ -230,8 +230,8 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         WindowRole::Launcher,
         &config,
         size(
-            px(config.window.width),
-            px(config.window_height(&theme.style.metrics, config.window.visible_rows)),
+            px(config.width(&theme.style.metrics)),
+            px(config.window_height(&theme.style.metrics, usize::MAX)),
         ),
         {
             let platform = platform.clone();
@@ -1032,9 +1032,11 @@ fn subscribe_to_launcher(
         off_the_callback(cx, move || {
             let outcome = match event {
                 LauncherEvent::Dismissed => hide(&platform, &shell),
-                LauncherEvent::Resized { height, anchor } => {
-                    resize(&platform, &config, &shell, height, anchor)
-                }
+                LauncherEvent::Resized {
+                    height,
+                    anchor,
+                    width,
+                } => resize(&platform, &config, &shell, height, anchor, width),
                 LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
                 LauncherEvent::Paste(ref paste) => {
                     paste_into(&platform, &config, &shell, paste.clone())
@@ -1369,7 +1371,11 @@ fn reload_config(
         .launcher
         .update(cx, |launcher, _window, cx| {
             launcher.apply_config(applied.clone(), cx);
-            (launcher.content_height(), launcher.anchor_height())
+            (
+                launcher.content_height(),
+                launcher.anchor_height(),
+                launcher.width(),
+            )
         })
         .ok();
 
@@ -1377,11 +1383,11 @@ fn reload_config(
     // can be seen while it is being made.
     let shell = shell.borrow();
     if shell.visible
-        && let (Some(monitor), Some((height, anchor))) = (shell.monitor, height)
+        && let (Some(monitor), Some((height, anchor, width))) = (shell.monitor, height)
     {
         platform.set_window_bounds(
             WindowRole::Launcher,
-            placement(&monitor, &applied, height, anchor),
+            placement(&monitor, &applied, height, anchor, width),
         )?;
     }
 
@@ -1686,24 +1692,26 @@ fn show(
 
     // Reset the view before the window is on screen, so the first frame the user
     // sees is already the cleared state rather than the previous search.
-    let (height, anchor) = window
+    let (height, anchor, width) = window
         .update(cx, |launcher, window, cx| {
             launcher.on_shown(window, cx);
             // Registered here rather than after `show_window`, because the
             // frame this reports on is the one `on_shown` just asked for.
             timing::report_first_frame(window, summoned);
-            (launcher.content_height(), launcher.anchor_height())
+            (
+                launcher.content_height(),
+                launcher.anchor_height(),
+                launcher.width(),
+            )
         })
         .unwrap_or_else(|_| {
-            let full = config.window_height(
-                &lumen_core::style::Metrics::BASE,
-                config.window.visible_rows,
-            );
-            (full, full)
+            let base = lumen_core::style::Metrics::BASE;
+            let full = config.window_height(&base, usize::MAX);
+            (full, full, config.width(&base))
         });
 
     let monitor = platform.cursor_monitor()?;
-    let bounds = placement(&monitor, config, height, anchor);
+    let bounds = placement(&monitor, config, height, anchor, width);
 
     let restore_to = platform.show_window(WindowRole::Launcher, bounds)?;
 
@@ -1847,6 +1855,7 @@ fn resize(
     shell: &Rc<RefCell<Shell>>,
     height: f32,
     anchor: f32,
+    width: f32,
 ) -> Result<()> {
     let shell = shell.borrow();
     if !shell.visible {
@@ -1858,7 +1867,7 @@ fn resize(
 
     platform.set_window_bounds(
         WindowRole::Launcher,
-        placement(&monitor, config, height, anchor),
+        placement(&monitor, config, height, anchor, width),
     )
 }
 
@@ -1867,9 +1876,9 @@ fn resize(
 /// The top edge is where a full root list would put it -- `anchor` tall, in
 /// the active style -- so the search field stays still while the result count
 /// changes the height.
-fn placement(monitor: &MonitorInfo, config: &Config, height: f32, anchor: f32) -> Rect {
+fn placement(monitor: &MonitorInfo, config: &Config, height: f32, anchor: f32, width: f32) -> Rect {
     monitor.place_anchored(
-        Rect::size(config.window.width as i32, height as i32),
+        Rect::size(width as i32, height as i32),
         anchor as i32,
         config.window.horizontal_bias,
         config.window.vertical_bias,

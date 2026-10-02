@@ -397,7 +397,7 @@ impl Launcher {
         root.set_favorites(lumen_core::favorites::Favorites::load(
             &paths.favorites_file(),
         ));
-        root.set_visible_rows(config.window.visible_rows);
+        root.set_visible_rows(config.visible_rows(&theme.style.metrics));
         root.set_arrangement(config.root.clone());
         root.set_weather_units(config.weather.units);
         // `time in vancouver` is answered in the system's way of writing a
@@ -803,6 +803,8 @@ impl Launcher {
         // a style that changes the square needs them extracted again, or a
         // larger icon is a small one stretched (F1, F15). Once per change of
         // style, which is something a person does, not something typing does.
+        self.root
+            .set_visible_rows(self.config.visible_rows(&theme.style.metrics));
         let resolution = theme.style.metrics.icon_resolution();
         if resolution != self.theme.style.metrics.icon_resolution() {
             self.icons = IconCache::new(self.platform.clone(), resolution);
@@ -820,6 +822,7 @@ impl Launcher {
             cx.emit(LauncherEvent::Resized {
                 height: self.content_height(),
                 anchor: self.anchor_height(),
+                width: self.width(),
             });
         }
         cx.notify();
@@ -836,7 +839,8 @@ impl Launcher {
         let presets_changed = config.translate.presets != self.config.translate.presets
             || config.timers.presets != self.config.timers.presets;
 
-        self.root.set_visible_rows(config.window.visible_rows);
+        self.root
+            .set_visible_rows(config.visible_rows(&self.theme.style.metrics));
         let units_changed = self.root.set_weather_units(config.weather.units);
         let arranged = config.root != self.config.root;
         self.root.set_arrangement(config.root.clone());
@@ -901,7 +905,7 @@ impl Launcher {
     fn rows_height(&self) -> f32 {
         let metrics = self.metrics();
         let card = self.card_rows() as f32 * metrics.row_height;
-        let cap = self.config.window.visible_rows as f32 * metrics.row_height - card;
+        let cap = self.config.list_height(metrics) - card;
         let mut used = 0.0;
         for row in &self.rows {
             let height = crate::view::row_height(row, metrics);
@@ -986,7 +990,7 @@ impl Launcher {
             return metrics.empty_height();
         }
 
-        let cap = self.config.window.visible_rows as f32 * metrics.row_height;
+        let cap = self.config.list_height(metrics);
 
         let mut used = 0.0;
         let mut all_fit = true;
@@ -1034,6 +1038,7 @@ impl Launcher {
             cx.emit(LauncherEvent::Resized {
                 height,
                 anchor: self.anchor_height(),
+                width: self.width(),
             });
         }
     }
@@ -1288,8 +1293,16 @@ impl Launcher {
     /// How tall the window is with a full root list: where its top edge is
     /// placed from, so the search field stays still as the results change.
     pub fn anchor_height(&self) -> f32 {
-        self.config
-            .window_height(self.metrics(), self.config.window.visible_rows)
+        let metrics = self.metrics();
+        metrics.search_height
+            + metrics.list_padding * 2.0
+            + self.config.visible_rows(metrics) as f32 * metrics.row_height
+            + metrics.footer_height
+    }
+
+    /// The window's width: the style's, or the config's when it sets one.
+    pub fn width(&self) -> f32 {
+        self.config.width(self.metrics())
     }
 
     /// The active style's geometry, as numbers, for sizing the window.
@@ -2969,9 +2982,12 @@ pub enum LauncherEvent {
     /// With the anchor: how tall a full root list is in the active style,
     /// which is where the window's top edge is placed from (F15). A style
     /// changes it, and the launcher is what knows the style.
+    ///
+    /// And the width, which a style sets (F15).
     Resized {
         height: f32,
         anchor: f32,
+        width: f32,
     },
 }
 

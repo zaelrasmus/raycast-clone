@@ -2,6 +2,8 @@
   "schema_version": 1,
   "name": "Ink",
   "metrics": {
+    "window.width": 788,
+    "list.height": 378,
     "window.radius": 10,
     "search.height": 61,
     "gutter": 16,

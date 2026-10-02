@@ -2,6 +2,8 @@
   "schema_version": 1,
   "name": "Carbon",
   "metrics": {
+    "window.width": 767,
+    "list.height": 371,
     "window.radius": 10,
     "search.height": 65,
     "gutter": 16,

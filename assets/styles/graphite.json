@@ -2,6 +2,8 @@
   "schema_version": 1,
   "name": "Graphite",
   "metrics": {
+    "window.width": 769,
+    "list.height": 385,
     "window.radius": 10,
     "search.height": 56,
     "gutter": 17,

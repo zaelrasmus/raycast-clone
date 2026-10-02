@@ -2113,6 +2113,8 @@ The style schema, version 1. Base values are the constants as F14 left them.
 
 | Token | Base | Range | What it is |
 | --- | --- | --- | --- |
+| `window.width` | 720 | 560--1000 | The window's width; `window.width` in `config.json` overrides it |
+| `list.height` | 352 | 200--640 | How tall the list grows before it scrolls, ending on whole rows; `window.visible-rows` overrides it |
 | `window.radius` | 10 | 0--16 | The window's corner |
 | `search.height` | 56 | 40--96 | The search field's row |
 | `gutter` | 14 | 8--32 | The left edge text lines up on |
@@ -2212,6 +2214,15 @@ What was decided while building it:
   Enter; this one has nothing to save, because seeing the launcher change is
   the point of choosing a look. An arrangement written by hand is shown as
   *Custom* and left alone.
+- **The size is the style's, the config can override it.** Measured against
+  full-screen captures, all three references were about 6 % wider and 17 %
+  taller than Lumen. Part of the height was a bug: the list's budget was a
+  row count, so every section header cost a whole row, and the default list
+  showed seven rows under one header where Raycast shows eight under two.
+  The budget is now a height, `list.height`, still filled with whole rows
+  (I-10). `window.width` and `window.visible-rows` in `config.json` became
+  optional overrides, bounded to 560--1000 and 3--20: a person's screen is
+  theirs to fit, and a preset should arrive the size it was measured at.
 - **Measured, at the close.** Release build, both builds alternated. Typing:
   p95 2.00--2.01 ms against 2.24 ms. Gesture: p50 8 ms, p95 19 ms. Idle:
   0.002--0.009 % against 0.004 %, one to four 15.6 ms ticks either way;

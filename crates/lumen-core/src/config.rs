@@ -19,6 +19,14 @@ use crate::places::store::PlacesConfig;
 use crate::providers::files::{self, FileLimits};
 use crate::snippets::SnippetsConfig;
 use crate::style::Metrics;
+
+/// What `window.width` may be, in logical pixels (F15): narrower and a
+/// title and its accessory collide; wider and the eye travels too far
+/// between the name and what it is.
+pub const WIDTH: std::ops::RangeInclusive<f32> = 560.0..=1000.0;
+
+/// What `window.visible-rows` may be (F15).
+pub const ROWS: std::ops::RangeInclusive<usize> = 3..=20;
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
 use crate::weather::WeatherConfig;
@@ -130,14 +138,16 @@ impl Default for ClipboardConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct WindowConfig {
-    /// Logical pixels. 720 is wide enough for a long application name plus its
-    /// accessories without the list becoming a horizon to scan.
-    pub width: f32,
-    /// How many rows are visible before the list scrolls.
+    /// Logical pixels, overriding the style's `window.width` (F15). `null`,
+    /// or absent, is the style's. Kept within [`WIDTH`].
+    pub width: Option<f32>,
+    /// How many rows are visible before the list scrolls, overriding the
+    /// style's `list.height` (F15). `null`, or absent, is the style's. Kept
+    /// within [`ROWS`].
     ///
     /// A count, not a height: the window grows in whole rows so that a partial
     /// row is never left clipped at the bottom edge.
-    pub visible_rows: usize,
+    pub visible_rows: Option<usize>,
     /// Where the window sits vertically in the work area, 0.0 to 1.0.
     ///
     /// 0.0 is against the top edge, 1.0 against the bottom, 0.5 centred. The
@@ -165,8 +175,8 @@ pub struct WindowConfig {
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
-            width: 720.0,
-            visible_rows: 8,
+            width: None,
+            visible_rows: None,
             vertical_bias: 0.22,
             horizontal_bias: 0.5,
             dismiss_on_focus_loss: true,
@@ -296,6 +306,36 @@ impl Config {
         std::fs::write(path, source).with_context(|| format!("writing {}", path.display()))
     }
 
+    /// The window's width: the config's when it sets one, the style's when
+    /// not, within [`WIDTH`] either way.
+    pub fn width(&self, metrics: &Metrics) -> f32 {
+        let width = self.window.width.unwrap_or(metrics.window_width);
+        if width.is_finite() {
+            width.clamp(*WIDTH.start(), *WIDTH.end())
+        } else {
+            metrics.window_width
+        }
+    }
+
+    /// How tall the list may grow before it scrolls, in logical pixels: the
+    /// config's row count in the style's rows when it sets one, the style's
+    /// `list.height` when not (F15).
+    ///
+    /// A height and not a row count, so a section's header does not cost a
+    /// whole row: the list still ends on a whole row (I-10), because rows are
+    /// accumulated until the next would not fit.
+    pub fn list_height(&self, metrics: &Metrics) -> f32 {
+        match self.window.visible_rows {
+            Some(rows) => rows.clamp(*ROWS.start(), *ROWS.end()) as f32 * metrics.row_height,
+            None => metrics.list_height,
+        }
+    }
+
+    /// How many whole rows fit in [`Config::list_height`].
+    pub fn visible_rows(&self, metrics: &Metrics) -> usize {
+        ((self.list_height(metrics) / metrics.row_height).floor() as usize).max(1)
+    }
+
     /// Total window height for a given number of visible rows.
     ///
     /// Computed from the active style's metrics rather than configured
@@ -303,7 +343,7 @@ impl Config {
     /// the window is always a whole number of fixed-height rows plus fixed
     /// chrome.
     pub fn window_height(&self, metrics: &Metrics, rows: usize) -> f32 {
-        let rows = rows.min(self.window.visible_rows);
+        let rows = rows.min(self.visible_rows(metrics));
         if rows == 0 {
             return metrics.search_height + metrics.footer_height;
         }
@@ -354,7 +394,28 @@ mod tests {
     fn dismiss_on_focus_loss_is_on_for_a_config_that_predates_it() {
         let config: Config = serde_json::from_str(r#"{ "window": { "width": 800.0 } }"#).unwrap();
         assert!(config.window.dismiss_on_focus_loss);
-        assert_eq!(config.window.width, 800.0);
+        assert_eq!(config.window.width, Some(800.0));
+    }
+
+    /// The style sizes the window unless the config says otherwise, and the
+    /// config is held to its bounds (F15).
+    #[test]
+    fn the_style_sizes_the_window_unless_the_config_overrides_it() {
+        let metrics = Metrics {
+            window_width: 764.0,
+            list_height: 371.0,
+            row_height: 38.0,
+            ..Metrics::BASE
+        };
+        let mut config = Config::default();
+        assert_eq!(config.width(&metrics), 764.0);
+        assert_eq!(config.list_height(&metrics), 371.0);
+        assert_eq!(config.visible_rows(&metrics), 9);
+
+        config.window.width = Some(5000.0);
+        config.window.visible_rows = Some(1);
+        assert_eq!(config.width(&metrics), 1000.0);
+        assert_eq!(config.list_height(&metrics), 3.0 * 38.0);
     }
 
     /// A config written before the setting existed must keep the launcher
@@ -370,7 +431,7 @@ mod tests {
     fn a_partial_config_keeps_defaults_for_everything_else() {
         let config: Config = serde_json::from_str(r#"{ "theme": "daylight" }"#).unwrap();
         assert_eq!(config.theme, "daylight");
-        assert_eq!(config.window.visible_rows, 8);
+        assert_eq!(config.window.visible_rows, None);
     }
 
     /// The switch has to survive a config written before it existed, or
@@ -433,8 +494,8 @@ mod tests {
         let before = Config::default();
         let mut after = before.clone();
         after.window.vertical_bias = 0.0;
-        after.window.width = 900.0;
-        after.window.visible_rows = 5;
+        after.window.width = Some(900.0);
+        after.window.visible_rows = Some(5);
         after.theme = "daylight".into();
         after.files.enabled = false;
 
