@@ -492,7 +492,8 @@ A font that is not installed can be dropped into
 at startup, so `lumen quit` then `lumen` after adding one. Raycast and
 Vicinae both set their interface in Inter, which Lumen bundles: what differs
 on screen is the renderer -- a web view's against DirectWrite -- not the
-typeface. Letter spacing is not available: gpui does not support it.
+typeface. Letter spacing is a style's, not a palette's: `text.tracking`, in em
+(-0.05 to 0.1, base 0), applies to the launcher's text except the keycaps.
 
 ### Styles
 

@@ -1,8 +1,10 @@
 # Letter spacing
 
-**Status: planned, not started.** Parked during F15 so the settings window
-could be finished first. This is the notebook to open on the day it starts,
-so the work begins from a list and not from a blank page.
+**Status: built, presets pending measurement.** The gpui patch is commit
+`8412ea5` and the `text.tracking` style token is `5907c17`. Carbon, Graphite
+and Ink keep tracking 0 until their values are measured (see "What was done
+differently"). The rest of this file is the plan as it was written, kept as
+history; the section below says where the build departed from it.
 
 **Why.** Raycast and Vicinae set their interface in Inter, the face Lumen
 bundles (F15 decisions). What still differs on screen is partly the
@@ -13,6 +15,43 @@ cannot ask for what the renderer cannot do.
 **Estimate.** One slice for the gpui patch with its tests, one for the style
 token and the presets. The patch is larger than the two Lumen already carries
 (7.35), and it has to be carried across every gpui upgrade (I-6).
+
+---
+
+## What was done differently
+
+- **`LetterSpacing(f32)`, not `Option<Pixels>`.** A newtype in em with a
+  manual `Eq` and `Hash` (`-0.0` and NaN fold to zero), because `TextRun`
+  derives `Eq` and `FontRun` is a hash key. The fields on `TextStyle` and
+  `TextRun` are plain, not optional: zero means none.
+- **Converted to pixels in `layout_line`,** from the run's own font size,
+  after shaping and after the `force_width` block, so the grid snap compares
+  unspaced positions. A glyph's offset is the sum of the spacing of every
+  glyph before it, each matched to its run by glyph index, which copes with
+  RTL order. `FontRun` merging requires equal spacing, and when every run is
+  zero the step returns at once.
+- **`LineWrapper`** keeps its per-character caches unspaced and
+  `width_for_char` adds the spacing. `line_wrapper_with_letter_spacing()`
+  resets a pooled wrapper's spacing on checkout. Wrapped lines go through
+  `layout_line`, so they take the step too.
+- **The line's width includes the spacing after the last glyph,** as CSS does.
+- **Ligatures:** one glyph, moved as one. Font features are unchanged -- there
+  is no `liga` off with tracking. Still an open point, to decide by looking
+  at tracked text.
+- **Not updated:** the macOS-only `FontRun` literals in
+  `vendor/gpui/src/platform/mac/text_system.rs` tests. Lumen does not build
+  for macOS.
+- **Lumen:** `text.tracking` applies on the launcher root (`styling::tracking`,
+  which sets nothing at 0) and is inherited by the query, rows, headers and
+  footer. Keycaps are reset to none (`styling::untracked`). It is not in
+  `styling::typography`: settings and the overlay do not read a style (7.41).
+  The style schema now has 30 tokens.
+- **Presets deferred.** The reference captures and `target/sample.ps1` the
+  plan relied on are no longer in `target/`, and the values must be measured,
+  not guessed.
+- **Not yet measured:** typing frame cost with tracking set
+  (`scripts/measure-typing.ps1`, which needs an attended desktop). At tracking
+  0 the patch returns early, so the base style's path adds one check.
 
 ---
 

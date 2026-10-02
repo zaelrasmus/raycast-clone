@@ -122,7 +122,7 @@ once Lumen was measured well inside them (7.36).
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
-| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 29 bounded tokens and nine variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is planned, not built (`LETTER-SPACING.md`). See F15 decisions |
+| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 30 bounded tokens and nine variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); the presets keep 0 until measured. See F15 decisions |
 
 ### F4 build order is not optional
 
@@ -2139,6 +2139,7 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `text.section` | 11.5 | 10--16 | A section's header |
 | `text.footer` | 11.5 | 10--16 | The footer |
 | `text.card` | 22 | 14--48 | The calculator card's two values |
+| `text.tracking` | 0 | -0.05--0.1 | Letter spacing in em, on the launcher's root and inherited by its text; keycaps take none (7.42) |
 | `weight.query`, `weight.title`, `weight.section` | 400 | 400, 500, 600 | The bundled faces; anything else snaps to the nearest |
 
 | Variant | Values (base first) | What it changes |
@@ -2223,8 +2224,8 @@ What was decided while building it:
   Vicinae were checked rather than guessed: both set their interface in
   Inter, Raycast in a web view (its own engineering blog) and Vicinae
   bundling it since its pull request 1071. The difference on screen is the
-  rasteriser, which no setting reaches. Letter spacing would be the next
-  lever, and gpui 0.2.2 has none.
+  rasteriser, which no setting reaches. Letter spacing was the next lever,
+  and gpui 0.2.2 had none; it was added as a patch (7.42).
 - **No gap between sections.** Measured before adding a token for it: in
   Raycast the band a later header occupies is the first's, 40 screen
   pixels, and in Vicinae it is tighter. The extra air the captures seem to
@@ -3056,6 +3057,54 @@ never produces a binary, which becomes a guarantee that it never produces a
 window: it is reverted to the base before anything draws. The base style is
 checked by a test, so the project's own values still cannot be broken
 unnoticed.
+
+### 7.42 Letter spacing is applied after shaping, as a patch to gpui
+
+gpui 0.2.2 has no letter spacing, and a style cannot ask for what the
+renderer cannot do. `docs/LETTER-SPACING.md` planned the patch; this records
+what was built and where it departs from the plan. Every changed line is
+marked `LUMEN PATCH (docs/LETTER-SPACING.md)`, as 7.35's are.
+
+The spacing is applied in shared code, after the platform has shaped the
+line, so it does not live in `direct_write.rs` and Linux gets it with F5. In
+`layout_line` each run's spacing is converted from em to pixels with that
+run's font size, after shaping and after the `force_width` block, so the
+grid snap still compares unspaced positions. A glyph moves by the sum of the
+spacing of every glyph before it, matched to its run by glyph index, which
+copes with right-to-left order; the line's width includes the spacing after
+the last glyph, as CSS does. Caret, selection and hit-testing read the moved
+positions. When every run has zero spacing the step returns at once.
+
+Where it differs from the notebook:
+
+- **A `LetterSpacing(f32)` newtype in em, not `Option<Pixels>`.** `TextRun`
+  derives `Eq` and `FontRun` is a hash key, so it has a manual `Eq` and
+  `Hash` that fold `-0.0` and NaN into zero. The fields on `TextStyle` and
+  `TextRun` are plain, and zero means none. `FontRun` merging requires equal
+  spacing, and the spacing is part of the layout cache key.
+- **`LineWrapper` keeps its per-character caches unspaced** and
+  `width_for_char` adds the spacing. Pooled wrappers are reset on checkout by
+  `line_wrapper_with_letter_spacing()`. Wrapped lines go through
+  `layout_line`, so they take the step too.
+- **Ligatures are one glyph and move as one; font features are unchanged.**
+  The notebook suggested turning `liga` off where tracking is set. That is
+  not done, and stays an open point.
+- **The macOS-only `FontRun` literals in `vendor/gpui/src/platform/mac/
+  text_system.rs` tests are not updated.** Lumen does not build for macOS.
+
+On the Lumen side `text.tracking` is a style token in em, base 0, range
+-0.05 to 0.1, clamped like every metric; the schema has 30 tokens. The
+launcher's root applies it (`styling::tracking`, which sets nothing at 0), so
+the query, rows, headers and footer inherit it, and keycaps reset to none
+(`styling::untracked`). It is not in `styling::typography`: settings and the
+overlay do not read a style (7.41).
+
+Not finished. Carbon, Graphite and Ink keep tracking 0: the reference
+captures and `target/sample.ps1` the plan relied on are gone from `target/`,
+and the values are to be measured, not guessed. The typing frame cost with
+tracking set is not measured either (`scripts/measure-typing.ps1` needs an
+attended desktop); at tracking 0 the patch exits early, so the base style's
+path adds one check.
 
 ---
 
