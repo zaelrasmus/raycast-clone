@@ -2440,6 +2440,8 @@ only hidden, exactly like the others.
 
 ### 7.11 The action panel replaces the list rather than floating over it
 
+*Superseded by 7.45, which makes it a popover after all.*
+
 F2 asks that every action be reachable from the keyboard; it does not say the
 panel has to be an overlay. The first attempt made it one, and it does not
 survive contact with the layout.
@@ -3165,10 +3167,57 @@ row shows `Enter`, the second `Ctrl+Enter`.
 of the selected row's actions -- a new window for an application, a private
 one for a link -- and does nothing when there is none, outside the root list or
 while a picker, a browser list or a quicklink's argument is open. The panel
-still opens on that second action, which is why the key and the panel agree.
+still opens on that second action, which is why the key and the panel agree
+(*it opens on the first since 7.45*).
 
 Three verbs changed to say what they open: *Open Application*, *New
 Application Window* and *Open Command*. The footer reads the first one's.
+
+### 7.45 The action panel is a popover over the list
+
+*Supersedes 7.11.* Raycast's panel floats at the bottom-right of the list with
+the list still visible behind it, and that is the look this project is after.
+7.11 gave up on it for two reasons, and both have an answer now.
+
+**The window had no room.** It is sized exactly to its content, so a popover
+taller than a short list had nowhere to stand. While the popover is open the
+window is `max(the height the list would have, search + inset + popover + inset
++ footer)` (`Config::panel_height`). With an ordinary list that is the list's
+height: the window does not change size at all and the list is not laid out
+again, so nothing moves beneath the popover. It grows only when the list is
+shorter than the popover, and goes back when it closes. The list is laid out to
+its own height (`Launcher::underlying_height`), not the grown window's, so it
+never stretches. The picker, which still replaces the list, keeps the old
+measure as `Config::picker_height`.
+
+**An absolutely positioned element had no height.** With only `right` and
+`bottom` set, taffy derives none. The popover now has an explicit height, from
+its rows (`layout::action_panel::height`: the header, the padding and outline,
+the rows shown -- capped at `MAX_ROWS` -- and the rules among them) and an
+explicit width. It sits in a transparent backdrop that is itself given the
+region's explicit height, inside a `relative` wrapper of the same.
+
+The backdrop occludes the mouse, so a click on the list behind closes the
+popover and cannot run the row under it, and the rows behind do not react to
+the pointer while it is open. The popover occludes too, which is what stops a
+click on one of its rows reaching the backdrop. Past `MAX_ROWS` the rows scroll
+in a container tracked by a `ScrollHandle`; the rules are children of that
+container, so the highlighted row is revealed by its child index
+(`action_panel::child_index`) and not by its position among the actions.
+
+It is drawn as Raycast draws it: a muted header naming the target, a 16 px icon
+at the start of each row (the square kept when there is none: I-10), the keys
+as keycaps or as text according to the style's `footer.hints`, and a rule where
+the group changes. The entries keep their order. It opens on the first row,
+which is what Enter would run and now shows with its key; the old reason for
+skipping it -- a panel whose Enter repeated Enter -- went when the panel stopped
+being a place to reach a second action (`Ctrl+Enter` is).
+
+The popover is opaque whatever the theme's `surface.elevated` alpha, since it
+floats over text. It adds no colour token: its outline is `border.strong`, the
+rules `border.subtle`, the highlight `selection.background`. Its geometry is in
+`layout::action_panel`, shared with the picker's rows. Room for a search field
+at its bottom is not reserved yet.
 
 ## 8. Risk register
 

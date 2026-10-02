@@ -28,8 +28,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, HighlightStyle,
-    ScrollStrategy, Styled, StyledText, Subscription, Task, UniformListScrollHandle, Window,
-    actions, div, ease_out_quint, img, svg, uniform_list,
+    MouseButton, ScrollHandle, ScrollStrategy, Styled, StyledText, Subscription, Task,
+    UniformListScrollHandle, Window, actions, div, ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::favorites::Change as FavoriteChange;
 use lumen_core::item::ActionGroup;
@@ -152,12 +152,16 @@ struct PanelEntry {
     shortcut: Vec<String>,
     /// The icon drawn at its start. The square is reserved whether or not
     /// there is one (I-10).
-    #[allow(dead_code)] // Drawn by the panel's redesign; filled in every mode.
     glyph: Option<lumen_core::view::Icon>,
     /// Which run of rows it belongs to; the panel draws a rule where this
     /// changes. A view's actions and the browsers are one run each.
-    #[allow(dead_code)] // Drawn by the panel's redesign; filled in every mode.
     group: ActionGroup,
+}
+
+/// Which row the action panel opens on: the first, as Raycast's does, which is
+/// what Enter would run. `None` when there is nothing to show.
+fn opening_selection(entries: usize) -> Option<usize> {
+    (entries > 0).then_some(0)
 }
 
 /// The root list's panel rows for `actions`, with the keys the keymap gives
@@ -376,6 +380,9 @@ pub struct Launcher {
     /// `None` means the panel is closed. Holding the selection here rather than
     /// a separate `bool` plus index makes the two impossible to disagree.
     action_panel: Option<usize>,
+    /// The popover's rows scroll past [`layout::action_panel::MAX_ROWS`]; this
+    /// is what keeps the highlighted one in view.
+    panel_scroll: ScrollHandle,
     /// The panel is showing browsers for "Open With..." rather than the row's
     /// actions: the link to open, waiting for one to be chosen. Only
     /// meaningful while the panel is open.
@@ -491,6 +498,7 @@ impl Launcher {
             focused_once: false,
             _activation: None,
             action_panel: None,
+            panel_scroll: ScrollHandle::new(),
             browser_menu: None,
             browsers: Vec::new(),
             picker: None,
@@ -997,23 +1005,34 @@ impl Launcher {
 
     /// How tall the window should be for whatever it is currently showing.
     ///
-    /// Three kinds of content, three heights. The action panel replaces the
-    /// list (7.11) and an action row is shorter than a result row; a view's
-    /// rows are result-height but its section headers are not.
+    /// The scope picker replaces the list and its rows are shorter than a
+    /// result row. The action panel floats over it (7.45), so the window is the
+    /// list's own height unless the popover needs more than that.
     pub fn content_height(&self) -> f32 {
         if self.picker.is_some() {
             // At least one row: a search that matches nothing says so.
             let rows = self
                 .picker_count()
                 .clamp(1, lumen_core::layout::view::PICKER_ROWS);
-            return self.config.panel_height(self.metrics(), rows);
-        }
-        if self.action_panel.is_some() {
-            return self
-                .config
-                .panel_height(self.metrics(), self.panel_entries().len());
+            return self.config.picker_height(self.metrics(), rows);
         }
 
+        let list = self.underlying_height();
+        let groups = self.panel_groups();
+        if self.action_panel.is_some() && !groups.is_empty() {
+            return self.config.panel_height(
+                self.metrics(),
+                list,
+                lumen_core::layout::action_panel::height(&groups),
+            );
+        }
+        list
+    }
+
+    /// The height of the window for what is behind the action panel: what it
+    /// would be with the panel closed. Also what the list is laid out to, so
+    /// a window grown for the popover does not stretch it.
+    fn underlying_height(&self) -> f32 {
         let metrics = self.metrics();
         match &self.mode {
             // Nothing found: the search field and the footer, as before.
@@ -1110,8 +1129,8 @@ impl Launcher {
     /// the window back the height the list needs. `false` when it was not open.
     ///
     /// The one way to close the panel from outside a function that resizes
-    /// anyway: the panel is a different height from the list, so closing it
-    /// without this leaves the list drawn into the panel's window.
+    /// anyway: the window may have grown for the popover, so closing it
+    /// without this leaves the list drawn into a window taller than it.
     fn close_action_panel(&mut self, cx: &mut Context<Self>) -> bool {
         let previous_height = self.content_height();
         let was_open = self.action_panel.take().is_some();
@@ -2180,6 +2199,55 @@ impl Launcher {
         }
     }
 
+    /// The groups of the panel's rows, in order: what decides where the rules
+    /// go and how tall the popover is.
+    fn panel_groups(&self) -> Vec<ActionGroup> {
+        self.panel_entries()
+            .iter()
+            .map(|entry| entry.group)
+            .collect()
+    }
+
+    /// What the popover's header names: the thing the actions are for.
+    ///
+    /// The selected row's title in the root list and in a view; nothing for a
+    /// detail view, which has no row to name. The header's line is reserved
+    /// either way (I-10).
+    fn panel_header(&self) -> String {
+        if self.showing_browsers() {
+            return "Open With\u{2026}".into();
+        }
+        match &self.mode {
+            Mode::Root => self
+                .selected_item()
+                .map(|item| item.title.clone())
+                .unwrap_or_default(),
+            Mode::View(state) => match &state.view {
+                lumen_core::view::View::List(list) => list
+                    .item(state.selected)
+                    .map(|item| item.title.clone())
+                    .unwrap_or_default(),
+                lumen_core::view::View::Detail(_) => String::new(),
+            },
+            Mode::Form(_) => String::new(),
+        }
+    }
+
+    /// Scroll the popover just far enough to show the highlighted row.
+    ///
+    /// The rules between groups are children of the scrolling container too,
+    /// so the row's place among them is not its index.
+    fn reveal_panel_selection(&self) {
+        let Some(selected) = self.action_panel else {
+            return;
+        };
+        self.panel_scroll
+            .scroll_to_item(layout::action_panel::child_index(
+                &self.panel_groups(),
+                selected,
+            ));
+    }
+
     /// Whether the open panel lists browsers rather than actions.
     fn showing_browsers(&self) -> bool {
         self.action_panel.is_some() && self.browser_menu.is_some()
@@ -2200,6 +2268,7 @@ impl Launcher {
         let previous_height = self.content_height();
         self.browser_menu = Some(open);
         self.action_panel = Some(0);
+        self.reveal_panel_selection();
         self.resize_if_needed(previous_height, cx);
         cx.notify();
     }
@@ -2219,13 +2288,9 @@ impl Launcher {
 
         self.action_panel = match self.action_panel {
             Some(_) => None,
-            // Opens on the *second* action, not the first: the first is what
-            // Enter already does, so landing on it would make the panel's own
-            // Enter a no-op and waste the gesture.
-            None if self.panel_entries().len() > 1 => Some(1),
-            None if !self.panel_entries().is_empty() => Some(0),
-            None => None,
+            None => opening_selection(self.panel_entries().len()),
         };
+        self.reveal_panel_selection();
 
         self.resize_if_needed(previous_height, cx);
         cx.notify();
@@ -2242,6 +2307,7 @@ impl Launcher {
             let count = self.panel_entries().len();
             if count > 0 {
                 self.action_panel = Some((selected + 1) % count);
+                self.reveal_panel_selection();
                 cx.notify();
             }
             return;
@@ -2271,6 +2337,7 @@ impl Launcher {
             let count = self.panel_entries().len();
             if count > 0 {
                 self.action_panel = Some(selected.checked_sub(1).unwrap_or(count - 1));
+                self.reveal_panel_selection();
                 cx.notify();
             }
             return;
@@ -3146,13 +3213,10 @@ impl Render for Launcher {
         root = crate::styling::tracking(root, &self.geometry());
 
         // One region, three possible occupants, in order of precedence: the
-        // action panel over whatever it was opened from, then an extension's
-        // view, then the root list.
-        let over = self
-            .render_action_panel(cx)
-            .or_else(|| self.render_picker(cx));
-        let body = match (over, &self.mode) {
-            (Some(over), _) => over,
+        // scope picker, then an extension's view, then the root list. The
+        // action panel is not one of them: it floats over whichever is there.
+        let body = match (self.render_picker(cx), &self.mode) {
+            (Some(picker), _) => picker,
             (None, Mode::Form(state)) => match &state.form {
                 FormKind::Quicklink(form) => form.clone().into_any_element(),
                 FormKind::Timer(form) => form.clone().into_any_element(),
@@ -3160,6 +3224,20 @@ impl Render for Launcher {
             },
             (None, Mode::View(state)) => self.render_view(state, cx),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
+        };
+        let body = match self.render_action_panel(cx) {
+            // The wrapper is what gives the popover something to be placed in:
+            // the region's own height, which is the window's less the search
+            // field and the footer, stated outright rather than left for the
+            // layout to derive.
+            Some(popover) => div()
+                .relative()
+                .flex_none()
+                .h(gpui::px(self.region_height()))
+                .child(body)
+                .child(popover)
+                .into_any_element(),
+            None => body,
         };
 
         root.child(self.render_search_field(cx))
@@ -3432,9 +3510,6 @@ impl Launcher {
     }
 
     /// The height of the region the list occupies.
-    ///
-    /// Shared with the action panel, which takes that region over, so the two
-    /// cannot disagree and the window never has to resize to swap between them.
     fn results_height(&self) -> gpui::Pixels {
         let geometry = self.geometry();
         gpui::px(self.card_height()) + gpui::px(self.rows_height()) + geometry.list_padding() * 2.0
@@ -3446,8 +3521,10 @@ impl Launcher {
     /// everything between them. That split is the one an extension will see:
     /// it supplies rows, and the chrome around them is never its to change.
     fn render_view(&self, state: &ViewState, cx: &mut gpui::App) -> gpui::AnyElement {
+        // The list's own height, not the window's: with the popover open the
+        // window may be taller, and the rows behind it must not stretch.
         let height = gpui::px(
-            self.content_height() - self.metrics().search_height - self.metrics().footer_height,
+            self.underlying_height() - self.metrics().search_height - self.metrics().footer_height,
         );
 
         if state.loading {
@@ -3932,12 +4009,32 @@ impl Launcher {
             })
     }
 
-    /// The action panel, when it is open.
+    /// The height of the region between the search field and the footer: all
+    /// the room the window has for the list and whatever floats over it.
+    fn region_height(&self) -> f32 {
+        self.content_height() - self.metrics().search_height - self.metrics().footer_height
+    }
+
+    /// The action panel, when it is open: a popover floating over the list,
+    /// anchored to the bottom-right just above the footer (7.45).
     ///
     /// Drawn inside the launcher's own window rather than given one of its own:
     /// unlike the shortcut overlay it is an ordinary part of the list's
     /// interface, it wants the focus the launcher already has, and it would
     /// gain nothing from being a separate surface but the cost of being one.
+    ///
+    /// An overlay was the first design and it failed for two reasons, both met
+    /// here. The window is sized to its content, so there was no room for a
+    /// floating element: `Config::panel_height` now grows it when the list is
+    /// too short to stand the popover in. And an absolutely positioned element
+    /// with only `right` and `bottom` gives taffy nothing to derive a height
+    /// from, so it laid out at zero: the popover, and the backdrop behind it,
+    /// are given theirs.
+    ///
+    /// What is returned fills the region. Its transparent backdrop takes the
+    /// mouse so that a click on the list behind closes the popover instead of
+    /// running the row under it, and so that nothing behind reacts to the
+    /// pointer while it is open.
     fn render_action_panel(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         use lumen_core::layout::action_panel as panel;
 
@@ -3948,67 +4045,184 @@ impl Launcher {
         }
 
         let colors = &self.theme.colors;
+        let geometry = self.geometry();
         let entity = cx.entity();
+        let groups: Vec<_> = entries.iter().map(|entry| entry.group).collect();
+        let height = panel::height(&groups);
 
-        // The panel takes the list's place rather than floating over it.
-        //
-        // An overlay was the first design and it does not survive contact with
-        // the layout: the window is sized exactly to its content, so there is
-        // no spare room for a floating element, and an absolutely positioned
-        // one with only `right` and `bottom` set gives taffy no way to derive a
-        // height -- it lays out at zero and is never seen. Replacing the list
-        // reuses the one region whose height is already known to be right, and
-        // it is arguably the better interaction anyway: the panel is a mode,
-        // Escape leaves it, and nothing is hidden behind it.
+        let mut rows = Vec::with_capacity(entries.len());
+        for (index, (entry, rule)) in entries.into_iter().zip(panel::breaks(&groups)).enumerate() {
+            if rule {
+                rows.push(
+                    div()
+                        .flex_none()
+                        .h(gpui::px(panel::SEPARATOR_HEIGHT))
+                        .my(gpui::px(panel::SEPARATOR_MARGIN))
+                        .bg(color(colors.border_subtle))
+                        .into_any_element(),
+                );
+            }
+            let entity = entity.clone();
+            rows.push(
+                div()
+                    .id(("action", index))
+                    .flex_none()
+                    .h(gpui::px(panel::ROW_HEIGHT))
+                    .px(geometry.gutter())
+                    .flex()
+                    .items_center()
+                    .gap(gpui::px(panel::ICON_GAP))
+                    .rounded(gpui::px(panel::ROW_RADIUS))
+                    .text_size(type_scale::title())
+                    .text_color(color(colors.text_primary))
+                    .when(index == selected, |row| {
+                        row.bg(color(colors.selection_background))
+                    })
+                    .cursor_pointer()
+                    .on_click(move |_event, window, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.action_panel = Some(index);
+                            this.activate(&Activate, window, cx);
+                        });
+                    })
+                    // The square is there whether or not the action has a
+                    // glyph, so the titles line up (I-10).
+                    .child(crate::view::render_icon(
+                        entry.glyph.as_ref(),
+                        gpui::px(panel::ICON_SIZE),
+                        colors,
+                        &geometry,
+                        &self.images,
+                        cx,
+                    ))
+                    .child(div().flex_1().min_w_0().truncate().child(entry.title))
+                    // The keys beside it: the first action says what Enter
+                    // already does, which is what stops the panel looking like
+                    // a list of things Enter cannot reach. A root row's come
+                    // from the keymap; a view's are what the extension asked
+                    // to have shown.
+                    .when(!entry.shortcut.is_empty(), |row| {
+                        row.child(render_keys(&entry.shortcut, colors, &geometry))
+                    })
+                    .into_any_element(),
+            );
+        }
+
+        let popover = div()
+            .absolute()
+            .right(gpui::px(panel::INSET))
+            .bottom(gpui::px(panel::INSET))
+            .w(gpui::px(panel::WIDTH))
+            .h(gpui::px(height))
+            // Over the backdrop, which would otherwise take a click on a row.
+            .occlude()
+            .flex()
+            .flex_col()
+            .p(gpui::px(panel::PADDING))
+            .rounded(gpui::px(panel::RADIUS))
+            // One pixel, which is `panel::BORDER`: GPUI names the width, not
+            // takes it.
+            .border_1()
+            .border_color(color(colors.border_strong))
+            // Opaque whatever the theme's alpha: it floats over text, and the
+            // list must not show through it.
+            .bg(color(colors.surface_elevated.with_alpha(255)))
+            .shadow_md()
+            .child(
+                div()
+                    .flex_none()
+                    .h(gpui::px(panel::HEADER_HEIGHT))
+                    .px(geometry.gutter())
+                    .flex()
+                    .items_center()
+                    .truncate()
+                    .text_size(type_scale::footer())
+                    .text_color(color(colors.text_muted))
+                    .child(self.panel_header()),
+            )
+            .child(
+                div()
+                    .id("action-rows")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.panel_scroll)
+                    .children(rows),
+            );
+
         Some(
             div()
-                .p(gpui::px(panel::PADDING))
-                .flex()
-                .flex_col()
-                .bg(color(colors.surface_elevated))
-                .children(entries.into_iter().enumerate().map(|(index, entry)| {
-                    let entity = entity.clone();
-                    div()
-                        .id(("action", index))
-                        .h(gpui::px(panel::ROW_HEIGHT))
-                        .px(self.geometry().gutter())
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .rounded(gpui::px(panel::ROW_RADIUS))
-                        .text_size(type_scale::title())
-                        .when(index == selected, |row| {
-                            row.bg(color(colors.selection_background))
-                                .text_color(color(colors.text_primary))
-                        })
-                        .when(index != selected, |row| {
-                            row.text_color(color(colors.text_muted))
-                        })
-                        .cursor_pointer()
-                        .on_click(move |_event, window, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.action_panel = Some(index);
-                                this.activate(&Activate, window, cx);
-                            });
-                        })
-                        .child(entry.title)
-                        // The keys beside it, as plain text for now: the first
-                        // action says what Enter already does, which is what
-                        // stops the panel looking like a list of things Enter
-                        // cannot reach. A root row's come from the keymap; a
-                        // view's are what the extension asked to have shown.
-                        .when(!entry.shortcut.is_empty(), |row| {
-                            row.child(
-                                div()
-                                    .text_size(type_scale::footer())
-                                    .text_color(color(colors.text_muted))
-                                    .child(entry.shortcut.join(" ")),
-                            )
-                        })
-                }))
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h(gpui::px(self.region_height()))
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.close_action_panel(cx);
+                        cx.notify();
+                    }),
+                )
+                .child(popover)
                 .into_any_element(),
         )
     }
+}
+
+/// The keys beside an action, drawn the way the footer draws its own: as text
+/// or as keycaps, whichever the style asks for (F15).
+fn render_keys(
+    keys: &[String],
+    colors: &lumen_core::theme::Colors,
+    geometry: &Geometry,
+) -> gpui::AnyElement {
+    use lumen_core::style::FooterHints;
+
+    match geometry.variants().footer_hints {
+        FooterHints::Text => div()
+            .text_size(type_scale::footer())
+            .text_color(color(colors.text_muted))
+            .child(keys.join("+"))
+            .into_any_element(),
+        FooterHints::Keycaps => div()
+            .flex()
+            .items_center()
+            .gap(geometry.keycap_gap())
+            .children(keys.iter().map(|key| render_keycap(key, colors, geometry)))
+            .into_any_element(),
+    }
+}
+
+/// One key in a cap of its own: filled or outlined, as the style draws it.
+fn render_keycap(key: &str, colors: &lumen_core::theme::Colors, geometry: &Geometry) -> gpui::Div {
+    use lumen_core::style::Keycap;
+
+    // A key is one or two letters, which tracking does not suit.
+    let cap = crate::styling::untracked(div())
+        .h(geometry.keycap_height())
+        .min_w(geometry.keycap_height())
+        .px(geometry.keycap_padding())
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(geometry.keycap_radius())
+        .border_1();
+    match geometry.variants().keycap {
+        Keycap::Filled => cap
+            .bg(color(colors.selection_background))
+            .border_color(color(colors.border_subtle))
+            .text_color(color(colors.text_primary)),
+        // The footer shows through, so the key reads as quieter than the label
+        // beside it, as Raycast draws it.
+        Keycap::Outline => cap
+            .border_color(color(colors.border_strong))
+            .text_color(color(colors.text_muted)),
+    }
+    .child(key.to_string())
 }
 
 /// The search field's icon, when the style asks for one (F15): the row
@@ -4047,7 +4261,7 @@ fn render_hint(
     colors: &lumen_core::theme::Colors,
     geometry: &Geometry,
 ) -> gpui::AnyElement {
-    use lumen_core::style::{FooterHints, Keycap};
+    use lumen_core::style::FooterHints;
 
     match geometry.variants().footer_hints {
         FooterHints::Text => div()
@@ -4079,30 +4293,7 @@ fn render_hint(
                     }))
                     .child(label),
             )
-            .children(keys.iter().map(|key| {
-                // A key is one or two letters, which tracking does not suit.
-                let cap = crate::styling::untracked(div())
-                    .h(geometry.keycap_height())
-                    .min_w(geometry.keycap_height())
-                    .px(geometry.keycap_padding())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(geometry.keycap_radius())
-                    .border_1();
-                match geometry.variants().keycap {
-                    Keycap::Filled => cap
-                        .bg(color(colors.selection_background))
-                        .border_color(color(colors.border_subtle))
-                        .text_color(color(colors.text_primary)),
-                    // The footer shows through, so the key reads as quieter
-                    // than the label beside it, as Raycast draws it.
-                    Keycap::Outline => cap
-                        .border_color(color(colors.border_strong))
-                        .text_color(color(colors.text_muted)),
-                }
-                .child(key.to_string())
-            }))
+            .children(keys.iter().map(|key| render_keycap(key, colors, geometry)))
             .into_any_element(),
     }
 }
@@ -4209,8 +4400,8 @@ fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
 mod tests {
 
     use super::{
-        LauncherEvent, calculated, card_extent, card_label, operator_ranges, root_panel_entries,
-        second_action,
+        LauncherEvent, calculated, card_extent, card_label, opening_selection, operator_ranges,
+        root_panel_entries, second_action,
     };
     use lumen_core::favorites::Change as FavoriteChange;
     use lumen_core::item::{ActionGroup, Builtin, Kind};
@@ -4310,21 +4501,19 @@ mod tests {
         }
     }
 
-    /// The panel opens on the *second* action, because the first is what Enter
-    /// already does.
+    /// The popover opens on the *first* row, as Raycast's does: it is the
+    /// action Enter would run, shown highlighted with its key beside it.
     #[test]
-    fn opening_the_panel_skips_the_primary_action() {
+    fn the_popover_opens_on_the_first_action() {
         let item = item_with(vec![
             Action::Builtin(Builtin::OpenSettings),
             Action::CopyToClipboard("x".into()),
         ]);
 
         let opened = opening_selection(item.actions.len());
-        assert_eq!(opened, Some(1));
+        assert_eq!(opened, Some(0));
     }
 
-    /// With only one action there is nothing the panel adds, so it lands on it
-    /// rather than on nothing.
     #[test]
     fn a_single_action_still_opens_somewhere_valid() {
         assert_eq!(opening_selection(1), Some(0));
@@ -4385,16 +4574,6 @@ mod tests {
             offenders.is_empty(),
             "these clear the action panel without a resize: {offenders:?}"
         );
-    }
-
-    /// Mirrors `toggle_action_panel`'s choice of starting index, kept beside it
-    /// so the rule is checkable without standing up a GPUI app.
-    fn opening_selection(action_count: usize) -> Option<usize> {
-        match action_count {
-            0 => None,
-            1 => Some(0),
-            _ => Some(1),
-        }
     }
 
     fn firefox_actions() -> Vec<Action> {

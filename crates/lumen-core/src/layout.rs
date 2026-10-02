@@ -94,8 +94,14 @@ pub const ROW_RADIUS: f32 = 7.0;
 /// Inset of the selected row's highlight from the window edge.
 pub const ROW_INSET: f32 = 7.0;
 
-/// The action panel, opened with Ctrl+K over the bottom-right of the launcher.
+/// The action panel, opened with Ctrl+K: a popover floating over the bottom-right
+/// of the list, just above the footer (7.45).
+///
+/// Its rows and padding are also the scope picker's, which is drawn the same
+/// way but in the list's place.
 pub mod action_panel {
+    use crate::item::ActionGroup;
+
     /// One action row.
     pub const ROW_HEIGHT: f32 = 30.0;
 
@@ -103,6 +109,73 @@ pub mod action_panel {
     pub const PADDING: f32 = 6.0;
 
     pub const ROW_RADIUS: f32 = 5.0;
+
+    /// The popover's width. Fixed rather than the window's share, so a wider
+    /// window shows the same popover and a narrower one is never covered by it.
+    pub const WIDTH: f32 = 440.0;
+
+    /// How far the popover stands from the window's right edge and from the
+    /// footer; also the gap kept above it, so it never touches the search row.
+    pub const INSET: f32 = 8.0;
+
+    /// The popover's outline. Part of its height, which is border-box.
+    pub const BORDER: f32 = 1.0;
+
+    pub const RADIUS: f32 = 10.0;
+
+    /// The line naming what the actions are for. Reserved even when the name
+    /// is empty (I-10).
+    pub const HEADER_HEIGHT: f32 = 30.0;
+
+    /// The rule where the group changes, and the air above and below it.
+    pub const SEPARATOR_HEIGHT: f32 = 1.0;
+    pub const SEPARATOR_MARGIN: f32 = 4.0;
+
+    /// How many rows are shown before the rest scroll.
+    pub const MAX_ROWS: usize = 7;
+
+    /// The icon at the start of a row: smaller than a result's, because the
+    /// row is.
+    pub const ICON_SIZE: f32 = 16.0;
+    pub const ICON_GAP: f32 = 10.0;
+
+    /// Which rows have a rule above them: wherever the group differs from the
+    /// row before. The first never does.
+    pub fn breaks(groups: &[ActionGroup]) -> Vec<bool> {
+        groups
+            .iter()
+            .enumerate()
+            .map(|(index, group)| index > 0 && groups[index - 1] != *group)
+            .collect()
+    }
+
+    /// Where `entry` sits among the scroll container's children, which hold a
+    /// rule wherever the group changes as well as the rows. What
+    /// `ScrollHandle::scroll_to_item` is given to keep a row in view.
+    pub fn child_index(groups: &[ActionGroup], entry: usize) -> usize {
+        let rules = breaks(groups)
+            .into_iter()
+            .take(entry + 1)
+            .filter(|rule| *rule)
+            .count();
+        entry + rules
+    }
+
+    /// The popover's height for rows of these groups: the header, the padding
+    /// and outline, and the rows that are shown with the rules among them.
+    ///
+    /// Capped at [`MAX_ROWS`]; only the rules among the rows shown count, since
+    /// the others are reached by scrolling.
+    pub fn height(groups: &[ActionGroup]) -> f32 {
+        let shown = &groups[..groups.len().min(MAX_ROWS)];
+        let rules = breaks(shown).into_iter().filter(|rule| *rule).count();
+
+        HEADER_HEIGHT
+            + PADDING * 2.0
+            + BORDER * 2.0
+            + shown.len() as f32 * ROW_HEIGHT
+            + rules as f32 * (SEPARATOR_HEIGHT + SEPARATOR_MARGIN * 2.0)
+    }
 }
 
 /// The pill naming a quicklink while the search field holds its argument (F6).
@@ -551,3 +624,71 @@ const _: () = assert!(
 );
 const _: () = assert!(settings::DIALOG_WIDTH < settings::WIDTH - settings::PADDING * 2.0);
 const _: () = assert!(settings::KEYS_FIELD_WIDTH * 2.0 < settings::WIDTH - settings::SIDEBAR_WIDTH);
+
+#[cfg(test)]
+mod tests {
+    use super::action_panel::{self, breaks};
+    use crate::item::ActionGroup::{Copy, Favorite, Primary};
+
+    #[test]
+    fn a_rule_falls_wherever_the_group_changes() {
+        assert_eq!(
+            breaks(&[Primary, Primary, Copy, Copy, Favorite]),
+            [false, false, true, false, true]
+        );
+        assert_eq!(breaks(&[Primary, Primary]), [false, false]);
+        assert!(breaks(&[]).is_empty());
+    }
+
+    /// The scroll container holds the rules as children of their own, so the
+    /// n-th entry is not its n-th child.
+    #[test]
+    fn an_entry_sits_after_the_rules_that_precede_it() {
+        let groups = [Primary, Primary, Copy, Copy, Favorite];
+
+        let at: Vec<_> = (0..groups.len())
+            .map(|entry| action_panel::child_index(&groups, entry))
+            .collect();
+
+        assert_eq!(at, [0, 1, 3, 4, 6]);
+    }
+
+    #[test]
+    fn the_popover_is_a_header_and_its_rows_and_rules() {
+        let chrome =
+            action_panel::HEADER_HEIGHT + action_panel::PADDING * 2.0 + action_panel::BORDER * 2.0;
+        let rule = action_panel::SEPARATOR_HEIGHT + action_panel::SEPARATOR_MARGIN * 2.0;
+
+        assert_eq!(
+            action_panel::height(&[Primary, Primary, Copy]),
+            chrome + 3.0 * action_panel::ROW_HEIGHT + rule
+        );
+        assert_eq!(
+            action_panel::height(&[Primary]),
+            chrome + action_panel::ROW_HEIGHT
+        );
+    }
+
+    /// Past the cap the popover stops growing and scrolls, so a long menu
+    /// cannot ask for a window taller than the screen.
+    #[test]
+    fn the_popover_stops_growing_at_the_row_cap() {
+        let many = vec![Primary; action_panel::MAX_ROWS + 5];
+        let capped = vec![Primary; action_panel::MAX_ROWS];
+
+        assert_eq!(action_panel::height(&many), action_panel::height(&capped));
+    }
+
+    /// Only the rules among the rows that are shown cost height; one further
+    /// down is reached by scrolling.
+    #[test]
+    fn a_rule_beyond_the_cap_does_not_make_the_popover_taller() {
+        let mut groups = vec![Primary; action_panel::MAX_ROWS];
+        groups.push(Copy);
+
+        assert_eq!(
+            action_panel::height(&groups),
+            action_panel::height(&groups[..action_panel::MAX_ROWS])
+        );
+    }
+}

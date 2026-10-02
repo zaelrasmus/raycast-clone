@@ -509,6 +509,7 @@ fn render_item(
                 })
                 .child(render_icon(
                     item.icon.as_ref(),
+                    geometry.icon_size(),
                     colors,
                     geometry,
                     images,
@@ -546,15 +547,18 @@ fn render_item(
         .into_any_element()
 }
 
-fn render_icon(
+/// An icon in a square of `size`, which is reserved whether or not there is
+/// one (I-10). A row's is the style's icon size; the action panel's is its own.
+pub(crate) fn render_icon(
     icon: Option<&Icon>,
+    size: gpui::Pixels,
     colors: &Colors,
     geometry: &Geometry,
     images: &ImageCache,
     cx: &mut App,
 ) -> AnyElement {
     let square = div()
-        .size(geometry.icon_size())
+        .size(size)
         .flex_none()
         .flex()
         .items_center()
@@ -568,7 +572,7 @@ fn render_icon(
             .child(
                 svg()
                     .path(format!("icons/{name}.svg"))
-                    .size(geometry.icon_size())
+                    .size(size)
                     .text_color(color(colors.icon)),
             )
             .into_any_element(),
@@ -588,7 +592,7 @@ fn render_icon(
                 |square, image| {
                     square.child(
                         img(image)
-                            .size(geometry.icon_size())
+                            .size(size)
                             .rounded(px(layout::view::THUMBNAIL_RADIUS)),
                     )
                 },

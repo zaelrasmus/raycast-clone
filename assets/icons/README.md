@@ -1,6 +1,6 @@
 # The icon set
 
-Thirty-three glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
+Thirty-nine glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
 
 ## The grid
 
@@ -52,4 +52,10 @@ are further from the centre and there is no shading to soften them.
 | `currency.svg` | A conversion in the root list, and the *Currency* command (F9) |
 | `clock.svg` | A time in the root list, and the *World Clock* command (F13) |
 | `weather-*.svg` | The sky in *Weather* (F13): clear by day and by night, partly cloudy, cloudy, fog, drizzle, rain, snow and storm. `weather-partly-cloudy.svg` is also the *Weather* command |
+| `open.svg` | *Open* in the action panel: an application, a file, a link |
+| `star.svg`, `star-off.svg` | *Add to Favorites* and *Remove from Favorites* in the action panel |
+| `copy.svg` | Every *Copy* action in the action panel |
+| `arrow-up.svg`, `arrow-down.svg` | *Move Up* and *Move Down* among the favourites |
+| `plus.svg` | An action that makes something: a quicklink, a snippet or a new timer |
+| `globe.svg` | A browser in *Open With…* |
 | `metric-*.svg` | A weather report's details (F13): feels like, UV index, pressure, visibility and coordinates. Sun, moon and cloud cover use the condition glyphs |

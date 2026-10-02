@@ -354,25 +354,45 @@ impl Config {
             + metrics.footer_height
     }
 
-    /// Total window height for the action panel showing `actions` rows.
+    /// Total window height while the action panel's popover is open, given the
+    /// height the list alone would have and the popover's own.
     ///
-    /// A separate calculation from [`Config::window_height`] rather than a
-    /// conversion into "equivalent result rows", because an action row is a
-    /// different height from a result row -- one line against a title and a
-    /// subtitle -- and rounding one into the other leaves exactly the band of
-    /// empty space this exists to remove. The panel's own rows keep their
-    /// constants (7.41); the search field and the footer around it are the
-    /// style's.
-    pub fn panel_height(&self, metrics: &Metrics, actions: usize) -> f32 {
+    /// The popover floats over the list, so it needs no room of its own when the
+    /// list is tall enough to stand it in -- the window then does not change at
+    /// all, which is what keeps the list from being re-laid out beneath it. It
+    /// grows only when the list is shorter: the search row, the popover with
+    /// the inset kept above and below it, and the footer (7.45). The popover is
+    /// given an explicit height because the window is sized exactly to its
+    /// content and an absolutely positioned element has no way to derive one.
+    pub fn panel_height(&self, metrics: &Metrics, list: f32, popover: f32) -> f32 {
         use crate::layout;
 
-        if actions == 0 {
+        let needed = metrics.search_height
+            + layout::action_panel::INSET * 2.0
+            + popover
+            + metrics.footer_height;
+        list.max(needed)
+    }
+
+    /// Total window height for the scope picker showing `options` rows.
+    ///
+    /// A separate calculation from [`Config::window_height`] rather than a
+    /// conversion into "equivalent result rows", because a picker row is a
+    /// different height from a result row -- one line against a title and a
+    /// subtitle -- and rounding one into the other leaves exactly the band of
+    /// empty space this exists to remove. The picker's own rows keep their
+    /// constants (7.41); the search field and the footer around it are the
+    /// style's.
+    pub fn picker_height(&self, metrics: &Metrics, options: usize) -> f32 {
+        use crate::layout;
+
+        if options == 0 {
             return metrics.search_height + metrics.footer_height;
         }
 
         metrics.search_height
             + layout::action_panel::PADDING * 2.0
-            + actions as f32 * layout::action_panel::ROW_HEIGHT
+            + options as f32 * layout::action_panel::ROW_HEIGHT
             + metrics.footer_height
     }
 }
@@ -574,34 +594,80 @@ mod tests {
         assert_eq!(parsed.backdrop, BackdropMode::SystemAcrylic);
     }
 
-    /// The panel is shorter than a list of the same length, which is the whole
-    /// reason it is measured separately.
+    /// With an ordinary list the popover fits over it, so opening it must not
+    /// change the window at all: that is the whole point of floating.
     #[test]
-    fn the_action_panel_is_shorter_than_the_list_it_replaces() {
-        let config = Config::default();
+    fn a_popover_that_fits_over_the_list_leaves_the_window_as_it_was() {
+        use crate::item::ActionGroup;
 
-        assert!(config.panel_height(&Metrics::BASE, 3) < config.window_height(&Metrics::BASE, 3));
-        assert!(config.panel_height(&Metrics::BASE, 1) < config.window_height(&Metrics::BASE, 1));
+        let config = Config::default();
+        let list = config.window_height(&Metrics::BASE, 8);
+        let popover = crate::layout::action_panel::height(&[ActionGroup::Primary; 4]);
+
+        assert_eq!(config.panel_height(&Metrics::BASE, list, popover), list);
+    }
+
+    /// A short list gives it nowhere to stand, so the window grows, by exactly
+    /// the room the popover needs: the search row, the popover with its insets
+    /// above and below, and the footer.
+    #[test]
+    fn a_popover_taller_than_the_list_grows_the_window_to_fit_it() {
+        use crate::item::ActionGroup;
+
+        let config = Config::default();
+        let list = config.window_height(&Metrics::BASE, 1);
+        let popover = crate::layout::action_panel::height(&[ActionGroup::Primary; 6]);
+
+        let height = config.panel_height(&Metrics::BASE, list, popover);
+
+        assert!(height > list);
+        assert_eq!(
+            height,
+            Metrics::BASE.search_height
+                + crate::layout::action_panel::INSET * 2.0
+                + popover
+                + Metrics::BASE.footer_height
+        );
     }
 
     #[test]
-    fn the_panel_grows_in_whole_action_rows() {
+    fn the_window_is_never_shorter_than_the_list_while_the_popover_is_open() {
+        let config = Config::default();
+
+        for rows in 0..=8 {
+            let list = config.window_height(&Metrics::BASE, rows);
+            assert!(config.panel_height(&Metrics::BASE, list, 0.0) >= list);
+        }
+    }
+
+    /// The picker takes the list's place, so its window is its own rows rather
+    /// than the list's.
+    #[test]
+    fn the_picker_is_shorter_than_the_list_it_replaces() {
+        let config = Config::default();
+
+        assert!(config.picker_height(&Metrics::BASE, 3) < config.window_height(&Metrics::BASE, 3));
+        assert!(config.picker_height(&Metrics::BASE, 1) < config.window_height(&Metrics::BASE, 1));
+    }
+
+    #[test]
+    fn the_picker_grows_in_whole_rows() {
         let config = Config::default();
         let step = crate::layout::action_panel::ROW_HEIGHT;
 
         assert_eq!(
-            config.panel_height(&Metrics::BASE, 3) - config.panel_height(&Metrics::BASE, 2),
+            config.picker_height(&Metrics::BASE, 3) - config.picker_height(&Metrics::BASE, 2),
             step
         );
     }
 
-    /// Unlike the result list, the panel is not capped at `visible-rows`: an
-    /// item with ten actions has to show all ten, because there is nothing else
+    /// Unlike the result list, the picker is not capped at `visible-rows`: a
+    /// scope with ten options has to show all ten, because there is nothing else
     /// on screen to scroll.
     #[test]
-    fn the_panel_is_not_capped_at_the_visible_row_count() {
+    fn the_picker_is_not_capped_at_the_visible_row_count() {
         let config = Config::default();
-        assert!(config.panel_height(&Metrics::BASE, 12) > config.panel_height(&Metrics::BASE, 8));
+        assert!(config.picker_height(&Metrics::BASE, 12) > config.picker_height(&Metrics::BASE, 8));
     }
 
     #[test]
