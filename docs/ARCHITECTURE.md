@@ -122,7 +122,7 @@ once Lumen was measured well inside them (7.36).
 | **F12** | Clipboard history, the rest of the way: a *Clipboard History* command that opens its own view, with text, links, colours, files and images | **Done.** The command, the view with a *Type* filter and a pane, files captured, colours drawn as swatches, `Enter` pasting; images captured, kept as files by hash and shown in the rows and the pane; a settings page for the limit and for clearing the history. See F12 decisions |
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
-| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 30 bounded tokens and nine variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
+| **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 34 bounded tokens and thirteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 
 ### F4 build order is not optional
 
@@ -2140,7 +2140,10 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `text.footer` | 11.5 | 10--16 | The footer |
 | `text.card` | 22 | 14--48 | The calculator card's two values |
 | `text.tracking` | 0 | -0.05--0.1 | Letter spacing in em, on the launcher's root and inherited by its text; keycaps take none (7.42) |
-| `weight.query`, `weight.title`, `weight.section` | 400 | 400, 500, 600 | The bundled faces; anything else snaps to the nearest |
+| `weight.query`, `weight.title`, `weight.section`, `weight.card` | 400 | 400, 500, 600 | The bundled faces; anything else snaps to the nearest. `weight.card` is the card's values (7.43) |
+| `rule.width` | 1 | 1--2 | The line under the search field and over the footer (7.43) |
+| `card.rows` | 2 | 2--4 | Rows the calculator's card takes, read as whole rows (7.43) |
+| `card.label-gap` | 6 | 2--24 | Between each of the card's values and its label (7.43) |
 
 | Variant | Values (base first) | What it changes |
 | --- | --- | --- |
@@ -2152,6 +2155,10 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `footer.icon` | `none`, `logo` | Lumen's mark before the footer's status |
 | `footer.count` | `shown`, `hidden` | *313 results*, where the footer has nothing else to say; none of the references shows it |
 | `footer.escape` | `shown`, `hidden` | The *Dismiss* or *Back* hint for Escape; none of the references shows it |
+| `card.header` | `hidden`, `shown` | A *Calculator* section header above the card, counted in the window's height (7.43) |
+| `card.labels` | `plain`, `chips` | *Expression* and *Result* as muted text, or on a filled chip in `border.strong` |
+| `card.divider` | `none`, `line` | A hairline in `border.strong` between the card's halves, broken around the arrow |
+| `card.operators` | `plain`, `dimmed` | The expression's operators in the muted colour |
 
 Two colour tokens joined the palette with them: `surface.footer`, behind the
 footer (transparent in the base themes), and `border.window`, the window's
@@ -3110,6 +3117,30 @@ the same style at 0, alternated twice, p95 2.31 and 2.27 ms against 2.29 and
 2.29 ms.
 
 ---
+
+### 7.43 The calculator's card is opened to the style
+
+Carbon's calculator did not look like Raycast's, and the card was fixed
+structure: two rows, plain labels, no divider. Opening it the way F15 opened
+the rest (I-11) adds four tokens and four variants, listed in the schema
+tables; their base values draw the card as it was, so a style that sets none
+of them is unchanged (I-12), and any style may set them. Carbon sets all of
+them, measured on Raycast's capture at 1.25 scale: values 24.5 pt at 600
+within a pixel of Raycast's, three rows under a header, chips, a divider,
+dimmed operators, and a label gap of 21 that puts 41.5 px between a value
+and its chip against Raycast's 42. Carbon's card is 143 px tall against 154:
+rows are whole.
+
+The line under the search field was drawn, but in the calculator view the
+card's fill, which on Carbon is the colour of `border.subtle`, began 3 px
+below it and swallowed it. `rule.width` thickens it and the footer's; Carbon's
+1.6 is two physical pixels at 1.25, Raycast's. The card's divider does not
+follow it: it is a hairline in `border.strong`, because `border.subtle` can
+be the card's own colour.
+
+The answer gained a second action, *Copy Expression*, and its first reads
+*Copy Answer*: the footer advertises the action panel only when there is a
+second action to reach.
 
 ## 8. Risk register
 
