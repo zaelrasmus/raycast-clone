@@ -288,6 +288,31 @@ for a mid-word answer that is 50 ms at this machine's size. Root no longer
 finds a match inside a word for an entry outside the hot layer; that is
 the trade, chosen over losing entries.
 
+**Refined with the user:**
+
+- **Words split at capitals and digits too.** A name is indexed as its
+  words by separators (space, `-`, `_`, `.`, `(`, `[`) *and* at a change to
+  a capital or to a digit, so `AnnualReport2024` is found by `report` and
+  `2024`. Only lower-case words run together (`myreport`) stay a mid-word
+  match.
+- **A setting, `files.index-detail`, three levels:**
+
+  | Level | On disk | Root finds | Real 500 000 |
+  | ----- | ------- | ---------- | ------------ |
+  | `complete` | compact + words + trigram | every match, mid-word included | ~100 MB |
+  | `balanced` (default) | compact + words | word starts, split as above | ~63 MB |
+  | `compact` | compact + words, `detail=none` | the same as `balanced`, slower on very common words | ~45 MB |
+
+  `compact` finds no less than `balanced`; only `complete` finds more. No
+  level drops an entry, and *Search Files* finds mid-word matches at every
+  level. Changing it builds or drops one table in the background.
+- **One or two letters still search only what is used.** In root, a query
+  under three letters searches the hot layer -- which is what was used --
+  and the names of one or two characters; from three, the disk joins. A
+  common letter on disk is tens of thousands of matches (`a`: 46 858 in
+  the real index) that nobody wants ranked. *Search Files* searches all at
+  any length.
+
 ---
 
 ## The decisions
