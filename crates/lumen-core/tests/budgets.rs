@@ -42,7 +42,11 @@ use lumen_core::item::{Action, Item, Kind};
 use lumen_core::search::{Candidate, Search};
 use lumen_platform::LaunchTarget;
 
-/// The index size the budget has to hold at: the file-search cap.
+/// The index size the budget has to hold at: F3's file-search cap, when files
+/// were ranked by this matcher. Since F16 they are matched by the file index,
+/// off the UI thread (`docs/FILE-SEARCH.md`), and the largest list ranked on a
+/// keystroke is the application index -- 5 000 is a machine with every SDK
+/// installed -- so the figure stands, for that.
 const LARGE: usize = 5_000;
 /// A quarter of it, for the growth comparison.
 const SMALL: usize = LARGE / 4;

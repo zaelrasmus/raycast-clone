@@ -82,11 +82,12 @@ an aesthetic worth looking at fifty times a day.
   The edges land flush: Windows draws a window's resize border outside what you
   see, and Lumen compensates for it, so tiled windows meet with no seam and do
   not hang off the screen.
-- **File search** across the folders you keep your own things in -- Desktop,
-  Documents, Downloads, Pictures, Video, Music, plus anything else you name.
-  `Enter` opens with the default application, `Ctrl+K` copies the path.
-  Dependency and build trees are never walked into, so the index is about your
-  files rather than about `node_modules`.
+- **File search** across your home folder by default, or the folders and
+  drives you name, with exclusions inside them. Files and folders are both
+  results; `Enter` opens a file with its default application and a folder in
+  Explorer, `Ctrl+K` copies the path. Dependency and build trees, ignore files
+  and hidden entries are skipped, so the index is about your files rather than
+  about `node_modules`.
 - **Extensions with views of their own** (F4, up to step 3). One ships as
   an example: **Characters**. An extension is a folder with a
   manifest and a program; its commands are in the root list without anything
@@ -204,11 +205,10 @@ Listed because a README that implies more than exists is worse than no README.
 
 - **The shortcut sheet editor has no icons.** The launcher's rows and the
   settings Quicklinks list do; the sheet editor is still text and buttons.
-- **File search is not a search of the whole disk.** It walks the folders
-  listed above, to a bounded depth and a bounded count, and matches from
-  memory. It finds the file you were working on, not every file on the machine.
-  Nothing watches those folders yet either, so a file created after the daemon
-  started is found on the next restart or `lumen reload`. (Newly installed
+- **File search is not watched yet.** The index is kept on disk and walked
+  again behind it when the daemon starts, so a file created after that is
+  found on the next restart or `lumen reload`. Watching for changes is the next
+  slice of F16 ([`docs/FILE-SEARCH.md`](docs/FILE-SEARCH.md)). (Newly installed
   *applications* are picked up by themselves.)
 - **Windows at a higher integrity level cannot be arranged.** A layout applied
   to an elevated window does nothing, and Windows reports no error for it to
@@ -247,7 +247,7 @@ release build, median of criterion's samples:
 | ---------- | --------- | ------------------- | ------------- |
 | 500 entries (a normal Start menu) | 73 µs | 90 µs | 53 µs |
 | 2 000 entries | 374 µs | 395 µs | 235 µs |
-| 5 000 entries (every SDK installed, and the file-search cap) | 1.09 ms | 1.06 ms | 558 µs |
+| 5 000 entries (every SDK installed, and F3's file-search cap) | 1.09 ms | 1.06 ms | 558 µs |
 | 20 000 entries | 7.03 ms | 7.42 ms | 2.81 ms |
 
 The worst case at 5 000 is 1.1 ms against a budget of 8 ms for the whole frame,
@@ -255,12 +255,11 @@ which is where the decision to keep ranking a plain linear pass over prepared
 haystacks comes from: there is no index to invalidate and nothing to get subtly
 wrong.
 
-The 20 000 row is why `files.limits.max-entries` defaults to 5 000 rather than
-to something more generous. Ranking is linear in the number of candidates, and
-the worst case is a single character typed — where nothing is filtered out
-early. At 20 000 entries that one list spends the entire frame budget. The
-number was chosen by running this benchmark, not by taste, and raising it is
-supported with the cost stated above.
+The 20 000 row is why F3 capped file search at 5 000 entries: ranking is
+linear in the number of candidates, and at 20 000 one list spends the entire
+frame budget. Files are no longer ranked here -- since F16 the file index
+matches them off the UI thread (see [File search](#file-search)) -- so this
+table is now about the application index alone.
 
 ### Every budget in section 5, and where each number comes from
 
@@ -409,8 +408,12 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
   },
   "files": {
     "enabled": true,
-    "roots": [],
-    "limits": { "max-entries": 5000, "max-depth": 6 }
+    "in-root": "folders-and-files",
+    "scopes": ["~"],
+    "exclusions": [],
+    "ignore-patterns": [],
+    "use-ignore-files": true,
+    "include-hidden": false
   },
   "preferred-browser": null
 }
@@ -770,36 +773,50 @@ started at all. To keep less, set the retention:
 
 ### File search
 
-By default Lumen walks your Desktop, Documents, Downloads, Pictures, Video and
-Music folders — resolved through the system's own idea of where those are, so a
-Documents folder redirected to OneDrive is followed. `Enter` opens a file with
-its default application; `Ctrl+K` offers to copy its path.
-
-To search somewhere else instead, name the folders:
+Lumen indexes your home folder by default, files and folders both, and shows
+the best eight in a *Files* section after the other results. `Enter` opens a
+file with its default application and a folder in Explorer; `Ctrl+K` offers to
+copy the path. The full design is in
+[`docs/FILE-SEARCH.md`](docs/FILE-SEARCH.md).
 
 ```json
 "files": {
   "enabled": true,
-  "roots": ["D:/work", "C:/Users/me/notes"],
-  "limits": { "max-entries": 5000, "max-depth": 6 }
+  "in-root": "folders-and-files",
+  "scopes": ["~", "D:/Dev"],
+  "exclusions": ["~/Videos"],
+  "ignore-patterns": ["*.log", "**/build/**"],
+  "use-ignore-files": true,
+  "include-hidden": false
 }
 ```
 
-Leaving `roots` empty keeps the defaults, which is why it is empty rather than
-pre-filled: a config file copied to another machine still works.
-
-**`max-entries` is a frame-budget number.** Ranking is linear in the number of
-candidates and the worst case is one character typed. The measurements section
-above has the cost of raising it; 5 000 leaves the frame room to spare and
-20 000 does not.
+- **`scopes`** are where to look, in order; `~` is your home folder, written
+  as `~` so a config copied to another machine still works. An empty list
+  indexes nothing. **`exclusions`** are folders inside them never walked.
+- **`in-root`** is `"off"`, `"folders"` or `"folders-and-files"`.
+- **`use-ignore-files`** applies `.gitignore` (inside a repository), `.ignore`
+  and `.lumenignore`; **`ignore-patterns`** are gitignore-style globs for every
+  scope; **`include-hidden`** takes dot-files and the Windows hidden attribute
+  too.
+- An F3 config still loads: `roots` becomes `scopes`, and `limits` is ignored.
 
 Not walked into, ever: `node_modules`, `target`, `build`, `dist`, `.git`,
-`.venv`, `AppData` and about fifteen others, matched by directory name. Files
-beginning with a dot are skipped.
+`.venv`, `AppData` and about fifteen others, matched by directory name.
 
-The index is built once when the daemon starts. A file created afterwards is
-found on the next restart, or by running `lumen reload`, which also
-rebuilds it.
+**Every scope you add is held in memory.** The names are matched in memory
+(about 30 bytes an entry), under a ceiling of 500 000 entries that keeps the
+largest index inside the idle-memory budget. Scopes fill it in order, and the
+log says which one did not fit. Add the folders you search, not whole drives
+you don't.
+
+**One or two letters search what you use.** Typed in root, they find files and
+folders you have opened from Lumen and names that short (`go`); three letters
+reach everything.
+
+The index is kept on disk and loaded at start, then walked again behind it. A
+file created afterwards is found on the next restart, or by running
+`lumen reload`, which also rebuilds it.
 
 ### Translation
 

@@ -62,9 +62,10 @@ fn ranking(c: &mut Criterion) {
     let mut group = c.benchmark_group("rank");
 
     // 500 is a typical Start menu; 5000 is a machine with every SDK installed.
-    // 20000 is the file-search cap (`FileLimits::max_entries`), which is now
-    // the largest thing ranked on a keystroke and so the size the budget
-    // actually has to hold at.
+    // 20000 was F3's measured case against its file-search cap of 5 000.
+    // Files are no longer ranked by this matcher -- the file index matches
+    // them off the UI thread (F16, `benches/file_index.rs`) -- so it stands as
+    // headroom above the largest application index.
     for count in [500usize, 2000, 5000, 20_000] {
         let candidates = index(count);
         let mut frecency = Frecency::new();

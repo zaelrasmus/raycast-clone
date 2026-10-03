@@ -805,6 +805,9 @@ fn subscribe_to_settings(
                 *sheets.borrow_mut() = library;
             }
             SettingsEvent::QuicklinkIconsChanged => {
+                // The whole reindex, so the file index's scopes are walked
+                // again too: off the UI thread and swapped in when done
+                // (F16), unneeded here and left as it was for now.
                 launcher
                     .update(cx, |launcher, _window, cx| launcher.reindex(cx))
                     .ok();

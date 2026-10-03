@@ -1,6 +1,8 @@
 # File search, the rest of the way (F16)
 
-**Status: designed, not started.** This is the plan. When a slice lands, its
+**Status: in progress** -- slices 0 and 1 are built (see "What was done
+differently"); slice 1's measurements of the running daemon are still to be
+taken. This is the plan. When a slice lands, its
 decisions move into `ARCHITECTURE.md` (F16 decisions, and the revisions to
 7.19, 7.20, 7.21 and 7.26 listed below), and this file records where the build
 departed from it, as `LETTER-SPACING.md` does.
@@ -98,6 +100,60 @@ Also confirmed: `ignore` with hidden entries skipped does skip a file that has
 only the Windows hidden attribute, so I-1 holds without a `Platform` call. And
 `ignore` applies `.gitignore` only inside a Git repository by default
 (`require_git`), which is what Git itself does and is kept.
+
+## What was done differently
+
+- **Fallbacks close the list, after the files -- but not inside them.** The
+  *Files* section comes after every match and before the fallbacks, and a
+  fallback still takes the last row of the first screen at the latest. Where
+  that row would split the files, the fallbacks go above the section
+  instead, so it stays in one piece and they stay in view. Fallbacks after
+  the files have no header of their own.
+- **Until slice 2, every start walks again behind the stored index.** The
+  index the store recorded is installed at once when its rules are today's,
+  then the scopes are walked again and the result swapped in -- the reconcile
+  this file describes replaces that walk in slice 2. The reload command
+  rebuilds the same way. A configuration change walks again only when the
+  walk itself changed -- the rules' digest, not the configuration -- so
+  `in-root` never walks, and turning `enabled` off and on loads the stored
+  index back without a walk.
+- **One build at a time, and never a wrong file.** Every build of the index
+  file holds one lock from the walk to the load; a build superseded while it
+  waited or walked writes nothing. A rebuild still rewrites the database
+  under the index that is installed, so every row a query reads is checked
+  against the name and kind it matched, and a row that moved is left out:
+  until the swap the old index can answer less, never another file.
+- **`limits` is read and ignored with one line in the log per run**, not one
+  per reload.
+
+## Slice 1: what was measured
+
+The release build, each configuration in its own `LUMEN_HOME`, idle with
+`scripts/measure-idle.ps1` (60 s sampled after the start's walk settled):
+
+| Files | Entries | Names | Database | Load at start | Walk, warm | Working set | Private | Idle CPU |
+| ----- | ------- | ----- | -------- | ------------- | ---------- | ----------- | ------- | -------- |
+| Off | -- | -- | -- | -- | -- | 68.3 MB | 82.5 MB | 0.009 % |
+| Home | 54 597 | 1.7 MB | 16 MB | 37 ms | 1.2 s | 73.9 MB | 86.5 MB | 0.004 % |
+| Home and `D:\` | 404 974 | 12.0 MB | 110 MB | 200 ms | 15.3 s | 76.7 MB | 100.9 MB | 0.009 % |
+
+The working-set budget (100 MB) holds with room in both. Two figures are
+worse than the design assumed, and are recorded rather than rounded:
+
+- **The database is about 270 bytes an entry**, 110 MB for home and `D:\`,
+  not "tens of megabytes". It is a cache on the local disk; the full path is
+  stored per row, and storing a parent id instead is the change to make if
+  its size matters.
+- **Private memory reaches 100.9 MB with `D:\` added**, 18 MB over files off:
+  12 MB of names and what the allocator keeps after the walk and the load.
+  Private is not the budgeted figure, but it is the one that grows; slice 2
+  looks at returning the walk's memory.
+
+The load runs off the UI thread and the applications are searchable before
+it ends, so cold start to usable is unchanged. A first idle sample with
+`D:\` read 0.022 % because the start's walk had not ended inside 45 s of
+settling; with 60 s it read 0.009 %. Until slice 2 every start walks the
+scopes again, which is that cost.
 
 ---
 
@@ -318,15 +374,38 @@ thread, not a pass over memory. So:
   today (7.21).
 - The selection never moves to a row because it arrived. Rows only ever
   append below; nothing above shifts (I-10).
-- An answer for a query that is no longer the current one is dropped. Until
+- An answer for a query that is no longer the current one is dropped, and
+  the scan behind it stops: every keystroke cancels the one before. Until
   the new answer arrives, the section keeps the previous rows that still
   match what is typed.
 
 The consequence, accepted: a file can no longer outrank an application, as
 7.26's discount allowed for a clear match. A late row that jumped above the
-selection would be worse than a perfect file match sitting lower. If the
-query answers within the frame, which is slice 0's target, the user never
-sees the section arrive.
+selection would be worse than a perfect file match sitting lower.
+
+### One or two letters search what you use
+
+Slice 1a measured the one case the names cannot answer quickly: a query of
+one or two letters, whose first byte is in nearly every name. At 350 000
+entries that is 4.4 ms at p95, about 6 ms at the ceiling -- off the UI
+thread, but work spent on rows nobody wants: with `a` typed, a never-opened
+file that happens to start with *a* is noise. So in root:
+
+| Query | Files and folders searched |
+| ----- | -------------------------- |
+| One or two letters | Those with a frecency score -- opened from Lumen -- and those whose whole name is one or two letters (`a`, `go`), used or not. A few hundred entries: under 0.05 ms |
+| Three letters or more | The whole index: at most 1.3 ms at 350 000, about 1.5 ms at the ceiling |
+
+Every name stays reachable: a short name by the exact-name rule, any other
+by its first three letters. *Search Files* searches the whole index at any
+length, where waiting is allowed. Threads were considered and not built:
+they spend the same CPU to shorten a wait this rule removes.
+
+The target is therefore that file rows arrive within the frame after the
+keystroke at the ceiling -- not a figure the per-frame budget depends on,
+since the scan never runs in a frame. Files opened outside Lumen do not
+count as used; reading the system's recent items to seed frecency is a
+possible later addition.
 
 Empty query: no files, as today (7.21). Recents belong to the view.
 
@@ -523,7 +602,7 @@ design changes before anything is built on it.
   Rows record their scope, so adding a volume identity later is a column, not
   a redesign.
 - **The low-disk-space block.** It matters for Raycast because content
-  indexes grow large. A name index of a home folder is tens of megabytes, and
+  indexes grow large. A name index of a home folder is about 16 MB, and
   content is the system's index, not Lumen's.
 - **A search sensitivity setting** -- see "How a query is answered".
 - **Content in root search** -- see "Three levels".

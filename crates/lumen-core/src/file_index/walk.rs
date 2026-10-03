@@ -25,7 +25,7 @@ use ignore::overrides::OverrideBuilder;
 
 /// The most entries the index holds, across every scope.
 ///
-/// A budget number, like F3's 5 000, and for the same reason. The names are
+/// A budget number, as F3's cap of 5 000 was, and for the same reason. The names are
 /// matched in memory at about 30 bytes an entry (slice 0), and idle memory
 /// has been measured at 71--75 MB from F8 to F15, against a budget of 100:
 ///
@@ -236,7 +236,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// A small tree under a unique temporary directory, removed when dropped.
-    /// No fixture crate, for the reason `providers/files.rs` gives.
+    /// No fixture crate: this is twenty lines and one dependency fewer.
     pub(crate) struct Tree(pub PathBuf);
 
     impl Tree {

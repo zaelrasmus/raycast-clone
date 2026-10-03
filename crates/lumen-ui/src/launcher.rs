@@ -24,6 +24,7 @@
 //! appears.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::prelude::*;
 use gpui::{
@@ -32,9 +33,10 @@ use gpui::{
     UniformListScrollHandle, Window, actions, div, ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::favorites::Change as FavoriteChange;
+use lumen_core::file_index::{FileIndex, Store, WalkRules, digest};
 use lumen_core::item::ActionGroup;
 use lumen_core::providers::QuicklinkProvider;
-use lumen_core::root::{Aside, Hit};
+use lumen_core::root::{FILES_CAP, Hit};
 use lumen_core::style::{
     CardDivider, CardHeader, CardLabels, CardOperators, Metrics, SectionCase, Variants,
 };
@@ -250,6 +252,89 @@ fn second_action(actions: Vec<Action>) -> Option<Action> {
     actions.into_iter().nth(1)
 }
 
+/// The file index the store at `path` holds, when it was walked with
+/// `rules`: what a start installs at once, in milliseconds, instead of
+/// waiting for a walk.
+fn load_files(
+    path: &std::path::Path,
+    rules: &WalkRules,
+    frecency: &Frecency,
+) -> Option<Arc<FileIndex>> {
+    let started = std::time::Instant::now();
+    let index = match Store::open(path).and_then(FileIndex::load) {
+        Ok(index) => index,
+        Err(error) => {
+            log::warn!("could not open the file index: {error:#}");
+            return None;
+        }
+    };
+    // Empty when no walk finished, which matches no rules.
+    if index.digest() != digest(rules) {
+        return None;
+    }
+    index.set_boosts(frecency);
+    log::info!(
+        "loaded the file index in {} ms: {}",
+        started.elapsed().as_millis(),
+        describe_files(&index)
+    );
+    Some(Arc::new(index))
+}
+
+/// Walk `rules` and make what was found the file index, written through
+/// `current`'s store when one is installed (see `FileIndex::rebuild`).
+///
+/// `None` when the build `build` was superseded -- the newer one waits for
+/// this one, writes its own walk, and this one must not write over it -- or
+/// when the walk could not be written.
+fn build_files(
+    path: &std::path::Path,
+    rules: &WalkRules,
+    current: Option<Arc<FileIndex>>,
+    frecency: &Frecency,
+    builds: &AtomicU64,
+    build: u64,
+) -> Option<Arc<FileIndex>> {
+    let started = std::time::Instant::now();
+    let superseded = || builds.load(Ordering::SeqCst) != build;
+    match FileIndex::rebuild(path, rules, current.as_deref(), &superseded) {
+        Ok(None) => None,
+        Ok(Some(index)) => {
+            index.set_boosts(frecency);
+            log::info!(
+                "built the file index in {} ms: {}",
+                started.elapsed().as_millis(),
+                describe_files(&index)
+            );
+            Some(Arc::new(index))
+        }
+        Err(error) => {
+            log::error!("could not build the file index: {error:#}");
+            None
+        }
+    }
+}
+
+/// What the log says of an index: the figures slice 1 is measured by.
+fn describe_files(index: &FileIndex) -> String {
+    let truncated = index
+        .truncated()
+        .map(|scope| {
+            format!(
+                "; full at {} entries, the rest of {} is not searched",
+                lumen_core::file_index::CEILING,
+                scope.display()
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{} entries, {:?} by scope, {} bytes of names in memory{truncated}",
+        index.len(),
+        index.per_scope(),
+        index.memory_bytes()
+    )
+}
+
 /// What the launcher is currently showing.
 ///
 /// A view takes over the list's region rather than opening a window of its own
@@ -407,6 +492,15 @@ pub struct Launcher {
     /// Shared with the recorder rather than opened twice: one database, one
     /// writer, and a read that cannot see a half-written row.
     clipboard: Option<Arc<parking_lot::Mutex<lumen_core::clipboard::History>>>,
+    /// The file index (F16), once loaded or built. Shared with the scans in
+    /// flight, so a rebuild replaces it without waiting for them.
+    files: Option<Arc<FileIndex>>,
+    /// Bumped by every build of the file index started, so an older one
+    /// that finishes later never replaces a newer one.
+    files_build: Arc<AtomicU64>,
+    /// Bumped on every keystroke, so a scan of the file index for an
+    /// earlier one stops, and its answer is dropped.
+    files_query: Arc<AtomicU64>,
 
     /// A copy of the field's text, updated on every edit. Ranking reads it on
     /// every keystroke, and reaching into another entity for it each time
@@ -505,6 +599,7 @@ impl Launcher {
             TextFieldEvent::Changed(text) => {
                 launcher.query.clone_from(text);
                 launcher.rerank(cx);
+                launcher.query_files(cx);
                 cx.notify();
             }
             // Backspace in an empty argument takes the pill away, as it would
@@ -562,6 +657,9 @@ impl Launcher {
             places_asked: false,
             weather_asked: None,
             clipboard: None,
+            files: None,
+            files_build: Arc::new(AtomicU64::new(0)),
+            files_query: Arc::new(AtomicU64::new(0)),
             query: String::new(),
             selected: 0,
             rows: Vec::new(),
@@ -617,76 +715,187 @@ impl Launcher {
         self.clipboard.clone()
     }
 
-    /// Re-read the files under the configured roots.
+    /// Open the file index, and walk the scopes again behind it (F16).
     ///
-    /// Separate from `start_indexing` and started alongside it rather than
-    /// inside it, because the two have nothing to do with each other and the
-    /// file walk is much the slower of the two. Sequencing them would mean the
-    /// application list -- the thing the launcher is mostly for -- waited on a
-    /// walk of Documents.
+    /// Everything on the background executor, and nothing waits for it
+    /// (I-3). When nothing is installed yet, the index the store last
+    /// recorded is loaded and installed at once -- milliseconds -- if it was
+    /// walked with today's rules. Then the scopes are walked again and the
+    /// result swapped in when it is done: until slice 2 watches for changes,
+    /// that walk is what keeps the index current. Separate from
+    /// `start_indexing` and started alongside it, because the walk is much
+    /// the slower of the two and the applications must not wait for it.
     pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
-        let roots = self.config.files.roots();
-        let limits = self.config.files.limits;
+        self.open_files(true, cx);
+    }
 
-        if !self.config.files.enabled || roots.is_empty() {
-            if self.config.files.enabled {
-                log::info!("file search has no folders to look in");
+    /// [`Self::refresh_files`], walking again only when `rewalk` says so or
+    /// the index at hand was walked with other rules.
+    ///
+    /// A configuration change asks with `rewalk` false: `in-root` and
+    /// `enabled` are not how the index is walked, and neither is `~` written
+    /// as the path it stands for, so what decides is the rules' digest, not
+    /// the configuration. Turning file search off drops the index and root's
+    /// questions to it; turning it on again loads it back from the store,
+    /// in milliseconds, without a walk.
+    fn open_files(&mut self, rewalk: bool, cx: &mut Context<Self>) {
+        let build = self.files_build.fetch_add(1, Ordering::SeqCst) + 1;
+        // What root showed came from the old rules, or the old level.
+        if self.root.clear_files() && matches!(self.mode, Mode::Root) {
+            self.rerank(cx);
+            cx.notify();
+        }
+        if !self.config.files.enabled {
+            self.files = None;
+            self.files_query.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+        self.query_files(cx);
+
+        let config = self.config.files.clone();
+        let path = self.paths.file_index_file();
+        let frecency = self.root.frecency().clone();
+        let installed = self.files.as_ref().map(|index| index.digest().to_string());
+        let builds = self.files_build.clone();
+        cx.spawn(async move |this, cx| {
+            let (rules, loaded, current) = {
+                let path = path.clone();
+                let frecency = frecency.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        // Resolving reads the disk too, so it is done here.
+                        let rules = config.walk_rules();
+                        let current = installed.as_deref() == Some(digest(&rules).as_str());
+                        let loaded = installed
+                            .is_none()
+                            .then(|| load_files(&path, &rules, &frecency))
+                            .flatten();
+                        (rules, loaded, current)
+                    })
+                    .await
+            };
+            // Loaded only when walked with these rules, so it is current too.
+            let current = current || loaded.is_some();
+            if let Some(index) = loaded {
+                this.update(cx, |this, cx| {
+                    if this.files_build.load(Ordering::SeqCst) == build {
+                        this.install_files(index, cx);
+                    }
+                })
+                .ok();
             }
-            // Emptied rather than left alone, so turning file search off in a
-            // running daemon takes the files out of the results too.
-            if !self.root.aside_is_empty(Aside::Files) {
-                self.set_aside(Aside::Files, Vec::new(), cx);
+            if current && !rewalk {
+                return;
             }
+
+            let Ok(current) = this.update(cx, |this, _| this.files.clone()) else {
+                return;
+            };
+            let built = cx
+                .background_executor()
+                .spawn(
+                    async move { build_files(&path, &rules, current, &frecency, &builds, build) },
+                )
+                .await;
+            if let Some(index) = built {
+                this.update(cx, |this, cx| {
+                    if this.files_build.load(Ordering::SeqCst) == build {
+                        this.install_files(index, cx);
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Make `index` the file index, and ask it what is typed.
+    fn install_files(&mut self, index: Arc<FileIndex>, cx: &mut Context<Self>) {
+        self.files = Some(index);
+        self.query_files(cx);
+    }
+
+    /// Ask the file index what is typed, off the UI thread, and place what
+    /// it answers when it does (F16).
+    ///
+    /// Every call supersedes the one before: its scan stops, and its answer
+    /// is dropped. Root search has already drawn everything else; the files
+    /// arrive into a section of their own at the end, under the selection
+    /// rather than in its place (I-10).
+    fn query_files(&mut self, cx: &mut Context<Self>) {
+        let generation = self.files_query.fetch_add(1, Ordering::SeqCst) + 1;
+        if !matches!(self.mode, Mode::Root) || self.argument.is_some() {
+            return;
+        }
+        let (Some(index), Some(kinds)) = (self.files.clone(), self.config.files.root_kinds())
+        else {
+            return;
+        };
+        let query = self.query.trim().to_string();
+        if query.is_empty() {
             return;
         }
 
+        let current = self.files_query.clone();
         cx.spawn(async move |this, cx| {
-            let started = std::time::Instant::now();
-            let candidates = cx
+            let asked = query.clone();
+            let hits = cx
                 .background_executor()
                 .spawn(async move {
-                    lumen_core::providers::files::scan(&roots, limits)
-                        .into_iter()
-                        .map(Candidate::new)
-                        .collect::<Vec<_>>()
+                    let cancelled = || current.load(Ordering::Relaxed) != generation;
+                    index.root_query(&asked, kinds, FILES_CAP, &cancelled)
                 })
                 .await;
-
-            log::info!(
-                "indexed {} files in {} ms",
-                candidates.len(),
-                started.elapsed().as_millis()
-            );
-
             this.update(cx, |this, cx| {
-                this.set_aside(Aside::Files, candidates, cx);
+                let current = this.files_query.load(Ordering::SeqCst) == generation
+                    && this.query.trim() == query
+                    && matches!(this.mode, Mode::Root)
+                    && this.argument.is_none();
+                if current {
+                    this.root.set_files(&query, hits);
+                    this.place_files(cx);
+                }
             })
             .ok();
         })
         .detach();
     }
 
-    /// Replace one aside and re-rank against it.
+    /// Rank again for files that arrived, keeping the selection where it is.
     ///
-    /// An aside is a *root-list* index, so when a view is open this stores it
-    /// and stops. Re-ranking a list nobody is looking at is wasted work, and --
-    /// as the first extension proved -- re-ranking is not free of consequence:
-    /// it is on the path that tells an extension about the query.
-    fn set_aside(&mut self, aside: Aside, candidates: Vec<Candidate>, cx: &mut Context<Self>) {
-        self.root.replace_aside(aside, candidates);
-
-        if matches!(self.mode, Mode::View(_)) {
-            return;
+    /// Not `rerank`, which puts the selection back on the first row: that is
+    /// right for a keystroke, and wrong for rows that arrived under somebody
+    /// already moving through the list. The selected row stays selected
+    /// wherever it now is; when it is gone, the selection stays at its place,
+    /// within the list.
+    fn place_files(&mut self, cx: &mut Context<Self>) {
+        let previous_height = self.content_height();
+        let selected = self.selected_item().map(|item| item.id.clone());
+        self.root.rank(&self.query);
+        let kept = selected
+            .as_ref()
+            .and_then(|id| self.hits().iter().position(|hit| self.item(hit).id == *id));
+        match kept {
+            Some(at) => self.selected = at,
+            None => {
+                self.selected = self.selected.min(self.hits().len().saturating_sub(1));
+                // The panel described a row that is gone.
+                self.action_panel = None;
+            }
         }
-
-        self.rerank(cx);
+        self.rebuild_rows();
+        self.reveal_row();
+        self.resize_if_needed(previous_height, cx);
         cx.notify();
     }
 
-    /// Rebuild the index: applications, scripts, snippets and clipboard history.
+    /// Rebuild the index: applications, scripts, snippets and clipboard
+    /// history -- and walk the file index's scopes again.
     ///
     /// Public so the daemon can ask for it after the user edits a script or a
-    /// snippet, rather than making them restart to see the change.
+    /// snippet, rather than making them restart to see the change. Until
+    /// slice 2 watches for changes, this reload is also the way to bring the
+    /// file index up to date by hand.
     pub fn reindex(&mut self, cx: &mut Context<Self>) {
         self.start_indexing(cx);
         self.refresh_files(cx);
@@ -993,7 +1202,7 @@ impl Launcher {
         }
 
         if files_changed {
-            self.refresh_files(cx);
+            self.open_files(false, cx);
         }
         if presets_changed {
             self.start_indexing(cx);
@@ -1184,9 +1393,9 @@ impl Launcher {
     }
 
     fn rerank(&mut self, cx: &mut Context<Self>) {
-        // A form has no list to rank. Asides still land while it is open --
-        // files are indexed whatever the launcher shows -- and the root list
-        // is ranked when the form is left.
+        // A form has no list to rank. The file index is still built while it
+        // is open -- files are indexed whatever the launcher shows -- and the
+        // root list is ranked when the form is left.
         if matches!(self.mode, Mode::Form(_)) {
             return;
         }
@@ -1231,8 +1440,9 @@ impl Launcher {
             return;
         }
 
-        // The ordering rules -- answers first, asides discounted and capped --
-        // are `RootSearch`'s. Nothing in it waits on anything (I-3).
+        // The ordering rules -- answers first, files in their own section at
+        // the end -- are `RootSearch`'s. Nothing in it waits on anything
+        // (I-3): the files are whatever the file index has answered so far.
         match &self.argument {
             Some(argument) => {
                 self.root.rank_argument(&argument.id, &self.query);
@@ -2664,6 +2874,16 @@ impl Launcher {
         let private = matches!(&action, Action::OpenLink(open) if open.private);
         if !private {
             let history = self.root.record_use(&id);
+            // A file or folder opened is one a short query finds from now on
+            // (F16), so the index takes the new boosts -- by path, from the
+            // database, so off this thread.
+            if (id.starts_with("file:") || id.starts_with("folder:"))
+                && let Some(index) = self.files.clone()
+            {
+                let history = history.clone();
+                cx.background_spawn(async move { index.set_boosts(&history) })
+                    .detach();
+            }
             let path = self.paths.frecency_file();
             cx.background_spawn(async move {
                 if let Err(error) = history.save(&path) {
@@ -4719,6 +4939,7 @@ mod tests {
             "close_action_panel",
             "on_shown",
             "rerank",
+            "place_files",
             "open_view",
             "begin_view",
             "leave_view",

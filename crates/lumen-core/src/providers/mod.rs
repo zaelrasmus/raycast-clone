@@ -27,7 +27,6 @@ pub mod commands;
 pub mod currency;
 pub mod dictionary;
 pub mod extensions;
-pub mod files;
 pub mod quicklinks;
 pub mod scripts;
 pub mod snippets;

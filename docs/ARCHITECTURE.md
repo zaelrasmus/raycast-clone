@@ -123,6 +123,7 @@ once Lumen was measured well inside them (7.36).
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
+| **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-1 done |
 
 ### F4 build order is not optional
 
@@ -2629,6 +2630,16 @@ is what the working rule about writing the measurement first is for. The cost
 of raising it is in the README next to the figures rather than buried in a
 commit message.
 
+*Revised by F16 (slice 1).* Files are no longer ranked by the matcher on
+a keystroke, so the cap and `files.limits` are gone. The file index holds
+every entry the rules allow, up to a ceiling of 500 000 (`file_index::CEILING`),
+and that number is a budget number too -- for idle memory, at about 30 bytes
+of names an entry -- not for the frame. The frame is protected by the query
+running off the UI thread, by a name scan that answers a million names in a
+few milliseconds, and by one- and two-letter queries in root searching only
+what was used ([`FILE-SEARCH.md`](FILE-SEARCH.md), "One or two letters
+search what you use").
+
 ### 7.21 Secondary indexes are searched but never browsed
 
 Clipboard history and file search are both large, both change without the user
@@ -2642,6 +2653,13 @@ query, each capped at eight rows so a common letter cannot fill the list with
 one kind of thing. Keeping them out of `candidates` also keeps the application
 index cheap to hold -- merging would mean re-preparing several hundred
 application haystacks every time the user copies something.
+
+*Revised by F16 (slice 1).* There are no asides left: the clipboard left in
+F12 and the files leave now. The file index's rows are a *Files* section
+appended after the results -- after every application and answer, before the
+fallbacks -- filled when the index answers, still capped at eight
+(`root::FILES_CAP`), and still never shown for an empty query. Its header
+follows the results header.
 
 ### 7.22 The glyph is chosen from the row's kind, in the UI layer
 
@@ -2753,6 +2771,12 @@ permanently and make file search useless.
 The same query, before and after: `co` went from six files and no applications
 to `Command Palette`, `Command Prompt`, `Component Services`,
 `Computer Management` and `Control Panel`.
+
+*Revised by F16 (slice 1).* The discount no longer applies; asides are gone
+(7.21). Files arrive from another thread into a section of their own at the
+end, so they never interleave with applications and a file never outranks
+one -- not even `colonialismo`'s clear match. Accepted: a late row that jumped
+above the selection would be worse than a perfect file match sitting lower.
 
 ### 7.27 The resize event carries a height, not a row count
 

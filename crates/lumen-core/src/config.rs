@@ -4,7 +4,7 @@
 //! user's own config. The launcher's geometry is the active style's and its
 //! colours are the palette's (F15); both are chosen here by name.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use anyhow::{Context as _, Result};
 use lumen_platform::{BackdropMode, Hotkey};
@@ -15,8 +15,8 @@ use crate::clipboard::Retention;
 use crate::clock::ClockConfig;
 use crate::currency::CurrencyConfig;
 use crate::dictionary::DictionaryConfig;
+use crate::file_index::{CEILING, Kinds, WalkRules};
 use crate::places::store::PlacesConfig;
-use crate::providers::files::{self, FileLimits};
 use crate::snippets::SnippetsConfig;
 use crate::style::Metrics;
 
@@ -75,41 +75,205 @@ pub struct Config {
     pub calculator: CalculatorConfig,
 }
 
-/// File search (F3).
+/// File search (F3, F16): where the file index looks, what it leaves out,
+/// and what root search shows of it. `docs/FILE-SEARCH.md`, "Configuration".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(from = "FileSearchFile", rename_all = "kebab-case")]
 pub struct FileSearchConfig {
     pub enabled: bool,
-    /// Folders to walk. Empty means the user's own directories --
-    /// [`files::default_roots`].
-    ///
-    /// Empty rather than the resolved list, so that the defaults follow the
-    /// machine: a config file copied to another computer, or a Documents
-    /// folder redirected to OneDrive after Lumen was first run, keeps working
-    /// instead of pointing at a path that no longer exists.
-    pub roots: Vec<std::path::PathBuf>,
-    pub limits: FileLimits,
+    /// What root search shows of the index.
+    pub in_root: InRoot,
+    /// Where to look, in order. `~` is the home folder, and is written as
+    /// `~` rather than resolved, so a configuration copied to another
+    /// machine, or a profile redirected to OneDrive, keeps working. Empty
+    /// means nothing is indexed: home is a scope like any other.
+    pub scopes: Vec<PathBuf>,
+    /// Folders inside the scopes never descended into.
+    pub exclusions: Vec<PathBuf>,
+    /// Gitignore-style patterns applied in every scope: `*.log`.
+    pub ignore_patterns: Vec<String>,
+    /// `.gitignore`, `.ignore` and `.lumenignore`.
+    pub use_ignore_files: bool,
+    /// A leading dot, or the Windows hidden attribute.
+    pub include_hidden: bool,
+}
+
+/// What root search shows of the file index (F16). Off still indexes, for
+/// the *Search Files* view.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InRoot {
+    Off,
+    Folders,
+    /// The default, because F3 showed files in root and removing them would
+    /// be a regression.
+    #[default]
+    FoldersAndFiles,
 }
 
 impl Default for FileSearchConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            in_root: InRoot::default(),
+            scopes: vec![PathBuf::from("~")],
+            exclusions: Vec::new(),
+            ignore_patterns: Vec::new(),
+            use_ignore_files: true,
+            include_hidden: false,
+        }
+    }
+}
+
+/// `files` as a file may hold it: today's keys, and F3's.
+///
+/// Read through this rather than straight into [`FileSearchConfig`] so a
+/// configuration written for F3 still loads (FILE-SEARCH.md): `roots`, if it
+/// named folders, replaced the defaults, and becomes the scopes; `limits` no
+/// longer means anything, and is read and ignored rather than an error.
+#[derive(Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+struct FileSearchFile {
+    enabled: bool,
+    in_root: InRoot,
+    scopes: Option<Vec<PathBuf>>,
+    exclusions: Vec<PathBuf>,
+    ignore_patterns: Vec<String>,
+    use_ignore_files: bool,
+    include_hidden: bool,
+    roots: Vec<PathBuf>,
+    limits: Option<serde::de::IgnoredAny>,
+}
+
+impl Default for FileSearchFile {
+    fn default() -> Self {
+        let defaults = FileSearchConfig::default();
+        Self {
+            enabled: defaults.enabled,
+            in_root: defaults.in_root,
+            scopes: None,
+            exclusions: defaults.exclusions,
+            ignore_patterns: defaults.ignore_patterns,
+            use_ignore_files: defaults.use_ignore_files,
+            include_hidden: defaults.include_hidden,
             roots: Vec::new(),
-            limits: FileLimits::default(),
+            limits: None,
+        }
+    }
+}
+
+impl From<FileSearchFile> for FileSearchConfig {
+    fn from(file: FileSearchFile) -> Self {
+        if file.limits.is_some() {
+            // Once a run: the file is read again on every reload.
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                log::info!(
+                    "files.limits is no longer used: the file index has its own ceiling (F16)"
+                );
+            });
+        }
+        let scopes = match file.scopes {
+            Some(scopes) => scopes,
+            None if !file.roots.is_empty() => file.roots,
+            None => FileSearchConfig::default().scopes,
+        };
+        Self {
+            enabled: file.enabled,
+            in_root: file.in_root,
+            scopes,
+            exclusions: file.exclusions,
+            ignore_patterns: file.ignore_patterns,
+            use_ignore_files: file.use_ignore_files,
+            include_hidden: file.include_hidden,
         }
     }
 }
 
 impl FileSearchConfig {
-    /// The folders to actually walk.
-    pub fn roots(&self) -> Vec<std::path::PathBuf> {
-        if self.roots.is_empty() {
-            files::default_roots()
-        } else {
-            self.roots.clone()
+    /// What root search asks the index for; `None` when it asks nothing.
+    pub fn root_kinds(&self) -> Option<Kinds> {
+        match (self.enabled, self.in_root) {
+            (false, _) | (_, InRoot::Off) => None,
+            (true, InRoot::Folders) => Some(Kinds::Folders),
+            (true, InRoot::FoldersAndFiles) => Some(Kinds::FoldersAndFiles),
         }
     }
+
+    /// The rules the index is walked with: every path resolved, against the
+    /// home folder and then the disk.
+    ///
+    /// As the disk has it -- [`std::fs::canonicalize`] -- because the walk
+    /// compares exclusions with the paths it finds by their components, and
+    /// those are spelled as the scope is: `~/videos` must exclude what the
+    /// walk of `~` finds as `Videos`. A path that does not exist is kept as
+    /// written; a scope that does not exist is simply empty.
+    pub fn walk_rules(&self) -> WalkRules {
+        let home = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+        let resolve = |paths: &[PathBuf]| {
+            paths
+                .iter()
+                .map(|path| resolve(path, home.as_deref()))
+                .collect()
+        };
+        WalkRules {
+            scopes: resolve(&self.scopes),
+            exclusions: resolve(&self.exclusions),
+            ignore_patterns: self.ignore_patterns.clone(),
+            use_ignore_files: self.use_ignore_files,
+            include_hidden: self.include_hidden,
+            ceiling: CEILING,
+        }
+    }
+}
+
+/// `path` with `~` and `~/...` resolved against `home`, then as the disk
+/// spells it, when it exists.
+fn resolve(path: &Path, home: Option<&Path>) -> PathBuf {
+    let written = path.to_string_lossy();
+    let expanded = match (home, written.as_ref()) {
+        (Some(home), "~") => home.to_path_buf(),
+        (Some(home), _) => match written
+            .strip_prefix("~/")
+            .or_else(|| written.strip_prefix("~\\"))
+        {
+            Some(rest) => home.join(rest),
+            None => path.to_path_buf(),
+        },
+        (None, _) => path.to_path_buf(),
+    };
+    match std::fs::canonicalize(&expanded) {
+        Ok(real) => plain(&real),
+        Err(_) => expanded,
+    }
+}
+
+/// `path` without the verbatim prefix `canonicalize` gives it on Windows:
+/// `\\?\C:\Users` is `C:\Users`, and `\\?\UNC\server\share` is
+/// `\\server\share`.
+///
+/// By its components, not by `cfg` (I-1): elsewhere a path has no prefix,
+/// and this returns it as it is. Every other path the index holds -- home,
+/// subtitles, frecency's ids -- is in the plain form, so the scopes must be.
+fn plain(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    let base = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(letter) => format!("{}:", letter as char),
+            Prefix::VerbatimUNC(server, share) => format!(
+                "\\\\{}\\{}",
+                server.to_string_lossy(),
+                share.to_string_lossy()
+            ),
+            _ => return path.to_path_buf(),
+        },
+        _ => return path.to_path_buf(),
+    };
+    let mut plain = PathBuf::from(base);
+    for component in components {
+        plain.push(component.as_os_str());
+    }
+    plain
 }
 
 /// Clipboard history (F3).
@@ -484,24 +648,189 @@ mod tests {
         assert!(config.clipboard.enabled);
     }
 
-    #[test]
-    fn file_search_is_on_for_a_config_that_predates_the_setting() {
-        let config: Config = serde_json::from_str(r#"{ "theme": "daylight" }"#).unwrap();
-        assert!(config.files.enabled);
-        assert!(config.files.roots.is_empty());
-        assert_eq!(config.files.limits.max_depth, 6);
+    fn files(source: &str) -> FileSearchConfig {
+        serde_json::from_str::<Config>(source).unwrap().files
     }
 
-    /// Naming roots must not also mean restating the limits.
     #[test]
-    fn file_roots_can_be_named_without_restating_the_limits() {
-        let config: Config =
-            serde_json::from_str(r#"{ "files": { "roots": ["D:/work"] } }"#).unwrap();
-        assert_eq!(
-            config.files.roots(),
-            vec![std::path::PathBuf::from("D:/work")]
+    fn file_search_is_on_for_a_config_that_predates_the_setting() {
+        let files = files(r#"{ "theme": "daylight" }"#);
+        assert_eq!(files, FileSearchConfig::default());
+        assert!(files.enabled);
+        assert_eq!(files.in_root, InRoot::FoldersAndFiles);
+        assert_eq!(files.scopes, [PathBuf::from("~")]);
+        assert!(files.use_ignore_files);
+        assert!(!files.include_hidden);
+    }
+
+    #[test]
+    fn every_file_search_key_is_read_in_kebab_case() {
+        let files = files(
+            r#"{ "files": {
+                "enabled": false,
+                "in-root": "folders",
+                "scopes": ["~", "D:/Dev"],
+                "exclusions": ["~/Videos"],
+                "ignore-patterns": ["*.log"],
+                "use-ignore-files": false,
+                "include-hidden": true
+            } }"#,
         );
-        assert_eq!(config.files.limits.max_entries, 5_000);
+        assert!(!files.enabled);
+        assert_eq!(files.in_root, InRoot::Folders);
+        assert_eq!(files.scopes, [PathBuf::from("~"), PathBuf::from("D:/Dev")]);
+        assert_eq!(files.exclusions, [PathBuf::from("~/Videos")]);
+        assert_eq!(files.ignore_patterns, ["*.log"]);
+        assert!(!files.use_ignore_files);
+        assert!(files.include_hidden);
+        assert_eq!(
+            serde_json::from_str::<FileSearchConfig>(&serde_json::to_string(&files).unwrap())
+                .unwrap(),
+            files
+        );
+        assert_eq!(
+            self::files(r#"{ "files": { "in-root": "off" } }"#).in_root,
+            InRoot::Off
+        );
+    }
+
+    /// F3's `roots` replaced the default folders; a scope list does the same.
+    #[test]
+    fn legacy_roots_become_the_scopes() {
+        let files = files(r#"{ "files": { "roots": ["D:/work"] } }"#);
+        assert_eq!(files.scopes, [PathBuf::from("D:/work")]);
+
+        let both = self::files(r#"{ "files": { "roots": ["D:/work"], "scopes": ["E:/"] } }"#);
+        assert_eq!(both.scopes, [PathBuf::from("E:/")]);
+    }
+
+    /// Empty `roots` meant F3's default folders, which are inside home.
+    #[test]
+    fn empty_legacy_roots_mean_home() {
+        let files = files(r#"{ "files": { "roots": [] } }"#);
+        assert_eq!(files.scopes, [PathBuf::from("~")]);
+    }
+
+    /// An empty scope list is nothing indexed, not home (FILE-SEARCH.md).
+    #[test]
+    fn an_empty_scope_list_stays_empty() {
+        assert!(files(r#"{ "files": { "scopes": [] } }"#).scopes.is_empty());
+    }
+
+    /// `limits` is read and ignored, never an error; nor is a key from a
+    /// later Lumen.
+    #[test]
+    fn legacy_limits_and_unknown_keys_still_load() {
+        let files = files(
+            r#"{ "files": {
+                "enabled": false,
+                "limits": { "max-entries": 20000, "max-depth": 3 },
+                "declined-drives": ["E:/"]
+            } }"#,
+        );
+        assert!(!files.enabled);
+        assert_eq!(files.scopes, [PathBuf::from("~")]);
+    }
+
+    #[test]
+    fn root_asks_the_index_for_what_in_root_says() {
+        let mut files = FileSearchConfig::default();
+        assert_eq!(files.root_kinds(), Some(Kinds::FoldersAndFiles));
+        files.in_root = InRoot::Folders;
+        assert_eq!(files.root_kinds(), Some(Kinds::Folders));
+        files.in_root = InRoot::Off;
+        assert_eq!(files.root_kinds(), None);
+        files.in_root = InRoot::FoldersAndFiles;
+        files.enabled = false;
+        assert_eq!(files.root_kinds(), None);
+    }
+
+    /// What root shows of the index, and whether it is shown at all, are not
+    /// how it is walked: changing them must not walk the scopes again.
+    #[test]
+    fn in_root_and_enabled_do_not_change_the_walk() {
+        let files = FileSearchConfig::default();
+        let walked = crate::file_index::digest(&files.walk_rules());
+        for changed in [
+            FileSearchConfig {
+                in_root: InRoot::Folders,
+                ..files.clone()
+            },
+            FileSearchConfig {
+                in_root: InRoot::Off,
+                ..files.clone()
+            },
+            FileSearchConfig {
+                enabled: false,
+                ..files.clone()
+            },
+        ] {
+            assert_eq!(crate::file_index::digest(&changed.walk_rules()), walked);
+        }
+
+        let excluded = FileSearchConfig {
+            exclusions: vec!["~/Videos".into()],
+            ..files
+        };
+        assert_ne!(crate::file_index::digest(&excluded.walk_rules()), walked);
+    }
+
+    /// `~` is the home folder, as the disk spells it; a path that does not
+    /// exist is kept as written.
+    #[test]
+    fn walk_rules_resolve_home_and_keep_a_missing_path() {
+        let files = FileSearchConfig {
+            scopes: vec!["~".into(), "no/such/folder".into()],
+            ..FileSearchConfig::default()
+        };
+        let rules = files.walk_rules();
+        assert_eq!(rules.ceiling, CEILING);
+        assert_eq!(rules.scopes[1], PathBuf::from("no/such/folder"));
+        if let Some(dirs) = directories::UserDirs::new() {
+            let home = plain(&std::fs::canonicalize(dirs.home_dir()).unwrap());
+            assert_eq!(rules.scopes[0], home);
+        }
+    }
+
+    /// An exclusion typed in another case must still match what the walk of
+    /// its scope finds -- where the disk ignores case, as Windows' does.
+    #[test]
+    fn an_exclusion_is_spelled_as_the_disk_spells_it() {
+        let root = std::env::temp_dir().join("lumen-config-exclusion-case");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Videos")).unwrap();
+        let typed = root.join("VIDEOS");
+
+        let files = FileSearchConfig {
+            scopes: vec![root.clone()],
+            exclusions: vec![typed.clone()],
+            ..FileSearchConfig::default()
+        };
+        let rules = files.walk_rules();
+        if typed.exists() {
+            assert_eq!(rules.exclusions[0], rules.scopes[0].join("Videos"));
+        }
+        assert!(!rules.scopes[0].to_string_lossy().starts_with(r"\\?"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_verbatim_prefix_is_given_back_in_its_plain_form() {
+        // Only where the platform reads the prefix: elsewhere the path has
+        // none, and is returned as it is.
+        let disk = Path::new(r"\\?\C:\Users\someone");
+        if matches!(disk.components().next(), Some(Component::Prefix(_))) {
+            assert_eq!(plain(disk), PathBuf::from(r"C:\Users\someone"));
+            assert_eq!(
+                plain(Path::new(r"\\?\UNC\server\share\folder")),
+                PathBuf::from(r"\\server\share\folder")
+            );
+        }
+        assert_eq!(
+            plain(Path::new("relative/path")),
+            PathBuf::from("relative/path")
+        );
     }
 
     /// A half-saved file while the daemon runs must be reported, not quietly

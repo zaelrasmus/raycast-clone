@@ -51,6 +51,12 @@ pub struct Match {
 /// The shortest word allowed to match in the middle of a word of a name.
 pub const MIN_SUBSTRING: usize = 3;
 
+/// How many hits a scan takes between asking whether it was cancelled: a
+/// check costs a call, a hit a comparison, and a scan of the ceiling's worth
+/// of names is a few milliseconds -- so a superseded one stops within a few
+/// microseconds without the check showing up in its cost.
+const CHECK_EVERY: u32 = 4096;
+
 /// Every name of the index, lower-cased, in one blob.
 #[derive(Debug, Default)]
 pub struct Names {
@@ -118,6 +124,18 @@ impl Names {
             .is_some_and(|bits| bits & (1 << (entry % 64)) != 0)
     }
 
+    /// Whether `entry` is `name`, folded as the blob is, and a folder exactly
+    /// when `is_dir` says so: how a row read from the store is checked to be
+    /// the entry these names matched (see [`super::FileIndex::rebuilt`]).
+    pub(crate) fn holds(&self, entry: u32, name: &str, is_dir: bool) -> bool {
+        if entry as usize >= self.len() || self.is_dir(entry) != is_dir {
+            return false;
+        }
+        let mut folded = String::with_capacity(name.len());
+        fold(name, &mut folded);
+        self.name(entry as usize) == folded
+    }
+
     /// The entry whose name holds the byte `hit`, searching forwards from
     /// `from`, which starts at or before it.
     ///
@@ -166,6 +184,21 @@ impl Names {
         kinds: Kinds,
         limit: usize,
         boost: impl Fn(u32) -> u32,
+    ) -> Vec<Match> {
+        self.find_until(query, kinds, limit, boost, || false)
+    }
+
+    /// [`Self::find`], abandoned -- answering nothing -- once `cancelled`
+    /// says so. Asked every [`CHECK_EVERY`] hits: root search starts a scan
+    /// on every keystroke, and the one before is then answering a query
+    /// nobody is looking at.
+    pub fn find_until(
+        &self,
+        query: &str,
+        kinds: Kinds,
+        limit: usize,
+        boost: impl Fn(u32) -> u32,
+        cancelled: impl Fn() -> bool,
     ) -> Vec<Match> {
         let words = words(query);
         if words.is_empty() || limit == 0 {
@@ -254,16 +287,27 @@ impl Names {
         // of `a` are inside a word, and cost one comparison.
         let short = words[longest].chars().count() < MIN_SUBSTRING;
         let at_word_start = |hit: usize| hit == 0 || starts_word(blob[hit - 1]);
+        let mut hits = 0u32;
+        let mut stop = || {
+            hits = hits.wrapping_add(1);
+            hits % CHECK_EVERY == 0 && cancelled()
+        };
         if word.len() == 1 {
             // A plain `memchr`: `memmem`'s iterator costs more per hit than
             // this whole check, and one byte has hits in nearly every name.
             for hit in memchr::memchr_iter(word[0], blob) {
+                if stop() {
+                    return Vec::new();
+                }
                 if at_word_start(hit) {
                     consider(hit);
                 }
             }
         } else {
             for hit in Finder::new(word).find_iter(blob) {
+                if stop() {
+                    return Vec::new();
+                }
                 if !short || at_word_start(hit) {
                     consider(hit);
                 }
@@ -273,6 +317,64 @@ impl Names {
         heap.into_sorted_vec()
             .into_iter()
             .map(|ranked| ranked.found)
+            .collect()
+    }
+
+    /// [`Self::find`] over `entries` alone, by the same rules and in the
+    /// same order: what a short query searches in root (see
+    /// [`super::FileIndex::query_known`]). A look at each name rather than a
+    /// scan of the blob, since they are a few hundred at most.
+    pub fn find_among(
+        &self,
+        query: &str,
+        kinds: Kinds,
+        limit: usize,
+        entries: &[u32],
+        boost: impl Fn(u32) -> u32,
+    ) -> Vec<Match> {
+        let words = words(query);
+        if words.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        // The tier is the longest word's, as `find`'s is.
+        let longest = (0..words.len())
+            .rev()
+            .max_by_key(|&index| words[index].len())
+            .expect("at least one word");
+        let whole = words.join(" ");
+
+        let mut ranked = entries
+            .iter()
+            .filter(|&&entry| (entry as usize) < self.len())
+            .filter(|&&entry| kinds == Kinds::FoldersAndFiles || self.is_dir(entry))
+            .filter_map(|&entry| {
+                let name = self.name(entry as usize);
+                let tier = word_tier(name, &words[longest])?;
+                if !words.iter().all(|word| word_tier(name, word).is_some()) {
+                    return None;
+                }
+                Some(Ranked {
+                    found: Match {
+                        entry,
+                        tier: if is_exact(name, &whole) { 4 } else { tier },
+                        boost: boost(entry),
+                    },
+                    length: name.len() as u32,
+                })
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_unstable();
+        ranked.truncate(limit);
+        ranked.into_iter().map(|ranked| ranked.found).collect()
+    }
+
+    /// The entries whose whole name is shorter than [`MIN_SUBSTRING`]
+    /// characters -- `a`, `go` -- which a short query in root searches
+    /// whether they were used or not, so no name is out of reach.
+    pub fn short_entries(&self) -> Vec<u32> {
+        (0..self.len())
+            .filter(|&entry| self.name(entry).chars().count() < MIN_SUBSTRING)
+            .map(|entry| entry as u32)
             .collect()
     }
 }
@@ -545,6 +647,91 @@ mod tests {
         assert_eq!(names.len(), 2);
         assert_eq!(found(&names, "lines"), [0]);
         assert_eq!(found(&names, "other"), [1]);
+    }
+
+    /// A scan whose query was superseded stops, and answers nothing rather
+    /// than the best of what it had seen.
+    #[test]
+    fn a_cancelled_scan_answers_nothing() {
+        let entries = (0..10_000)
+            .map(|index| (format!("file {index}.txt"), false))
+            .collect::<Vec<_>>();
+        let names = Names::from_entries(entries.iter().map(|(name, dir)| (name.as_str(), *dir)));
+
+        let all = names.find_until("file", Kinds::FoldersAndFiles, 8, |_| 0, || false);
+        assert_eq!(all, names.find("file", Kinds::FoldersAndFiles, 8, |_| 0));
+        assert_eq!(all.len(), 8);
+        assert!(
+            names
+                .find_until("file", Kinds::FoldersAndFiles, 8, |_| 0, || true)
+                .is_empty()
+        );
+        assert!(
+            names
+                .find_until("f", Kinds::FoldersAndFiles, 8, |_| 0, || true)
+                .is_empty()
+        );
+    }
+
+    /// The same tiers, the same short-word rule and the same order as a scan
+    /// of everything, over the entries given.
+    #[test]
+    fn finding_among_some_entries_ranks_as_a_scan_does() {
+        let names = names(&[
+            ("my report.txt", false), // 0
+            ("report.txt", false),    // 1
+            ("areport.txt", false),   // 2
+            ("reports", true),        // 3
+            ("banana", false),        // 4
+        ]);
+        let every = [0, 1, 2, 3, 4];
+        let among = |query: &str, kinds: Kinds, entries: &[u32]| {
+            names
+                .find_among(query, kinds, 64, entries, |entry| u32::from(entry == 3))
+                .iter()
+                .map(|found| found.entry)
+                .collect::<Vec<_>>()
+        };
+
+        let scanned = names
+            .find("report", Kinds::FoldersAndFiles, 64, |entry| {
+                u32::from(entry == 3)
+            })
+            .iter()
+            .map(|found| found.entry)
+            .collect::<Vec<_>>();
+        assert_eq!(among("report", Kinds::FoldersAndFiles, &every), scanned);
+        assert_eq!(among("report", Kinds::FoldersAndFiles, &[0, 2]), [0, 2]);
+        assert_eq!(among("report", Kinds::Folders, &every), [3]);
+        assert_eq!(
+            among("an", Kinds::FoldersAndFiles, &every),
+            Vec::<u32>::new()
+        );
+        assert_eq!(among("re", Kinds::FoldersAndFiles, &[1, 2]), [1]);
+        assert_eq!(
+            among("report", Kinds::FoldersAndFiles, &[99]),
+            Vec::<u32>::new()
+        );
+    }
+
+    #[test]
+    fn names_of_one_or_two_characters_are_short() {
+        let names = names(&[("a", false), ("go", true), ("abc", false), ("ét", false)]);
+        assert_eq!(names.short_entries(), [0, 1, 3]);
+    }
+
+    /// A row is the entry only when its name folds to the entry's and it is
+    /// the same kind; an entry past the end is nothing.
+    #[test]
+    fn an_entry_holds_only_its_own_name_and_kind() {
+        let names = names(&[("İstanbul.TXT", false), ("projects", true)]);
+
+        assert!(names.holds(0, "İstanbul.TXT", false));
+        assert!(names.holds(0, "İSTANBUL.txt", false));
+        assert!(!names.holds(0, "İstanbul.TXT", true));
+        assert!(!names.holds(0, "projects", false));
+        assert!(names.holds(1, "Projects", true));
+        assert!(!names.holds(2, "projects", true));
     }
 
     #[test]

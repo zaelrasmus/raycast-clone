@@ -2,15 +2,15 @@
 //!
 //! [`crate::search`] ranks one list of candidates. The launcher's root list is
 //! several lists with different lifetimes and different rules -- the
-//! application index, provider answers, and the secondary indexes this module
-//! calls *asides* -- and the policy for putting them into one order lives here
-//! rather than in the view that draws it.
+//! application index, provider answers, and the rows the file index sends
+//! when it answers -- and the policy for putting them into one order lives
+//! here rather than in the view that draws it.
 //!
-//! That placement is AD-03. The rules below (answers first, asides discounted
-//! and capped, never browsed) are what make the launcher feel right, and they
-//! are exactly the part that must survive the presentation layer being
-//! replaced. Here they are also testable without a window, which is what
-//! turns 7.26's worked example into an assertion.
+//! That placement is AD-03. The rules below (answers first, files in a
+//! section of their own after the results, capped and never browsed) are
+//! what make the launcher feel right, and they are exactly the part that must
+//! survive the presentation layer being replaced. Here they are also testable
+//! without a window.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ use lumen_platform::Platform;
 use serde::{Deserialize, Serialize};
 
 use crate::favorites::{Change, Favorites};
+use crate::file_index::{self, FileHit, names};
 use crate::frecency::Frecency;
 use crate::item::Item;
 use crate::paths::Paths;
@@ -31,63 +32,14 @@ use crate::search::{Candidate, Search};
 /// call of its own (I-1).
 pub type TimeFormat = Arc<dyn Fn(&lumen_platform::LocalTime) -> String + Send + Sync>;
 
-/// A secondary index: searched, but never browsed (7.21).
-///
-/// Files are large, change without the user doing anything to the launcher,
-/// and do not belong in the root list. With an empty query the index is shown
-/// in frecency order, so entries with no usage history would sort
-/// alphabetically among the applications -- open the launcher, see a folder
-/// called `Archive`. So an aside is matched only when there is a query, and
-/// capped so that a common letter cannot fill the list with one kind of thing.
-///
-/// The clipboard was the other aside until F12 gave it a view of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Aside {
-    Files,
-}
-
-impl Aside {
-    pub const ALL: [Aside; 1] = [Aside::Files];
-
-    fn slot(self) -> usize {
-        match self {
-            Aside::Files => 0,
-        }
-    }
-
-    /// How many of this aside's rows may appear in one set of results.
-    ///
-    /// Eight is enough to find the file you were just editing, and few enough that the list is still about applications.
-    pub fn cap(self) -> usize {
-        match self {
-            Aside::Files => 8,
-        }
-    }
-
-    /// What fraction of its earned score an aside row keeps, in eighths (7.26).
-    ///
-    /// Typing `co` matches `Command Prompt` and a file called `COMPLETE.png`
-    /// about equally well, and the launcher is a launcher: the application
-    /// should win. Typing `complete` is no longer ambiguous, the file scores far
-    /// higher than anything else, and the discount does not change the outcome.
-    ///
-    /// Six eighths, because that is enough to break a near-tie and not enough
-    /// to bury a clear match. Applied to the score rather than by sorting
-    /// asides after applications, which would bury them permanently.
-    pub fn weight(self) -> u32 {
-        match self {
-            Aside::Files => 6,
-        }
-    }
-}
-
 /// Which list a hit came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     /// An index into the application index.
     Indexed(usize),
-    /// An aside, and a row within it.
-    Aside(Aside, usize),
+    /// A file or folder the file index found, by its place in what it
+    /// last answered (F16).
+    File(usize),
     /// An index into this query's provider answers.
     Answer(usize),
     /// An index into this query's fallbacks, which always close the list.
@@ -191,6 +143,16 @@ pub struct Section {
 /// The title of the one section a typed query is shown in.
 pub const RESULTS: &str = "Results";
 
+/// The title of the section the file index's rows are shown in (F16).
+pub const FILES: &str = "Files";
+
+/// How many of the file index's rows one query shows: 7.21's cap, kept.
+///
+/// Eight is enough to find the file you were just editing, and few enough
+/// that the list is still about applications. The *Search Files* view is
+/// where there is no cap (F16).
+pub const FILES_CAP: usize = 8;
+
 /// One result, held as an index into its list rather than a copy of it.
 ///
 /// Re-ranking happens on every keystroke; cloning several hundred items each
@@ -207,9 +169,10 @@ pub struct Hit {
 ///
 /// Several lists rather than one because they have different lifetimes. The
 /// application index is built once and reused for thousands of queries;
-/// provider answers are rebuilt for every keystroke; the asides change when the
-/// user copies something or saves a file. Concatenating them per keystroke
-/// would mean cloning several hundred prepared haystacks to add three rows.
+/// provider answers are rebuilt for every keystroke; the files arrive from
+/// another thread when the file index answers. Concatenating them per
+/// keystroke would mean cloning several hundred prepared haystacks to add
+/// three rows.
 pub struct RootSearch {
     search: Search,
     providers: Providers,
@@ -228,10 +191,12 @@ pub struct RootSearch {
     /// which is why the root list is allowed to be empty rather than treated
     /// as a bug.
     index: Arc<Vec<Candidate>>,
-    /// In [`Aside::slot`] order.
-    asides: [Arc<Vec<Candidate>>; 1],
     /// This query's provider answers.
     answers: Vec<Item>,
+    /// What the file index last answered, and the query it answered (F16).
+    /// Matched there, off the UI thread, and only placed here.
+    files: Vec<FileHit>,
+    files_query: String,
     /// The quicklinks, held here rather than among the providers because they
     /// are the one provider the user edits while the daemon runs (F6).
     quicklinks: QuicklinkProvider,
@@ -278,8 +243,9 @@ impl RootSearch {
             home: None,
             sections: Vec::new(),
             index: Arc::new(Vec::new()),
-            asides: std::array::from_fn(|_| Arc::new(Vec::new())),
             answers: Vec::new(),
+            files: Vec::new(),
+            files_query: String::new(),
             quicklinks: QuicklinkProvider::default(),
             timer_presets: Vec::new(),
             rates: None,
@@ -313,10 +279,6 @@ impl RootSearch {
     pub fn replace_index(&mut self, index: Vec<Candidate>) {
         self.home = None;
         self.index = Arc::new(index);
-    }
-
-    pub fn replace_aside(&mut self, aside: Aside, candidates: Vec<Candidate>) {
-        self.asides[aside.slot()] = Arc::new(candidates);
     }
 
     /// Take the quicklinks as they now are in the file.
@@ -411,15 +373,99 @@ impl RootSearch {
         self.wants_weather
     }
 
-    pub fn aside_is_empty(&self, aside: Aside) -> bool {
-        self.asides[aside.slot()].is_empty()
+    /// Take what the file index answered for `query` (F16). Shown whole by
+    /// the next [`Self::rank`] of the same query; see [`Self::file_rows`]
+    /// for any other.
+    pub fn set_files(&mut self, query: &str, hits: Vec<FileHit>) {
+        self.forget_file_hits();
+        self.files = hits;
+        self.files_query = query.trim().to_string();
+    }
+
+    /// Forget the files: file search was turned off, or its rules changed.
+    /// Returns whether any was being shown, so the caller knows to draw the
+    /// list again.
+    pub fn clear_files(&mut self) -> bool {
+        self.files.clear();
+        self.files_query.clear();
+        self.forget_file_hits()
+    }
+
+    /// Take the file rows out of the current hits, and their section with
+    /// them: their [`Source::File`] would point at files no longer held.
+    /// Until the next rank, the list is what it was without them.
+    fn forget_file_hits(&mut self) -> bool {
+        // By what it holds, not by its title: the empty list's sections are
+        // the user's to name, `Files` included.
+        let Some(at) = self.sections.iter().position(|section| {
+            self.hits
+                .get(section.start)
+                .is_some_and(|hit| matches!(hit.source, Source::File(_)))
+        }) else {
+            return false;
+        };
+        let files = self.sections.remove(at);
+        self.hits.drain(files.start..files.start + files.len);
+        for section in &mut self.sections[at..] {
+            section.start -= files.len;
+        }
+        true
+    }
+
+    /// The usage history, for the file index's boosts.
+    pub fn frecency(&self) -> &Frecency {
+        &self.frecency
+    }
+
+    /// The file rows for `query`, at most [`FILES_CAP`].
+    ///
+    /// The file index answers on another thread, so on every keystroke but
+    /// the one it answered, what is held is the answer to an earlier query.
+    /// Its rows that still match every word typed -- by the index's own rule,
+    /// [`names::word_tier`] -- stay, highlighted for this query, until the
+    /// new answer replaces them; the rest go at once. A row that no longer
+    /// matches is worse than a row that has not arrived.
+    fn file_rows(&self, query: &str) -> Vec<Hit> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let current = self.files_query == query;
+        let words = names::words(query);
+        let mut folded = String::new();
+        self.files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, found)| {
+                let highlights = if current {
+                    found.highlights.clone()
+                } else {
+                    folded.clear();
+                    names::fold(&found.item.title, &mut folded);
+                    if !words
+                        .iter()
+                        .all(|word| names::word_tier(&folded, word).is_some())
+                    {
+                        return None;
+                    }
+                    file_index::highlights(&found.item.title, &words)
+                };
+                Some(Hit {
+                    source: Source::File(index),
+                    highlights,
+                    score: 0,
+                })
+            })
+            .take(FILES_CAP)
+            .collect()
     }
 
     /// Rank everything against `query`, replacing the previous hits.
     ///
-    /// Answers first and unmatched, then the index and the asides merged by
-    /// score. Runs on the UI thread on every keystroke; nothing here waits on
-    /// anything (I-3).
+    /// Answers first and unmatched, then the index by score, then the files
+    /// the file index last sent, then the fallbacks. Runs on the UI thread on
+    /// every keystroke; nothing here waits on anything (I-3) -- the files are
+    /// whatever has arrived.
     pub fn rank(&mut self, query: &str) -> &[Hit] {
         // Nothing typed: the sections, from the cache. Nothing answers an
         // empty query and nothing falls back from one, so the list is the
@@ -546,26 +592,6 @@ impl RootSearch {
             })
             .collect();
 
-        if !query.trim().is_empty() {
-            for aside in Aside::ALL {
-                let candidates = &self.asides[aside.slot()];
-                if candidates.is_empty() {
-                    continue;
-                }
-
-                hits.extend(
-                    self.search
-                        .rank(query, candidates, &self.frecency, aside.cap())
-                        .into_iter()
-                        .map(|m| Hit {
-                            source: Source::Aside(aside, m.index),
-                            highlights: m.highlights,
-                            score: m.score / 8 * aside.weight(),
-                        }),
-                );
-            }
-        }
-
         // Sorted before the answers are prepended, so the answers keep the top
         // regardless of how well anything else scored.
         hits.sort_by(|a, b| {
@@ -606,15 +632,31 @@ impl RootSearch {
         });
         hits.splice(0..0, answers);
 
+        // The files close the matches, in a section of their own, and never
+        // interleave with them (F16): they arrive when the file index
+        // answers, and a row that arrived must not land above the one the
+        // user is on (I-10). The consequence, accepted, is that a file never
+        // outranks an application, as 7.26's discount let a clear match do.
+        let results = hits.len();
+        let files = self.file_rows(query);
+        let file_count = files.len();
+        hits.extend(files);
+
         // A fallback is for when nothing above it was what the user meant, so
-        // it comes after the matches -- but no later than the last row of the
-        // first screen. Sixteen loose clipboard matches would otherwise bury
-        // it below the window, which is where nobody looks for it. Never above
-        // an answer, which is what the user asked for by construction.
-        let at = hits
+        // it comes after the matches and the files -- but no later than the
+        // last row of the first screen. Sixteen loose clipboard matches would
+        // otherwise bury it below the window, which is where nobody looks for
+        // it. Never above an answer, which is what the user asked for by
+        // construction. And never inside the files: where it would split
+        // their section, it goes above them instead, which keeps it on the
+        // first screen too.
+        let mut at = hits
             .len()
             .min(self.visible_rows.saturating_sub(self.fallbacks.len()))
             .max(self.answers.len().min(hits.len()));
+        if at > results && at < results + file_count {
+            at = results;
+        }
         hits.splice(
             at..at,
             (0..self.fallbacks.len()).map(|index| Hit {
@@ -624,16 +666,30 @@ impl RootSearch {
             }),
         );
 
-        self.sections = if hits.is_empty() {
-            Vec::new()
+        // The results, then the files under a header of their own, drawn by
+        // the same rule as the results'. Fallbacks after the files close the
+        // list with no header: they are not files.
+        let header = self.arrangement.results_header;
+        let results = if at <= results {
+            results + self.fallbacks.len()
         } else {
-            vec![Section {
-                title: RESULTS.into(),
-                start: 0,
-                len: hits.len(),
-                header: self.arrangement.results_header,
-            }]
+            results
         };
+        let rest = hits.len() - results - file_count;
+        self.sections = [
+            (RESULTS, 0, results, header),
+            (FILES, results, file_count, header),
+            (RESULTS, results + file_count, rest, false),
+        ]
+        .into_iter()
+        .filter(|&(_, _, len, _)| len > 0)
+        .map(|(title, start, len, header)| Section {
+            title: title.into(),
+            start,
+            len,
+            header,
+        })
+        .collect();
         self.hits = hits;
         &self.hits
     }
@@ -795,7 +851,7 @@ impl RootSearch {
     pub fn item(&self, hit: &Hit) -> &Item {
         match hit.source {
             Source::Indexed(index) => &self.index[index].item,
-            Source::Aside(aside, index) => &self.asides[aside.slot()][index].item,
+            Source::File(index) => &self.files[index].item,
             Source::Answer(index) => &self.answers[index],
             Source::Fallback(index) => &self.fallbacks[index],
         }
@@ -1166,56 +1222,207 @@ mod tests {
         assert_eq!(root.favorite_changes(&code), [Change::Remove]);
     }
 
-    /// 7.26, the case that motivated the discount: two letters match an
-    /// application and a file about equally well, and the launcher is a
-    /// launcher.
-    #[test]
-    fn an_application_wins_a_near_tie_with_an_aside() {
-        let mut root = root(apps(&["Command Prompt"]));
-        root.replace_aside(Aside::Files, files(&["COMPLETE.png"]));
-
-        root.rank("co");
-
-        assert_eq!(titles(&root)[0], "Command Prompt");
+    fn found(titles: &[&str]) -> Vec<FileHit> {
+        titles
+            .iter()
+            .map(|title| FileHit {
+                item: item(&format!("file:{title}"), title, Kind::File),
+                highlights: Vec::new(),
+            })
+            .collect()
     }
 
-    /// The other half of 7.26: the discount must not bury a clear match.
+    fn file_titles(root: &RootSearch) -> Vec<String> {
+        root.hits()
+            .iter()
+            .filter(|hit| matches!(hit.source, Source::File(_)))
+            .map(|hit| root.item(hit).title.clone())
+            .collect()
+    }
+
+    /// F16 replaces 7.26's discount: files arrive late, in a section of
+    /// their own, so even a file named exactly what was typed sits below the
+    /// application it shares a word with.
     #[test]
-    fn a_clear_aside_match_still_comes_first() {
-        let mut root = root(apps(&["Command Prompt"]));
-        root.replace_aside(Aside::Files, files(&["COMPLETE.png"]));
+    fn a_file_never_ranks_above_an_application_even_on_its_exact_name() {
+        let mut root = root(apps(&["Complete Anatomy"]));
+        root.set_files("complete", found(&["complete"]));
 
         root.rank("complete");
 
-        assert_eq!(titles(&root)[0], "COMPLETE.png");
+        assert_eq!(titles(&root), ["Complete Anatomy", "complete"]);
     }
 
-    /// 7.21: open the launcher, do not see what you copied last Tuesday.
+    /// Answers, then the index, then the files, then the fallbacks -- each
+    /// run in one piece, the files under a header of their own.
     #[test]
-    fn asides_are_never_browsed() {
-        let mut root = root(apps(&["Firefox"]));
-        root.replace_aside(Aside::Files, files(&["Archive"]));
-
-        root.rank("");
-
-        assert!(
-            root.hits()
-                .iter()
-                .all(|hit| !matches!(hit.source, Source::Aside(..)))
-        );
-        assert!(titles(&root).contains(&"Firefox".to_string()));
-    }
-
-    #[test]
-    fn an_aside_cannot_fill_the_list() {
-        let many: Vec<String> = (0..40).map(|n| format!("report {n}.txt")).collect();
-        let many: Vec<&str> = many.iter().map(String::as_str).collect();
-        let mut root = root(Vec::new());
-        root.replace_aside(Aside::Files, files(&many));
+    fn files_come_after_the_index_and_before_the_fallbacks() {
+        let mut root = root(apps(&["Report Builder"]));
+        root.replace_quicklinks(google());
+        root.set_visible_rows(8);
+        root.set_files("report", found(&["report.txt", "reports"]));
 
         root.rank("report");
 
-        assert_eq!(root.hits().len(), Aside::Files.cap());
+        let sources: Vec<Source> = root.hits().iter().map(|hit| hit.source).collect();
+        assert!(matches!(
+            sources[..],
+            [
+                Source::Indexed(_),
+                Source::File(0),
+                Source::File(1),
+                Source::Fallback(_)
+            ]
+        ));
+        let files = &root.sections()[1];
+        assert_eq!(
+            (files.title.as_str(), files.start, files.len, files.header),
+            (FILES, 1, 2, true)
+        );
+        assert_eq!(root.sections()[0].title, RESULTS);
+    }
+
+    /// The files' header follows the results' (F15): off for one, off for
+    /// both.
+    #[test]
+    fn the_files_header_follows_the_results_header() {
+        let mut root = root(apps(&["Report Builder"]));
+        root.set_arrangement(RootConfig {
+            results_header: false,
+            ..RootConfig::default()
+        });
+        root.set_files("report", found(&["report.txt"]));
+
+        root.rank("report");
+
+        let files = root
+            .sections()
+            .iter()
+            .find(|section| section.title == FILES)
+            .unwrap();
+        assert!(!files.header);
+    }
+
+    /// A fallback still takes the last row of the first screen, however many
+    /// files arrive -- and never splits the files' section to get there.
+    #[test]
+    fn files_do_not_push_a_fallback_off_the_first_screen() {
+        let mut root = root(apps(&["Report Builder", "Reporter"]));
+        root.replace_quicklinks(google());
+        root.set_visible_rows(8);
+        let many: Vec<String> = (0..8).map(|n| format!("report {n}.txt")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        root.set_files("report", found(&many));
+
+        root.rank("report");
+
+        let sources: Vec<Source> = root.hits().iter().map(|hit| hit.source).collect();
+        let fallback = sources
+            .iter()
+            .position(|source| matches!(source, Source::Fallback(_)))
+            .unwrap();
+        assert!(fallback < 8, "{sources:?}");
+        let files: Vec<usize> = (0..sources.len())
+            .filter(|&at| matches!(sources[at], Source::File(_)))
+            .collect();
+        assert_eq!(files.len(), 8);
+        assert_eq!(files.last().unwrap() - files[0], 7, "in one piece");
+    }
+
+    /// 7.21, kept: open the launcher, do not see a folder called `Archive`.
+    #[test]
+    fn files_are_never_shown_for_an_empty_query() {
+        let mut root = root(apps(&["Firefox"]));
+        root.set_files("arc", found(&["Archive"]));
+
+        root.rank("");
+
+        assert!(file_titles(&root).is_empty());
+        assert!(titles(&root).contains(&"Firefox".to_string()));
+    }
+
+    /// 7.21's cap, kept: eight is enough to find the file you were just
+    /// editing, and few enough that the list is still about applications.
+    #[test]
+    fn at_most_eight_files_are_shown() {
+        let many: Vec<String> = (0..40).map(|n| format!("report {n}.txt")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut root = root(Vec::new());
+        root.set_files("report", found(&many));
+
+        root.rank("report");
+
+        assert_eq!(file_titles(&root).len(), FILES_CAP);
+        assert_eq!(FILES_CAP, 8);
+    }
+
+    /// Until the index answers a new query, the rows it gave for the last
+    /// one stay if they still match what is typed -- with the new query's
+    /// highlights -- and go if they do not.
+    #[test]
+    fn previous_files_that_still_match_are_kept_until_the_new_answer() {
+        let mut root = root(Vec::new());
+        root.set_files("rep", found(&["report.txt", "repo notes.md"]));
+
+        root.rank("report");
+        assert_eq!(file_titles(&root), ["report.txt"]);
+        assert_eq!(root.hits()[0].highlights, [0, 1, 2, 3, 4, 5]);
+
+        root.set_files("report", found(&["report-final.txt"]));
+        root.rank("report");
+        assert_eq!(file_titles(&root), ["report-final.txt"]);
+    }
+
+    /// An answer for another query is never shown as one for this query.
+    #[test]
+    fn a_stale_answer_is_not_shown() {
+        let mut root = root(apps(&["Firefox"]));
+        root.set_files("invoice", found(&["invoice.pdf"]));
+
+        root.rank("fire");
+
+        assert!(file_titles(&root).is_empty());
+    }
+
+    /// Files forgotten -- search turned off, rules changed -- leave the
+    /// list at once, and nothing left points at them.
+    #[test]
+    fn clearing_the_files_takes_their_rows_out_of_the_list() {
+        let mut root = root(apps(&["Report Builder"]));
+        root.replace_quicklinks(google());
+        root.set_files("report", found(&["report.txt", "reports"]));
+        root.rank("report");
+        assert_eq!(root.hits().len(), 4);
+
+        assert!(root.clear_files());
+        assert!(!root.clear_files(), "nothing left to clear");
+
+        let sources: Vec<Source> = root.hits().iter().map(|hit| hit.source).collect();
+        assert!(matches!(
+            sources[..],
+            [Source::Indexed(_), Source::Fallback(_)]
+        ));
+        let covered: usize = root.sections().iter().map(|section| section.len).sum();
+        assert_eq!(covered, 2);
+        assert_eq!(root.sections().last().unwrap().start, 1);
+        assert!(
+            titles(&root)
+                .iter()
+                .all(|title| !title.starts_with("report"))
+        );
+    }
+
+    /// A file is not in the index, so there is nothing to come back to.
+    #[test]
+    fn a_file_cannot_be_a_favourite() {
+        let mut root = root(Vec::new());
+        root.set_files("notes", found(&["notes.md"]));
+
+        root.rank("notes");
+
+        let file = root.hits()[0].clone();
+        assert!(matches!(file.source, Source::File(_)));
+        assert!(root.favorite_changes(&file).is_empty());
     }
 
     /// 7.9: an answer is not matched against the query, and it leads.
@@ -1436,10 +1643,7 @@ mod tests {
         let mut index = apps(&["Zed Quick", "Modrinth App"]);
         index.extend(presets.catalogue().into_iter().map(Candidate::new));
         let mut root = root(index);
-        root.replace_aside(
-            Aside::Files,
-            files(&["ZedQ2016.fantome", "Zeta_backup.zip"]),
-        );
+        root.set_files("zq", found(&["ZedQ2016.fantome", "Zeta_backup.zip"]));
         root.replace_timer_presets(vec![preset]);
 
         root.rank("zq");
