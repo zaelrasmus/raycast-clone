@@ -29,6 +29,7 @@ mod clipboard_watch;
 mod com;
 mod date;
 mod dib;
+mod files;
 mod foreground;
 mod icons;
 mod input;
@@ -273,6 +274,18 @@ impl Platform for WindowsPlatform {
 
     fn stop_alert(&self) -> Result<()> {
         sound::stop()
+    }
+
+    fn recent_files(&self) -> Result<Vec<std::path::PathBuf>> {
+        files::recent()
+    }
+
+    fn show_in_folder(&self, path: &std::path::Path) -> Result<()> {
+        files::show_in_folder(path)
+    }
+
+    fn open_with(&self, path: &std::path::Path) -> Result<()> {
+        files::open_with(path)
     }
 }
 

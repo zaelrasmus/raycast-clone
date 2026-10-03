@@ -623,6 +623,24 @@ pub trait Platform: Send + Sync {
 
     /// Stop the alert that is playing, if one is. Stopping silence is fine.
     fn stop_alert(&self) -> Result<()>;
+
+    /// The files and folders the user opened recently, by the system's own
+    /// list -- the one its file manager shows -- newest first, only those
+    /// that still exist (F16). *Search Files* shows them before anything is
+    /// typed, so the view is useful before Lumen has any history.
+    ///
+    /// Reads the disk; called off the UI thread. An implementation may stop
+    /// after the newest few hundred.
+    fn recent_files(&self) -> Result<Vec<std::path::PathBuf>>;
+
+    /// Open the folder holding `path` in the file manager, with `path`
+    /// selected (F16).
+    fn show_in_folder(&self, path: &std::path::Path) -> Result<()>;
+
+    /// Ask the user which application should open `path`, with the system's
+    /// own chooser, and open it with the one chosen (F16). Returns once the
+    /// chooser is up, not when it closes.
+    fn open_with(&self, path: &std::path::Path) -> Result<()>;
 }
 
 #[cfg(test)]

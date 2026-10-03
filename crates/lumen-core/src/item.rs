@@ -263,6 +263,8 @@ pub enum ViewSource {
     Weather { city: Option<String> },
     /// *Calculator History* (F14).
     CalculatorHistory,
+    /// *Search Files* (F16).
+    Files,
 }
 
 impl Action {

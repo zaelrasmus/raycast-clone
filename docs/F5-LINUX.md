@@ -95,6 +95,9 @@ keystroke would show in the budgets.
 | `open_url` | `None`: `xdg-open`. `Some`: the browser's `Exec` with `%u` replaced by the URL, detached like `launch`. Keep `Browser::name` the desktop entry's `Name=` so `preferred-browser` is the same string on both systems | Easy |
 | `alert_sounds` | The XDG sound theme's `stereo/` folder (freedesktop: `alarm-clock-elapsed`, `bell`, `complete`...). Windows names (`Alarm01`) will not exist: a saved name that is not listed plays nothing and logs, so decide whether to map the Windows default to `alarm-clock-elapsed` | Easy |
 | `play_alert` / `stop_alert` | Spawn `pw-play` (or `paplay`) on the file, looping by respawning while `repeat`; stop by killing the child. One child at a time, like `PlaySoundW` | Easy |
+| `recent_files` | Stubbed as an empty list, so *Search Files* shows Lumen's own recents only. Read `$XDG_DATA_HOME/recently-used.xbel` (the GTK list file managers write), newest `modified` first, `file://` URIs that exist | Easy |
+| `show_in_folder` | Stubbed as an error. `org.freedesktop.FileManager1.ShowItems` over D-Bus (Nautilus, Dolphin, Thunar implement it); without it, `xdg-open` on the parent folder | Easy |
+| `open_with` | Stubbed as an error. The desktop portal's `OpenURI` with `ask: true`, which shows the chooser | Easy |
 
 ---
 

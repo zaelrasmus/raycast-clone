@@ -162,6 +162,32 @@ only the Windows hidden attribute, so I-1 holds without a `Platform` call. And
   until the swap the old index can answer less, never another file.
 - **`limits` is read and ignored with one line in the log per run**, not one
   per reload.
+- ***Search Files* is run by the launcher, not the daemon** (slice 3a). The
+  session is in `core` (`file_search::session`), as F12's is; the loop that
+  carries out its effects is in `launcher.rs`, because the index, frecency
+  and the watch are the launcher's. Each keystroke is a search of the whole
+  index off the UI thread, abandoned by the next keystroke, with at most 200
+  rows; the *Type* filter runs inside the scan (`FileIndex::query_where`),
+  so a filtered query finds its own best 200.
+- ***Recently Used* is Lumen's own first, then the system's.** Frecency's
+  files and folders, best first, then the targets of the shortcuts in the
+  Recent folder, newest first; deduplicated, existing paths only, at most
+  fifty. The system's list carries no times to interleave the two by.
+  Shortcuts to network paths are skipped unchecked: asking whether one
+  exists waits on the network.
+- **The pane is read when the selection lands on a row,** off the UI
+  thread; until then the row shows its name, place and type. Text previews
+  read at most 64 KB and show at most 200 lines; a NUL or invalid UTF-8
+  means no preview.
+- ***Exclude from Index* writes an anchored line** -- `/drafts/old.txt`,
+  the item's path from the ignore file's folder -- into the nearest
+  `.lumenignore` up to the scope's folder, or a new one beside the item, so
+  it leaves out that item and not every file of the same name below. The
+  index is handed the ignore file at once, the path the watcher takes;
+  with `use-ignore-files` off the line is written and not read.
+- **"Indexing..."** is the section's subtitle, or the empty state, while a
+  load, reconcile or build of the index runs; the view has no footer line
+  of its own in 3a.
 
 ## Slice 1: what was measured
 
@@ -475,12 +501,39 @@ Empty query: no files, as today (7.21). Recents belong to the view.
 ## The *Search Files* view
 
 A built-in view, reached as a command in root (*Search Files*), with an alias
-and a hotkey like any command.
+and a hotkey like any command. The reference is Raycast's *Search Files*: a
+list on the left and a pane on the right, laid out as *Clipboard History*
+(F12) already is.
 
-- **Empty query:** recently opened files and folders, from frecency.
-- **Typing:** the same name index as root, without root's eight-row cap.
-- **Details:** a pane with path, kind, size, dates and, for an image, a
-  preview -- the vocabulary F10 to F13 already use.
+- **Empty query:** a *Recently Used* section -- what was opened from Lumen
+  (frecency) merged with Windows' own recent items, the list Explorer
+  shows, so the view is useful before Lumen has any history. Reading the
+  recent items' shortcuts is a `Platform` call (`recent_files`).
+- **Typing:** the same name index as root, without root's eight-row cap and
+  at any length -- the one-or-two-letter rule is root's alone.
+- **Type filter:** the *Type* scope from F12, titled *All Types*: Folders,
+  Documents, Images, Video, Audio, Archives, Code. A category is a list of
+  extensions in core.
+- **Rows:** the file's own icon from the shell (`IconSource::ShellItem`, as
+  applications use), so a zip shows its archiver's icon and a picture its
+  image icon. When two rows share a name, each shows its parent folder
+  before it, dimmed -- `styles/carbon.json`, `themes/carbon.json` -- since
+  otherwise they cannot be told apart.
+- **Preview,** first in the pane, chosen by type and read off the UI thread:
+  - an image: the picture, scaled to fit, as F12 shows a copied image;
+  - any text file -- code, configuration, logs, `.txt`, `.md`: the first
+    lines in a card, in the palette's *monospace family* (a new palette
+    key, I-11; Cascadia Mono by default, which Windows 11 ships), as
+    Raycast does: a preview is the file as written, and a fixed width keeps
+    its indentation and columns. `files.preview-font` = `"interface"` draws
+    it in the interface font instead; the default is `"monospace"`. Which
+    font is the look's, so it is the palette's; whether to use it is a
+    preference, so it is the configuration's;
+  - anything else, or a file that is not text: no preview, the metadata only.
+  At most 64 KB is read and the card is clipped to its height; the pane
+  scrolls as every pane does.
+- **Metadata:** Name, Where (`~`-shortened), Type, Size, Created, Modified;
+  a folder shows its item count instead of a size.
 - **Contents:** a toggle in the view's filter (the *Type* filter's
   pattern from F12) that adds content matches **after** name matches, from
   Windows Search.
@@ -606,7 +659,8 @@ none exists when slice 7 lands, at the end of this one, under its own heading.
 | `search_content(query, scopes, limit)` | Windows Search |
 | `content_coverage(scopes)` | Whether Windows Search indexes each scope |
 | `open_indexing_options()` | Opens the system's settings |
-| *Show in Explorer*, *Open With...* | Shell calls, if `launch` cannot express them |
+| `recent_files()` | The system's recent items: the Recent folder's shortcuts on Windows (slice 3a) |
+| `show_in_folder(path)`, `open_with(path)` | Shell calls `launch` cannot express: `SHOpenFolderAndSelectItems`, `SHOpenWithDialog` (slice 3a) |
 
 Each lands with its Linux stub in the same commit (I-2, I-9). Walking and
 watching need nothing new: `std::fs`, `ignore` and `notify` already sit

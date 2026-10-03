@@ -506,6 +506,219 @@ impl ViewSink {
     }
 }
 
+/// What the *Search Files* loop hears: the view's events, and that the file
+/// index started or finished indexing.
+enum FileSearchInput {
+    View(lumen_core::view::Event),
+    Status,
+}
+
+/// A queue a view's sink pushes to and its loop awaits, on the UI thread.
+///
+/// The few lines a channel crate would be: the sink is called from inside
+/// the launcher's own update, so it can only leave the event somewhere and
+/// wake the loop, never act on it.
+struct Inbox<T> {
+    state: parking_lot::Mutex<InboxState<T>>,
+}
+
+struct InboxState<T> {
+    items: std::collections::VecDeque<T>,
+    waker: Option<std::task::Waker>,
+    closed: bool,
+}
+
+impl<T> Inbox<T> {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: parking_lot::Mutex::new(InboxState {
+                items: std::collections::VecDeque::new(),
+                waker: None,
+                closed: false,
+            }),
+        })
+    }
+
+    /// Queue `item` and wake the loop. Nothing once closed.
+    fn push(&self, item: T) {
+        let waker = {
+            let mut state = self.state.lock();
+            if state.closed {
+                return;
+            }
+            state.items.push_back(item);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// No more items: the loop gets what is queued, then `None`.
+    fn close(&self) {
+        let waker = {
+            let mut state = self.state.lock();
+            state.closed = true;
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// The next item, or `None` once closed and drained.
+    async fn next(&self) -> Option<T> {
+        std::future::poll_fn(|context| {
+            let mut state = self.state.lock();
+            if let Some(item) = state.items.pop_front() {
+                std::task::Poll::Ready(Some(item))
+            } else if state.closed {
+                std::task::Poll::Ready(None)
+            } else {
+                state.waker = Some(context.waker().clone());
+                std::task::Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
+/// What the *Search Files* loop needs to carry out an effect off the UI
+/// thread.
+struct FileSearchRun<'a> {
+    this: &'a gpui::WeakEntity<Launcher>,
+    platform: &'a Arc<dyn Platform>,
+    /// Compared before and after a search, which is abandoned when it moved.
+    keystrokes: &'a Arc<AtomicU64>,
+    describer: &'a lumen_core::file_search::preview::Describer,
+}
+
+impl FileSearchRun<'_> {
+    /// The index's answer to `query` in `filter`, or `None` when another
+    /// keystroke came first. No index yet answers nothing.
+    async fn search(
+        &self,
+        cx: &mut gpui::AsyncApp,
+        query: String,
+        filter: Option<lumen_core::file_search::Category>,
+    ) -> Option<Vec<lumen_core::file_search::Found>> {
+        let index = self
+            .this
+            .update(cx, |launcher, _| launcher.files.clone())
+            .ok()?;
+        let Some(index) = index else {
+            return Some(Vec::new());
+        };
+        let asked = self.keystrokes.load(Ordering::SeqCst);
+        let current = self.keystrokes.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let cancelled = || current.load(Ordering::Relaxed) != asked;
+                let found = lumen_core::file_search::search(&index, &query, filter, &cancelled);
+                (!cancelled()).then_some(found)
+            })
+            .await
+    }
+
+    /// The pane for `found`, read from the disk.
+    async fn describe(
+        &self,
+        cx: &mut gpui::AsyncApp,
+        found: lumen_core::file_search::Found,
+    ) -> lumen_core::view::ItemDetail {
+        let describer = self.describer.clone();
+        cx.background_executor()
+            .spawn(async move { describer.describe(&found) })
+            .await
+    }
+
+    /// Hide the launcher, then ask the platform for `work`: hidden first,
+    /// so what opens comes to the front over the window it was opened on.
+    fn close_then(
+        &self,
+        cx: &mut gpui::AsyncApp,
+        work: impl FnOnce(&dyn Platform) -> anyhow::Result<()> + Send + 'static,
+    ) {
+        self.this.update(cx, |launcher, cx| launcher.close(cx)).ok();
+        let platform = self.platform.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = work(platform.as_ref()) {
+                log::warn!("could not act on a file: {error:#}");
+            }
+        })
+        .detach();
+    }
+
+    /// Put `text` on the clipboard, and hide once it is there.
+    async fn copy(&self, cx: &mut gpui::AsyncApp, text: String) {
+        let platform = self.platform.clone();
+        let copied = cx
+            .background_executor()
+            .spawn(async move { platform.set_clipboard_text(&text) })
+            .await;
+        match copied {
+            Ok(()) => {
+                self.this.update(cx, |launcher, cx| launcher.close(cx)).ok();
+            }
+            Err(error) => log::error!("could not copy a path: {error:#}"),
+        }
+    }
+
+    /// Write `found` into a `.lumenignore`, and have the index read it at
+    /// once rather than when the watch reports it -- the same path, sooner;
+    /// the report then finds nothing left to change. `true` when written.
+    async fn exclude(
+        &self,
+        cx: &mut gpui::AsyncApp,
+        found: lumen_core::file_search::Found,
+    ) -> bool {
+        let Ok(config) = self
+            .this
+            .update(cx, |launcher, _| launcher.config.files.clone())
+        else {
+            return false;
+        };
+        let use_ignore_files = config.use_ignore_files;
+        let written = cx
+            .background_executor()
+            .spawn(async move {
+                let scopes = config.walk_rules().scopes;
+                lumen_core::file_search::exclude::exclude(&found.path, found.is_dir, &scopes)
+            })
+            .await;
+        let file = match written {
+            Ok(file) => file,
+            Err(error) => {
+                log::warn!("could not exclude a file from the index: {error:#}");
+                return false;
+            }
+        };
+        log::info!("excluded from the file index in {}", file.display());
+        if !use_ignore_files {
+            log::warn!(
+                "files.use-ignore-files is off, so the index does not read {}",
+                file.display()
+            );
+        }
+        self.this
+            .update(cx, |launcher, cx| {
+                launcher.apply_file_changes(vec![file], cx)
+            })
+            .ok();
+        true
+    }
+}
+
+/// Held by a view's sink: closes the inbox when the view is dropped,
+/// however it goes -- left, or replaced by another -- so its loop ends.
+struct ClosesInbox(Arc<Inbox<FileSearchInput>>);
+
+impl Drop for ClosesInbox {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
 /// A view, and everything the launcher needs to draw and drive it.
 struct ViewState {
     /// Where events go. `None` for the bundled example, which has nobody to
@@ -597,6 +810,12 @@ pub struct Launcher {
     /// Where the watch pushes: the daemon, which lets a burst settle and
     /// hands it back to [`Self::apply_file_changes`].
     files_sink: Option<FileSink>,
+    /// Builds and reconciles of the file index running: while there are
+    /// any, *Search Files* says it is indexing.
+    files_indexing: usize,
+    /// The open *Search Files* view's inbox, told when indexing starts or
+    /// stops. Pushing to a view that has gone does nothing.
+    file_search: Option<Arc<Inbox<FileSearchInput>>>,
 
     /// A copy of the field's text, updated on every edit. Ranking reads it on
     /// every keystroke, and reaching into another entity for it each time
@@ -758,6 +977,8 @@ impl Launcher {
             files_query: Arc::new(AtomicU64::new(0)),
             files_watch: None,
             files_sink: None,
+            files_indexing: 0,
+            file_search: None,
             query: String::new(),
             selected: 0,
             rows: Vec::new(),
@@ -859,6 +1080,7 @@ impl Launcher {
             self.files = None;
             self.files_watch = None;
             self.files_query.fetch_add(1, Ordering::SeqCst);
+            self.tell_file_search();
             return;
         }
         self.query_files(cx);
@@ -869,7 +1091,7 @@ impl Launcher {
         let frecency = self.root.frecency().clone();
         let installed = self.files.as_ref().map(|index| index.digest().to_string());
         let builds = self.files_build.clone();
-        cx.spawn(async move |this, cx| {
+        let opening = cx.spawn(async move |this, cx| {
             let (rules, loaded, current) = {
                 let path = path.clone();
                 let frecency = frecency.clone();
@@ -935,6 +1157,18 @@ impl Launcher {
                 })
                 .ok();
             }
+        });
+        // Counted from here until the load, reconcile or build is done,
+        // whichever way it ends: what *Search Files* calls indexing.
+        self.files_indexing += 1;
+        self.tell_file_search();
+        cx.spawn(async move |this, cx| {
+            opening.await;
+            this.update(cx, |this, _| {
+                this.files_indexing = this.files_indexing.saturating_sub(1);
+                this.tell_file_search();
+            })
+            .ok();
         })
         .detach();
     }
@@ -1028,6 +1262,172 @@ impl Launcher {
     fn install_files(&mut self, index: Arc<FileIndex>, cx: &mut Context<Self>) {
         self.files = Some(index);
         self.query_files(cx);
+    }
+
+    // -- Search Files (F16) ---------------------------------------------------
+
+    /// Open *Search Files* and run it until it closes.
+    ///
+    /// The clipboard view's shape (F12) -- a session in `core` decides, a
+    /// loop does what it asks -- run by the launcher rather than the daemon,
+    /// because the index, frecency and the watch it reads and writes are
+    /// the launcher's. Every read of the disk or the index is on the
+    /// background executor, and a search is abandoned as soon as the next
+    /// keystroke is typed: the launcher never waits for one (I-3).
+    fn open_file_search(&mut self, cx: &mut Context<Self>) {
+        use lumen_core::file_search::preview::Describer;
+        use lumen_core::file_search::session::{Effect, Session};
+        use lumen_core::file_search::{self, recents};
+        use lumen_core::view::Event;
+
+        let inbox = Inbox::new();
+        // Bumped by every keystroke and every change of type, on this
+        // thread, before the event is queued: a search under way sees it at
+        // once, not when the loop reaches the event.
+        let keystrokes = Arc::new(AtomicU64::new(0));
+        let closes = ClosesInbox(inbox.clone());
+        let typed = keystrokes.clone();
+        let sink = ViewSink::new(move |event| {
+            if matches!(
+                event,
+                Event::QueryChanged { .. } | Event::ScopeChanged { .. }
+            ) {
+                typed.fetch_add(1, Ordering::SeqCst);
+            }
+            closes.0.push(FileSearchInput::View(event));
+        });
+        self.begin_view(sink, cx);
+        self.file_search = Some(inbox.clone());
+
+        let status = self.file_search_status();
+        let frecency = self.root.frecency().clone();
+        let platform = self.platform.clone();
+        cx.spawn(async move |this, cx| {
+            let (mut session, describer) = {
+                let platform = platform.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        let system = platform.recent_files().unwrap_or_else(|error| {
+                            log::warn!("could not read the recent files: {error:#}");
+                            Vec::new()
+                        });
+                        let home = file_search::home_dir();
+                        let recents = recents::recently_used(&frecency, system);
+                        let session = Session::new(recents, status).with_home(home.clone());
+                        // Here rather than on the UI thread: the first call
+                        // reads the system's time zone.
+                        (session, Describer::new(home))
+                    })
+                    .await
+            };
+            let run = FileSearchRun {
+                this: &this,
+                platform: &platform,
+                keystrokes: &keystrokes,
+                describer: &describer,
+            };
+            let mut effects = session.open();
+
+            loop {
+                let mut follow = Vec::new();
+                for effect in effects.drain(..) {
+                    match effect {
+                        Effect::Render(view) => {
+                            this.update(cx, |launcher, cx| launcher.show_view(view, cx))
+                                .ok();
+                        }
+                        Effect::Search {
+                            generation,
+                            query,
+                            filter,
+                        } => {
+                            // `None` when superseded: the next search is
+                            // already queued.
+                            if let Some(found) = run.search(cx, query, filter).await {
+                                follow.extend(session.found(generation, found));
+                            }
+                        }
+                        Effect::Describe(found) => {
+                            let path = found.path.clone();
+                            let detail = run.describe(cx, found).await;
+                            follow.extend(session.described(path, detail));
+                        }
+                        Effect::Open(found) => {
+                            this.update(cx, |launcher, cx| launcher.open_found(&found, cx))
+                                .ok();
+                        }
+                        Effect::ShowInFolder(path) => {
+                            run.close_then(cx, move |platform| platform.show_in_folder(&path));
+                        }
+                        Effect::OpenWith(path) => {
+                            run.close_then(cx, move |platform| platform.open_with(&path));
+                        }
+                        Effect::CopyPath(text) => run.copy(cx, text).await,
+                        Effect::Exclude(found) => {
+                            let path = found.path.clone();
+                            if run.exclude(cx, found).await {
+                                follow.extend(session.excluded(&path));
+                            }
+                        }
+                        Effect::Rebuild => {
+                            this.update(cx, |launcher, cx| launcher.rebuild_files(cx))
+                                .ok();
+                        }
+                    }
+                }
+                if !follow.is_empty() {
+                    effects = follow;
+                    continue;
+                }
+                effects = match inbox.next().await {
+                    None | Some(FileSearchInput::View(Event::Dismissed)) => break,
+                    Some(FileSearchInput::View(event)) => session.event(event),
+                    Some(FileSearchInput::Status) => {
+                        match this.update(cx, |launcher, _| launcher.file_search_status()) {
+                            Ok(status) => session.set_status(status),
+                            Err(_) => break,
+                        }
+                    }
+                };
+            }
+        })
+        .detach();
+    }
+
+    /// What *Search Files* says about the index.
+    fn file_search_status(&self) -> lumen_core::file_search::session::Status {
+        lumen_core::file_search::session::Status {
+            scopes: self.config.files.enabled && !self.config.files.scopes.is_empty(),
+            indexing: self.files_indexing > 0,
+        }
+    }
+
+    /// Tell an open *Search Files* that the index's status may have moved.
+    fn tell_file_search(&self) {
+        if let Some(inbox) = &self.file_search {
+            inbox.push(FileSearchInput::Status);
+        }
+    }
+
+    /// *Open* in *Search Files*: counted as used, as a file opened from root
+    /// is, then opened by the shell once the launcher has gone.
+    fn open_found(&mut self, found: &lumen_core::file_search::Found, cx: &mut Context<Self>) {
+        self.record_use(&found.id(), cx);
+        cx.emit(LauncherEvent::Dismissed);
+        let action = Action::Launch(lumen_platform::LaunchTarget::ShellExecute(
+            found.path.display().to_string(),
+        ));
+        let platform = self.platform.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = action.perform(platform.as_ref()) {
+                log::error!("could not run {action:?}: {error:#}");
+                let (title, body) = lumen_core::item::failure_notice(&action, &error);
+                if let Err(error) = platform.notify(&title, &body) {
+                    log::warn!("could not show the failure either: {error:#}");
+                }
+            }
+        })
+        .detach();
     }
 
     /// Ask the file index what is typed, off the UI thread, and place what
@@ -1803,6 +2203,12 @@ impl Launcher {
             // The file and the clipboard are the daemon's (F14).
             lumen_core::ViewSource::CalculatorHistory => {
                 cx.emit(LauncherEvent::RunCalculatorHistory);
+                return;
+            }
+            // The file index is the launcher's own (F16), so the view of it
+            // is run from here.
+            lumen_core::ViewSource::Files => {
+                self.open_file_search(cx);
                 return;
             }
         };
@@ -2899,6 +3305,8 @@ impl Launcher {
             if let (Some(first), Mode::View(state)) = (first, &mut self.mode) {
                 state.selected = first;
                 self.reveal_view_selection();
+                // Told, as a move by one row is, so a pane follows it.
+                self.tell_selection();
                 cx.notify();
             }
             return;
@@ -2918,6 +3326,8 @@ impl Launcher {
             if let (Some(last), Mode::View(state)) = (last, &mut self.mode) {
                 state.selected = last;
                 self.reveal_view_selection();
+                // Told, as a move by one row is, so a pane follows it.
+                self.tell_selection();
                 cx.notify();
             }
             return;
@@ -3088,24 +3498,7 @@ impl Launcher {
         // only by name, is what private means not to do.
         let private = matches!(&action, Action::OpenLink(open) if open.private);
         if !private {
-            let history = self.root.record_use(&id);
-            // A file or folder opened is one a short query finds from now on
-            // (F16), so the index takes the new boosts -- by path, from the
-            // database, so off this thread.
-            if (id.starts_with("file:") || id.starts_with("folder:"))
-                && let Some(index) = self.files.clone()
-            {
-                let history = history.clone();
-                cx.background_spawn(async move { index.set_boosts(&history) })
-                    .detach();
-            }
-            let path = self.paths.frecency_file();
-            cx.background_spawn(async move {
-                if let Err(error) = history.save(&path) {
-                    log::warn!("could not persist usage statistics: {error:#}");
-                }
-            })
-            .detach();
+            self.record_use(&id, cx);
         }
         if let Some(calculated) = calculated {
             cx.emit(calculated);
@@ -3186,6 +3579,29 @@ impl Launcher {
                 if let Err(error) = platform.notify(&title, &body) {
                     log::warn!("could not show the failure either: {error:#}");
                 }
+            }
+        })
+        .detach();
+    }
+
+    /// Count `id` as used, and keep the history: on disk, and in the file
+    /// index's boosts when it is a file or a folder.
+    fn record_use(&mut self, id: &str, cx: &mut Context<Self>) {
+        let history = self.root.record_use(id);
+        // A file or folder opened is one a short query finds from now on
+        // (F16), so the index takes the new boosts -- by path, from the
+        // database, so off this thread.
+        if (id.starts_with("file:") || id.starts_with("folder:"))
+            && let Some(index) = self.files.clone()
+        {
+            let history = history.clone();
+            cx.background_spawn(async move { index.set_boosts(&history) })
+                .detach();
+        }
+        let path = self.paths.frecency_file();
+        cx.background_spawn(async move {
+            if let Err(error) = history.save(&path) {
+                log::warn!("could not persist usage statistics: {error:#}");
             }
         })
         .detach();

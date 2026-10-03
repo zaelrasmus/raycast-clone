@@ -231,4 +231,26 @@ impl Platform for LinuxPlatform {
     fn stop_alert(&self) -> Result<()> {
         todo!("F5: stop the player started by play_alert")
     }
+
+    /// Empty until F5: *Search Files* then shows Lumen's own recents only.
+    /// F5 reads `recently-used.xbel` in `$XDG_DATA_HOME`.
+    fn recent_files(&self) -> Result<Vec<std::path::PathBuf>> {
+        Ok(Vec::new())
+    }
+
+    /// F5: `org.freedesktop.FileManager1.ShowItems` over D-Bus.
+    fn show_in_folder(&self, path: &std::path::Path) -> Result<()> {
+        anyhow::bail!(
+            "showing {} in its folder is not built on Linux yet (F5)",
+            path.display()
+        )
+    }
+
+    /// F5: the XDG desktop portal's `OpenURI` with `ask` set.
+    fn open_with(&self, path: &std::path::Path) -> Result<()> {
+        anyhow::bail!(
+            "choosing an application for {} is not built on Linux yet (F5)",
+            path.display()
+        )
+    }
 }

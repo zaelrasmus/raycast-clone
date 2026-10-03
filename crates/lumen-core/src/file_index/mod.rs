@@ -371,11 +371,27 @@ impl FileIndex {
         limit: usize,
         cancelled: &dyn Fn() -> bool,
     ) -> Vec<FileHit> {
+        self.query_where(query, kinds, limit, &|_, _| true, cancelled)
+    }
+
+    /// [`Self::query`] over the entries `accept` takes, asked with each
+    /// matched name -- lower-cased -- and whether it is a folder: what
+    /// *Search Files*' type filter searches (F16). Applied inside the scan,
+    /// so a filtered query finds its own best `limit`.
+    pub fn query_where(
+        &self,
+        query: &str,
+        kinds: Kinds,
+        limit: usize,
+        accept: &dyn Fn(&str, bool) -> bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Vec<FileHit> {
         let boosts = self.boosts.read();
-        let found = self.names.find_until(
+        let found = self.names.find_where(
             query,
             kinds,
             limit,
+            accept,
             |entry| boosts.get(&entry).copied().unwrap_or(0),
             cancelled,
         );

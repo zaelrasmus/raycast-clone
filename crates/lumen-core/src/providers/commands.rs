@@ -46,8 +46,32 @@ impl Provider for CommandsProvider {
         COMMANDS
             .iter()
             .map(item)
-            .chain([create_quicklink(), example_view()])
+            .chain([search_files(), create_quicklink(), example_view()])
             .collect()
+    }
+}
+
+/// *Search Files* (F16): the whole file index, with recents, a type filter
+/// and a pane, where root shows eight file rows at most.
+///
+/// Its own row rather than a line of the table, since it opens a view
+/// rather than running a built-in, and is found by words about files, not
+/// about Lumen's settings.
+fn search_files() -> Item {
+    Item {
+        id: "command:search-files".into(),
+        title: "Search Files".into(),
+        subtitle: Some("Find a file or folder by name, with a preview".into()),
+        icon: None,
+        keywords: vec![
+            "files".into(),
+            "folders".into(),
+            "find".into(),
+            "documents".into(),
+            "recent".into(),
+        ],
+        actions: vec![Action::OpenView(ViewSource::Files)],
+        kind: Kind::Command,
     }
 }
 
@@ -112,8 +136,8 @@ mod tests {
     #[test]
     fn offers_its_commands_in_the_catalogue() {
         let items = CommandsProvider.catalogue();
-        // The table, plus the two that open something in place of the list.
-        assert_eq!(items.len(), COMMANDS.len() + 2);
+        // The table, plus the three that open something in place of the list.
+        assert_eq!(items.len(), COMMANDS.len() + 3);
         assert!(items.iter().all(|item| item.kind == Kind::Command));
     }
 
@@ -137,6 +161,17 @@ mod tests {
             .expect("the example view has a row");
 
         assert_eq!(example.primary(), Action::OpenView(ViewSource::Example));
+    }
+
+    #[test]
+    fn searching_files_is_reachable_from_the_launcher() {
+        let items = CommandsProvider.catalogue();
+        let search = items
+            .iter()
+            .find(|item| item.title == "Search Files")
+            .expect("the view has a row");
+
+        assert_eq!(search.primary(), Action::OpenView(ViewSource::Files));
     }
 
     /// The answer to "a file is missing": a row in root, as the other

@@ -268,6 +268,22 @@ impl Names {
         boost: impl Fn(u32) -> u32,
         cancelled: impl Fn() -> bool,
     ) -> Vec<Match> {
+        self.find_where(query, kinds, limit, |_, _| true, boost, cancelled)
+    }
+
+    /// [`Self::find_until`] over the entries `accept` takes, asked with the
+    /// folded name and whether it is a folder: *Search Files*' type filter
+    /// (F16). Inside the scan rather than on its answer, so the best `limit`
+    /// of a type are found, not what was left of the best `limit` of all.
+    pub fn find_where(
+        &self,
+        query: &str,
+        kinds: Kinds,
+        limit: usize,
+        accept: impl Fn(&str, bool) -> bool,
+        boost: impl Fn(u32) -> u32,
+        cancelled: impl Fn() -> bool,
+    ) -> Vec<Match> {
         let words = words(query);
         if words.is_empty() || limit == 0 {
             return Vec::new();
@@ -302,7 +318,11 @@ impl Names {
             let name = self.name(entry);
             next = start + name.len() + 1;
 
-            if kinds == Kinds::Folders && !self.is_dir(entry as u32) {
+            let is_dir = self.is_dir(entry as u32);
+            if kinds == Kinds::Folders && !is_dir {
+                return;
+            }
+            if !accept(name, is_dir) {
                 return;
             }
             // This is the word's first place in the name, so it starts the
