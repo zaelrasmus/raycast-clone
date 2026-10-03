@@ -304,20 +304,28 @@ why.
 
 The opposite failure is real too: a user whose files are on `D:` installs
 Lumen, searches, finds nothing and concludes file search is broken. So the
-other drives are made *visible* instead of automatic:
+other drives are made *visible* instead of automatic -- and what is offered
+is **folders on them, not the drives**. Measured, this machine's `D:\` is
+350 000 entries, over 90 % games and launchers, and the user's own work is
+3 000 of them: the advice beside the scopes is "add the folders you search,
+not whole drives", and the offer must not contradict it.
 
-1. **The first time *Search Files* opens**, a row at the top names the internal
-   drives that are not scopes: *"D:\ (Data, 1.8 TB) is not searched -- Add"*,
-   with *Not now*. It appears where the user is looking for files, not in a
-   dialog at install. *Not now* is remembered per drive.
-2. **An empty result explains itself.** When *Search Files* finds nothing and
-   internal drives are off, the empty state says which, with *Add* beside each.
-3. **The settings page lists every internal drive as a switch**, not as a path
-   to type.
-4. **What is skipped is shown.** When a drive is added, the default skip rules
-   apply to it, and the settings page lists the folders they actually skipped
-   on it, each one switchable back on. Nothing is excluded invisibly -- the
-   same idea as Raycast's *Excluded Automatically* list.
+1. **The first time *Search Files* opens**, a row at the top names an internal
+   drive with no scope on it: *"Files on D:\ (Data) aren't searched --
+   Choose folders..."*, with *Not now*. *Choose folders* opens the folder
+   picker **at that drive**. It appears where the user is looking for files,
+   not in a dialog at install. *Not now* is remembered per drive
+   (`declined-drives`).
+2. **An empty result explains itself.** When *Search Files* finds nothing
+   and an internal drive has no scope, the empty state says so, with the
+   same *Choose folders...*.
+3. **A whole drive is asked about.** Picking a drive's root, from any
+   *Add Folder*, says what it costs before it is added -- the whole drive,
+   and its size in entries once known -- with *Add anyway* and *Cancel*.
+
+No switch per drive and no list of folders skipped per drive: *Add Folder*
+and *Excluded by default* (slice 4) already are both, and a switch would
+make adding a whole drive the one-click path.
 
 Only fixed, internal drives are listed. Which drives those are is an OS
 question, so it is a `Platform` method (see "Platform changes").
@@ -700,8 +708,7 @@ A *File Search* page in the settings window (F15's navigation), in four
 groups:
 
 1. **In root search** -- the three levels, as a segmented choice.
-2. **Where** -- scopes with *Add Folder*; internal drives as switches; the
-   exclusions; per drive, *Skipped automatically* with a switch each. Above
+2. **Where** -- scopes with *Add Folder*; the exclusions. Above
    the list, the memory note ("Against the budgets"); beside each scope its
    item count, and the total against the 500 000 ceiling.
 3. **What** -- *Use ignore files*, *Include hidden files*, ignore patterns;
@@ -793,7 +800,7 @@ Measurement first, then each user-visible step on its own.
 | 2 | **Fresh.** Watching without excluded subtrees, the start reconcile, *Rebuild Index* | A file created on the Desktop is found within seconds; idle CPU measured with the watcher on |
 | 3 | ***Search Files*.** The view, recents, details, actions, *Exclude from Index*, status | The view finds what root finds and more, with no cap |
 | 4 | **Settings.** The page, the three levels, ignore files, patterns, hidden | Every key in "Configuration" is settable without editing JSON |
-| 5 | **Drives.** `internal_drives`, the first-view offer, the empty-result suggestion, drive switches, the list of folders skipped on each drive | A drive can be found, added and pruned without typing a path |
+| 5 | **Drives.** `internal_drives`, the first-view offer and the empty-result hint opening the picker at the drive, `declined-drives`, the whole-drive warning | A user with files on another drive learns it is not searched and adds folders from it without typing a path |
 | 6 | **Contents.** Windows Search in the view, coverage per scope | Text inside a document in a covered scope is found from the view |
 | 7 | **Extra application folders** | A portable `.exe` is listed and launched as an application |
 
