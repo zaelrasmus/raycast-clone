@@ -14,9 +14,20 @@
 //!
 //! Scopes are walked in the order they are listed, so when the index fills,
 //! the scope cut short is the one added last -- never home, which is listed
-//! first by default. A scope inside one already walked adds nothing; a scope
-//! *around* one already walked lists its folder but does not walk it again.
-//! Either way an entry is found once.
+//! first by default. A scope inside one already walked adds nothing when
+//! that walk reaches it; a scope *around* one already walked lists its
+//! folder but does not walk it again. Either way an entry is found once.
+//!
+//! # A scope added on purpose beats every rule
+//!
+//! The rules apply below a scope, never to its own folder: the user named
+//! it. So a scope the walk of an outer one would not reach -- a folder
+//! between them is skipped, excluded, hidden or ignored, as `AppData` is
+//! from `~` -- is walked on its own, in its turn, with exclusions around
+//! it set aside. Whether the outer walk reaches it is asked of the same
+//! rules, one directory read a level ([`reaches`]), never of a second copy.
+//! One rule still beats a scope: an exclusion of that very folder. Both are
+//! the user's, and the exclusion is the narrower intent.
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +67,8 @@ pub struct WalkRules {
     pub use_ignore_files: bool,
     /// A leading dot, or the Windows hidden attribute.
     pub include_hidden: bool,
+    /// Names from [`default_skips`] the user turned back on, lower-cased.
+    pub skips_off: Vec<String>,
     /// The most entries to keep: [`CEILING`], except in tests.
     pub ceiling: usize,
 }
@@ -87,13 +100,15 @@ pub struct Walked {
     pub roots: Vec<Option<i64>>,
 }
 
-/// Directory names never descended into.
+/// Directory names never descended into, unless the user turned one back on
+/// ([`WalkRules::skips_off`]).
 ///
 /// Matched exactly and case-insensitively against the directory's own name, not
 /// against the path, so a folder the user actually named `Build` is skipped
 /// too. That is the right trade: the cost of skipping one folder is one file
 /// not found, and the cost of descending into a `node_modules` is an index
-/// made of nothing else.
+/// made of nothing else. Spelled as Windows spells them, for the settings
+/// page that lists them.
 pub(crate) const SKIPPED: &[&str] = &[
     // Dependency and build trees.
     "node_modules",
@@ -118,20 +133,29 @@ pub(crate) const SKIPPED: &[&str] = &[
     ".vs",
     ".vscode",
     // Windows' own. `AppData` alone is larger than everything the user made.
-    "appdata",
-    "application data",
-    "$recycle.bin",
-    "system volume information",
+    "AppData",
+    "Application Data",
+    "$Recycle.Bin",
+    "System Volume Information",
     // Where the Store and Xbox install to on a second drive: readable by
     // nobody but the system, so it is never anything to find, and a watch
     // on it fails at every start.
-    "windowsapps",
+    "WindowsApps",
 ];
 
-pub(crate) fn is_skipped(name: &str) -> bool {
+/// The default skip list, for the settings page to show and switch: a new
+/// default reaches everyone, and only what was turned off is stored.
+pub fn default_skips() -> &'static [&'static str] {
+    SKIPPED
+}
+
+/// Whether a folder named `name` is skipped: on the default list and not
+/// turned back on in `skips_off`.
+pub(crate) fn is_skipped(name: &str, skips_off: &[String]) -> bool {
     SKIPPED
         .iter()
         .any(|skipped| name.eq_ignore_ascii_case(skipped))
+        && !skips_off.iter().any(|off| name.eq_ignore_ascii_case(off))
 }
 
 /// When `path` was last modified, in nanoseconds since 1970; `None` when it
@@ -153,20 +177,59 @@ fn modified(metadata: &std::fs::Metadata) -> Option<i64> {
     i64::try_from(since.as_nanos()).ok()
 }
 
-/// The positions of the scopes that are walked: every scope not inside one
-/// listed before it, which adds nothing (see "In order, and never twice"
-/// above).
+/// The positions of the scopes that are walked, in order: every scope but
+/// one excluded itself, or one whose folder the walk of a scope listed
+/// before it reaches, which adds nothing (see "In order, and never twice"
+/// and "A scope added on purpose beats every rule" above).
+///
+/// Reads a directory for each level between a scope and one inside it, so
+/// it runs where the walk does, never where anything waits (I-3). Without
+/// nested scopes it reads nothing.
 pub(crate) fn effective_scopes(rules: &WalkRules) -> Vec<usize> {
     let mut effective: Vec<usize> = Vec::new();
     for (index, scope) in rules.scopes.iter().enumerate() {
-        if !effective
+        if rules.exclusions.contains(scope) {
+            continue;
+        }
+        let walked = effective
             .iter()
-            .any(|&earlier| scope.starts_with(&rules.scopes[earlier]))
+            .map(|&earlier| rules.scopes[earlier].clone())
+            .collect::<Vec<_>>();
+        if !walked
+            .iter()
+            .any(|outer| reaches(outer, scope, rules, &walked))
         {
             effective.push(index);
         }
     }
     effective
+}
+
+/// Whether the walk of `outer`, beside the scopes `walked`, lists `inner`:
+/// every folder from the first below `outer` down to `inner` itself is one
+/// the rules allow. Asked of the rules a level at a time, as the walk
+/// meets them, and given up at the first refused.
+fn reaches(outer: &Path, inner: &Path, rules: &WalkRules, walked: &[PathBuf]) -> bool {
+    let Ok(rest) = inner.strip_prefix(outer) else {
+        return false;
+    };
+    let mut folder = outer.to_path_buf();
+    for part in rest.components() {
+        let next = folder.join(part);
+        let mut builder = walker(&folder, outer, rules, walked);
+        builder.max_depth(Some(1));
+        let listed = builder.build().flatten().any(|found| {
+            found.depth() == 1
+                && !found.path_is_symlink()
+                && found.file_type().is_some_and(|kind| kind.is_dir())
+                && found.path() == next
+        });
+        if !listed {
+            return false;
+        }
+        folder = next;
+    }
+    true
 }
 
 /// The entries directly in `folder`, by the rules, as a walk of `scope`
@@ -251,10 +314,8 @@ pub fn walk(rules: &WalkRules) -> Walked {
     };
     let mut done: Vec<PathBuf> = Vec::new();
 
-    'scopes: for (index, scope) in rules.scopes.iter().enumerate() {
-        if done.iter().any(|earlier| scope.starts_with(earlier)) {
-            continue;
-        }
+    'scopes: for index in effective_scopes(rules) {
+        let scope = &rules.scopes[index];
         walked.roots[index] = modified_time(scope);
         for result in walker(scope, scope, rules, &done).build() {
             let Ok(found) = result else {
@@ -282,7 +343,9 @@ pub fn walk(rules: &WalkRules) -> Walked {
 
 /// The walker for `root`, in `scope`, with every rule but Lumen's applied by
 /// `ignore` and Lumen's in its entry filter. `root` is the scope itself
-/// except when a change is applied, which reads one folder of it.
+/// except when a change is applied, which reads one folder of it. Of `done`,
+/// the scopes walked on their own, only those inside `scope` matter; of the
+/// exclusions, only those that are not `scope` or around it.
 fn walker(root: &Path, scope: &Path, rules: &WalkRules, done: &[PathBuf]) -> WalkBuilder {
     let mut builder = WalkBuilder::new(root);
     let ignore_files = rules.use_ignore_files;
@@ -320,8 +383,18 @@ fn walker(root: &Path, scope: &Path, rules: &WalkRules, done: &[PathBuf]) -> Wal
         Err(error) => log::warn!("ignoring the file patterns: {error}"),
     }
 
-    let exclusions = rules.exclusions.clone();
-    let done = done.to_vec();
+    let exclusions = rules
+        .exclusions
+        .iter()
+        .filter(|excluded| !scope.starts_with(excluded))
+        .cloned()
+        .collect::<Vec<_>>();
+    let done = done
+        .iter()
+        .filter(|other| other.starts_with(scope) && *other != scope)
+        .cloned()
+        .collect::<Vec<_>>();
+    let skips_off = rules.skips_off.clone();
     builder.filter_entry(move |entry| {
         if entry.depth() == 0 {
             return true;
@@ -339,7 +412,7 @@ fn walker(root: &Path, scope: &Path, rules: &WalkRules, done: &[PathBuf]) -> Wal
             return false;
         }
         let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
-        !(is_dir && is_skipped(&entry.file_name().to_string_lossy()))
+        !(is_dir && is_skipped(&entry.file_name().to_string_lossy(), &skips_off))
     });
     builder
 }
@@ -399,6 +472,7 @@ pub(crate) mod tests {
             ignore_patterns: Vec::new(),
             use_ignore_files: true,
             include_hidden: false,
+            skips_off: Vec::new(),
             ceiling: CEILING,
         }
     }
@@ -604,6 +678,148 @@ pub(crate) mod tests {
             ["Documents/", "Documents/notes.md", "top.txt"]
         );
         assert_eq!(walked.per_scope, [1, 2]);
+    }
+
+    /// `~` skips `AppData`, so a scope inside it is walked on its own: the
+    /// outer walk never reaches it, and dropping it indexed nothing.
+    #[test]
+    fn a_scope_under_a_skipped_folder_is_walked_on_its_own() {
+        let tree = Tree::new("walk-nested-skipped");
+        tree.file("top.txt")
+            .file("AppData/Local/cache.db")
+            .file("AppData/Roaming/Lumen/config/settings.json");
+
+        let walked = walk(&rules(&[
+            tree.0.clone(),
+            tree.path("AppData/Roaming/Lumen/config"),
+        ]));
+
+        assert_eq!(
+            relative(&walked, &tree.0),
+            ["AppData/Roaming/Lumen/config/settings.json", "top.txt"]
+        );
+        assert_eq!(walked.per_scope, [1, 1]);
+    }
+
+    /// The same for every rule between them: an exclusion, a hidden folder,
+    /// an ignore file and an ignore pattern. The scope's own folder is where
+    /// the user looks from, so the rules apply below it, never to it.
+    #[test]
+    fn a_scope_beats_every_rule_that_hides_it_from_an_outer_one() {
+        let tree = Tree::new("walk-nested-rules");
+        tree.file("top.txt")
+            .file("Videos/keep/clip.mp4")
+            .file(".config/app/app.toml")
+            .write("docs/.lumenignore", "drafts/\n")
+            .file("docs/drafts/kept/one.md")
+            .file("logs/today/run.txt");
+
+        let mut rules = rules(&[
+            tree.0.clone(),
+            tree.path("Videos/keep"),
+            tree.path(".config/app"),
+            tree.path("docs/drafts/kept"),
+            tree.path("logs/today"),
+        ]);
+        rules.exclusions = vec![tree.path("Videos")];
+        rules.ignore_patterns = vec!["**/logs/**".into()];
+        let walked = walk(&rules);
+
+        assert_eq!(
+            relative(&walked, &tree.0),
+            [
+                ".config/app/app.toml",
+                "Videos/keep/clip.mp4",
+                "docs/",
+                "docs/drafts/kept/one.md",
+                "logs/",
+                "logs/today/run.txt",
+                "top.txt",
+            ]
+        );
+        assert_eq!(walked.per_scope, [3, 1, 1, 1, 1]);
+    }
+
+    /// A scope that is also an exclusion is both asked for and refused, by
+    /// the same user; the exclusion is the narrower intent and wins.
+    #[test]
+    fn an_exclusion_of_the_scope_itself_wins() {
+        let tree = Tree::new("walk-nested-excluded");
+        tree.file("top.txt").file("Videos/clip.mp4");
+
+        let mut rules = rules(&[tree.0.clone(), tree.path("Videos")]);
+        rules.exclusions = vec![tree.path("Videos")];
+        let walked = walk(&rules);
+
+        assert_eq!(relative(&walked, &tree.0), ["top.txt"]);
+        assert_eq!(walked.per_scope, [1, 0]);
+    }
+
+    /// Listed first or last, a scope under a skipped folder gives its
+    /// entries once, and a scope inside it that its walk reaches adds
+    /// nothing.
+    #[test]
+    fn a_scope_under_a_skipped_folder_is_never_walked_twice() {
+        let tree = Tree::new("walk-nested-skipped-order");
+        tree.file("top.txt")
+            .file("AppData/Lumen/config/settings.json")
+            .file("AppData/Lumen/config/themes/dark.json");
+        let config = tree.path("AppData/Lumen/config");
+
+        let walked = walk(&rules(&[
+            config.clone(),
+            tree.0.clone(),
+            config.join("themes"),
+        ]));
+
+        assert_eq!(
+            relative(&walked, &tree.0),
+            [
+                "AppData/Lumen/config/settings.json",
+                "AppData/Lumen/config/themes/",
+                "AppData/Lumen/config/themes/dark.json",
+                "top.txt",
+            ]
+        );
+        assert_eq!(walked.per_scope, [3, 1, 0]);
+    }
+
+    /// The ceiling still follows the listed order when a nested scope is
+    /// walked on its own: it comes where it is listed, not after the rest.
+    #[test]
+    fn a_nested_scope_takes_its_turn_under_the_ceiling() {
+        let tree = Tree::new("walk-nested-ceiling");
+        let other = Tree::new("walk-nested-ceiling-other");
+        tree.file("a.txt").file("AppData/config/b.txt");
+        other.file("c.txt").file("d.txt");
+
+        let mut rules = rules(&[tree.0.clone(), tree.path("AppData/config"), other.0.clone()]);
+        rules.ceiling = 3;
+        let walked = walk(&rules);
+
+        assert_eq!(walked.per_scope, [1, 1, 1]);
+        assert_eq!(walked.truncated, Some(other.0.clone()));
+    }
+
+    /// A default skip the user turned back on is descended into like any
+    /// folder, matched without regard to case.
+    #[test]
+    fn a_default_skip_turned_off_is_indexed() {
+        let tree = Tree::new("walk-skips-off");
+        tree.file("app/node_modules/left-pad/index.js")
+            .file("app/target/out.bin");
+
+        let mut rules = tree.rules();
+        rules.skips_off = vec!["node_modules".into()];
+        assert_eq!(
+            relative(&walk(&rules), &tree.0),
+            [
+                "app/",
+                "app/node_modules/",
+                "app/node_modules/left-pad/",
+                "app/node_modules/left-pad/index.js",
+            ]
+        );
     }
 
     /// Scopes are walked in order, so the one cut short is the one added

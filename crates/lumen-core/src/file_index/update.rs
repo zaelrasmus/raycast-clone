@@ -17,7 +17,9 @@
 //! one the rules allowed when it was last read. A change inside `AppData`,
 //! a hidden folder, an exclusion or an ignored one is in no indexed folder,
 //! so it is passed over without a read -- the same rules decide as for the
-//! walk, without a second copy of them here. A changed ignore file reads
+//! walk, without a second copy of them here. A scope the walk reached on
+//! its own, inside `AppData` say, is a scope like any other: a change in it
+//! belongs to it, the deepest walked scope around the folder. A changed ignore file reads
 //! its folder's subfolders again too, since it may say something new about
 //! any of them.
 //!

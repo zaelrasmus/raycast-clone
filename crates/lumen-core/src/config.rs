@@ -96,6 +96,10 @@ pub struct FileSearchConfig {
     pub use_ignore_files: bool,
     /// A leading dot, or the Windows hidden attribute.
     pub include_hidden: bool,
+    /// Names from the default skip list ([`crate::file_index::default_skips`])
+    /// turned back on, in any case. Only what was turned off is stored, so a
+    /// new default reaches everyone; a name not on the list is ignored.
+    pub default_skips_off: Vec<String>,
 }
 
 /// What root search shows of the file index (F16). Off still indexes, for
@@ -121,6 +125,7 @@ impl Default for FileSearchConfig {
             ignore_patterns: Vec::new(),
             use_ignore_files: true,
             include_hidden: false,
+            default_skips_off: Vec::new(),
         }
     }
 }
@@ -141,6 +146,7 @@ struct FileSearchFile {
     ignore_patterns: Vec<String>,
     use_ignore_files: bool,
     include_hidden: bool,
+    default_skips_off: Vec<String>,
     roots: Vec<PathBuf>,
     limits: Option<serde::de::IgnoredAny>,
 }
@@ -156,6 +162,7 @@ impl Default for FileSearchFile {
             ignore_patterns: defaults.ignore_patterns,
             use_ignore_files: defaults.use_ignore_files,
             include_hidden: defaults.include_hidden,
+            default_skips_off: defaults.default_skips_off,
             roots: Vec::new(),
             limits: None,
         }
@@ -173,6 +180,17 @@ impl From<FileSearchFile> for FileSearchConfig {
                 );
             });
         }
+        let unknown = file
+            .default_skips_off
+            .iter()
+            .filter(|name| !is_default_skip(name))
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            // One line a read, naming them all.
+            log::warn!(
+                "files.default-skips-off: ignoring {unknown:?}, not on the default skip list"
+            );
+        }
         let scopes = match file.scopes {
             Some(scopes) => scopes,
             None if !file.roots.is_empty() => file.roots,
@@ -186,8 +204,15 @@ impl From<FileSearchFile> for FileSearchConfig {
             ignore_patterns: file.ignore_patterns,
             use_ignore_files: file.use_ignore_files,
             include_hidden: file.include_hidden,
+            default_skips_off: file.default_skips_off,
         }
     }
+}
+
+fn is_default_skip(name: &str) -> bool {
+    crate::file_index::default_skips()
+        .iter()
+        .any(|skip| name.eq_ignore_ascii_case(skip))
 }
 
 impl FileSearchConfig {
@@ -222,8 +247,24 @@ impl FileSearchConfig {
             ignore_patterns: self.ignore_patterns.clone(),
             use_ignore_files: self.use_ignore_files,
             include_hidden: self.include_hidden,
+            skips_off: self.skips_off(),
             ceiling: CEILING,
         }
+    }
+
+    /// The default skips turned back on, as the walk takes them: on the
+    /// list, lower-cased, sorted and once each, so neither the case they
+    /// were written in nor their order walks the scopes again.
+    fn skips_off(&self) -> Vec<String> {
+        let mut off = self
+            .default_skips_off
+            .iter()
+            .filter(|name| is_default_skip(name))
+            .map(|name| name.to_lowercase())
+            .collect::<Vec<_>>();
+        off.sort();
+        off.dedup();
+        off
     }
 }
 
@@ -773,6 +814,32 @@ mod tests {
             ..files
         };
         assert_ne!(crate::file_index::digest(&excluded.walk_rules()), walked);
+    }
+
+    /// A default skip turned back on walks the scopes again; a name not on
+    /// the list, or one written in another case or order, does not change
+    /// what is walked.
+    #[test]
+    fn default_skips_off_change_the_walk_only_by_known_names() {
+        let defaults = FileSearchConfig::default();
+        let walked = crate::file_index::digest(&defaults.walk_rules());
+
+        let on = files(r#"{ "files": { "default-skips-off": ["node_modules", "target"] } }"#);
+        assert_eq!(on.walk_rules().skips_off, ["node_modules", "target"]);
+        assert_ne!(crate::file_index::digest(&on.walk_rules()), walked);
+
+        let same = files(
+            r#"{ "files": { "default-skips-off": ["Target", "NODE_MODULES", "no-such-skip"] } }"#,
+        );
+        assert_eq!(same.default_skips_off.len(), 3);
+        assert_eq!(
+            crate::file_index::digest(&same.walk_rules()),
+            crate::file_index::digest(&on.walk_rules())
+        );
+
+        let unknown = files(r#"{ "files": { "default-skips-off": ["no-such-skip"] } }"#);
+        assert!(unknown.walk_rules().skips_off.is_empty());
+        assert_eq!(crate::file_index::digest(&unknown.walk_rules()), walked);
     }
 
     /// `~` is the home folder, as the disk spells it; a path that does not

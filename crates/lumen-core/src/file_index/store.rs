@@ -105,6 +105,15 @@ pub fn digest(rules: &WalkRules) -> String {
         hash.write(&[VALUE]);
     }
     hash.write(&[LIST]);
+    // Only when there is one, so an index walked before the list existed
+    // still matches its rules and is not walked again for nothing.
+    if !rules.skips_off.is_empty() {
+        for name in &rules.skips_off {
+            hash.write(name.as_bytes());
+            hash.write(&[VALUE]);
+        }
+        hash.write(&[LIST]);
+    }
     hash.write(&[
         u8::from(rules.use_ignore_files),
         u8::from(rules.include_hidden),
@@ -760,6 +769,9 @@ mod tests {
         variants.push(changed);
         let mut changed = base.clone();
         changed.include_hidden = true;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.skips_off.push("node_modules".into());
         variants.push(changed);
         let mut changed = base.clone();
         changed.ceiling = 10;

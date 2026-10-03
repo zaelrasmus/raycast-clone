@@ -31,6 +31,7 @@ fn count(root: &Path) {
         ignore_patterns: Vec::new(),
         use_ignore_files: true,
         include_hidden: false,
+        skips_off: Vec::new(),
         ceiling: usize::MAX,
     };
     let start = Instant::now();

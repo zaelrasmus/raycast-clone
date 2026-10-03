@@ -411,7 +411,8 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
     "exclusions": [],
     "ignore-patterns": [],
     "use-ignore-files": true,
-    "include-hidden": false
+    "include-hidden": false,
+    "default-skips-off": []
   },
   "preferred-browser": null
 }
@@ -785,7 +786,8 @@ copy the path. The full design is in
   "exclusions": ["~/Videos"],
   "ignore-patterns": ["*.log", "**/build/**"],
   "use-ignore-files": true,
-  "include-hidden": false
+  "include-hidden": false,
+  "default-skips-off": []
 }
 ```
 
@@ -799,8 +801,12 @@ copy the path. The full design is in
   too.
 - An F3 config still loads: `roots` becomes `scopes`, and `limits` is ignored.
 
-Not walked into, ever: `node_modules`, `target`, `build`, `dist`, `.git`,
-`.venv`, `AppData` and about fifteen others, matched by directory name.
+Not walked into by default: `node_modules`, `target`, `build`, `dist`, `.git`,
+`.venv`, `AppData` and about fifteen others, matched by directory name. Name
+one in **`default-skips-off`** to walk it after all. A scope you add is
+always walked, even inside a skipped, excluded or hidden folder (say
+`~/AppData/Roaming/Lumen/config` beside `~`), unless it is itself one of the
+`exclusions`.
 
 **Every scope you add is held in memory.** The names are matched in memory
 (about 30 bytes an entry), under a ceiling of 500 000 entries that keeps the

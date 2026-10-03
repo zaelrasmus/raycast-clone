@@ -14,6 +14,11 @@
 //! still hears that `AppData`'s time moved when an entry arrives directly
 //! in it -- rare, and one listing of the scope's folder to apply.
 //!
+//! A scope inside `AppData` -- walked on its own because `~`'s walk never
+//! reaches it -- is watched the same way, as a scope of its own; one inside
+//! a folder already watched with everything beneath needs nothing more, so
+//! no change is reported twice.
+//!
 //! # Push and return
 //!
 //! The callback runs on `notify`'s thread and hands the paths `notify`
@@ -36,7 +41,8 @@ pub struct Target {
 
 /// What to watch for `rules`: each scope walked on its own without its
 /// subfolders, and every folder directly in it the rules allow, with
-/// everything beneath (see "Never a watch over a skipped tree" above).
+/// everything beneath (see "Never a watch over a skipped tree" above) --
+/// less what a watch with everything beneath already covers.
 ///
 /// Reads each scope's folder, so it runs off the UI thread like the walk.
 pub fn watch_targets(rules: &WalkRules) -> Vec<Target> {
@@ -66,6 +72,16 @@ pub fn watch_targets(rules: &WalkRules) -> Vec<Target> {
             }
         }
     }
+    let covering = targets
+        .iter()
+        .filter(|target| target.recursive)
+        .map(|target| target.path.clone())
+        .collect::<Vec<_>>();
+    targets.retain(|target| {
+        !covering
+            .iter()
+            .any(|outer| target.path.starts_with(outer) && target.path != *outer)
+    });
     targets
 }
 
@@ -198,6 +214,81 @@ mod tests {
 
         let targets = watch_targets(&rules(&[tree.0.clone(), tree.path("Documents")]));
         assert_eq!(targets.len(), 2);
+    }
+
+    /// The outer scope's watches pass `AppData` by, so a scope inside it is
+    /// watched as a scope of its own; `AppData` itself still is not.
+    #[test]
+    fn a_scope_under_a_skipped_folder_gets_its_own_watch() {
+        let tree = Tree::new("watch-nested-skipped");
+        tree.file("AppData/Local/cache.db")
+            .file("AppData/config/themes/dark.json")
+            .file("Documents/notes.md");
+
+        let targets = watch_targets(&rules(&[tree.0.clone(), tree.path("AppData/config")]));
+
+        assert_eq!(
+            targets,
+            [
+                Target {
+                    path: tree.0.clone(),
+                    recursive: false,
+                },
+                Target {
+                    path: tree.path("Documents"),
+                    recursive: true,
+                },
+                Target {
+                    path: tree.path("AppData/config"),
+                    recursive: false,
+                },
+                Target {
+                    path: tree.path("AppData/config/themes"),
+                    recursive: true,
+                },
+            ]
+        );
+    }
+
+    /// A scope inside a folder watched with everything beneath -- hidden
+    /// from `~`'s walk, not from its watch -- adds no watch of its own.
+    #[test]
+    fn a_scope_inside_a_recursive_watch_is_not_watched_twice() {
+        let tree = Tree::new("watch-nested-covered");
+        tree.file("Documents/.private/notes/plan.md");
+
+        let targets = watch_targets(&rules(&[
+            tree.path("Documents/.private/notes"),
+            tree.0.clone(),
+        ]));
+
+        assert_eq!(
+            targets,
+            [
+                Target {
+                    path: tree.0.clone(),
+                    recursive: false,
+                },
+                Target {
+                    path: tree.path("Documents"),
+                    recursive: true,
+                },
+            ]
+        );
+    }
+
+    /// A default skip turned back on is watched like any other folder.
+    #[test]
+    fn a_default_skip_turned_off_is_watched() {
+        let tree = Tree::new("watch-skips-off");
+        tree.file("node_modules/left-pad/index.js");
+
+        let mut rules = tree.rules();
+        rules.skips_off = vec!["node_modules".into()];
+        assert!(watch_targets(&rules).contains(&Target {
+            path: tree.path("node_modules"),
+            recursive: true,
+        }));
     }
 
     /// The watch pushes what changed, and nothing about a skipped tree.

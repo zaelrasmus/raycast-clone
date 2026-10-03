@@ -67,7 +67,7 @@ use parking_lot::{Mutex, RwLock};
 
 pub use names::{Kinds, MIN_SUBSTRING, Match, Names};
 pub use store::{Meta, Row, Store, digest};
-pub use walk::{CEILING, Entry, WalkRules, Walked, walk};
+pub use walk::{CEILING, Entry, WalkRules, Walked, default_skips, walk};
 pub use watch::{FileWatch, watch_targets};
 
 use lumen_platform::LaunchTarget;
@@ -1139,6 +1139,41 @@ mod tests {
 
         assert!(updated.index.is_none());
         assert_eq!(index.len(), before);
+    }
+
+    /// A scope under a folder the outer scope skips owns the changes inside
+    /// it: they are applied, and to it, while `AppData` around it stays out.
+    #[test]
+    fn a_change_in_a_scope_under_a_skipped_folder_is_applied_to_it() {
+        let mut scope = Scope::new("update-nested-skipped");
+        scope
+            .file("top.txt")
+            .file("AppData/Local/cache.db")
+            .file("AppData/config/settings.json");
+        scope.rules.scopes.push(scope.path("AppData/config"));
+        let index = scope.build();
+        assert_eq!(
+            found(&index, &scope, "settings"),
+            ["AppData/config/settings.json"]
+        );
+        assert_eq!(index.per_scope(), [1, 1]);
+
+        scope.file("AppData/config/themes/dark.json");
+        scope.file("AppData/Local/noise.db");
+        let index = scope.update(
+            index,
+            &[
+                scope.path("AppData/config/themes"),
+                scope.path("AppData/Local/noise.db"),
+            ],
+        );
+
+        assert_eq!(
+            found(&index, &scope, "dark"),
+            ["AppData/config/themes/dark.json"]
+        );
+        assert!(found(&index, &scope, "noise").is_empty());
+        assert_eq!(index.per_scope(), [1, 3]);
     }
 
     /// An index made before a batch never answers with a row the batch
