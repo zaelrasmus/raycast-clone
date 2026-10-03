@@ -18,13 +18,65 @@ is a measurement and changes nothing a user sees.
 
 ---
 
+## Slice 0: what was measured
+
+`cargo bench -p lumen-core --bench file_index` and
+`cargo run --release -p lumen-core --example count_home`, on this machine.
+
+**Real folders, after the skip rules** (`ignore` with hidden entries skipped,
+ignore files on, today's `SKIPPED` names):
+
+| Root | Entries | Walk, one thread | Where the bulk is |
+| ---- | ------- | ---------------- | ----------------- |
+| Home | 54 597 | 2.5 s | Downloads 39 255, `go` 9 323, Documents 2 383 |
+| `D:\` | 350 373 | 23.7 s | ModrinthApp 216 646, Apps 78 945, SteamLibrary 33 188, XboxGames 12 387 -- and `Dev` 3 329 |
+
+The estimate of 100 000 to 1 000 000 entries for a home folder was too high by
+an order of magnitude. `D:\` is the case "offered, not taken" was decided
+for: over 90 % of it is games and launchers, and the user's own work is 1 %.
+
+**Storage, on a synthetic corpus** (p95 of 200 runs; "all" collects every
+match, "500" stops at 500):
+
+| | 100 000 entries | 1 000 000 entries |
+| - | --------------- | ----------------- |
+| SQLite + FTS5 trigram: build | 1.9 s | 30.7 s |
+| SQLite: file on disk | 17.6 MB | 172.8 MB |
+| SQLite, all, `invoice` | 1.89 ms | **19.06 ms** |
+| SQLite, 500, any query | < 0.36 ms | < 0.54 ms |
+| Names in memory: build | 3 ms | 28 ms |
+| Names in memory: resident | 3.6 MB | 29.8 MB |
+| Names in memory, all, worst query | 0.49 ms | 4.59 ms |
+| Names in memory, 500, any query | < 0.10 ms | < 1.2 ms |
+
+Two things the numbers say that the design did not expect. Trigram FTS gets
+*slower* as the query gets longer, because it intersects more posting lists;
+and ranking needs every match, not the first 500 in storage order, which is
+where SQLite misses the budget.
+
+**Decision: names are matched in memory; entries are kept on disk.** The
+names live in one lower-cased blob with an offset table, scanned with
+`memmem`, which answers every match within the 4 ms target up to a million
+entries and builds a thousand times faster. At the sizes measured it is 2 MB
+for this home folder and about 13 MB if all of `D:\` were added. SQLite stays,
+without FTS, as the record of what was indexed -- paths, folders' modification
+times for the start reconcile -- so a start never walks again from nothing.
+The blob is rebuilt from it at start in milliseconds.
+
+Also confirmed: `ignore` with hidden entries skipped does skip a file that has
+only the Windows hidden attribute, so I-1 holds without a `Platform` call. And
+`ignore` applies `.gitignore` only inside a Git repository by default
+(`require_git`), which is what Git itself does and is kept.
+
+---
+
 ## The decisions
 
 | Question | Decision |
 | -------- | -------- |
 | Where does it look by default? | The user's home folder. Other internal drives are **offered**, never added silently |
 | Can home be removed? | Yes. Home is an ordinary scope; scopes and exclusions are two lists |
-| Where does the index live? | On disk, in Lumen's cache folder. Not in memory |
+| Where does the index live? | Entries on disk, in Lumen's cache folder; names matched from a compact blob in memory (slice 0) |
 | How is it kept current? | Watching for changes, plus a reconcile at start and a *Rebuild Index* action |
 | What can root search show? | A setting with three levels: *Off*, *Folders*, *Folders and files* |
 | Text inside files? | Only in the *Search Files* view, never in root, through the Windows Search index |
@@ -128,24 +180,25 @@ from the result that annoyed you, not from a settings page.
 
 ## The index
 
-### On disk, because of the memory budget
+### Entries on disk, names in memory
 
 An index is the list of every name and path the rules allow, built once so a
-keystroke never touches the disk. F3 keeps it in memory, and at 5 000 entries
-that is one or two megabytes. A home folder on a developer's machine is
-plausibly 100 000 to 1 000 000 entries *after* the skip rules (an estimate,
-measured in slice 0). In memory, with the matcher's prepared haystacks, that
-is tens to hundreds of megabytes -- the idle budget is 100 MB for everything.
+keystroke never touches the disk. F3 keeps it in memory with the matcher's
+prepared haystacks for every entry, which is affordable at 5 000 and not at
+the hundreds of thousands a second drive can hold -- the idle budget is
+100 MB for everything.
 
-So the index is a SQLite database in Lumen's cache folder
-(`Paths::cache_dir`, which is local, not roaming: the index is rebuilt from
-the disk and has no business following the user between machines). SQLite is already in the build for the
-clipboard history (F3, F12); its page cache is bounded, so resident memory
-does not grow with the index.
+So it is split (slice 0 measured why):
 
-What a row holds: the path, the name, the parent, folder or file, size,
-modification time, and which scope it came from. The name is also stored in
-a form for matching (lower-cased, normalised).
+- **The entries** are a SQLite database in Lumen's cache folder
+  (`Paths::cache_dir`, local, not roaming: the index is rebuilt from the disk
+  and has no business following the user between machines). SQLite is
+  already in the build for the clipboard history (F3, F12). A row holds the
+  path, the name, the parent, folder or file, size, modification time, and
+  which scope it came from.
+- **The names** are one lower-cased, normalised blob with an offset table,
+  about 30 bytes an entry, rebuilt from the database at start in
+  milliseconds. Only the matches of a query get the matcher's prepared form.
 
 ### How a query is answered
 
@@ -169,11 +222,10 @@ scattered-letter matches. Matching files by word start and substring removes
 those for the one source that has hundreds of thousands of them, and leaves
 applications as fuzzy as they are today.
 
-**Decided by measurement, not here:** FTS5 trigram against an in-memory
-table of names alone (roughly 30--40 bytes an entry, no haystacks). Slice 0
-measures both on a synthetic million-entry index. The design depends only on
-"a query answers in under 4 ms at p95 and idle memory stays in budget"; the
-storage that meets it wins.
+**Decided by measurement** (slice 0, above): not FTS5 trigram but the names
+in memory -- one blob, about 30 bytes an entry, scanned with `memmem` -- with
+the entries themselves in SQLite. The prefix and trigram paths described
+above were the SQLite candidate and are not built.
 
 ### Kept current
 

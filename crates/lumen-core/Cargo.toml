@@ -47,6 +47,11 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+# Slice 0 of the file index (F16): the in-memory candidate scans its names
+# with `memmem` (already in the build through regex), and `count_home` walks a
+# real home folder with the walker the index is designed around.
+memchr = "2"
+ignore = "0.4"
 
 [[bench]]
 name = "search"
@@ -54,4 +59,8 @@ harness = false
 
 [[bench]]
 name = "calculator"
+harness = false
+
+[[bench]]
+name = "file_index"
 harness = false
