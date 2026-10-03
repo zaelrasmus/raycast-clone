@@ -3349,6 +3349,27 @@ search field and the footer. That is not the same jump. The root list has no
 loading state, and its height already follows its results as they change;
 collapsing when there are none is deliberate, and unchanged.
 
+### 7.51 An ellipsis needs the width it was cut to, as a patch to gpui
+
+Text styled `truncate()` never drew its ellipsis; it was clipped at the edge
+of its box instead. gpui 0.2.2 measures text once per layout pass and keeps
+the result, and its cache check compares only the wrap width. A line that
+does not wrap has none, so the first measurement always hit the cache. Flex
+layout takes that first measurement at max-content, where there is no width
+to cut to, and the definite width offered next was answered with the full,
+uncut line.
+
+The patch stores the width a layout was truncated to beside its wrap width,
+and the cache is used only when both match. Every changed line in
+`vendor/gpui/src/elements/text.rs` is marked
+`LUMEN PATCH (docs/ARCHITECTURE.md, 7.51)`, as 7.35's are. A test in the
+same file lays out a truncated line in a narrow flex row and checks that it
+ends in the ellipsis and fits the row.
+
+Across a gpui upgrade (I-6) the test is the check: if upstream has fixed the
+cache, drop the patch; if not, re-apply it. gpui is not a workspace member,
+so its tests run against its own manifest.
+
 ## 8. Risk register
 
 | # | Risk | Phase | Status |

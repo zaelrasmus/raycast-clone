@@ -316,6 +316,9 @@ struct TextLayoutInner {
     lines: SmallVec<[WrappedLine; 1]>,
     line_height: Pixels,
     wrap_width: Option<Pixels>,
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.51): part of the cache check, so a
+    // line measured without a width is not reused when a width arrives.
+    truncate_width: Option<Pixels>,
     size: Option<Size<Pixels>>,
     bounds: Option<Bounds<Pixels>>,
 }
@@ -373,6 +376,8 @@ impl TextLayout {
                 if let Some(text_layout) = element_state.0.borrow().as_ref()
                     && text_layout.size.is_some()
                     && (wrap_width.is_none() || wrap_width == text_layout.wrap_width)
+                    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.51)
+                    && truncate_width == text_layout.truncate_width
                 {
                     return text_layout.size.unwrap();
                 }
@@ -411,6 +416,7 @@ impl TextLayout {
                         len: 0,
                         line_height,
                         wrap_width,
+                        truncate_width, // LUMEN PATCH (docs/ARCHITECTURE.md, 7.51)
                         size: Some(Size::default()),
                         bounds: None,
                     });
@@ -429,6 +435,7 @@ impl TextLayout {
                     len,
                     line_height,
                     wrap_width,
+                    truncate_width, // LUMEN PATCH (docs/ARCHITECTURE.md, 7.51)
                     size: Some(size),
                     bounds: None,
                 });
@@ -915,5 +922,32 @@ impl IntoElement for InteractiveText {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+// LUMEN PATCH (docs/ARCHITECTURE.md, 7.51)
+#[cfg(test)]
+mod truncation_tests {
+    use crate::{
+        self as gpui, ParentElement, StyledText, TestAppContext, div, point, prelude::*, px, size,
+    };
+
+    #[gpui::test]
+    fn test_truncation_uses_the_definite_width(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let text = StyledText::new("a line far too long for its row");
+        let layout = text.layout().clone();
+
+        // Flex measures the text at max-content for its basis, then offers it
+        // the row's definite width.
+        cx.draw(point(px(0.), px(0.)), size(px(200.), px(20.)), |_, _| {
+            div()
+                .flex()
+                .w(px(50.))
+                .child(div().flex_1().truncate().child(text))
+        });
+
+        assert!(layout.text().ends_with('…'), "{}", layout.text());
+        assert!(layout.bounds().size.width <= px(50.));
     }
 }
