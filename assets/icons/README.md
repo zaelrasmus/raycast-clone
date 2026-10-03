@@ -1,6 +1,6 @@
 # The icon set
 
-Thirty-nine glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
+Forty glyphs, drawn for this project, MIT OR Apache-2.0 with everything else.
 
 ## The grid
 
@@ -47,6 +47,7 @@ are further from the centre and there is no shading to soften them.
 | `search.svg` | The search field, when a style's `search.icon` is `search` |
 | `lumen.svg` | Lumen's mark, the four-pointed spark of `lumen.ico`: the search field and the footer, when a style asks |
 | `file.svg` | A file |
+| `folder.svg` | A folder, from the file index (F16) |
 | `link.svg` | A quicklink |
 | `timer.svg` | A timer, and the *Timers* view (F8) |
 | `currency.svg` | A conversion in the root list, and the *Currency* command (F9) |

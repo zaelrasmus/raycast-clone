@@ -39,6 +39,8 @@ use std::path::{Path, PathBuf};
 use lumen_platform::LaunchTarget;
 use serde::{Deserialize, Serialize};
 
+use crate::file_index::for_display;
+use crate::file_index::walk::is_skipped;
 use crate::item::{Action, Item, Kind};
 
 /// How far the walk is allowed to go.
@@ -80,43 +82,6 @@ impl Default for FileLimits {
         }
     }
 }
-
-/// Directory names never descended into.
-///
-/// Matched exactly and case-insensitively against the directory's own name, not
-/// against the path, so a folder the user actually named `Build` is skipped
-/// too. That is the right trade: the cost of skipping one folder is one file
-/// not found, and the cost of descending into a `node_modules` is an index
-/// made of nothing else.
-const SKIPPED: &[&str] = &[
-    // Dependency and build trees.
-    "node_modules",
-    "target",
-    "build",
-    "dist",
-    "out",
-    "obj",
-    "bin",
-    "vendor",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "env",
-    // Version control and tooling state.
-    ".git",
-    ".svn",
-    ".hg",
-    ".cache",
-    ".gradle",
-    ".idea",
-    ".vs",
-    ".vscode",
-    // Windows' own. `AppData` alone is larger than everything the user made.
-    "appdata",
-    "application data",
-    "$recycle.bin",
-    "system volume information",
-];
 
 /// Walk `roots` and return one [`Item`] per file found.
 ///
@@ -204,33 +169,8 @@ fn walk(
     }
 }
 
-/// A path as it should be *shown*: the user's home replaced by `~`.
-///
-/// Purely cosmetic and applied only to the subtitle -- the action and the
-/// searchable keyword both keep the real path. A file subtitle is the longest
-/// text in the list, and on Windows the first thirty characters of it are
-/// `C:\Users\<name>\` on every single row: thirty characters that say nothing,
-/// pushing out the part that does.
-fn for_display(path: &Path, home: Option<&Path>) -> String {
-    let Some(home) = home else {
-        return path.display().to_string();
-    };
-
-    match path.strip_prefix(home) {
-        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
-        Err(_) => path.display().to_string(),
-    }
-}
-
 fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
-}
-
-fn is_skipped(name: &str) -> bool {
-    SKIPPED
-        .iter()
-        .any(|skipped| name.eq_ignore_ascii_case(skipped))
 }
 
 fn item(path: &Path, name: &str, home: Option<&Path>) -> Item {

@@ -47,6 +47,8 @@ pub enum Kind {
     Clipboard,
     Window,
     File,
+    /// A folder from the file index (F16).
+    Folder,
     Extension,
     Quicklink,
     /// A URL typed into the search field (F6).
@@ -72,6 +74,7 @@ impl Kind {
             Kind::Clipboard => "Clipboard",
             Kind::Window => "Window",
             Kind::File => "File",
+            Kind::Folder => "Folder",
             Kind::Extension => "Extension",
             Kind::Quicklink => "Quicklink",
             Kind::Website => "Website",
@@ -628,6 +631,8 @@ mod tests {
             Kind::Clipboard,
             Kind::Quicklink,
             Kind::Timer,
+            Kind::File,
+            Kind::Folder,
         ] {
             assert!(!kind.label().is_empty());
         }

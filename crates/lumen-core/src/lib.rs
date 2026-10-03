@@ -22,6 +22,7 @@ pub mod dates;
 pub mod dictionary;
 pub mod extension;
 pub mod favorites;
+pub mod file_index;
 pub mod frecency;
 pub mod item;
 pub mod layout;

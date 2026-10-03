@@ -38,6 +38,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../../assets/icons/file.svg"),
     ),
     (
+        "icons/folder.svg",
+        include_bytes!("../../../assets/icons/folder.svg"),
+    ),
+    (
         "icons/link.svg",
         include_bytes!("../../../assets/icons/link.svg"),
     ),
@@ -219,6 +223,7 @@ mod tests {
             Kind::Clipboard,
             Kind::Window,
             Kind::File,
+            Kind::Folder,
             Kind::Quicklink,
             Kind::Timer,
         ] {

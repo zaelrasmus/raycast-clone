@@ -46,6 +46,7 @@ pub fn glyph(kind: Kind) -> &'static str {
         Kind::Clipboard => "icons/clipboard.svg",
         Kind::Window => "icons/window.svg",
         Kind::File => "icons/file.svg",
+        Kind::Folder => "icons/folder.svg",
         Kind::Quicklink | Kind::Website => "icons/link.svg",
         Kind::Timer => "icons/timer.svg",
         Kind::Currency => "icons/currency.svg",

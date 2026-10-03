@@ -98,6 +98,13 @@ impl Frecency {
         }
     }
 
+    /// Every id with a history, in no particular order. For an index that
+    /// keeps its own boosts, such as the file index (F16), rather than asking
+    /// for each of a million entries.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+
     /// Drop entries that have decayed to nothing, so the file does not grow
     /// without bound across years of use.
     pub fn prune(&mut self) {

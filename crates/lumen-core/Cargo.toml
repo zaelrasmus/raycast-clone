@@ -44,14 +44,15 @@ sha2 = "0.10"
 # The bundled catalogue of places is compressed (F13). Already in the build
 # through resvg and png, with the same pure-Rust backend.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+# The file index (F16): `ignore` walks the scopes with the skip rules ripgrep
+# implements -- ignore files and the Windows hidden attribute among them, read
+# inside the dependency (I-1) -- and `memchr` scans the names with `memmem`,
+# as slice 0 measured. `memchr` is already in the build through regex.
+ignore = "0.4"
+memchr = "2"
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
-# Slice 0 of the file index (F16): the in-memory candidate scans its names
-# with `memmem` (already in the build through regex), and `count_home` walks a
-# real home folder with the walker the index is designed around.
-memchr = "2"
-ignore = "0.4"
 
 [[bench]]
 name = "search"

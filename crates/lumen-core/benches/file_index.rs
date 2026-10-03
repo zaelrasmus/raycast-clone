@@ -10,10 +10,16 @@
 //!
 //! A plain `main` rather than criterion: the budget is stated as a percentile,
 //! and criterion reports means and confidence intervals, not p95.
+//!
+//! Slice 1 adds "find and rank": the matcher that was built from the winner,
+//! `file_index::Names::find`, ranking and keeping the best 64 at the sizes
+//! slice 1 is held to -- this home folder, this home folder with `D:\`, and a
+//! million.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use lumen_core::file_index::{Kinds, Names};
 use memchr::memmem::Finder;
 use rusqlite::{Connection, params};
 
@@ -480,10 +486,62 @@ fn measure(count: usize) {
     remove_database(&path);
 }
 
+/// The sizes slice 1 is measured at: this home folder (54 597), home and
+/// `D:\` (405 000, rounded down to the drive alone), and a million.
+const FIND_SIZES: [usize; 3] = [55_000, 350_000, 1_000_000];
+
+/// Slice 0's queries, and two words.
+const FIND_QUERIES: [&str; 7] = ["a", "in", "inv", "invoice", "2024", "zqxj", "inv 2024"];
+
+/// As many as the *Search Files* view asks for; root asks for eight.
+const FIND_LIMIT: usize = 64;
+
+/// Slice 1: `Names::find` as the index runs it, every match ranked and the
+/// best 64 kept.
+fn find_and_rank() {
+    println!("\n## Find and rank (slice 1)\n");
+    println!("`Names::find(query, FoldersAndFiles, {FIND_LIMIT}, |_| 0)`.\n");
+    println!("| entries | query | p50 ms | p95 ms | max ms | returned |");
+    println!("| - | - | - | - | - | - |");
+
+    let mut memory = Vec::new();
+    for count in FIND_SIZES {
+        let entries = corpus(count);
+        let start = Instant::now();
+        let names = Names::from_entries(
+            entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.is_dir)),
+        );
+        let built = start.elapsed();
+        drop(entries);
+
+        for query in FIND_QUERIES {
+            let (samples, matches) = time(|| {
+                names
+                    .find(query, Kinds::FoldersAndFiles, FIND_LIMIT, |_| 0)
+                    .len()
+            });
+            row(&count.to_string(), query, &samples, matches);
+        }
+        memory.push((count, names.memory_bytes(), built));
+    }
+
+    println!();
+    for (count, bytes, built) in memory {
+        println!(
+            "names, {count} entries: {:.1} MB in memory, built in {:.0} ms",
+            bytes as f64 / 1_048_576.0,
+            ms(built)
+        );
+    }
+}
+
 fn main() {
     // `cargo bench` passes `--bench`; nothing here takes arguments.
-    println!("# File index, slice 0");
+    println!("# File index, slices 0 and 1");
     println!("\n{WARMUP} warm-up runs, then {RUNS} timed runs per row.");
+    find_and_rank();
     for count in SIZES {
         measure(count);
     }

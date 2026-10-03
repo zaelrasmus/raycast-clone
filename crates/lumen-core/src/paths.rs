@@ -120,6 +120,13 @@ impl Paths {
         self.cache_dir.join("favicons")
     }
 
+    /// The file index's entries (F16). In the cache: it is walked again from
+    /// the disk whenever it is lost, and has no business roaming with the
+    /// user to another machine.
+    pub fn file_index_file(&self) -> PathBuf {
+        self.cache_dir.join("files.db")
+    }
+
     pub fn frecency_file(&self) -> PathBuf {
         self.data_dir.join("frecency.json")
     }
