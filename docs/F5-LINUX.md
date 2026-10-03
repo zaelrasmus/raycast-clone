@@ -98,7 +98,8 @@ keystroke would show in the budgets.
 | `recent_files` | Stubbed as an empty list, so *Search Files* shows Lumen's own recents only. Read `$XDG_DATA_HOME/recently-used.xbel` (the GTK list file managers write), newest `modified` first, `file://` URIs that exist | Easy |
 | `show_in_folder` | Stubbed as an error. `org.freedesktop.FileManager1.ShowItems` over D-Bus (Nautilus, Dolphin, Thunar implement it); without it, `xdg-open` on the parent folder | Easy |
 | `open_with` | Stubbed as an error. The desktop portal's `OpenURI` with `ask: true`, which shows the chooser | Easy |
-| `pick_folder` | Stubbed as `Ok(None)`, so *Add Folder* adds nothing. The desktop portal's `FileChooser.OpenFile` with `directory: true` (`ashpd`), parented to the settings window; the chosen URI's path | Easy |
+| `pick_folder` | Stubbed as `Ok(None)`, so *Add Folder* and *Choose folders...* add nothing. The desktop portal's `FileChooser.OpenFile` with `directory: true` (`ashpd`), parented to the window in front, with `current_folder` set from `start`; the chosen URI's path | Easy |
+| `internal_drives` | Stubbed as an empty list, so *Search Files* offers no other drive. `udisks2` over D-Bus: block devices not `Removable`, not the root filesystem's, by their mount point and `IdLabel`; or `/proc/self/mounts` filtered to local filesystems under `/mnt`, `/media` and `/run/media` | Medium |
 
 ---
 

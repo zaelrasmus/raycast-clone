@@ -256,7 +256,17 @@ impl Platform for LinuxPlatform {
 
     /// F5: the desktop portal's `FileChooser.OpenFile` with `directory: true`.
     /// Until then nothing is picked, and the page says so by adding nothing.
-    fn pick_folder(&self, _title: &str) -> Result<Option<std::path::PathBuf>> {
+    fn pick_folder(
+        &self,
+        _title: &str,
+        _start: Option<&std::path::Path>,
+    ) -> Result<Option<std::path::PathBuf>> {
         Ok(None)
+    }
+
+    /// F5: the block devices `udisks2` reports as not removable, by mount
+    /// point. Until then none, so *Search Files* offers no other drive.
+    fn internal_drives(&self) -> Result<Vec<lumen_platform::Drive>> {
+        Ok(Vec::new())
     }
 }

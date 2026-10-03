@@ -201,6 +201,27 @@ fn write_list(path: &Path, list: List, paths: Vec<String>) -> Result<()> {
     })
 }
 
+/// Remember *Not now* for the drive at `root` (slice 5): appended to
+/// `declined-drives` as written, `D:/`. `false`, and nothing written, when
+/// it is already there in any spelling.
+pub fn decline_drive(path: &Path, root: &Path) -> Result<bool> {
+    let root = written(root, None);
+    let mut declined: Vec<String> = read(path)?
+        .declined_drives
+        .iter()
+        .map(|each| each.to_string_lossy().into_owned())
+        .collect();
+    if declined.iter().any(|each| same(each, &root)) {
+        return Ok(false);
+    }
+    declined.push(root);
+    section::edit(path, SECTION, |files| {
+        files.insert("declined-drives".into(), Value::from(declined));
+        Ok(())
+    })?;
+    Ok(true)
+}
+
 /// Whether the default skip called `name` is excluded: on the list and not
 /// turned back on.
 pub fn is_excluded(config: &FileSearchConfig, name: &str) -> bool {
@@ -429,6 +450,31 @@ mod tests {
         assert!(!contents(&path).contains("default-skips-off"));
 
         assert!(set_default_skip(&path, "not-a-skip", false).is_err());
+    }
+
+    #[test]
+    fn a_declined_drive_is_appended_once_with_forward_slashes() {
+        let path = file("declined", WRITTEN);
+        assert!(decline_drive(&path, Path::new("E:/")).unwrap());
+        assert!(!decline_drive(&path, Path::new("e:/")).unwrap());
+        assert!(decline_drive(&path, Path::new("D:/")).unwrap());
+        let config = read(&path).unwrap();
+        assert_eq!(
+            config.declined_drives,
+            [PathBuf::from("E:/"), PathBuf::from("D:/")]
+        );
+        // The rest of the section is untouched.
+        assert_eq!(config.scopes, [PathBuf::from("~"), PathBuf::from("D:/Dev")]);
+        assert!(contents(&path).contains("\"future-key\": 7"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_declined_windows_drive_is_written_as_the_file_spells_roots() {
+        let path = file("declined-windows", WRITTEN);
+        assert!(decline_drive(&path, Path::new(r"D:\")).unwrap());
+        assert!(!decline_drive(&path, Path::new("D:/")).unwrap());
+        assert!(contents(&path).contains("\"D:/\""));
     }
 
     #[test]

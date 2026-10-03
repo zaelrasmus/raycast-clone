@@ -17,8 +17,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use lumen_platform::Drive;
+
 use super::category::{CATEGORIES, Category};
-use super::{Found, preview};
+use super::{Found, drives, preview};
 use crate::view::{
     Action, EmptyState, Event, Filtering, Icon, Item, ItemDetail, List, Scope, ScopeOption,
     Section, View,
@@ -35,6 +37,14 @@ pub const COPY_PATH: &str = "copy-path";
 pub const OPEN_WITH: &str = "open-with";
 pub const EXCLUDE: &str = "exclude";
 pub const REBUILD: &str = "rebuild";
+/// On a drive's offer, and on the hint under an empty result (slice 5).
+pub const CHOOSE_FOLDERS: &str = "choose-folders";
+pub const NOT_NOW: &str = "not-now";
+/// On the whole-drive warning.
+pub const ADD_ANYWAY: &str = "add-anyway";
+pub const CANCEL: &str = "cancel";
+/// The most drives offered at once.
+pub const MAX_OFFERS: usize = 2;
 
 /// What the daemon is asked to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +75,14 @@ pub enum Effect {
     Exclude(Found),
     /// Walk every scope again.
     Rebuild,
+    /// Open the folder picker at this drive's root, off the UI thread, and
+    /// hand what is chosen to [`Session::picked`].
+    PickFolder(PathBuf),
+    /// Add this folder as a scope through the settings store, then tell
+    /// [`Session::added`].
+    AddScope(PathBuf),
+    /// Remember *Not now* for this drive's root (`declined-drives`).
+    DeclineDrive(PathBuf),
 }
 
 /// What the view says about the index itself.
@@ -97,6 +115,11 @@ pub struct Session {
     status: Status,
     /// Shortens *Where* in the pane shown before a row is described.
     home: Option<PathBuf>,
+    /// Internal drives no scope is on and not declined (slice 5), offered
+    /// above *Recently Used* and under an empty result.
+    offers: Vec<Drive>,
+    /// A whole drive picked, waiting for *Add anyway* or *Cancel*.
+    whole_drive: Option<PathBuf>,
 }
 
 impl Session {
@@ -113,7 +136,36 @@ impl Session {
             gone: HashSet::new(),
             status,
             home: None,
+            offers: Vec::new(),
+            whole_drive: None,
         }
+    }
+
+    /// The drives to offer folders from: [`drives::uncovered`].
+    pub fn with_drives(mut self, offers: Vec<Drive>) -> Self {
+        self.offers = offers;
+        self
+    }
+
+    /// What the folder picker returned: `None` when it was cancelled. A
+    /// folder is added; a whole drive is asked about first.
+    pub fn picked(&mut self, folder: Option<PathBuf>) -> Vec<Effect> {
+        let Some(folder) = folder else {
+            return Vec::new();
+        };
+        if drives::is_drive_root(&folder) {
+            self.whole_drive = Some(folder);
+            return vec![Effect::Render(self.view())];
+        }
+        vec![Effect::AddScope(folder)]
+    }
+
+    /// `folder` is a scope now, or already was: its drive is covered, and
+    /// offered no more.
+    pub fn added(&mut self, folder: &Path) -> Vec<Effect> {
+        self.offers
+            .retain(|drive| !drives::same_drive(&drive.root, folder));
+        vec![Effect::Render(self.view())]
     }
 
     /// The user's home folder, to shorten *Where*.
@@ -153,6 +205,9 @@ impl Session {
                 item: Some(item),
                 action,
             } => {
+                if let Some(effects) = self.drive_action(&item, &action) {
+                    return effects;
+                }
                 let Some(found) = self.shown_by_id(&item) else {
                     return Vec::new();
                 };
@@ -213,6 +268,43 @@ impl Session {
     pub fn excluded(&mut self, path: &Path) -> Vec<Effect> {
         self.gone.insert(path.to_path_buf());
         self.shown_again()
+    }
+
+    /// An action on a drive's offer, the hint under an empty result, or the
+    /// whole-drive warning; `None` when `item` is none of them.
+    fn drive_action(&mut self, item: &str, action: &str) -> Option<Vec<Effect>> {
+        if let Some(root) = item.strip_prefix(WHOLE_DRIVE_ID) {
+            let root = PathBuf::from(root);
+            if self.whole_drive.as_ref() != Some(&root) {
+                return Some(Vec::new());
+            }
+            return Some(match action {
+                ADD_ANYWAY => {
+                    self.whole_drive = None;
+                    vec![Effect::AddScope(root)]
+                }
+                CANCEL => {
+                    self.whole_drive = None;
+                    vec![Effect::Render(self.view())]
+                }
+                _ => Vec::new(),
+            });
+        }
+        let root = item
+            .strip_prefix(OFFER_ID)
+            .or_else(|| item.strip_prefix(HINT_ID))?;
+        let root = PathBuf::from(root);
+        if !self.offers.iter().any(|drive| drive.root == root) {
+            return Some(Vec::new());
+        }
+        Some(match action {
+            CHOOSE_FOLDERS => vec![Effect::PickFolder(root)],
+            NOT_NOW => {
+                self.offers.retain(|drive| drive.root != root);
+                vec![Effect::DeclineDrive(root), Effect::Render(self.view())]
+            }
+            _ => Vec::new(),
+        })
     }
 
     /// Search again for what is typed, or show the recents for nothing.
@@ -285,15 +377,40 @@ impl Session {
         } else {
             "Results"
         };
-        let sections = if items.is_empty() {
-            Vec::new()
-        } else {
-            vec![Section {
+        // Above everything: the whole drive picked, then, before anything
+        // is typed, the drives offered. Untitled: each row says what it is.
+        let mut lead: Vec<Item> = self
+            .whole_drive
+            .as_deref()
+            .map(whole_drive_row)
+            .into_iter()
+            .collect();
+        if self.query.is_empty() {
+            lead.extend(self.offers.iter().take(MAX_OFFERS).map(offer_row));
+        }
+        let mut sections = Vec::new();
+        if !lead.is_empty() {
+            sections.push(Section {
+                title: None,
+                subtitle: None,
+                items: lead,
+            });
+        }
+        if !items.is_empty() {
+            sections.push(Section {
                 title: Some(title.into()),
                 subtitle: self.status.indexing.then(|| "Indexing\u{2026}".into()),
                 items,
-            }]
-        };
+            });
+        } else if let Some(drive) = self.offers.first().filter(|_| self.found_nothing()) {
+            // An empty result explains itself: as a row, so Enter opens
+            // the picker at the drive.
+            sections.push(Section {
+                title: None,
+                subtitle: None,
+                items: vec![hint_row(drive)],
+            });
+        }
 
         View::List(List {
             placeholder: Some("Search files\u{2026}".into()),
@@ -304,6 +421,16 @@ impl Session {
             showing_detail: true,
             sections,
         })
+    }
+
+    /// What is typed was answered, with nothing, by an index that is not
+    /// still being built.
+    fn found_nothing(&self) -> bool {
+        self.status.scopes
+            && !self.status.indexing
+            && !self.query.is_empty()
+            && self.results.is_empty()
+            && self.answered.as_ref() == Some(&(self.query.clone(), self.filter))
     }
 
     fn empty(&self) -> EmptyState {
@@ -418,6 +545,80 @@ pub fn prefixes(shown: &[&Found]) -> Vec<Option<String>> {
             Some(format!("{folder}/"))
         })
         .collect()
+}
+
+/// The ids of the drive rows (slice 5), the drive's root after the prefix.
+/// Never an entry's: those are `file:` and `folder:`.
+const OFFER_ID: &str = "drive:";
+const HINT_ID: &str = "drive-hint:";
+const WHOLE_DRIVE_ID: &str = "whole-drive:";
+
+/// What the pane says beside a drive's offer and the empty result's hint.
+const OFFER_DETAIL: &str = "Lumen searches the folders it is given, and none is on this drive. \
+                            **Choose folders\u{2026}** opens the picker on it: add the folders \
+                            you search rather than the whole drive, since everything indexed \
+                            is held in memory. **Not now** stops offering it; a folder can \
+                            still be added in Settings, on the File Search page.";
+
+/// *Files on D:\ (Data) aren't searched*, with *Choose folders...* and
+/// *Not now*.
+fn offer_row(drive: &Drive) -> Item {
+    let root = drive.root.display();
+    let title = if drive.label.is_empty() {
+        format!("Files on {root} aren't searched")
+    } else {
+        format!("Files on {root} ({}) aren't searched", drive.label)
+    };
+    drive_row(
+        format!("{OFFER_ID}{root}"),
+        title,
+        vec![
+            action(CHOOSE_FOLDERS, "Choose folders\u{2026}"),
+            action(NOT_NOW, "Not now"),
+        ],
+        OFFER_DETAIL.into(),
+    )
+}
+
+/// The empty result's hint: nothing matched, and this drive is not
+/// searched.
+fn hint_row(drive: &Drive) -> Item {
+    let root = drive.root.display();
+    drive_row(
+        format!("{HINT_ID}{root}"),
+        format!("No files match. Files on {root} aren't searched."),
+        vec![action(CHOOSE_FOLDERS, "Choose folders\u{2026}")],
+        OFFER_DETAIL.into(),
+    )
+}
+
+/// A drive's root was picked: what it costs, before it is added.
+fn whole_drive_row(root: &Path) -> Item {
+    let root = root.display();
+    drive_row(
+        format!("{WHOLE_DRIVE_ID}{root}"),
+        format!("{root} is the whole drive: everything on it is held in memory."),
+        vec![action(ADD_ANYWAY, "Add anyway"), action(CANCEL, "Cancel")],
+        format!(
+            "Every file on {root} is indexed and kept in Lumen's memory, games and \
+             libraries included. Choosing the folders you search instead keeps \
+             the index small."
+        ),
+    )
+}
+
+fn drive_row(id: String, title: String, actions: Vec<Action>, detail: String) -> Item {
+    Item {
+        id,
+        title,
+        icon: Some(glyph("folder")),
+        actions,
+        detail: Some(ItemDetail {
+            markdown: detail,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 /// The shell's icon for the entry, over its category's glyph until it
@@ -852,6 +1053,171 @@ mod tests {
         let effects = session.set_status(READY);
         assert!(matches!(effects[0], Effect::Render(_)));
         assert!(matches!(effects[1], Effect::Search { .. }));
+    }
+
+    fn drive(root: &str, label: &str) -> Drive {
+        Drive {
+            root: root.into(),
+            label: label.into(),
+        }
+    }
+
+    fn offered() -> Vec<Drive> {
+        vec![
+            drive("D:\\", "Data"),
+            drive("E:\\", ""),
+            drive("F:\\", "Games"),
+        ]
+    }
+
+    fn invoke(session: &mut Session, item: Option<String>, action: &str) -> Vec<Effect> {
+        session.event(Event::ActionInvoked {
+            item,
+            action: action.into(),
+        })
+    }
+
+    fn row_id(session: &Session, title: &str) -> String {
+        list(&session.view())
+            .items()
+            .find(|item| item.title == title)
+            .unwrap_or_else(|| panic!("no row {title:?} in {:?}", titles(session)))
+            .id
+            .clone()
+    }
+
+    const OFFER_D: &str = "Files on D:\\ (Data) aren't searched";
+    const OFFER_E: &str = "Files on E:\\ aren't searched";
+
+    /// Above *Recently Used*, at most two, each with *Choose folders...*
+    /// first and *Not now*.
+    #[test]
+    fn an_uncovered_drive_is_offered_above_the_recents() {
+        let session = Session::new(recents(), READY).with_drives(offered());
+        let view = session.view();
+        let list = list(&view);
+        assert_eq!(list.sections.len(), 2);
+        assert_eq!(list.sections[1].title.as_deref(), Some("Recently Used"));
+        let offers: Vec<&str> = list.sections[0]
+            .items
+            .iter()
+            .map(|item| item.title.as_str())
+            .collect();
+        assert_eq!(offers, [OFFER_D, OFFER_E]);
+        let actions: Vec<&str> = list.sections[0].items[0]
+            .actions
+            .iter()
+            .map(|action| action.title.as_str())
+            .collect();
+        assert_eq!(actions, ["Choose folders\u{2026}", "Not now"]);
+    }
+
+    #[test]
+    fn no_offer_while_typing_or_with_every_drive_covered() {
+        let mut session = Session::new(recents(), READY).with_drives(offered());
+        let asked = generation(&query(&mut session, "plan"));
+        session.found(asked, vec![file("C:\\plan.md")]);
+        assert_eq!(titles(&session), ["plan.md"]);
+
+        let session = Session::new(recents(), READY);
+        let view = session.view();
+        assert_eq!(list(&view).sections.len(), 1);
+        assert_eq!(titles(&session).len(), 3);
+    }
+
+    /// The picker opens at the drive; the folder chosen is added, and the
+    /// drive is offered no more.
+    #[test]
+    fn choosing_folders_picks_at_the_drive_and_adds_the_one_chosen() {
+        let mut session = Session::new(recents(), READY).with_drives(offered());
+        let id = row_id(&session, OFFER_D);
+        assert_eq!(
+            invoke(&mut session, Some(id), CHOOSE_FOLDERS),
+            [Effect::PickFolder("D:\\".into())]
+        );
+        assert!(session.picked(None).is_empty(), "cancelled");
+        assert_eq!(
+            session.picked(Some("D:\\Work".into())),
+            [Effect::AddScope("D:\\Work".into())]
+        );
+        let effects = session.added(Path::new("D:\\Work"));
+        assert!(matches!(effects[0], Effect::Render(_)));
+        let titles = titles(&session);
+        assert!(!titles.iter().any(|title| title == OFFER_D), "{titles:?}");
+        // The next drive takes its place.
+        assert_eq!(titles[0], OFFER_E);
+        assert_eq!(titles[1], "Files on F:\\ (Games) aren't searched");
+    }
+
+    #[test]
+    fn not_now_declines_the_drive_and_removes_its_row() {
+        let mut session = Session::new(recents(), READY).with_drives(offered());
+        let id = row_id(&session, OFFER_E);
+        let effects = invoke(&mut session, Some(id), NOT_NOW);
+        assert_eq!(effects[0], Effect::DeclineDrive("E:\\".into()));
+        assert!(matches!(effects[1], Effect::Render(_)));
+        assert!(!titles(&session).iter().any(|title| title == OFFER_E));
+    }
+
+    /// A drive's root is asked about before it is added.
+    #[test]
+    fn a_whole_drive_picked_is_asked_about_first() {
+        let mut session = Session::new(recents(), READY).with_drives(offered());
+        let effects = session.picked(Some("D:\\".into()));
+        assert!(matches!(effects[..], [Effect::Render(_)]));
+        let warning = "D:\\ is the whole drive: everything on it is held in memory.";
+        let view = session.view();
+        let first = list(&view).item(0).unwrap();
+        assert_eq!(first.title, warning);
+        let actions: Vec<&str> = first.actions.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(actions, ["Add anyway", "Cancel"]);
+
+        let id = first.id.clone();
+        assert_eq!(
+            invoke(&mut session, Some(id.clone()), ADD_ANYWAY),
+            [Effect::AddScope("D:\\".into())]
+        );
+        assert!(!titles(&session).iter().any(|title| title == warning));
+
+        session.picked(Some("E:\\".into()));
+        let id = row_id(
+            &session,
+            "E:\\ is the whole drive: everything on it is held in memory.",
+        );
+        let effects = invoke(&mut session, Some(id), CANCEL);
+        assert!(matches!(effects[..], [Effect::Render(_)]));
+        assert!(
+            !titles(&session)
+                .iter()
+                .any(|title| title.contains("whole drive"))
+        );
+    }
+
+    /// Nothing found, and a drive is not searched: the list says so, and
+    /// offers the picker at it.
+    #[test]
+    fn an_empty_result_names_a_drive_that_is_not_searched() {
+        let mut session = Session::new(Vec::new(), READY).with_drives(offered());
+        let asked = generation(&query(&mut session, "zzz"));
+        session.found(asked, Vec::new());
+        let view = session.view();
+        let hint = list(&view).item(0).expect("a hint row");
+        assert_eq!(hint.title, "No files match. Files on D:\\ aren't searched.");
+        let actions: Vec<&str> = hint.actions.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(actions, ["Choose folders\u{2026}"]);
+        assert_eq!(list(&view).len(), 1);
+        let id = hint.id.clone();
+        assert_eq!(
+            invoke(&mut session, Some(id), CHOOSE_FOLDERS),
+            [Effect::PickFolder("D:\\".into())]
+        );
+
+        // Every drive covered: the empty state, as before.
+        let mut session = Session::new(Vec::new(), READY);
+        let asked = generation(&query(&mut session, "zzz"));
+        session.found(asked, Vec::new());
+        assert!(list(&session.view()).is_empty());
+        assert_eq!(empty_title(&session), "No files match");
     }
 
     /// The whole loop against a real index: what the session asks, the

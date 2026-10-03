@@ -7,6 +7,7 @@
 //! what the session asks off the UI thread.
 
 pub mod category;
+pub mod drives;
 pub mod exclude;
 pub mod icon;
 pub mod preview;

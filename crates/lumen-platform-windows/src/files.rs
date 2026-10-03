@@ -1,24 +1,27 @@
 //! Files as the shell knows them (F16): the user's recent items, an item
-//! shown selected in Explorer, the *Open With* chooser, and the folder
-//! picker.
+//! shown selected in Explorer, the *Open With* chooser, the folder picker,
+//! and the internal drives.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, Result};
+use lumen_platform::Drive;
 use windows::Win32::Foundation::{ERROR_CANCELLED, HWND, MAX_PATH};
+use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
 };
+use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     FOLDERID_Recent, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog,
-    IFileOpenDialog, ILFree, IShellLinkW, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT,
-    OPENASINFO, SHOpenFolderAndSelectItems, SHOpenWithDialog, SHParseDisplayName,
-    SIGDN_FILESYSPATH, ShellLink,
+    IFileOpenDialog, ILFree, IShellItem, IShellLinkW, OAIF_ALLOW_REGISTRATION, OAIF_EXEC,
+    OAIF_REGISTER_EXT, OPENASINFO, SHCreateItemFromParsingName, SHOpenFolderAndSelectItems,
+    SHOpenWithDialog, SHParseDisplayName, SIGDN_FILESYSPATH, ShellLink,
 };
-use windows::core::{Interface as _, PCWSTR};
+use windows::core::{HSTRING, Interface as _, PCWSTR};
 
 use crate::{app_watch, com};
 
@@ -160,16 +163,21 @@ pub(crate) fn open_with(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The system's folder picker, titled `title`, over `owner`: the folder
-/// chosen, or `None` when it was cancelled.
+/// The system's folder picker, titled `title`, over `owner`, opened at
+/// `start` when given: the folder chosen, or `None` when it was cancelled.
 ///
-/// Owned by the settings window, which is topmost, so the picker opens over
-/// it rather than behind it, and the window waits while it is up. On a
-/// thread of its own, in the single-threaded apartment its dialog needs, and
-/// waited for: the caller is already off the UI thread, and asked for the
-/// answer.
-pub(crate) fn pick_folder(title: &str, owner: Option<HWND>) -> Result<Option<PathBuf>> {
+/// Owned by the window in front -- the settings window or the launcher,
+/// both topmost -- so the picker opens over it rather than behind it, and
+/// the window waits while it is up. On a thread of its own, in the
+/// single-threaded apartment its dialog needs, and waited for: the caller
+/// is already off the UI thread, and asked for the answer.
+pub(crate) fn pick_folder(
+    title: &str,
+    start: Option<&Path>,
+    owner: Option<HWND>,
+) -> Result<Option<PathBuf>> {
     let title = title.to_string();
+    let start = start.map(|start| start.to_string_lossy().into_owned());
     // A window handle is not `Send`; its value is all the thread needs.
     let owner = owner.map(|hwnd| hwnd.0 as isize);
     std::thread::Builder::new()
@@ -185,6 +193,17 @@ pub(crate) fn pick_folder(title: &str, owner: Option<HWND>) -> Result<Option<Pat
                     options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST,
                 )?;
                 dialog.SetTitle(&com::wide(&title))?;
+                // Where it opens, not a limit: the user can still go
+                // anywhere. A start that cannot be found opens where the
+                // picker last was, as with none.
+                if let Some(start) = &start {
+                    match SHCreateItemFromParsingName::<_, _, IShellItem>(&com::wide(start), None) {
+                        Ok(folder) => dialog.SetFolder(&folder)?,
+                        Err(error) => {
+                            log::warn!("cannot open the folder picker at {start}: {error}")
+                        }
+                    }
+                }
                 let owner = owner.map(|raw| HWND(raw as *mut _));
                 match dialog.Show(owner) {
                     Ok(()) => {}
@@ -199,4 +218,65 @@ pub(crate) fn pick_folder(title: &str, owner: Option<HWND>) -> Result<Option<Pat
         .context("starting the folder picker")?
         .join()
         .map_err(|_| anyhow::anyhow!("the thread showing the folder picker panicked"))?
+}
+
+/// The fixed, internal drives, `C:\` first: each letter `GetLogicalDrives`
+/// reports whose type is `DRIVE_FIXED`, labelled by its volume's name.
+///
+/// A drive whose volume cannot be read -- locked by BitLocker, say -- is
+/// still listed, unlabelled: it is there, and the picker says the rest.
+pub(crate) fn internal_drives() -> Vec<Drive> {
+    let letters = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(|bit| letters & (1 << bit) != 0)
+        .filter_map(|bit| {
+            let root = format!("{}:\\", char::from(b'A' + bit));
+            let wide = com::wide(&root);
+            let kind = unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) };
+            (kind == DRIVE_FIXED).then(|| Drive {
+                label: volume_label(&wide),
+                root: PathBuf::from(root),
+            })
+        })
+        .collect()
+}
+
+/// The volume's name, `Data`, or empty.
+fn volume_label(root: &HSTRING) -> String {
+    let mut name = [0u16; MAX_PATH as usize + 1];
+    let read = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root.as_ptr()),
+            Some(&mut name),
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    if read.is_err() {
+        return String::new();
+    }
+    let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+    String::from_utf16_lossy(&name[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// This machine boots from a fixed drive, so it has one: rooted, as
+    /// `X:\`, and never a removable or network letter.
+    #[test]
+    fn the_system_drive_is_an_internal_drive() {
+        let drives = internal_drives();
+        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        assert!(
+            drives
+                .iter()
+                .any(|drive| drive.root == Path::new(&format!("{system}\\"))),
+            "{drives:?}"
+        );
+        assert!(drives.iter().all(|drive| drive.root.parent().is_none()));
+    }
 }

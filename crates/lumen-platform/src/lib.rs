@@ -358,6 +358,16 @@ impl Browser {
     }
 }
 
+/// A fixed, internal volume (F16, slice 5): what *Search Files* offers
+/// folders from when no scope is on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drive {
+    /// Its root, as the system spells it: `D:\`.
+    pub root: PathBuf,
+    /// The name the user gave it, `Data`; empty when it has none.
+    pub label: String,
+}
+
 /// How an [`AppEntry`] is started.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LaunchTarget {
@@ -643,12 +653,22 @@ pub trait Platform: Send + Sync {
     fn open_with(&self, path: &std::path::Path) -> Result<()>;
 
     /// Ask the user for a folder, with the system's own picker titled
-    /// `title`, over the settings window (F16, slice 4): `None` when it is
-    /// cancelled.
+    /// `title`, over whichever of Lumen's windows is in front (F16, slices
+    /// 4 and 5): `None` when it is cancelled. Opened at `start` when given
+    /// -- a drive's root, when *Search Files* offers folders on it.
     ///
     /// Blocks until the picker closes, which is when the user decides, so it
     /// is called off the UI thread.
-    fn pick_folder(&self, title: &str) -> Result<Option<std::path::PathBuf>>;
+    fn pick_folder(
+        &self,
+        title: &str,
+        start: Option<&std::path::Path>,
+    ) -> Result<Option<std::path::PathBuf>>;
+
+    /// The fixed, internal drives, in the system's order (F16, slice 5):
+    /// no removable, network or optical drive. Asks the system each time;
+    /// called off the UI thread.
+    fn internal_drives(&self) -> Result<Vec<Drive>>;
 }
 
 #[cfg(test)]

@@ -100,6 +100,10 @@ pub struct FileSearchConfig {
     /// turned back on, in any case. Only what was turned off is stored, so a
     /// new default reaches everyone; a name not on the list is ignored.
     pub default_skips_off: Vec<String>,
+    /// The drives answered *Not now* in *Search Files* (slice 5), as
+    /// written: `E:/`. Not offered again; any can still be added from
+    /// settings.
+    pub declined_drives: Vec<PathBuf>,
     /// The family a text file's preview is drawn in, in *Search Files*.
     /// Which monospace family is the palette's (`font_mono`); whether to use
     /// it is this preference.
@@ -162,6 +166,7 @@ impl Default for FileSearchConfig {
             use_ignore_files: true,
             include_hidden: false,
             default_skips_off: Vec::new(),
+            declined_drives: Vec::new(),
             preview_font: PreviewFont::default(),
         }
     }
@@ -184,6 +189,7 @@ struct FileSearchFile {
     use_ignore_files: bool,
     include_hidden: bool,
     default_skips_off: Vec<String>,
+    declined_drives: Vec<PathBuf>,
     roots: Vec<PathBuf>,
     limits: Option<serde::de::IgnoredAny>,
     /// Read as any value, so one this build does not know is the default
@@ -203,6 +209,7 @@ impl Default for FileSearchFile {
             use_ignore_files: defaults.use_ignore_files,
             include_hidden: defaults.include_hidden,
             default_skips_off: defaults.default_skips_off,
+            declined_drives: defaults.declined_drives,
             roots: Vec::new(),
             limits: None,
             preview_font: None,
@@ -246,6 +253,7 @@ impl From<FileSearchFile> for FileSearchConfig {
             use_ignore_files: file.use_ignore_files,
             include_hidden: file.include_hidden,
             default_skips_off: file.default_skips_off,
+            declined_drives: file.declined_drives,
             preview_font: PreviewFont::read(file.preview_font.as_ref()),
         }
     }
@@ -850,6 +858,17 @@ mod tests {
         );
         assert!(!files.enabled);
         assert_eq!(files.scopes, [PathBuf::from("~")]);
+    }
+
+    /// The drives answered *Not now* are read as written (slice 5).
+    #[test]
+    fn declined_drives_are_read() {
+        let files = files(r#"{ "files": { "declined-drives": ["E:/", "D:/"] } }"#);
+        assert_eq!(
+            files.declined_drives,
+            [PathBuf::from("E:/"), PathBuf::from("D:/")]
+        );
+        assert!(FileSearchConfig::default().declined_drives.is_empty());
     }
 
     #[test]

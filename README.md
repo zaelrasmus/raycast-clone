@@ -803,6 +803,9 @@ copy the path. The full design is in
   scope; **`include-hidden`** takes dot-files and the Windows hidden attribute
   too.
 - An F3 config still loads: `roots` becomes `scopes`, and `limits` is ignored.
+- An internal drive with no scope on it is offered in *Search Files*:
+  *Choose folders...* opens the picker on it, *Not now* writes it to
+  **`declined-drives`** so it is not offered again.
 
 Not walked into by default: `node_modules`, `target`, `build`, `dist`, `.git`,
 `.venv`, `AppData` and about fifteen others, matched by directory name. Name

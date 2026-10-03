@@ -78,6 +78,9 @@ pub struct FileSearchPage {
     skips: Vec<(&'static str, FocusHandle)>,
     /// A folder picker is up, so another is not opened over it.
     picking: bool,
+    /// A whole drive picked as a scope, waiting for *Add anyway* or
+    /// *Cancel* (slice 5).
+    whole_drive: Option<PathBuf>,
     error: Option<String>,
     status: Option<SharedString>,
 }
@@ -112,6 +115,7 @@ impl FileSearchPage {
             flags,
             skips,
             picking: false,
+            whole_drive: None,
             error: None,
             status: None,
         };
@@ -255,40 +259,74 @@ impl FileSearchPage {
     }
 
     /// Ask for a folder with the system's picker, off the UI thread, and add
-    /// it to `list` as `config.json` writes it.
+    /// it to `list` as `config.json` writes it. A whole drive as a scope is
+    /// asked about first (slice 5).
     fn pick(&mut self, list: List, cx: &mut Context<Self>) {
         if self.picking || self.problem.is_some() {
             return;
         }
         self.picking = true;
+        self.whole_drive = None;
         self.error = None;
         let platform = self.platform.clone();
-        let home = self.home.clone();
-        let path = self.path.clone();
         let title = match list {
             List::Scopes => "Add a Folder to Search",
             List::Exclusions => "Exclude a Folder",
         };
         cx.spawn(async move |this, cx| {
-            let result = cx
+            let picked = cx
                 .background_executor()
-                .spawn(async move {
-                    let Some(folder) = platform.pick_folder(title)? else {
-                        return Ok(None);
-                    };
-                    let written = settings::written(&folder, home.as_deref());
-                    let added = settings::add(&path, list, &written)?;
-                    Ok::<_, anyhow::Error>(Some((written, added)))
-                })
+                .spawn(async move { platform.pick_folder(title, None) })
                 .await;
             this.update(cx, |page, cx| {
                 page.picking = false;
-                match result {
+                match picked {
                     Ok(None) => {}
-                    Ok(Some((written, true))) => {
-                        page.status = Some(format!("Added {written}").into());
+                    Ok(Some(folder))
+                        if list == List::Scopes
+                            && lumen_core::file_search::drives::is_drive_root(&folder) =>
+                    {
+                        page.whole_drive = Some(folder);
                     }
-                    Ok(Some((written, false))) => {
+                    Ok(Some(folder)) => page.add(list, folder, cx),
+                    Err(error) => {
+                        log::warn!("could not show the folder picker: {error:#}");
+                        page.error = Some(format!("{error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// *Add anyway* on the whole-drive warning, or *Cancel*.
+    fn answer_whole_drive(&mut self, add: bool, cx: &mut Context<Self>) {
+        if let Some(root) = self.whole_drive.take() {
+            if add {
+                self.add(List::Scopes, root, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// Write `folder` into `list`, off the UI thread.
+    fn add(&mut self, list: List, folder: PathBuf, cx: &mut Context<Self>) {
+        let written = settings::written(&folder, self.home.as_deref());
+        let path = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn({
+                    let written = written.clone();
+                    async move { settings::add(&path, list, &written) }
+                })
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(true) => page.status = Some(format!("Added {written}").into()),
+                    Ok(false) => {
                         page.status = Some(format!("{written} is already in the list").into());
                     }
                     Err(error) => {
@@ -577,6 +615,32 @@ impl FileSearchPage {
                 "No folders",
                 Some("Nothing is indexed until a folder is added".into()),
                 div(),
+                colors,
+            ));
+        }
+        if let Some(root) = &self.whole_drive {
+            let answers = div()
+                .flex()
+                .gap(px(metrics::TAB_GAP))
+                .child(text_button(
+                    "add-whole-drive",
+                    "Add anyway",
+                    colors,
+                    cx.listener(|page, _, _, cx| page.answer_whole_drive(true, cx)),
+                ))
+                .child(text_button(
+                    "cancel-whole-drive",
+                    "Cancel",
+                    colors,
+                    cx.listener(|page, _, _, cx| page.answer_whole_drive(false, cx)),
+                ));
+            scopes.push(ui::row(
+                format!(
+                    "{} is the whole drive: everything on it is held in memory.",
+                    root.display()
+                ),
+                Some("Add the folders you search on it instead, or add it anyway".into()),
+                answers,
                 colors,
             ));
         }

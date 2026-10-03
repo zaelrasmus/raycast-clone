@@ -591,6 +591,10 @@ struct FileSearchRun<'a> {
     /// Compared before and after a search, which is abandoned when it moved.
     keystrokes: &'a Arc<AtomicU64>,
     describer: &'a lumen_core::file_search::preview::Describer,
+    /// `config.json`, which a folder chosen or a drive declined is written
+    /// to (slice 5), and the home folder `~` is written against.
+    config_file: &'a std::path::Path,
+    home: &'a Option<std::path::PathBuf>,
 }
 
 impl FileSearchRun<'_> {
@@ -647,6 +651,75 @@ impl FileSearchRun<'_> {
             }
         })
         .detach();
+    }
+
+    /// The folder picker, opened at `start` over the launcher: what was
+    /// chosen, or `None`. The launcher does not hide while it is up.
+    async fn pick_folder(
+        &self,
+        cx: &mut gpui::AsyncApp,
+        start: std::path::PathBuf,
+    ) -> Option<std::path::PathBuf> {
+        self.this
+            .update(cx, |launcher, _| launcher.picking_folder = true)
+            .ok();
+        let platform = self.platform.clone();
+        let picked = cx
+            .background_executor()
+            .spawn(async move { platform.pick_folder("Choose Folders to Search", Some(&start)) })
+            .await;
+        self.this
+            .update(cx, |launcher, _| launcher.picking_folder = false)
+            .ok();
+        picked.unwrap_or_else(|error| {
+            log::warn!("could not show the folder picker: {error:#}");
+            None
+        })
+    }
+
+    /// Add `folder` as a scope through the settings store, as the settings
+    /// page does: `~` for home, forward slashes, a duplicate refused. The
+    /// daemon's watch on the file walks it. `true` when it is a scope now,
+    /// added or already there.
+    async fn add_scope(&self, cx: &mut gpui::AsyncApp, folder: std::path::PathBuf) -> bool {
+        use lumen_core::file_search::settings::{self, List};
+        let config_file = self.config_file.to_path_buf();
+        let home = self.home.clone();
+        let added = cx
+            .background_executor()
+            .spawn(async move {
+                let written = settings::written(&folder, home.as_deref());
+                settings::add(&config_file, List::Scopes, &written).map(|added| (written, added))
+            })
+            .await;
+        match added {
+            Ok((written, true)) => {
+                log::info!("added {written} to the file search scopes");
+                true
+            }
+            Ok((written, false)) => {
+                log::info!("{written} is already a file search scope");
+                true
+            }
+            Err(error) => {
+                log::warn!("could not add a folder to search: {error:#}");
+                false
+            }
+        }
+    }
+
+    /// Remember *Not now* for the drive at `root`.
+    async fn decline_drive(&self, cx: &mut gpui::AsyncApp, root: std::path::PathBuf) {
+        let config_file = self.config_file.to_path_buf();
+        let declined =
+            cx.background_executor()
+                .spawn(async move {
+                    lumen_core::file_search::settings::decline_drive(&config_file, &root)
+                })
+                .await;
+        if let Err(error) = declined {
+            log::warn!("could not remember a drive declined: {error:#}");
+        }
     }
 
     /// Put `text` on the clipboard, and hide once it is there.
@@ -816,6 +889,9 @@ pub struct Launcher {
     /// The open *Search Files* view's inbox, told when indexing starts or
     /// stops. Pushing to a view that has gone does nothing.
     file_search: Option<Arc<Inbox<FileSearchInput>>>,
+    /// *Search Files* has the folder picker up, over this window (slice
+    /// 5): losing focus to it is not the user leaving.
+    picking_folder: bool,
 
     /// A copy of the field's text, updated on every edit. Ranking reads it on
     /// every keystroke, and reaching into another entity for it each time
@@ -979,6 +1055,7 @@ impl Launcher {
             files_sink: None,
             files_indexing: 0,
             file_search: None,
+            picking_folder: false,
             query: String::new(),
             selected: 0,
             rows: Vec::new(),
@@ -1304,8 +1381,10 @@ impl Launcher {
         let status = self.file_search_status();
         let frecency = self.root.frecency().clone();
         let platform = self.platform.clone();
+        let files = self.config.files.clone();
+        let config_file = self.paths.config_file();
         cx.spawn(async move |this, cx| {
-            let (mut session, describer) = {
+            let (mut session, describer, home) = {
                 let platform = platform.clone();
                 cx.background_executor()
                     .spawn(async move {
@@ -1315,10 +1394,27 @@ impl Launcher {
                         });
                         let home = file_search::home_dir();
                         let recents = recents::recently_used(&frecency, system);
-                        let session = Session::new(recents, status).with_home(home.clone());
+                        // Offered only while file search is on: off, no
+                        // drive is searched, and none is the news.
+                        let offers = match platform.internal_drives() {
+                            Ok(internal) if files.enabled => file_search::drives::uncovered(
+                                &internal,
+                                &files.scopes,
+                                &files.declined_drives,
+                                home.as_deref(),
+                            ),
+                            Ok(_) => Vec::new(),
+                            Err(error) => {
+                                log::warn!("could not list the internal drives: {error:#}");
+                                Vec::new()
+                            }
+                        };
+                        let session = Session::new(recents, status)
+                            .with_home(home.clone())
+                            .with_drives(offers);
                         // Here rather than on the UI thread: the first call
                         // reads the system's time zone.
-                        (session, Describer::new(home))
+                        (session, Describer::new(home.clone()), home)
                     })
                     .await
             };
@@ -1327,6 +1423,8 @@ impl Launcher {
                 platform: &platform,
                 keystrokes: &keystrokes,
                 describer: &describer,
+                config_file: &config_file,
+                home: &home,
             };
             let mut effects = session.open();
 
@@ -1375,6 +1473,16 @@ impl Launcher {
                             this.update(cx, |launcher, cx| launcher.rebuild_files(cx))
                                 .ok();
                         }
+                        Effect::PickFolder(start) => {
+                            let picked = run.pick_folder(cx, start).await;
+                            follow.extend(session.picked(picked));
+                        }
+                        Effect::AddScope(folder) => {
+                            if run.add_scope(cx, folder.clone()).await {
+                                follow.extend(session.added(&folder));
+                            }
+                        }
+                        Effect::DeclineDrive(root) => run.decline_drive(cx, root).await,
                     }
                 }
                 if !follow.is_empty() {
@@ -1758,7 +1866,7 @@ impl Launcher {
             return;
         }
 
-        if !self.config.window.dismiss_on_focus_loss {
+        if !self.config.window.dismiss_on_focus_loss || self.picking_folder {
             return;
         }
 

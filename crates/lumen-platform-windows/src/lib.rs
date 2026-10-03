@@ -288,10 +288,26 @@ impl Platform for WindowsPlatform {
         files::open_with(path)
     }
 
-    fn pick_folder(&self, title: &str) -> Result<Option<std::path::PathBuf>> {
-        // Only settings asks, so the picker is its; before it was ever shown
-        // there is no window to own it, and the picker stands alone.
-        files::pick_folder(title, self.window(WindowRole::Settings).ok())
+    fn pick_folder(
+        &self,
+        title: &str,
+        start: Option<&std::path::Path>,
+    ) -> Result<Option<std::path::PathBuf>> {
+        // The settings page and *Search Files* ask, each from its own
+        // window: the picker is the one in front's. With neither in front
+        // the settings window owns it, as before; never shown, there is no
+        // window to own it, and the picker stands alone.
+        let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+        let owner = [WindowRole::Launcher, WindowRole::Settings]
+            .into_iter()
+            .filter_map(|role| self.window(role).ok())
+            .find(|hwnd| *hwnd == foreground)
+            .or_else(|| self.window(WindowRole::Settings).ok());
+        files::pick_folder(title, start, owner)
+    }
+
+    fn internal_drives(&self) -> Result<Vec<lumen_platform::Drive>> {
+        Ok(files::internal_drives())
     }
 }
 

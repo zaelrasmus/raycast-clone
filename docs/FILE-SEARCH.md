@@ -1,8 +1,9 @@
 # File search, the rest of the way (F16)
 
-**Status: in progress** -- slices 0 to 2 are built (see "What was done
-differently"); slice 2's measurements of the running daemon -- idle CPU with
-the watcher on, private memory after a build -- are still to be taken. This
+**Status: in progress** -- slices 0 to 5 are built (see "What was done
+differently" and each slice's notes); slice 2's measurements of the running
+daemon -- idle CPU with the watcher on, private memory after a build -- are
+still to be taken. This
 is the plan. When a slice lands, its
 decisions move into `ARCHITECTURE.md` (F16 decisions, and the revisions to
 7.19, 7.20, 7.21 and 7.26 listed below), and this file records where the build
@@ -745,6 +746,35 @@ none exists when slice 7 lands, at the end of this one, under its own heading.
 - `enabled` and `preview-font` have rows too (*Index*, *What*), so every key
   but `declined-drives` is settable. Drive switches, the per-drive skipped
   folders and Windows Search coverage wait for slices 5 and 6.
+
+### Slice 5: how it was built
+
+- **`Platform::internal_drives`** lists `GetLogicalDrives`' letters whose
+  `GetDriveTypeW` is `DRIVE_FIXED`, labelled by `GetVolumeInformationW`
+  (empty when unreadable). Linux returns none until F5. No size yet: the
+  whole-drive warning names the cost in words, not entries.
+- **Which drives are offered** is core's, `file_search::drives::uncovered`:
+  the internal drives minus any with a scope on it (`~` counts for home's
+  drive) minus `declined-drives`, roots compared in any spelling. Read once
+  when *Search Files* opens, with the recents, off the UI thread; at most two
+  are offered, and none while file search is off.
+- **No new view vocabulary** (I-13). Adding actions to `EmptyState` would
+  have changed every view's literal, so the offer, the empty-result hint
+  and the whole-drive warning are ordinary rows with ordinary actions: an
+  untitled section above *Recently Used*, and for an answered query with no
+  match, one row, *No files match. Files on D:\ aren't searched.*, whose
+  `Enter` is *Choose folders...*.
+- **`pick_folder` takes a start folder**, set with `IFileOpenDialog::
+  SetFolder`, and is owned by whichever of the launcher or the settings
+  window is in front. While *Search Files* has it up, the launcher does not
+  hide on losing focus to it.
+- **A folder chosen is written through the slice-4 store** (`~`, forward
+  slashes, a duplicate refused); the daemon's watch on the file does the
+  rest, and the drive's row goes at once. *Not now* appends the root, as
+  `D:/`, to `declined-drives` (`settings::decline_drive`).
+- **A drive's root is asked about** -- a path with no parent -- on the
+  settings page's *Add Folder* for scopes (an inline row) and in *Search
+  Files* (a row), each with *Add anyway* and *Cancel*.
 
 ---
 
