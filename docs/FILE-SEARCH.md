@@ -278,6 +278,16 @@ drive, and an index on disk can lift the ceiling without spending memory.
 Not yet measured: asking the database for its best rows *ranked* (exact,
 name start, shortest) rather than its first 200 in storage order.
 
+**Decision: B.** The compact layout with an FTS5 word index replaces the
+ceiling. Root searches a hot layer in memory -- what was used, what is
+recent, the shallowest folders, within a fixed budget; for an index the
+size of a home folder, all of it -- and then the word index on disk, whose
+rows are appended below. *Search Files* adds mid-word matches by a plain
+scan, where waiting is allowed. No trigram: it would double the database
+for a mid-word answer that is 50 ms at this machine's size. Root no longer
+finds a match inside a word for an entry outside the hot layer; that is
+the trade, chosen over losing entries.
+
 ---
 
 ## The decisions
