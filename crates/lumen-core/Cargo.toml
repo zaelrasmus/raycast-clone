@@ -65,3 +65,7 @@ harness = false
 [[bench]]
 name = "file_index"
 harness = false
+
+[[bench]]
+name = "file_index_disk"
+harness = false

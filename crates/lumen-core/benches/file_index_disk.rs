@@ -1,0 +1,1363 @@
+//! The file index without a ceiling (F16): what "a hot layer in memory and the
+//! full index on disk" would cost, measured before it is designed.
+//!
+//! Today every name is held in memory (`file_index::Names`) under a 500 000
+//! ceiling, and the store keeps each entry's full path. This bench builds the
+//! same corpora five ways on disk -- today's layout, a compact folder tree, the
+//! tree with an FTS5 word index (full and compact detail), the tree with an
+//! FTS5 trigram index -- and the in-memory names built from the tree, and
+//! measures their size, their build, every query of slice 0 against each, the
+//! first query of a fresh process, and the process's memory while querying.
+//!
+//! The corpora are the user's real index (copied, never opened in place), its
+//! home-folder subset, and slice 0's generator at one and two million entries,
+//! grown as a folder tree so a folders table means something.
+//!
+//! Everything is written under `target/disk-bench` and removed at the end.
+//! Child processes of this same binary measure the cold-ish first query and
+//! the working set, so neither is polluted by the corpora this one holds.
+
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use lumen_core::file_index::{Kinds, Names};
+use memchr::memmem::Finder;
+use rusqlite::{Connection, OpenFlags, params};
+
+/// Slice 0's queries and two words; three real words are added at run time.
+const QUERIES: [&str; 7] = ["a", "in", "inv", "invoice", "2024", "zqxj", "inv 2024"];
+
+/// The capped variant of every query.
+const LIMIT: usize = 200;
+
+const WARMUP: usize = 20;
+const RUNS: usize = 200;
+
+/// The page cache every query connection runs with: resident memory must not
+/// grow with the number of files.
+const CACHE: &str = "PRAGMA cache_size = -8192;";
+
+/// The synthetic sizes. Real corpora come from the user's index.
+const SYNTHETIC: [usize; 2] = [1_000_000, 2_000_000];
+
+/// A fixed-seed xorshift64, as in slice 0.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items[self.below(items.len())]
+    }
+}
+
+const FOLDERS: [&str; 28] = [
+    "Documents",
+    "Projects",
+    "lumen",
+    "src",
+    "Photos",
+    "2024",
+    "2025",
+    "Invoices",
+    "Downloads",
+    "notes",
+    "archive",
+    "Desktop",
+    "Music",
+    "Videos",
+    "Acme Corp",
+    "Globex",
+    "Initech",
+    "Umbrella",
+    "Hooli",
+    "drafts",
+    "old",
+    "backup",
+    "scans",
+    "taxes",
+    "school",
+    "assets",
+    "docs",
+    "tests",
+];
+
+const WORDS: [&str; 48] = [
+    "invoice",
+    "Report",
+    "budget",
+    "Meeting",
+    "notes",
+    "draft",
+    "final",
+    "Resume",
+    "contract",
+    "proposal",
+    "summary",
+    "Screenshot",
+    "IMG",
+    "photo",
+    "holiday",
+    "Beach",
+    "family",
+    "receipt",
+    "statement",
+    "Tax",
+    "install",
+    "index",
+    "main",
+    "lib",
+    "config",
+    "README",
+    "changelog",
+    "Presentation",
+    "slides",
+    "Quarterly",
+    "roadmap",
+    "design",
+    "mockup",
+    "logo",
+    "banner",
+    "export",
+    "backup",
+    "letter",
+    "Application",
+    "form",
+    "schedule",
+    "timesheet",
+    "payroll",
+    "recording",
+    "interview",
+    "lecture",
+    "Thesis",
+    "chapter",
+];
+
+const EXTENSIONS: [&str; 16] = [
+    "pdf", "docx", "png", "jpg", "rs", "md", "txt", "xlsx", "mp4", "zip", "pptx", "csv", "json",
+    "heic", "mov", "html",
+];
+
+/// One file or folder.
+struct Item {
+    folder: u32,
+    name: String,
+    is_dir: bool,
+    scope: i64,
+    modified: Option<i64>,
+}
+
+/// A corpus as a folder tree: every folder path once, and the items in it.
+#[derive(Default)]
+struct Corpus {
+    /// Each folder's full path, as first seen: what today's layout stores per
+    /// row.
+    paths: Vec<String>,
+    parents: Vec<Option<u32>>,
+    /// The last component of each folder's path.
+    folder_names: Vec<String>,
+    ids: HashMap<String, u32>,
+    items: Vec<Item>,
+}
+
+impl Corpus {
+    /// The folder at `path`, added with its ancestors if new.
+    fn folder(&mut self, path: &str) -> u32 {
+        let trimmed = path.trim_end_matches(['\\', '/']);
+        let key = if trimmed.is_empty() { path } else { trimmed };
+        if let Some(&id) = self.ids.get(key) {
+            return id;
+        }
+        let (parent, name) = match key.rfind(['\\', '/']) {
+            Some(at) if at > 0 => (Some(self.folder(&key[..at])), &key[at + 1..]),
+            _ => (None, key),
+        };
+        let id = self.paths.len() as u32;
+        self.paths.push(path.to_string());
+        self.parents.push(parent);
+        self.folder_names.push(name.to_string());
+        self.ids.insert(key.to_string(), id);
+        id
+    }
+
+    fn push(
+        &mut self,
+        parent: &str,
+        name: String,
+        is_dir: bool,
+        scope: i64,
+        modified: Option<i64>,
+    ) {
+        let folder = self.folder(parent);
+        self.items.push(Item {
+            folder,
+            name,
+            is_dir,
+            scope,
+            modified,
+        });
+    }
+}
+
+/// Slice 0's generator, grown as a tree: one entry in eleven is a folder
+/// (the real index has 9.6 %), each under a random earlier folder, and every
+/// file in a random folder.
+fn synthetic(count: usize) -> Corpus {
+    const SEPARATORS: [&str; 3] = ["-", "_", " "];
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut corpus = Corpus::default();
+    let root = corpus.folder(r"C:\Users\bench");
+    let mut folders = vec![root];
+
+    let dirs = count / 11;
+    for index in 0..dirs {
+        let parent = folders[rng.below(folders.len())];
+        let word = rng.pick(&FOLDERS);
+        let mut name = match rng.below(4) {
+            0 => format!("{word} {}", rng.below(100)),
+            _ => word.to_string(),
+        };
+        let parent_path = corpus.paths[parent as usize].clone();
+        if corpus.ids.contains_key(&format!("{parent_path}\\{name}")) {
+            name = format!("{name} ({index})");
+        }
+        let path = format!("{parent_path}\\{name}");
+        let modified = Some((rng.next() >> 33) as i64);
+        corpus.push(&parent_path, name, true, 0, modified);
+        folders.push(corpus.folder(&path));
+    }
+
+    for _ in dirs..count {
+        let folder = folders[rng.below(folders.len())];
+        let separator = rng.pick(&SEPARATORS);
+        let words = 1 + rng.below(3);
+        let mut name = (0..words)
+            .map(|_| rng.pick(&WORDS))
+            .collect::<Vec<_>>()
+            .join(separator);
+        match rng.below(10) {
+            0..=1 => name = format!("{name}{separator}{}", 2015 + rng.below(12)),
+            2..=3 => name = format!("{name}{separator}{}", rng.below(1000)),
+            _ => {}
+        }
+        name = format!("{name}.{}", rng.pick(&EXTENSIONS));
+        corpus.items.push(Item {
+            folder,
+            name,
+            is_dir: false,
+            scope: 0,
+            modified: None,
+        });
+    }
+    corpus
+}
+
+/// One row of the user's index.
+struct RealRow {
+    parent: String,
+    name: String,
+    is_dir: bool,
+    scope: i64,
+    modified: Option<i64>,
+}
+
+fn load_real(path: &Path) -> Vec<RealRow> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("open the copy of the real index");
+    let mut statement = connection
+        .prepare("SELECT parent, name, is_dir, scope, modified FROM entries ORDER BY id")
+        .expect("prepare the real entries");
+    statement
+        .query_map([], |row| {
+            Ok(RealRow {
+                parent: row.get(0)?,
+                name: row.get(1)?,
+                is_dir: row.get(2)?,
+                scope: row.get(3)?,
+                modified: row.get(4)?,
+            })
+        })
+        .expect("read the real entries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read a real entry")
+}
+
+fn corpus_of<'a>(rows: impl IntoIterator<Item = &'a RealRow>) -> Corpus {
+    let mut corpus = Corpus::default();
+    for row in rows {
+        corpus.push(
+            &row.parent,
+            row.name.clone(),
+            row.is_dir,
+            row.scope,
+            row.modified,
+        );
+    }
+    corpus
+}
+
+/// Lower-case as `Names` does, a character at a time.
+fn fold(text: &str, out: &mut String) {
+    for character in text.chars() {
+        out.extend(character.to_lowercase());
+    }
+}
+
+fn words(query: &str) -> Vec<String> {
+    let mut folded = String::new();
+    fold(query, &mut folded);
+    folded.split_whitespace().map(str::to_string).collect()
+}
+
+fn starts_word(byte: u8) -> bool {
+    matches!(byte, b' ' | b'-' | b'_' | b'.' | b'(' | b'[' | b'\n')
+}
+
+/// Frequent words of the real names: alphabetic, four letters or more.
+fn frequent_words(corpus: &Corpus) -> Vec<(String, usize)> {
+    let mut counts = HashMap::<String, usize>::new();
+    let mut folded = String::new();
+    for item in &corpus.items {
+        folded.clear();
+        fold(&item.name, &mut folded);
+        for token in folded.split(|c: char| !c.is_alphanumeric()) {
+            if token.len() >= 4 && token.chars().all(|c| c.is_ascii_alphabetic()) {
+                *counts.entry(token.to_string()).or_default() += 1;
+            }
+        }
+    }
+    let mut counts = counts.into_iter().collect::<Vec<_>>();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    counts
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Variant {
+    /// Today's layout: the full parent path in every row.
+    V0,
+    /// A folder tree: each folder path once.
+    V1,
+    /// V1 and an FTS5 word index, default detail.
+    V2,
+    /// V2 with `detail=none, columnsize=0`: the compact word index.
+    V2c,
+    /// V1 and an FTS5 trigram index.
+    V3,
+}
+
+impl Variant {
+    fn label(self) -> &'static str {
+        match self {
+            Variant::V0 => "V0 full paths (today)",
+            Variant::V1 => "V1 folders + files",
+            Variant::V2 => "V2 V1 + FTS5 words",
+            Variant::V2c => "V2c V1 + FTS5 words, detail=none",
+            Variant::V3 => "V3 V1 + FTS5 trigram",
+        }
+    }
+
+    fn file(self) -> &'static str {
+        match self {
+            Variant::V0 => "v0.db",
+            Variant::V1 => "v1.db",
+            Variant::V2 => "v2.db",
+            Variant::V2c => "v2c.db",
+            Variant::V3 => "v3.db",
+        }
+    }
+}
+
+const WORD_INDEX: &str = "CREATE VIRTUAL TABLE words USING fts5(
+     name, content='files', content_rowid='id',
+     tokenize=\"unicode61 separators '-_.()[]'\", prefix='1 2 3'";
+
+/// Builds `variant` of `corpus` at `path`: the bulk insert in one
+/// transaction, indexes after it, then the FTS build.
+fn build(path: &Path, corpus: &Corpus, variant: Variant) -> Duration {
+    remove(path);
+    let start = Instant::now();
+    let connection = Connection::open(path).expect("open a bench database");
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -65536;",
+        )
+        .expect("configure the build");
+    let transaction = connection
+        .unchecked_transaction()
+        .expect("begin the bulk insert");
+    if variant == Variant::V0 {
+        transaction
+            .execute_batch(
+                "CREATE TABLE entries (
+                     id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                     scope    INTEGER NOT NULL,
+                     parent   TEXT    NOT NULL,
+                     name     TEXT    NOT NULL,
+                     is_dir   INTEGER NOT NULL,
+                     modified INTEGER
+                 );",
+            )
+            .expect("create today's table");
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO entries (id, scope, parent, name, is_dir, modified)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .expect("prepare the insert");
+            for (id, item) in (1i64..).zip(&corpus.items) {
+                insert
+                    .execute(params![
+                        id,
+                        item.scope,
+                        corpus.paths[item.folder as usize],
+                        item.name,
+                        item.is_dir,
+                        item.modified
+                    ])
+                    .expect("insert an entry");
+            }
+        }
+        transaction
+            .execute_batch("CREATE INDEX entries_path ON entries (parent, name);")
+            .expect("index the paths");
+    } else {
+        transaction
+            .execute_batch(
+                "CREATE TABLE folders (
+                     id        INTEGER PRIMARY KEY,
+                     parent_id INTEGER,
+                     name      TEXT NOT NULL
+                 );
+                 CREATE TABLE files (
+                     id        INTEGER PRIMARY KEY,
+                     folder_id INTEGER NOT NULL,
+                     scope     INTEGER NOT NULL,
+                     name      TEXT    NOT NULL,
+                     is_dir    INTEGER NOT NULL,
+                     modified  INTEGER
+                 );",
+            )
+            .expect("create the tree");
+        {
+            let mut insert = transaction
+                .prepare("INSERT INTO folders (id, parent_id, name) VALUES (?1, ?2, ?3)")
+                .expect("prepare the folders");
+            for (id, (parent, name)) in
+                (1i64..).zip(corpus.parents.iter().zip(&corpus.folder_names))
+            {
+                insert
+                    .execute(params![id, parent.map(|parent| parent as i64 + 1), name])
+                    .expect("insert a folder");
+            }
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO files (id, folder_id, scope, name, is_dir, modified)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .expect("prepare the files");
+            for (id, item) in (1i64..).zip(&corpus.items) {
+                insert
+                    .execute(params![
+                        id,
+                        item.folder as i64 + 1,
+                        item.scope,
+                        item.name,
+                        item.is_dir,
+                        item.modified
+                    ])
+                    .expect("insert a file");
+            }
+        }
+        transaction
+            .execute_batch(
+                "CREATE INDEX folders_path ON folders (parent_id, name);
+                 CREATE INDEX files_path ON files (folder_id, name);",
+            )
+            .expect("index the tree");
+        let fts = match variant {
+            Variant::V2 => Some(format!("{WORD_INDEX});")),
+            Variant::V2c => Some(format!("{WORD_INDEX}, detail=none, columnsize=0);")),
+            Variant::V3 => Some(
+                "CREATE VIRTUAL TABLE trigrams USING fts5(
+                     name, content='files', content_rowid='id', tokenize='trigram');"
+                    .to_string(),
+            ),
+            _ => None,
+        };
+        if let Some(create) = fts {
+            // Its absence is a finding: report it and stop.
+            if let Err(error) = transaction.execute_batch(&create) {
+                println!("FTS5 table unavailable ({}): {error}", variant.label());
+                std::process::exit(1);
+            }
+            let table = if variant == Variant::V3 {
+                "trigrams"
+            } else {
+                "words"
+            };
+            transaction
+                .execute_batch(&format!("INSERT INTO {table}({table}) VALUES ('rebuild');"))
+                .expect("build the FTS index");
+        }
+    }
+    transaction.commit().expect("commit the bulk insert");
+    drop(connection);
+    start.elapsed()
+}
+
+fn remove(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(path.with_extension("db-journal"));
+}
+
+fn size(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// The names of V1, loaded as the hot layer would be at start.
+fn load_names(connection: &Connection) -> Names {
+    let mut statement = connection
+        .prepare("SELECT name, is_dir FROM files ORDER BY id")
+        .expect("prepare the names");
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })
+        .expect("read the names")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read a name");
+    Names::from_entries(rows.iter().map(|(name, is_dir)| (name.as_str(), *is_dir)))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Method {
+    /// FTS5 word-prefix MATCH on V2.
+    Words,
+    /// The same on V2c.
+    WordsCompact,
+    /// FTS5 trigram MATCH on V3; words of three characters or more.
+    Trigram,
+    /// `LIKE '%q%'` on V1's names, a full scan; words of three or more.
+    Like,
+    /// V1's names streamed in rowid order and matched by `Names`' rules
+    /// with `memmem`: no index beyond the tree.
+    Stream,
+    /// `Names::find` on the names loaded from V1.
+    Blob,
+}
+
+const METHODS: [Method; 6] = [
+    Method::Words,
+    Method::WordsCompact,
+    Method::Trigram,
+    Method::Like,
+    Method::Stream,
+    Method::Blob,
+];
+
+impl Method {
+    fn name(self) -> &'static str {
+        match self {
+            Method::Words => "v2",
+            Method::WordsCompact => "v2c",
+            Method::Trigram => "v3",
+            Method::Like => "like",
+            Method::Stream => "stream",
+            Method::Blob => "v4",
+        }
+    }
+
+    fn parse(text: &str) -> Self {
+        *METHODS
+            .iter()
+            .find(|method| method.name() == text)
+            .expect("a known method")
+    }
+
+    fn variant(self) -> Variant {
+        match self {
+            Method::Words => Variant::V2,
+            Method::WordsCompact => Variant::V2c,
+            Method::Trigram => Variant::V3,
+            Method::Like | Method::Stream | Method::Blob => Variant::V1,
+        }
+    }
+}
+
+/// One open variant: a read-only connection with the bounded cache, and the
+/// names when the method is the blob.
+struct Engine {
+    connection: Connection,
+    names: Option<Names>,
+}
+
+impl Engine {
+    fn open(path: &Path, method: Method) -> Self {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .expect("open a variant");
+        connection.execute_batch(CACHE).expect("bound the cache");
+        let names = (method == Method::Blob).then(|| load_names(&connection));
+        Self { connection, names }
+    }
+
+    /// The number of matches of `query` by `method`, all of them or the first
+    /// `limit`; `None` where the method cannot answer the query.
+    fn search(&self, method: Method, query: &str, limit: Option<usize>) -> Option<usize> {
+        let words = words(query);
+        let sql_limit = limit.map_or(-1, |limit| limit as i64);
+        match method {
+            Method::Words | Method::WordsCompact => {
+                let fts = words
+                    .iter()
+                    .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                Some(self.count(
+                    "SELECT rowid FROM words WHERE words MATCH ?1 LIMIT ?2",
+                    params![fts, sql_limit],
+                ))
+            }
+            Method::Trigram => {
+                if words.iter().any(|word| word.chars().count() < 3) {
+                    return None;
+                }
+                let fts = words
+                    .iter()
+                    .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                Some(self.count(
+                    "SELECT rowid FROM trigrams WHERE trigrams MATCH ?1 LIMIT ?2",
+                    params![fts, sql_limit],
+                ))
+            }
+            Method::Like => {
+                if words.iter().any(|word| word.chars().count() < 3) {
+                    return None;
+                }
+                let mut sql = String::from("SELECT id FROM files WHERE ");
+                for index in 0..words.len() {
+                    if index > 0 {
+                        sql.push_str(" AND ");
+                    }
+                    let _ = write!(sql, "name LIKE ?{}", index + 1);
+                }
+                let _ = write!(sql, " LIMIT {sql_limit}");
+                let patterns = words
+                    .iter()
+                    .map(|word| format!("%{word}%"))
+                    .collect::<Vec<_>>();
+                Some(self.count(&sql, rusqlite::params_from_iter(patterns)))
+            }
+            Method::Stream => Some(self.stream(&words, limit.unwrap_or(usize::MAX))),
+            Method::Blob => {
+                let names = self.names.as_ref().expect("names loaded");
+                let limit = limit.unwrap_or(names.len());
+                Some(
+                    names
+                        .find(query, Kinds::FoldersAndFiles, limit, |_| 0)
+                        .len(),
+                )
+            }
+        }
+    }
+
+    fn count(&self, sql: &str, params: impl rusqlite::Params) -> usize {
+        let mut statement = self
+            .connection
+            .prepare_cached(sql)
+            .expect("prepare a query");
+        let mut rows = statement.query(params).expect("run a query");
+        let mut count = 0;
+        while rows.next().expect("read a row").is_some() {
+            count += 1;
+        }
+        count
+    }
+
+    fn stream(&self, words: &[String], limit: usize) -> usize {
+        let finders = words
+            .iter()
+            .map(|word| Finder::new(word.as_bytes()))
+            .collect::<Vec<_>>();
+        let mut statement = self
+            .connection
+            .prepare_cached("SELECT name FROM files ORDER BY id")
+            .expect("prepare the stream");
+        let mut rows = statement.query([]).expect("stream the names");
+        let mut folded = String::new();
+        let mut count = 0;
+        while let Some(row) = rows.next().expect("read a name") {
+            let name = row
+                .get_ref(0)
+                .and_then(|v| Ok(v.as_str()?))
+                .expect("a name");
+            folded.clear();
+            fold(name, &mut folded);
+            let bytes = folded.as_bytes();
+            let all = words.iter().zip(&finders).all(|(word, finder)| {
+                if word.chars().count() >= 3 {
+                    finder.find(bytes).is_some()
+                } else {
+                    finder
+                        .find_iter(bytes)
+                        .any(|at| at == 0 || starts_word(bytes[at - 1]))
+                }
+            });
+            if all {
+                count += 1;
+                if count == limit {
+                    break;
+                }
+            }
+        }
+        count
+    }
+}
+
+/// Sorted samples, how many runs, and the matches of the last run.
+struct Timing {
+    p50: Duration,
+    p95: Duration,
+    max: Duration,
+    runs: usize,
+    matches: usize,
+}
+
+/// Times `run` after a warm-up. A query whose first run is slow gets fewer
+/// runs, so a full scan at two million does not take the whole budget.
+fn time(mut run: impl FnMut() -> usize) -> Timing {
+    let start = Instant::now();
+    run();
+    let probe = start.elapsed();
+    let (warmup, runs) = if probe < Duration::from_millis(5) {
+        (WARMUP, RUNS)
+    } else if probe < Duration::from_millis(50) {
+        (5, 50)
+    } else {
+        (2, 15)
+    };
+    for _ in 0..warmup {
+        run();
+    }
+    let mut matches = 0;
+    let mut samples = (0..runs)
+        .map(|_| {
+            let start = Instant::now();
+            matches = run();
+            start.elapsed()
+        })
+        .collect::<Vec<_>>();
+    samples.sort();
+    Timing {
+        p50: samples[runs / 2],
+        p95: samples[runs * 95 / 100],
+        max: samples[runs - 1],
+        runs,
+        matches,
+    }
+}
+
+fn ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+fn mb(bytes: u64) -> f64 {
+    bytes as f64 / 1_048_576.0
+}
+
+fn cell(timing: Option<&Timing>) -> String {
+    match timing {
+        None => "n/a".to_string(),
+        Some(t) => {
+            let mut text = format!("{:.2} / {:.2} / {:.2}", ms(t.p50), ms(t.p95), ms(t.max));
+            if t.runs != RUNS {
+                let _ = write!(text, " ({})", t.runs);
+            }
+            text
+        }
+    }
+}
+
+/// The working set, peak working set and private bytes of process `pid`.
+fn working_set(pid: u32) -> Option<(u64, u64, u64)> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "$p = Get-Process -Id {pid}; \"$($p.WorkingSet64) $($p.PeakWorkingSet64) $($p.PrivateMemorySize64)\""
+            ),
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut numbers = text.split_whitespace().map(|n| n.parse::<u64>().ok());
+    Some((numbers.next()??, numbers.next()??, numbers.next()??))
+}
+
+/// A copy of `source` in `dir` written with unbuffered I/O (`robocopy /J`),
+/// so none of its pages are in the OS file cache: the cold-ish condition
+/// that needs no administrator to purge the cache.
+fn unbuffered_copy(source: &Path, dir: &Path) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    let file = source.file_name()?;
+    let target = dir.join(file);
+    remove(&target);
+    let status = Command::new("robocopy")
+        .arg(source.parent()?)
+        .arg(dir)
+        .arg(file)
+        .args(["/J", "/NJH", "/NJS", "/NFL", "/NDL", "/NP", "/R:0", "/W:0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    (status.code().is_some_and(|code| code < 8) && target.exists()).then_some(target)
+}
+
+/// How long a sequential buffered read of the whole file takes.
+fn read_ms(path: &Path) -> f64 {
+    let mut file = File::open(path).expect("open for reading");
+    let mut buffer = vec![0u8; 1 << 20];
+    let start = Instant::now();
+    while file.read(&mut buffer).expect("read") > 0 {}
+    ms(start.elapsed())
+}
+
+/// Runs this binary as a child and returns what it printed.
+fn spawn(args: &[&str]) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let output = Command::new(exe).arg("--child").args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The child side: `cold <method> <db> <query>` or `mem <method> <db>
+/// <queries joined by |>`.
+fn child(args: &[String]) {
+    match args[0].as_str() {
+        "cold" => {
+            let method = Method::parse(&args[1]);
+            let start = Instant::now();
+            let engine = Engine::open(Path::new(&args[2]), method);
+            let open = start.elapsed();
+            let start = Instant::now();
+            let matches = engine.search(method, &args[3], None).unwrap_or(0);
+            let first = start.elapsed();
+            let start = Instant::now();
+            engine.search(method, &args[3], None);
+            let second = start.elapsed();
+            println!(
+                "{:.2} {:.2} {:.2} {matches}",
+                ms(open),
+                ms(first),
+                ms(second)
+            );
+        }
+        "mem" => {
+            let mut names_bytes = 0;
+            let mut engine = None;
+            if args[1] != "none" {
+                let method = Method::parse(&args[1]);
+                let opened = Engine::open(Path::new(&args[2]), method);
+                for _ in 0..2 {
+                    for query in args[3].split('|') {
+                        opened.search(method, query, None);
+                        opened.search(method, query, Some(LIMIT));
+                    }
+                }
+                names_bytes = opened.names.as_ref().map_or(0, Names::memory_bytes);
+                engine = Some(opened);
+            }
+            // SAFETY: plain reads of SQLite's global memory counters.
+            let (used, high) = unsafe {
+                (
+                    rusqlite::ffi::sqlite3_memory_used(),
+                    rusqlite::ffi::sqlite3_memory_highwater(0),
+                )
+            };
+            let (ws, peak, private) = working_set(std::process::id()).unwrap_or_default();
+            println!("{ws} {peak} {private} {used} {high} {names_bytes}");
+            drop(engine);
+        }
+        other => panic!("unknown child mode {other}"),
+    }
+}
+
+/// Every table, filled corpus by corpus and printed at the end.
+#[derive(Default)]
+struct Report {
+    sizes: String,
+    all: String,
+    capped: String,
+    cold: String,
+    cache_check: String,
+    memory: String,
+    notes: String,
+}
+
+fn measure(label: &str, corpus: &Corpus, queries: &[String], dir: &Path, report: &mut Report) {
+    let entries = corpus.items.len();
+    eprintln!(
+        "[{label}] {entries} entries, {} folders",
+        corpus.paths.len()
+    );
+    let dir = dir.join(label.replace(' ', "-"));
+    std::fs::create_dir_all(&dir).expect("create the corpus folder");
+
+    for variant in [
+        Variant::V0,
+        Variant::V1,
+        Variant::V2,
+        Variant::V2c,
+        Variant::V3,
+    ] {
+        let path = dir.join(variant.file());
+        let built = build(&path, corpus, variant);
+        let bytes = size(&path);
+        eprintln!(
+            "[{label}] built {} in {:.1} s",
+            variant.label(),
+            built.as_secs_f64()
+        );
+        let _ = writeln!(
+            report.sizes,
+            "| {label} | {} | {entries} | {} | {:.1} | {:.0} | {:.1} |",
+            variant.label(),
+            corpus.paths.len(),
+            mb(bytes),
+            bytes as f64 / entries as f64,
+            built.as_secs_f64()
+        );
+        if variant == Variant::V0 {
+            remove(&path);
+        }
+    }
+
+    let v1 = dir.join(Variant::V1.file());
+    let start = Instant::now();
+    let blob = Engine::open(&v1, Method::Blob);
+    let loaded = start.elapsed();
+    let names_bytes = blob.names.as_ref().map_or(0, Names::memory_bytes) as u64;
+    let _ = writeln!(
+        report.sizes,
+        "| {label} | V4 names in memory, from V1 | {entries} | - | {:.1} (memory) | {:.0} | {:.1} (load from V1) |",
+        mb(names_bytes),
+        names_bytes as f64 / entries as f64,
+        loaded.as_secs_f64()
+    );
+
+    // Warm: one connection per variant, every query, all and capped.
+    let engines = METHODS
+        .iter()
+        .map(|&method| {
+            if method == Method::Blob {
+                None
+            } else {
+                Some(Engine::open(&dir.join(method.variant().file()), method))
+            }
+        })
+        .collect::<Vec<_>>();
+    for query in queries {
+        eprintln!("[{label}] warm `{query}`");
+        let mut all = Vec::new();
+        let mut capped = Vec::new();
+        for (index, &method) in METHODS.iter().enumerate() {
+            let engine = engines[index].as_ref().unwrap_or(&blob);
+            for (limit, out) in [(None, &mut all), (Some(LIMIT), &mut capped)] {
+                let timing = engine
+                    .search(method, query, limit)
+                    .map(|_| time(|| engine.search(method, query, limit).unwrap_or(0)));
+                out.push(timing);
+            }
+        }
+        let matches = |timings: &[Option<Timing>], method: Method| {
+            let index = METHODS.iter().position(|&m| m == method).expect("a method");
+            timings[index]
+                .as_ref()
+                .map_or("n/a".to_string(), |t| t.matches.to_string())
+        };
+        let substring = all[METHODS.iter().position(|&m| m == Method::Like).unwrap()]
+            .as_ref()
+            .map(|t| t.matches);
+        let trigram = all[METHODS.iter().position(|&m| m == Method::Trigram).unwrap()]
+            .as_ref()
+            .map(|t| t.matches);
+        if substring != trigram {
+            let _ = writeln!(
+                report.notes,
+                "- {label} `{query}`: LIKE found {substring:?}, trigram {trigram:?}."
+            );
+        }
+        if matches(&all, Method::Stream) != matches(&all, Method::Blob) {
+            let _ = writeln!(
+                report.notes,
+                "- {label} `{query}`: stream found {}, Names {}.",
+                matches(&all, Method::Stream),
+                matches(&all, Method::Blob)
+            );
+        }
+        if matches(&all, Method::Words) != matches(&all, Method::WordsCompact) {
+            let _ = writeln!(
+                report.notes,
+                "- {label} `{query}`: V2 found {}, V2c {}.",
+                matches(&all, Method::Words),
+                matches(&all, Method::WordsCompact)
+            );
+        }
+        for (out, timings) in [(&mut report.all, &all), (&mut report.capped, &capped)] {
+            let _ = write!(
+                out,
+                "| {label} | `{query}` | {} / {} / {} |",
+                matches(&all, Method::Words),
+                substring.map_or("n/a".to_string(), |n| n.to_string()),
+                matches(&all, Method::Blob)
+            );
+            for timing in timings {
+                let _ = write!(out, " {} |", cell(timing.as_ref()));
+            }
+            out.push('\n');
+        }
+    }
+    drop(engines);
+    drop(blob);
+
+    // Cold-ish: a fresh process. First with the OS cache as the build and
+    // the warm runs left it, then on a copy written without the cache.
+    let cold_dir = dir.join("cold");
+    let cold_cases = [
+        (Method::Words, "inv"),
+        (Method::WordsCompact, "inv"),
+        (Method::Trigram, "invoice"),
+        (Method::Like, "invoice"),
+        (Method::Stream, "invoice"),
+        (Method::Blob, "invoice"),
+    ];
+    if let Some(copy) = unbuffered_copy(&dir.join(Variant::V3.file()), &cold_dir) {
+        let first = read_ms(&copy);
+        let second = read_ms(&copy);
+        let _ = writeln!(
+            report.cache_check,
+            "| {label} | {:.0} MB | {first:.0} | {second:.0} |",
+            mb(size(&copy))
+        );
+        remove(&copy);
+    } else {
+        let _ = writeln!(report.cache_check, "| {label} | robocopy unavailable | | |");
+    }
+    for (method, query) in cold_cases {
+        eprintln!("[{label}] cold {} `{query}`", method.name());
+        let source = dir.join(method.variant().file());
+        let warm = spawn(&["cold", method.name(), &source.to_string_lossy(), query]);
+        let copy = unbuffered_copy(&source, &cold_dir);
+        let uncached = copy
+            .as_ref()
+            .and_then(|copy| spawn(&["cold", method.name(), &copy.to_string_lossy(), query]));
+        if let Some(copy) = copy {
+            remove(&copy);
+        }
+        let split = |text: Option<String>| -> (String, String) {
+            match text {
+                Some(text) => {
+                    let parts = text.split_whitespace().collect::<Vec<_>>();
+                    (
+                        format!("{} + {} / {}", parts[0], parts[1], parts[2]),
+                        parts[3].to_string(),
+                    )
+                }
+                None => ("failed".to_string(), "-".to_string()),
+            }
+        };
+        let (warm, matches) = split(warm);
+        let (uncached, _) = split(uncached);
+        let _ = writeln!(
+            report.cold,
+            "| {label} | {} | `{query}` | {warm} | {uncached} | {matches} |",
+            method.name()
+        );
+    }
+
+    // Memory: a fresh process per method, after every query twice.
+    let joined = queries.join("|");
+    let base = spawn(&["mem", "none", "-", "-"]);
+    for (method, text) in std::iter::once((None, base)).chain(
+        [
+            Method::Words,
+            Method::WordsCompact,
+            Method::Trigram,
+            Method::Stream,
+            Method::Blob,
+        ]
+        .into_iter()
+        .map(|method| {
+            eprintln!("[{label}] memory {}", method.name());
+            let db = dir.join(method.variant().file());
+            let text = spawn(&["mem", method.name(), &db.to_string_lossy(), &joined]);
+            (Some(method), text)
+        })
+        .collect::<Vec<_>>(),
+    ) {
+        let name = method.map_or("no database (baseline)", |method| match method {
+            Method::Words => "v2 words, all queries",
+            Method::WordsCompact => "v2c words, all queries",
+            Method::Trigram => "v3 trigram, queries >= 3 chars",
+            Method::Stream => "v1 stream scan, all queries",
+            _ => "v4 names loaded from V1, all queries",
+        });
+        let numbers = text
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(|n| n.parse::<i64>().unwrap_or(0))
+            .collect::<Vec<_>>();
+        if numbers.len() == 6 {
+            let _ = writeln!(
+                report.memory,
+                "| {label} | {name} | {:.1} | {:.1} | {:.1} | {:.1} / {:.1} | {:.1} |",
+                mb(numbers[0] as u64),
+                mb(numbers[1] as u64),
+                mb(numbers[2] as u64),
+                mb(numbers[3] as u64),
+                mb(numbers[4] as u64),
+                mb(numbers[5] as u64)
+            );
+        } else {
+            let _ = writeln!(report.memory, "| {label} | {name} | failed | | | | |");
+        }
+    }
+
+    for variant in [Variant::V1, Variant::V2, Variant::V2c, Variant::V3] {
+        remove(&dir.join(variant.file()));
+    }
+    let _ = std::fs::remove_dir(&cold_dir);
+    let _ = std::fs::remove_dir(&dir);
+}
+
+fn main() {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("--child") {
+        child(&args[1..]);
+        return;
+    }
+    let started = Instant::now();
+
+    // `target/tmp` is where cargo points benches; its parent is `target`.
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .parent()
+        .expect("the target directory")
+        .join("disk-bench");
+    std::fs::create_dir_all(&dir).expect("create the bench folder");
+
+    let real_db = dir.join("real.db");
+    if !real_db.exists() {
+        let local = std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA");
+        let source = Path::new(&local).join(r"Lumen\cache\files.db");
+        std::fs::copy(&source, &real_db).expect("copy the real index");
+    }
+
+    println!("# File index on disk: hot layer and full index");
+    let check = Connection::open_in_memory().expect("an in-memory database");
+    let version: String = check
+        .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+        .expect("the version");
+    let fts5: bool = check
+        .query_row(
+            "SELECT sqlite_compileoption_used('ENABLE_FTS5')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the FTS5 option");
+    let trigram = check
+        .execute_batch("CREATE VIRTUAL TABLE t USING fts5(x, tokenize='trigram');")
+        .is_ok();
+    println!("\nSQLite {version}; ENABLE_FTS5 = {fts5}; trigram tokenizer = {trigram}.");
+    drop(check);
+
+    let rows = load_real(&real_db);
+    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| r"C:\Users\kiza2".to_string());
+    let in_home = |row: &&RealRow| {
+        row.parent == home
+            || row
+                .parent
+                .strip_prefix(&home)
+                .is_some_and(|rest| rest.starts_with('\\'))
+    };
+    let under_dot_folder = |row: &RealRow| {
+        row.parent[home.len()..]
+            .split('\\')
+            .any(|part| part.starts_with('.'))
+            || (row.is_dir && row.name.starts_with('.'))
+    };
+    let home_rows = rows.iter().filter(in_home).collect::<Vec<_>>();
+    let without_dot_folders = home_rows
+        .iter()
+        .filter(|row| !under_dot_folder(row))
+        .count();
+    let without_dot_entries = home_rows
+        .iter()
+        .filter(|row| !under_dot_folder(row) && !row.name.starts_with('.'))
+        .count();
+    let real = corpus_of(&rows);
+    let home_corpus = corpus_of(home_rows.iter().copied());
+    println!("\n## Real corpus counts\n");
+    println!("| set | entries | folders (distinct paths incl. ancestors) |");
+    println!("| - | - | - |");
+    println!(
+        "| real index, all | {} | {} |",
+        real.items.len(),
+        real.paths.len()
+    );
+    println!(
+        "| home (`{home}`) | {} | {} |",
+        home_corpus.items.len(),
+        home_corpus.paths.len()
+    );
+    println!("| home without dot-folders | {without_dot_folders} | |");
+    println!("| home without dot-folders and dotfiles | {without_dot_entries} | |");
+    println!(
+        "| real index, folders (`is_dir`) | {} | |",
+        rows.iter().filter(|row| row.is_dir).count()
+    );
+    drop(home_rows);
+    drop(rows);
+
+    let frequent = frequent_words(&real);
+    println!("\nMost frequent real name words (alphabetic, >= 4 letters):");
+    for (rank, (word, count)) in frequent.iter().take(10).enumerate() {
+        println!("{}. `{word}` {count}", rank + 1);
+    }
+    let picked = [0, 9, 99]
+        .iter()
+        .filter_map(|&rank| frequent.get(rank))
+        .map(|(word, count)| (word.clone(), *count))
+        .collect::<Vec<_>>();
+    println!(
+        "\nReal words queried (ranks 1, 10, 100): {}",
+        picked
+            .iter()
+            .map(|(word, count)| format!("`{word}` ({count})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let queries = QUERIES
+        .iter()
+        .map(|query| query.to_string())
+        .chain(picked.into_iter().map(|(word, _)| word))
+        .collect::<Vec<_>>();
+
+    let mut report = Report::default();
+    measure("real", &real, &queries, &dir, &mut report);
+    drop(real);
+    measure("home", &home_corpus, &queries, &dir, &mut report);
+    drop(home_corpus);
+    for count in SYNTHETIC {
+        let corpus = synthetic(count);
+        measure(
+            &format!("synth {}M", count / 1_000_000),
+            &corpus,
+            &queries,
+            &dir,
+            &mut report,
+        );
+    }
+
+    let columns = METHODS
+        .iter()
+        .map(|method| match method {
+            Method::Words => "V2 words",
+            Method::WordsCompact => "V2c words",
+            Method::Trigram => "V3 trigram",
+            Method::Like => "V1 LIKE scan",
+            Method::Stream => "V1 stream + memmem",
+            Method::Blob => "V4 Names::find",
+        })
+        .collect::<Vec<_>>();
+    let header = format!(
+        "| corpus | query | matches words / substring / Names | {} |\n| - | - | - |{}",
+        columns.join(" | "),
+        " - |".repeat(columns.len())
+    );
+
+    println!("\n## 1. Size and build\n");
+    println!(
+        "Bulk insert in one transaction, `journal_mode=OFF`, `synchronous=OFF`, 64 MB build cache; indexes after the insert, then the FTS `rebuild`. Sizes are the file on disk.\n"
+    );
+    println!("| corpus | variant | entries | folders | MB | B/entry | build s |");
+    println!("| - | - | - | - | - | - | - |");
+    print!("{}", report.sizes);
+
+    println!("\n## 2a. Warm queries, every match counted\n");
+    println!(
+        "Cells are p50 / p95 / max ms; 20 warm-ups and 200 runs, or (n) runs when the first run took over 5 ms (5 warm-ups, 50 runs) or 50 ms (2 warm-ups, 15 runs). SQLite at `cache_size=-8192`, OS cache warm. SQLite methods count rowids only (no names fetched); V4 ranks every match. `n/a`: a trigram or LIKE cannot answer a word under 3 characters.\n"
+    );
+    println!("{header}");
+    print!("{}", report.all);
+
+    println!("\n## 2b. Warm queries, LIMIT {LIMIT}\n");
+    println!(
+        "SQLite methods stop at the first {LIMIT} in storage order; V4 still scans every name and keeps the best {LIMIT} ranked.\n"
+    );
+    println!("{header}");
+    print!("{}", report.capped);
+
+    println!("\n## 3. Cold-ish first query (fresh process)\n");
+    println!(
+        "`open + first / second` ms in a new process: open is the connection and pragmas (for v4, loading every name from V1). \"OS warm\" is the file as the build left it in the OS cache; \"uncached copy\" is a copy written by `robocopy /J` (unbuffered I/O) just before. Purging the cache itself needs administrator rights and was not done.\n"
+    );
+    println!("| corpus | method | query | OS warm | uncached copy | matches |");
+    println!("| - | - | - | - | - | - |");
+    print!("{}", report.cold);
+    println!(
+        "\nWhether the copy was really uncached: a full sequential read of the V3 copy right after it was written, then again.\n"
+    );
+    println!("| corpus | file | first read ms | second read ms |");
+    println!("| - | - | - | - |");
+    print!("{}", report.cache_check);
+
+    println!("\n## 4. Memory of a querying process\n");
+    println!(
+        "A fresh process per row, every query run twice (all and LIMIT {LIMIT}), then measured. Working set, peak and private bytes from `Get-Process`; SQLite's own allocator from `sqlite3_memory_used` / `sqlite3_memory_highwater`.\n"
+    );
+    println!(
+        "| corpus | process | working set MB | peak WS MB | private MB | SQLite used / high MB | Names bytes MB |"
+    );
+    println!("| - | - | - | - | - | - | - |");
+    print!("{}", report.memory);
+
+    println!("\n## Notes\n");
+    if report.notes.is_empty() {
+        println!("- Every cross-check agreed (LIKE = trigram, stream = Names, V2 = V2c).");
+    } else {
+        print!("{}", report.notes);
+    }
+    println!(
+        "\nSynthetic corpora: slice 0's names, one entry in eleven a folder under a random earlier folder (folder names from slice 0's folder list). Total run {:.0} s.",
+        started.elapsed().as_secs_f64()
+    );
+
+    remove(&real_db);
+}

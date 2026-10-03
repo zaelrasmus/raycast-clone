@@ -243,6 +243,41 @@ The same build and `LUMEN_HOME`s, with the watcher running:
 - `D:\WindowsApps` (the Store's install folder, readable only by the system)
   could not be watched and warned at every start; it joins the skip list.
 
+## The ceiling, measured again: an index on disk
+
+The 500 000 ceiling failed the way a ceiling fails: by losing data. With
+hidden files on, home grew from 55 000 to 303 447 entries -- 81 % under
+dot-folders -- and `D:\` was cut at 196 553 of 350 000, so a folder on it
+could not be found from root or from the view. A notice does not fix that:
+the user should not have to choose between their hidden files and their
+drive. `cargo bench -p lumen-core --bench file_index_disk` measured an
+index searched on disk instead, on the real 500 000-entry index and on
+synthetic 1M and 2M.
+
+| Real 500 000 | Disk | Build |
+| ------------ | ---- | ----- |
+| Today's rows, a full path each | 115 MB | 1.1 s |
+| Compact: each folder once, files point to it (V1) | 36 MB | 0.6 s |
+| V1 + an FTS5 word index (V2) | 63 MB | 3.7 s |
+| V1 + FTS5 word index, `detail=none` (V2c) | 45 MB | 2.8 s |
+| V1 + FTS5 trigram (V3) | 72 MB | 4.6 s |
+
+On the real index, warm, p95: word start on V2 0.1--0.5 ms for ordinary
+queries and 10.4 ms for `html` (91 000 matches) -- where today's names in
+memory take 20.3 ms, since real names repeat as synthetic ones did not.
+Mid-word: trigram 0.2--15 ms, a plain scan 44--52 ms; at 2M, 36.5 and
+290 ms. Every match of a common word on V2 at 2M is over 8 ms (`in`
+26.8, `html` 15.0); stopping at 200 is under 7.3 ms for all. A process
+searching on disk held 1--5 MB more than an idle one; the names in memory
+were 14.4 MB at 500 000 and 53.6 MB at 2M. The first query in a fresh
+process was 2.9 ms on V2; the system's cache could not be purged without
+administrator rights, so a truly cold disk is not measured.
+
+What it says: a compact layout is what keeps Raycast near 89 MB for a
+drive, and an index on disk can lift the ceiling without spending memory.
+Not yet measured: asking the database for its best rows *ranked* (exact,
+name start, shortest) rather than its first 200 in storage order.
+
 ---
 
 ## The decisions
