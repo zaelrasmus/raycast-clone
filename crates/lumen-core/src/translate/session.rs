@@ -456,6 +456,7 @@ impl Session {
                             detail: None,
                             id: format!("{ALTERNATIVE}{target}-{index}"),
                             title: alternative.terms.join(", "),
+                            prefix: None,
                             subtitle: None,
                             icon: Some(Icon::Text {
                                 text: abbreviation(&alternative.part),
@@ -641,6 +642,7 @@ impl Session {
             detail: None,
             id: format!("{TARGET}{index}"),
             title,
+            prefix: None,
             subtitle,
             icon: None,
             accessories: vec![Accessory::Tag {

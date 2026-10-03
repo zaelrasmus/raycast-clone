@@ -271,7 +271,15 @@ impl Session {
     }
 
     pub fn view(&self) -> View {
-        let items: Vec<Item> = self.shown().map(|found| self.item(found)).collect();
+        let shown: Vec<&Found> = self.shown().collect();
+        let items: Vec<Item> = shown
+            .iter()
+            .zip(prefixes(&shown))
+            .map(|(found, prefix)| Item {
+                prefix,
+                ..self.item(found)
+            })
+            .collect();
         let title = if self.query.is_empty() {
             "Recently Used"
         } else {
@@ -361,6 +369,7 @@ impl Session {
         Item {
             id: found.id(),
             title: found.name(),
+            prefix: None,
             subtitle: None,
             icon: Some(icon(found)),
             accessories: Vec::new(),
@@ -378,16 +387,54 @@ impl Session {
     }
 }
 
-/// A glyph by category: the shell's own icon per file is slice 3b's.
+/// What each of `shown` draws dimmed before its name: its folder's name,
+/// `styles/`, when another row has the same name in any case, so the two
+/// can be told apart (F16). `None` for a name of its own. An entry at the
+/// top of a drive is told apart by the drive, `C:/`.
+pub fn prefixes(shown: &[&Found]) -> Vec<Option<String>> {
+    let names: Vec<String> = shown
+        .iter()
+        .map(|found| found.name().to_lowercase())
+        .collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for name in &names {
+        *counts.entry(name).or_default() += 1;
+    }
+    shown
+        .iter()
+        .zip(&names)
+        .map(|(found, name)| {
+            if counts[name.as_str()] < 2 {
+                return None;
+            }
+            let parent = found.path.parent()?;
+            let folder = match parent.file_name() {
+                Some(folder) => folder.to_string_lossy().into_owned(),
+                None => parent
+                    .to_string_lossy()
+                    .trim_end_matches(['\\', '/'])
+                    .to_string(),
+            };
+            Some(format!("{folder}/"))
+        })
+        .collect()
+}
+
+/// The shell's icon for the entry, over its category's glyph until it
+/// arrives.
 fn icon(found: &Found) -> Icon {
-    let name = match Category::of(&found.name(), found.is_dir) {
+    let fallback = match Category::of(&found.name(), found.is_dir) {
         Some(Category::Folders) => "folder",
         Some(Category::Images) => "image",
         Some(Category::Code) => "script",
         Some(Category::Documents) => "text",
         _ => "file",
     };
-    glyph(name)
+    Icon::File {
+        path: found.path.clone(),
+        folder: found.is_dir,
+        fallback: fallback.into(),
+    }
 }
 
 fn glyph(name: &str) -> Icon {
@@ -674,6 +721,82 @@ mod tests {
                     action: OPEN.into(),
                 })
                 .is_empty()
+        );
+    }
+
+    /// Two rows of one name cannot be told apart by it: each says which
+    /// folder it is in, in any case. A name of its own says nothing more.
+    #[test]
+    fn rows_of_the_same_name_are_told_apart_by_their_folder() {
+        let shown = [
+            file("C:\\config\\styles\\carbon.json"),
+            file("C:\\shots\\Screenshot.png"),
+            file("C:\\config\\themes\\Carbon.JSON"),
+            folder("C:\\carbon.json"),
+        ];
+        let shown: Vec<&Found> = shown.iter().collect();
+        assert_eq!(
+            prefixes(&shown),
+            [
+                Some("styles/".to_string()),
+                None,
+                Some("themes/".to_string()),
+                Some("C:/".to_string()),
+            ]
+        );
+
+        let mut session = Session::new(
+            vec![
+                file("C:\\styles\\carbon.json"),
+                file("C:\\themes\\carbon.json"),
+                file("C:\\notes.txt"),
+            ],
+            READY,
+        );
+        let view = session.view();
+        let prefixes: Vec<Option<&str>> = list(&view)
+            .items()
+            .map(|item| item.prefix.as_deref())
+            .collect();
+        assert_eq!(prefixes, [Some("styles/"), Some("themes/"), None]);
+        // The title stays the name: the prefix is drawn, not matched.
+        assert_eq!(titles(&session)[0], "carbon.json");
+
+        // Filtered down to one, it needs no folder.
+        filter(&mut session, "documents");
+        let view = session.view();
+        assert_eq!(list(&view).item(0).unwrap().prefix, None);
+    }
+
+    /// A row draws the shell's icon for its entry, with its category's
+    /// glyph until that arrives.
+    #[test]
+    fn a_row_asks_for_its_own_icon_over_its_categorys_glyph() {
+        let session = Session::new(recents(), READY);
+        let view = session.view();
+        let icons: Vec<Icon> = list(&view)
+            .items()
+            .map(|item| item.icon.clone().unwrap())
+            .collect();
+        assert_eq!(
+            icons,
+            [
+                Icon::File {
+                    path: "C:\\styles\\carbon.json".into(),
+                    folder: false,
+                    fallback: "script".into(),
+                },
+                Icon::File {
+                    path: "C:\\shots\\Screenshot.png".into(),
+                    folder: false,
+                    fallback: "image".into(),
+                },
+                Icon::File {
+                    path: "C:\\projects".into(),
+                    folder: true,
+                    fallback: "folder".into(),
+                },
+            ]
         );
     }
 

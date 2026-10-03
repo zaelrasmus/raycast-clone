@@ -235,6 +235,10 @@ pub struct Item {
     /// shown.
     pub id: String,
     pub title: String,
+    /// Drawn dimmed before the title, as one line with it (F16): what tells
+    /// two rows of the same title apart, such as `styles/` before
+    /// `carbon.json`. Empty, the default, draws nothing.
+    pub prefix: Option<String>,
     pub subtitle: Option<String>,
     pub icon: Option<Icon>,
     /// Shown right-aligned, in order. Bounded because a row is one line and
@@ -271,6 +275,14 @@ pub struct ItemDetail {
     /// paragraph. The subset has no escapes and no hard breaks, and adding
     /// both would still leave the view escaping text to have it unescaped.
     pub text: Option<String>,
+    /// Text shown as written in a card, after the Markdown and in place of
+    /// [`text`](Self::text)'s plain run (F16): a file's first lines. Drawn
+    /// in the palette's monospace family with its lines clipped, not
+    /// wrapped, so columns and indentation survive -- unless the user
+    /// prefers the interface family for previews, which wraps them. The
+    /// card is as tall as its lines up to a bound, so what is under it is
+    /// always within reach.
+    pub code: Option<String>,
     /// A picture the host wrote, shown first, scaled to fit (F12). The
     /// host's alone, like [`Icon::Image`], and for the same reason.
     #[serde(skip)]
@@ -357,6 +369,18 @@ pub enum Icon {
     /// an extension named it.
     #[serde(skip)]
     Image { path: std::path::PathBuf },
+    /// The shell's own icon for a file or folder the host found (F16): a
+    /// zip's archiver, a folder's custom icon. Extracted off the UI thread;
+    /// the glyph `fallback` names is drawn in the square until it arrives,
+    /// and for good if it cannot be had (I-10).
+    ///
+    /// The host's alone, as [`Icon::Image`] is, and for the same reason.
+    #[serde(skip)]
+    File {
+        path: std::path::PathBuf,
+        folder: bool,
+        fallback: String,
+    },
 }
 
 /// Something the user can do to a row or to the view.
@@ -585,6 +609,7 @@ mod tests {
                     detail: Some(ItemDetail {
                         markdown: "# Fix the seam\n\nThe pane *follows*.".into(),
                         text: None,
+                        code: None,
                         image: None,
                         metadata: vec![MetadataRow {
                             label: "Opened".into(),
@@ -594,6 +619,7 @@ mod tests {
                     }),
                     id: "1".into(),
                     title: "Fix the seam".into(),
+                    prefix: None,
                     subtitle: Some("lumen#12".into()),
                     icon: Some(Icon::Text {
                         text: "🐛".into()

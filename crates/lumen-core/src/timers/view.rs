@@ -167,6 +167,7 @@ fn item(timer: &Timer, now: Millis) -> Item {
         title: timer.title(),
         // Where a cycle is; what a named timer counts; nothing for an
         // unnamed one, whose title already says it.
+        prefix: None,
         subtitle: match (
             match (&timer.cycle, &timer.name) {
                 (Some(cycle), _) if timer.is_ringing() => {
@@ -209,6 +210,7 @@ fn stopwatch(watch: &Stopwatch, now: Millis) -> Item {
         detail: None,
         id: format!("{WATCH}{}", watch.id),
         title: watch.title(),
+        prefix: None,
         subtitle: None,
         icon: Some(Icon::Glyph { name: GLYPH.into() }),
         accessories,
@@ -227,6 +229,7 @@ fn preset(preset: &Preset) -> Item {
         detail: None,
         id: format!("{PRESET}{}", preset.name),
         title: preset.name.clone(),
+        prefix: None,
         subtitle: Some(match &preset.cycle {
             Some(plan) => plan.describe(),
             None => describe(preset.duration),
@@ -252,6 +255,7 @@ fn quick_start(duration: Duration) -> Item {
         detail: None,
         id: format!("{QUICK}{}", duration.as_secs()),
         title: describe(duration),
+        prefix: None,
         subtitle: None,
         icon: Some(Icon::Glyph { name: GLYPH.into() }),
         accessories: Vec::new(),

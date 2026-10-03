@@ -44,6 +44,7 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
             detail: None,
             id: format!("{SOUND}{name}"),
             title: label(name),
+            prefix: None,
             subtitle: None,
             icon: Some(Icon::Glyph {
                 name: super::view::GLYPH.into(),

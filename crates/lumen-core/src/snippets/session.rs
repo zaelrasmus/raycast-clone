@@ -286,6 +286,7 @@ impl Session {
         let row = |id: &str, title: &str| Item {
             id: id.into(),
             title: title.into(),
+            prefix: None,
             subtitle: None,
             icon: Some(glyph()),
             accessories: Vec::new(),
@@ -408,12 +409,14 @@ impl Session {
                 Format::Markdown => ItemDetail {
                     markdown: text,
                     text: None,
+                    code: None,
                     image: None,
                     metadata: Vec::new(),
                 },
                 Format::Text | Format::Unknown => ItemDetail {
                     markdown: String::new(),
                     text: Some(text),
+                    code: None,
                     image: None,
                     metadata: Vec::new(),
                 },
@@ -430,6 +433,7 @@ impl Session {
             vec![Item {
                 id: ANSWER.into(),
                 title,
+                prefix: None,
                 subtitle,
                 icon: Some(glyph()),
                 accessories: Vec::new(),
@@ -447,6 +451,7 @@ impl Session {
                 .map(|(index, option)| Item {
                     id: format!("option:{index}"),
                     title: option.clone(),
+                    prefix: None,
                     subtitle: (argument.default.as_deref() == Some(option.as_str()))
                         .then(|| "the default".to_string()),
                     icon: Some(glyph()),
@@ -596,6 +601,7 @@ impl Session {
         Item {
             id: index.to_string(),
             title: snippet.name.trim().into(),
+            prefix: None,
             subtitle: None,
             icon: Some(glyph()),
             accessories: snippet
@@ -674,12 +680,14 @@ impl Session {
             Format::Markdown => ItemDetail {
                 markdown: snippet.text.clone(),
                 text: None,
+                code: None,
                 image: None,
                 metadata,
             },
             Format::Text | Format::Unknown => ItemDetail {
                 markdown: String::new(),
                 text: Some(snippet.text.clone()),
+                code: None,
                 image: None,
                 metadata,
             },
@@ -696,6 +704,7 @@ fn broken_item(broken: &Broken) -> Item {
             .name
             .clone()
             .unwrap_or_else(|| format!("Snippet {}", broken.position)),
+        prefix: None,
         subtitle: Some(broken.reason.clone()),
         icon: Some(Icon::Glyph {
             name: "snippet".into(),
@@ -704,6 +713,7 @@ fn broken_item(broken: &Broken) -> Item {
         keywords: Vec::new(),
         actions: Vec::new(),
         detail: Some(ItemDetail {
+            code: None,
             markdown: String::new(),
             text: Some(format!(
                 "Snippet {} in snippets.json could not be read:

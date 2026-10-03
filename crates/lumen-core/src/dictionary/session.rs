@@ -615,6 +615,7 @@ impl Session {
                     .map(|(index, entry)| Item {
                         id: format!("{FAVOURITE_ROW}{index}"),
                         title: entry.word.clone(),
+                        prefix: None,
                         subtitle: entry
                             .senses()
                             .next()
@@ -646,6 +647,7 @@ impl Session {
                     .map(|(index, recent)| Item {
                         id: format!("{RECENT_ROW}{index}"),
                         title: recent.word.clone(),
+                        prefix: None,
                         subtitle: None,
                         icon: None,
                         accessories: vec![Accessory::Text {
@@ -731,6 +733,7 @@ impl Session {
                         Item {
                             id: format!("{SENSE}{p}-{s}"),
                             title: one_line(&sense.definition),
+                            prefix: None,
                             subtitle: sense.examples.first().map(|example| one_line(example)),
                             icon: Some(Icon::Text {
                                 text: (s + 1).to_string(),
@@ -819,6 +822,7 @@ impl Session {
         ItemDetail {
             markdown,
             text: None,
+            code: None,
             image: None,
             metadata,
         }
@@ -844,6 +848,7 @@ impl Session {
             items: vec![Item {
                 id: FAILURE.into(),
                 title,
+                prefix: None,
                 subtitle: Some(subtitle),
                 icon: None,
                 accessories: vec![Accessory::Tag {

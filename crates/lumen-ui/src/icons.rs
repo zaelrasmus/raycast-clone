@@ -10,8 +10,15 @@
 //!    next to it (I-10).
 //! 3. **Cache by source, not by row.** The same executable appears under several
 //!    names; extracting its icon once per name is work done for nothing.
+//!
+//! A file's icon in *Search Files* (F16) goes further: kept by type where
+//! every file of the type has the same one, by path where it may be its own,
+//! and the by-path ones forgotten when the launcher hides
+//! ([`lumen_core::file_search::icon`] says which, and why).
 
 use std::collections::HashMap;
+use std::hash::Hash;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, RenderImage};
@@ -70,10 +77,24 @@ enum Slot {
     Failed,
 }
 
+/// What a file's icon is kept as (F16).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FileKey {
+    /// Its type's, by lower-case extension: one for every `.json`.
+    Type(String),
+    /// Its own.
+    Own(PathBuf),
+}
+
 /// Icons, extracted off the UI thread and cached by source.
+///
+/// Cloned into a virtualised list's row closure; every clone is the same
+/// cache.
+#[derive(Clone)]
 pub struct IconCache {
     platform: Arc<dyn Platform>,
     slots: Arc<Mutex<HashMap<IconSource, Slot>>>,
+    files: Arc<Mutex<HashMap<FileKey, Slot>>>,
     size_px: u32,
 }
 
@@ -82,6 +103,7 @@ impl IconCache {
         Self {
             platform,
             slots: Arc::new(Mutex::new(HashMap::new())),
+            files: Arc::new(Mutex::new(HashMap::new())),
             size_px,
         }
     }
@@ -92,23 +114,94 @@ impl IconCache {
     /// reserved placeholder either way, so both cases look the same on screen.
     pub fn get(&self, source: &IconSource, cx: &mut App) -> Option<Arc<RenderImage>> {
         {
-            let slots = self.slots.lock();
+            let mut slots = self.slots.lock();
             match slots.get(source) {
                 Some(Slot::Ready(image)) => return Some(image.clone()),
                 Some(Slot::Loading | Slot::Failed) => return None,
-                None => {}
+                None => {
+                    slots.insert(source.clone(), Slot::Loading);
+                }
             }
         }
 
-        self.spawn_load(source.clone(), cx);
+        self.spawn_load(&self.slots, source.clone(), source.clone(), cx);
         None
     }
 
-    fn spawn_load(&self, source: IconSource, cx: &mut App) {
-        self.slots.lock().insert(source.clone(), Slot::Loading);
+    /// The shell's icon for the file or folder at `path` (F16), as
+    /// [`get`](Self::get): `None` while it loads and when it cannot be had.
+    pub fn file(&self, path: &Path, folder: bool, cx: &mut App) -> Option<Arc<RenderImage>> {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default();
+        let key = match lumen_core::file_search::icon::shared(&name, folder) {
+            Some(extension) => FileKey::Type(extension),
+            None => FileKey::Own(path.to_path_buf()),
+        };
+        {
+            let mut files = self.files.lock();
+            match files.get(&key) {
+                Some(Slot::Ready(image)) => return Some(image.clone()),
+                Some(Slot::Loading | Slot::Failed) => return None,
+                None => {
+                    files.insert(key.clone(), Slot::Loading);
+                }
+            }
+        }
 
+        // A type's icon is extracted from the first file of it drawn.
+        let source = IconSource::ShellItem(path.display().to_string());
+        self.spawn_load(&self.files, key, source, cx);
+        None
+    }
+
+    /// Forget every file's own icon, and free its texture; a type's stays.
+    ///
+    /// Called when the launcher hides and when a view closes: an icon kept
+    /// by path is one of hundreds a search can show, and worth its memory
+    /// only while it is on screen (the idle budget). A type that failed is
+    /// forgotten too, so the next file of it is asked.
+    pub fn release_files(&self, cx: &mut App) {
+        let released: Vec<Arc<RenderImage>> = {
+            let mut files = self.files.lock();
+            let mut released = Vec::new();
+            files.retain(|key, slot| match (key, slot) {
+                (FileKey::Type(_), Slot::Ready(_)) => true,
+                (_, Slot::Ready(image)) => {
+                    released.push(image.clone());
+                    false
+                }
+                // A load in flight is dropped when it lands.
+                (_, Slot::Loading | Slot::Failed) => false,
+            });
+            released
+        };
+        if released.is_empty() {
+            return;
+        }
+        // Deferred to when no window is being drawn, as the pictures are.
+        cx.defer(move |cx| {
+            for image in released {
+                cx.drop_image(image, None);
+            }
+        });
+    }
+
+    /// Extract `source` off the UI thread into `slots` under `key`, which
+    /// the caller has marked as loading. Kept only while it still is: a
+    /// slot released while it loaded stays released.
+    fn spawn_load<K>(
+        &self,
+        slots: &Arc<Mutex<HashMap<K, Slot>>>,
+        key: K,
+        source: IconSource,
+        cx: &mut App,
+    ) where
+        K: Clone + Eq + Hash + Send + 'static,
+    {
         let platform = self.platform.clone();
-        let slots = self.slots.clone();
+        let slots = slots.clone();
         let size_px = self.size_px;
 
         cx.spawn(async move |cx| {
@@ -127,7 +220,13 @@ impl IconCache {
                     Slot::Failed
                 }
             };
-            slots.lock().insert(source, slot);
+            {
+                let mut slots = slots.lock();
+                if !matches!(slots.get(&key), Some(Slot::Loading)) {
+                    return;
+                }
+                slots.insert(key, slot);
+            }
 
             // The list is already on screen with a placeholder in this row;
             // nothing repaints until something asks for a frame.

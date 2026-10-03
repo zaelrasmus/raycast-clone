@@ -174,6 +174,7 @@ pub fn refusal(what: &str, timer: Option<&Timer>, now: Millis) -> View {
                 detail: None,
                 id: "blocked".into(),
                 title: format!("{what} is blocked"),
+                prefix: None,
                 subtitle: Some(subtitle),
                 icon: Some(Icon::Glyph {
                     name: super::view::GLYPH.into(),

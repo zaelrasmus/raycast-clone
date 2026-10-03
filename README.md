@@ -486,8 +486,11 @@ makes it vanish and primary makes it shout over the title beside it.
 
 A theme -- a *palette* -- sets **colour and typography only**: its family,
 any font installed on the system by name (`"font_family": "Segoe UI"`), and
-the family's OpenType features (`"font_features": { "cv11": 1 }`). The rest
-of the look is a style's.
+the family's OpenType features (`"font_features": { "cv11": 1 }`), and a
+monospace family for text shown as written, such as a file's preview in
+*Search Files* (`"font_mono": "Consolas"`; Cascadia Mono, which Windows 11
+ships, when unset). A family that is not installed draws in the system's
+interface font. The rest of the look is a style's.
 
 A font that is not installed can be dropped into
 `%APPDATA%\Lumen\config\fonts\` as `.ttf`, `.otf` or `.ttc`; it is loaded

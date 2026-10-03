@@ -22,16 +22,23 @@ pub const PREVIEW_BYTES: usize = 64 * 1024;
 /// frame the pane is drawn.
 pub const PREVIEW_LINES: usize = 200;
 
+/// The most characters of a line the card keeps. Its lines are clipped at
+/// the pane's edge, not wrapped, so the rest is never seen; a minified file
+/// is one line of 64 KB, which would otherwise be laid out whole.
+pub const PREVIEW_COLUMNS: usize = 400;
+
+/// Spaces a tab is drawn as: the text system has no tab stops.
+const TAB: &str = "    ";
+
 /// What the pane shows above the metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preview {
     /// The picture itself, scaled to fit.
     Image,
-    /// The first lines, as written: code, configuration and logs. Its own
-    /// case, apart from prose, because slice 3b draws it in the palette's
-    /// monospace family.
+    /// The first lines, as written: code, configuration and logs.
     Code,
-    /// The first lines of text meant to be read: `.txt`, `.md`.
+    /// The first lines of text meant to be read: `.txt`, `.md`. Shown in
+    /// the same card as code: a preview is the file as written.
     Prose,
     /// The metadata only.
     None,
@@ -95,6 +102,22 @@ pub fn text_from(bytes: &[u8]) -> Option<String> {
     Some(text[..end].trim_end().to_string())
 }
 
+/// Preview text as the card shows it: each tab as spaces, a Windows line
+/// ending as a line ending, and each line cut at [`PREVIEW_COLUMNS`]
+/// characters.
+pub fn card_text(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line).replace('\t', TAB);
+            match line.char_indices().nth(PREVIEW_COLUMNS) {
+                Some((end, _)) => line[..end].to_string(),
+                None => line,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The first [`PREVIEW_BYTES`] of the file at `path`, as preview text.
 fn read_text(path: &Path) -> Option<String> {
     use std::io::Read as _;
@@ -143,7 +166,9 @@ pub fn describe(path: &Path, is_dir: bool, home: Option<&Path>, now: &Zoned) -> 
     let mut detail = summary(path, is_dir, home);
     match preview_of(&name, is_dir) {
         Preview::Image => detail.image = Some(path.to_path_buf()),
-        Preview::Code | Preview::Prose => detail.text = read_text(path),
+        Preview::Code | Preview::Prose => {
+            detail.code = read_text(path).map(|text| card_text(&text));
+        }
         Preview::None => {}
     }
 
@@ -198,6 +223,7 @@ pub fn summary(path: &Path, is_dir: bool, home: Option<&Path>) -> ItemDetail {
     ItemDetail {
         markdown: String::new(),
         text: None,
+        code: None,
         image: None,
         metadata: vec![row("Name", &name), row("Where", &place), row("Type", &kind)],
     }
@@ -282,7 +308,8 @@ mod tests {
         let path = tree.path("config/carbon.json");
         let detail = describe(&path, false, Some(&tree.0), &now());
 
-        assert_eq!(detail.text.as_deref(), Some("{ \"name\": \"Carbon\" }"));
+        assert_eq!(detail.code.as_deref(), Some("{ \"name\": \"Carbon\" }"));
+        assert_eq!(detail.text, None);
         assert_eq!(detail.image, None);
         let labels: Vec<&str> = detail.metadata.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(
@@ -306,6 +333,38 @@ mod tests {
         assert_eq!(value("Size"), "20 bytes");
     }
 
+    /// Every text preview is a card, prose as well as code (F16).
+    #[test]
+    fn every_text_preview_is_a_card() {
+        let tree = Tree::new("preview-card");
+        tree.write("notes.md", "# Notes\n\n- one");
+        tree.write("main.rs", "fn main() {\n\tprintln!();\n}");
+        let notes = describe(&tree.path("notes.md"), false, None, &now());
+        assert_eq!(notes.code.as_deref(), Some("# Notes\n\n- one"));
+        assert_eq!(notes.text, None);
+        assert_eq!(notes.markdown, "");
+        // A tab is spaces in the card: the renderer has no tab stops.
+        let main = describe(&tree.path("main.rs"), false, None, &now());
+        assert_eq!(
+            main.code.as_deref(),
+            Some("fn main() {\n    println!();\n}")
+        );
+    }
+
+    /// A minified file is one line of 64 KB; the card shows its start.
+    #[test]
+    fn a_long_line_is_cut_for_the_card() {
+        let long = "x".repeat(PREVIEW_COLUMNS + 50);
+        let card = card_text(&format!("{long}\nnext"));
+        let lines: Vec<&str> = card.lines().collect();
+        assert_eq!(lines[0].chars().count(), PREVIEW_COLUMNS);
+        assert_eq!(lines[1], "next");
+        assert_eq!(card_text("a\r\nb"), "a\nb");
+        // Cut on a character, never inside one.
+        let wide = "é".repeat(PREVIEW_COLUMNS + 1);
+        assert_eq!(card_text(&wide).chars().count(), PREVIEW_COLUMNS);
+    }
+
     #[test]
     fn a_folder_counts_its_items_instead_of_a_size() {
         let tree = Tree::new("preview-folder");
@@ -326,7 +385,7 @@ mod tests {
                 ("Items", "2 items")
             ]
         );
-        assert_eq!(detail.text, None);
+        assert_eq!(detail.code, None);
     }
 
     #[test]
@@ -336,8 +395,8 @@ mod tests {
         std::fs::write(tree.path("data.json"), b"\0\0\0").unwrap();
         let picture = describe(&tree.path("cat.png"), false, None, &now());
         assert_eq!(picture.image, Some(tree.path("cat.png")));
-        assert_eq!(picture.text, None);
+        assert_eq!(picture.code, None);
         let binary = describe(&tree.path("data.json"), false, None, &now());
-        assert_eq!(binary.text, None);
+        assert_eq!(binary.code, None);
     }
 }

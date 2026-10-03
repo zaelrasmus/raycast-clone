@@ -8,6 +8,7 @@
 
 pub mod category;
 pub mod exclude;
+pub mod icon;
 pub mod preview;
 pub mod recents;
 pub mod session;

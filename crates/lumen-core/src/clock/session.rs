@@ -397,6 +397,7 @@ impl Session {
         Item {
             id: HERE.into(),
             title: self.here_name(),
+            prefix: None,
             subtitle: Some(format!("Your time zone \u{00b7} {zone}")),
             icon: self.here_country().map(|text| Icon::Text { text }),
             accessories: vec![
@@ -427,6 +428,7 @@ impl Session {
         Item {
             id: format!("{CONTINENT}{}", continent.code()),
             title: continent.name().into(),
+            prefix: None,
             subtitle: Some(format!("{} countries", countries.len())),
             icon: Some(Icon::Text {
                 text: continent.code().into(),
@@ -460,6 +462,7 @@ impl Session {
         Some(Item {
             id: format!("{COUNTRY}{}", country.code),
             title: country.name.to_string(),
+            prefix: None,
             subtitle: Some(format!("{} \u{00b7} {cities}", country.continent.name())),
             icon: Some(Icon::Text {
                 text: country.code.to_string(),
@@ -484,6 +487,7 @@ impl Session {
         Some(Item {
             id: browse::city_id(index),
             title: city.name.to_string(),
+            prefix: None,
             subtitle: Some(self.places.whereabouts(city)),
             icon: Some(Icon::Text {
                 text: self.places.country_of(city).code.to_string(),
@@ -589,6 +593,7 @@ impl Session {
         ItemDetail {
             markdown: format!("# {time}\n\n{}", there.strftime("%A, %-d %B %Y")),
             text: None,
+            code: None,
             image: None,
             metadata,
         }

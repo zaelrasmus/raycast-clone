@@ -414,6 +414,7 @@ impl Session {
                             Failure::Offline => "No internet connection".into(),
                             Failure::Other(_) => "Could not load the weather".into(),
                         },
+                        prefix: None,
                         subtitle: Some(match failure {
                             Failure::Offline => "Enter tries again".into(),
                             Failure::Other(message) => message.clone(),
@@ -457,6 +458,7 @@ impl Session {
             Item {
                 id: id(name),
                 title,
+                prefix: None,
                 subtitle,
                 icon: detail_glyph(name).map(|glyph| Icon::Glyph { name: glyph.into() }),
                 accessories: values
@@ -678,6 +680,7 @@ impl Session {
                 super::age(self.now - forecast.fetched)
             ),
             text: None,
+            code: None,
             image: None,
             metadata,
         }
@@ -756,6 +759,7 @@ impl Session {
         Some(Item {
             id: browse::city_id(index),
             title: city.name.to_string(),
+            prefix: None,
             subtitle: Some(self.places.whereabouts(city)),
             icon: forecast.map(|forecast| Icon::Glyph {
                 name: forecast.condition().glyph().into(),
@@ -777,6 +781,7 @@ impl Session {
         Some(Item {
             id: format!("{COUNTRY}{}", country.code),
             title: country.name.to_string(),
+            prefix: None,
             subtitle: Some(country.continent.name().into()),
             icon: Some(Icon::Text {
                 text: country.code.to_string(),
@@ -796,6 +801,7 @@ impl Session {
         Item {
             id: format!("{CONTINENT}{}", continent.code()),
             title: continent.name().into(),
+            prefix: None,
             subtitle: None,
             icon: Some(Icon::Text {
                 text: continent.code().into(),

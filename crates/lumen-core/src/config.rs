@@ -100,6 +100,42 @@ pub struct FileSearchConfig {
     /// turned back on, in any case. Only what was turned off is stored, so a
     /// new default reaches everyone; a name not on the list is ignored.
     pub default_skips_off: Vec<String>,
+    /// The family a text file's preview is drawn in, in *Search Files*.
+    /// Which monospace family is the palette's (`font_mono`); whether to use
+    /// it is this preference.
+    pub preview_font: PreviewFont,
+}
+
+/// What a text file's preview is drawn in (F16).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviewFont {
+    /// The palette's monospace family, lines clipped rather than wrapped:
+    /// a preview is the file as written, columns and indentation included.
+    #[default]
+    Monospace,
+    /// The palette's interface family, lines wrapped.
+    Interface,
+}
+
+impl PreviewFont {
+    /// The value as written in `config.json`; anything else is the default,
+    /// with one log line a read, never an error: a configuration written
+    /// for a later Lumen must still load on this one.
+    fn read(value: Option<&serde_json::Value>) -> Self {
+        match value.and_then(serde_json::Value::as_str) {
+            None if value.is_none() => Self::default(),
+            Some("monospace") => Self::Monospace,
+            Some("interface") => Self::Interface,
+            _ => {
+                log::warn!(
+                    "files.preview-font: ignoring {}, expected \"monospace\" or \"interface\"",
+                    value.map(ToString::to_string).unwrap_or_default()
+                );
+                Self::default()
+            }
+        }
+    }
 }
 
 /// What root search shows of the file index (F16). Off still indexes, for
@@ -126,6 +162,7 @@ impl Default for FileSearchConfig {
             use_ignore_files: true,
             include_hidden: false,
             default_skips_off: Vec::new(),
+            preview_font: PreviewFont::default(),
         }
     }
 }
@@ -149,6 +186,9 @@ struct FileSearchFile {
     default_skips_off: Vec<String>,
     roots: Vec<PathBuf>,
     limits: Option<serde::de::IgnoredAny>,
+    /// Read as any value, so one this build does not know is the default
+    /// rather than a configuration that fails to load.
+    preview_font: Option<serde_json::Value>,
 }
 
 impl Default for FileSearchFile {
@@ -165,6 +205,7 @@ impl Default for FileSearchFile {
             default_skips_off: defaults.default_skips_off,
             roots: Vec::new(),
             limits: None,
+            preview_font: None,
         }
     }
 }
@@ -205,6 +246,7 @@ impl From<FileSearchFile> for FileSearchConfig {
             use_ignore_files: file.use_ignore_files,
             include_hidden: file.include_hidden,
             default_skips_off: file.default_skips_off,
+            preview_font: PreviewFont::read(file.preview_font.as_ref()),
         }
     }
 }
@@ -732,6 +774,43 @@ mod tests {
         assert_eq!(
             self::files(r#"{ "files": { "in-root": "off" } }"#).in_root,
             InRoot::Off
+        );
+    }
+
+    /// A preview is monospace unless the user prefers the interface font,
+    /// and a value this build does not know is that default, never an error.
+    #[test]
+    fn the_preview_font_is_monospace_unless_set_to_the_interface() {
+        assert_eq!(
+            FileSearchConfig::default().preview_font,
+            PreviewFont::Monospace
+        );
+        assert_eq!(
+            files(r#"{ "files": { "preview-font": "interface" } }"#).preview_font,
+            PreviewFont::Interface
+        );
+        assert_eq!(
+            files(r#"{ "files": { "preview-font": "monospace" } }"#).preview_font,
+            PreviewFont::Monospace
+        );
+        assert_eq!(
+            files(r#"{ "files": { "preview-font": "comic-sans" } }"#).preview_font,
+            PreviewFont::Monospace
+        );
+        assert_eq!(
+            files(r#"{ "files": { "preview-font": 3 } }"#).preview_font,
+            PreviewFont::Monospace
+        );
+
+        let interface = FileSearchConfig {
+            preview_font: PreviewFont::Interface,
+            ..FileSearchConfig::default()
+        };
+        let json = serde_json::to_string(&interface).unwrap();
+        assert!(json.contains(r#""preview-font":"interface""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<FileSearchConfig>(&json).unwrap(),
+            interface
         );
     }
 

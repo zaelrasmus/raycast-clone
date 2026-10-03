@@ -573,6 +573,42 @@ list on the left and a pane on the right, laid out as *Clipboard History*
 Later, not in this phase: *Save as Quicklink*, typing a path to browse a
 folder, sorting a folder.
 
+### Slice 3b: how the view was made to look like the reference
+
+- **The palette's monospace family** is `font_mono`, beside `font_family`,
+  Cascadia Mono in the base palettes and resolved from them when a palette
+  is silent (I-12). A family that is not installed is not an error: gpui
+  logs it once and draws in the system's interface font, as it does for
+  `font_family`.
+- **The card is a field of the view vocabulary,** `ItemDetail::code`: text
+  as written, in a card, after the Markdown. One field rather than a flag
+  on `text`, which *Clipboard History* and *Snippets* draw plain. Which
+  family is the host's: the palette's `font_mono` with lines clipped, or the
+  interface family with lines wrapped under `preview-font: "interface"`.
+  The card is as tall as its lines up to the picture's height
+  (`DETAIL_CARD_MAX_HEIGHT`), so the metadata is where it is for an image.
+  Each line is cut at 400 characters and tabs are four spaces: a minified
+  file is one line of 64 KB, and the text system has no tab stops.
+- **The parent folder before a shared name** is `Item::prefix`, drawn
+  dimmed in the same run as the title, so the two end in one ellipsis. The
+  session sets it when two shown rows have a name in common, in any case;
+  an entry at a drive's top is prefixed with the drive, `C:/`.
+- **Shell icons are kept by type where they can be.** `Icon::File` carries
+  the path and the category glyph, drawn until the shell's icon arrives and
+  for good when it does not. Code, configuration, text and archives keep
+  one icon per extension for the life of the process (their icon is their
+  handler's); folders, `.exe`, `.lnk`, `.ico`, `.url`, and every type the
+  shell may draw as a thumbnail -- pictures, video, audio, documents -- are
+  kept by path and forgotten when the launcher hides or the view closes.
+  The platform asks the shell for its image, not its icon only, so a
+  picture's row shows its thumbnail rather than its type's icon.
+- **Long titles end in an ellipsis,** in the view and in root: the inline
+  title no longer refuses to shrink.
+- **What is typed while the view starts is kept.** The placeholder shown
+  before the first render filtered in the host, so the query was never
+  sent; it is sent with the first render now, for every view that filters
+  its own rows, *Clipboard History* included.
+
 ---
 
 ## Content search through Windows Search
@@ -637,7 +673,8 @@ applications, ranked as applications, and it works with file search off.
   "use-ignore-files": true,
   "include-hidden": false,
   "default-skips-off": ["node_modules"],
-  "declined-drives": ["E:/"]
+  "declined-drives": ["E:/"],
+  "preview-font": "monospace"
 },
 "apps": {
   "extra-folders": ["D:/Tools"]
@@ -650,6 +687,9 @@ applications, ranked as applications, and it works with file search off.
   per read of the file. Changing it walks the scopes again.
 - `declined-drives`: the drives answered *Not now*, so they are not offered
   again. Any drive can still be added from settings.
+- `preview-font`: `"monospace"` (the default) or `"interface"`, what a text
+  file's preview card is drawn in. Any other value is the default, with a
+  log line, never an error.
 - **Old configurations still load.** `roots`, if present, is read as `scopes`
   -- it replaced the defaults, and a scope list does the same. `limits` is no
   longer used; it is read, ignored and logged once, never an error.

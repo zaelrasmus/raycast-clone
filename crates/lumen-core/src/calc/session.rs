@@ -165,6 +165,7 @@ fn item(at: usize, entry: &Entry) -> Item {
     Item {
         id: at.to_string(),
         title: entry.result.clone(),
+        prefix: None,
         subtitle: Some(entry.expression.clone()),
         icon: Some(glyph()),
         accessories: Vec::new(),

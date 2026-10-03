@@ -1013,6 +1013,7 @@ impl Launcher {
     /// are worth their memory only while somebody is looking at them.
     pub fn release_images(&mut self, cx: &mut Context<Self>) {
         self.images.release(cx);
+        self.icons.release_files(cx);
     }
 
     /// Give the launcher the clipboard history, for the view and for
@@ -2041,15 +2042,7 @@ impl Launcher {
             // reported a query change that had not happened, which made the
             // extension redraw the list and wipe the "copied" tag it had just
             // put there. A spurious event is not a harmless one.
-            let query = self.query.clone();
-            if let Mode::View(state) = &mut self.mode
-                && let lumen_core::view::View::List(list) = &state.view
-                && list.filtering == lumen_core::view::Filtering::Extension
-                && state.sent_query != query
-            {
-                state.sent_query = query.clone();
-                self.tell_extension(lumen_core::view::Event::QueryChanged { query });
-            }
+            self.send_query();
 
             self.resize_if_needed(previous_height, cx);
             return;
@@ -2335,6 +2328,12 @@ impl Launcher {
         // back out underneath them.
         self.refilter_view();
         self.keep_selection(selected_id);
+        // What was typed while the view was starting: the placeholder it
+        // replaced filtered in the host, so nothing was sent then, and
+        // `search files` Enter `carbon` typed at once lost `carbon`.
+        if self.picker.is_none() {
+            self.send_query();
+        }
 
         // An open picker survives a render, which may have changed its
         // options; it closes if its scope is gone.
@@ -2771,6 +2770,18 @@ impl Launcher {
         }
     }
 
+    /// Tell a view that filters its own rows what is typed, when it has not
+    /// been told already.
+    fn send_query(&mut self) {
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        if let Some(query) = query_to_send(&state.view, &state.sent_query, &self.query) {
+            state.sent_query = query.clone();
+            self.tell_extension(lumen_core::view::Event::QueryChanged { query });
+        }
+    }
+
     /// Tell the extension something, if there is one listening.
     fn tell_extension(&self, event: lumen_core::view::Event) {
         if let Mode::View(state) = &self.mode
@@ -2785,6 +2796,7 @@ impl Launcher {
         // Told before the mode changes, or there is nothing left to tell.
         self.tell_extension(lumen_core::view::Event::Dismissed);
         self.images.release(cx);
+        self.icons.release_files(cx);
 
         let previous_height = self.content_height();
         self.picker = None;
@@ -4525,6 +4537,8 @@ impl Launcher {
                 &self.theme,
                 height,
                 &self.images,
+                &self.icons,
+                self.config.files.preview_font,
                 cx,
             ),
             lumen_core::view::View::Detail(detail) => {
@@ -4832,6 +4846,9 @@ impl Launcher {
                             .text_size(geometry.text_title())
                             .font_weight(geometry.weight_title())
                             .text_color(color(colors.text_primary))
+                            // A long name ends in an ellipsis, not through a
+                            // letter at the kind label.
+                            .truncate()
                             .child(highlighted(&item.title, &hit.highlights, colors))
                             .into_any_element(),
                         item.subtitle.clone().map(Into::into),
@@ -5108,6 +5125,7 @@ impl Launcher {
                         colors,
                         &geometry,
                         &self.images,
+                        &self.icons,
                         cx,
                     ))
                     .child(div().flex_1().min_w_0().truncate().child(entry.title))
@@ -5401,6 +5419,18 @@ fn card_extent(rows: usize, metrics: &Metrics, variants: &Variants) -> f32 {
     rows as f32 * metrics.row_height + header
 }
 
+/// The query to tell `view`, which was last told `sent`: `query`, when the
+/// view filters its own rows and it is news to it. A view the host filters
+/// is never told, and nothing is told twice -- a spurious change makes a
+/// view redraw what it just drew.
+fn query_to_send(view: &lumen_core::view::View, sent: &str, query: &str) -> Option<String> {
+    let lumen_core::view::View::List(list) = view else {
+        return None;
+    };
+    (list.filtering == lumen_core::view::Filtering::Extension && sent != query)
+        .then(|| query.to_string())
+}
+
 /// What names the result in the calculator's card: *Result*, or what the
 /// answer's subtitle says after what was typed -- the rates' date, for money
 /// (F14).
@@ -5438,13 +5468,34 @@ mod tests {
 
     use super::{
         LauncherEvent, calculated, card_extent, card_label, opening_selection, operator_ranges,
-        panel_matches, refiltered_selection, root_panel_entries, second_action, visible_panel_rows,
+        panel_matches, query_to_send, refiltered_selection, root_panel_entries, second_action,
+        visible_panel_rows,
     };
     use lumen_core::favorites::Change as FavoriteChange;
     use lumen_core::item::{ActionGroup, Builtin, Kind};
     use lumen_core::providers::Provider;
     use lumen_core::style::{CardHeader, Metrics, Variants};
     use lumen_core::{Action, Item};
+
+    /// What was typed while a view was starting reaches it with its first
+    /// render: the placeholder it replaced filtered nothing, so nothing was
+    /// sent. Never twice, and never to a view that filters in the host.
+    #[test]
+    fn a_query_typed_before_the_view_arrived_is_sent_once_it_does() {
+        use lumen_core::view::{Detail, Filtering, List, View};
+        let own = View::List(List {
+            filtering: Filtering::Extension,
+            ..Default::default()
+        });
+        assert_eq!(query_to_send(&own, "", "carbon").as_deref(), Some("carbon"));
+        assert_eq!(query_to_send(&own, "carbon", "carbon"), None);
+        assert_eq!(query_to_send(&own, "carbon", "").as_deref(), Some(""));
+
+        let hosts = View::List(List::default());
+        assert_eq!(query_to_send(&hosts, "", "carbon"), None);
+        let detail = View::Detail(Detail::default());
+        assert_eq!(query_to_send(&detail, "", "carbon"), None);
+    }
 
     #[test]
     fn the_card_names_its_result_or_its_rates() {

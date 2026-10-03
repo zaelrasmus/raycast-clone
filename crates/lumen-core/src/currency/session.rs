@@ -375,6 +375,7 @@ impl Session {
                 detail: None,
                 id: FAILED.into(),
                 title,
+                prefix: None,
                 subtitle: Some(subtitle),
                 icon: None,
                 accessories: vec![crate::view::Accessory::Tag {
@@ -442,6 +443,7 @@ fn row(to: &'static Currency, value: f64, pinned: bool) -> Item {
         detail: None,
         id: format!("{ROW}{}", to.code),
         title: to.code.into(),
+        prefix: None,
         subtitle: Some(format::shown(value, to)),
         icon: Some(Icon::Text {
             text: to.region().into(),

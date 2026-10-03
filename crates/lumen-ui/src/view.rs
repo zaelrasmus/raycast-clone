@@ -36,6 +36,7 @@ use gpui::{
     AnyElement, App, FontStyle, FontWeight, HighlightStyle, ListAlignment, ListState, SharedString,
     Styled, StyledText, div, img, list, px, relative, svg,
 };
+use lumen_core::config::PreviewFont;
 use lumen_core::layout;
 use lumen_core::markdown::{self, Block, Span};
 use lumen_core::style::{Metrics, RowSubtitle};
@@ -44,6 +45,7 @@ use lumen_core::view::{
     Accessory, Detail, EmptyState, Icon, Item, ItemDetail, List, MAX_ACCESSORIES, MetadataRow, Tone,
 };
 
+use crate::icons::IconCache;
 use crate::images::{Fit, ImageCache, PREVIEW_PX};
 use crate::styling::{Geometry, color, type_scale};
 
@@ -230,6 +232,8 @@ pub fn render_list(
     theme: &Theme,
     height: gpui::Pixels,
     images: &ImageCache,
+    icons: &IconCache,
+    preview_font: PreviewFont,
     cx: &mut App,
 ) -> AnyElement {
     if source.is_empty() {
@@ -249,6 +253,7 @@ pub fn render_list(
     let rows = rows.to_vec();
     let colors = theme.colors.clone();
     let row_images = images.clone();
+    let row_icons = icons.clone();
     let geometry = Geometry::of(theme);
 
     let list = div().h(height).py(geometry.list_padding()).child(
@@ -264,6 +269,7 @@ pub fn render_list(
                         &colors,
                         &geometry,
                         &row_images,
+                        &row_icons,
                         cx,
                     ),
                     None => div().into_any_element(),
@@ -288,7 +294,14 @@ pub fn render_list(
             list.w(relative(layout::view::DETAIL_LIST_SHARE))
                 .flex_none(),
         )
-        .child(render_pane(detail.as_ref(), theme, height, images, cx))
+        .child(render_pane(
+            detail.as_ref(),
+            theme,
+            height,
+            images,
+            preview_font,
+            cx,
+        ))
         .into_any_element()
 }
 
@@ -301,6 +314,7 @@ fn render_pane(
     theme: &Theme,
     height: gpui::Pixels,
     images: &ImageCache,
+    preview_font: PreviewFont,
     cx: &mut App,
 ) -> AnyElement {
     let colors = &theme.colors;
@@ -340,6 +354,10 @@ fn render_pane(
             pane.child(render_body(
                 &detail.markdown,
                 detail.text.as_deref(),
+                detail
+                    .code
+                    .as_deref()
+                    .map(|code| render_card(code, theme, preview_font)),
                 &detail.metadata,
                 colors,
             ))
@@ -347,13 +365,54 @@ fn render_pane(
         .into_any_element()
 }
 
+/// The family a preview card is drawn in, and whether its lines wrap (F16):
+/// the palette's monospace family, clipped, or -- when the user prefers
+/// the interface font for previews -- the family inherited, wrapped.
+fn card_font(theme: &Theme, preview_font: PreviewFont) -> (Option<&str>, bool) {
+    match preview_font {
+        PreviewFont::Monospace => (Some(theme.font_mono.as_str()), false),
+        PreviewFont::Interface => (None, true),
+    }
+}
+
+/// Text as written, in a card on a raised surface (F16): a file's first
+/// lines. As tall as its lines up to a bound, past which they are clipped,
+/// so the metadata under it stays a short scroll away. Monospace lines run
+/// off the right edge rather than wrap: a wrapped line of code is two lines
+/// that are not in the file.
+fn render_card(code: &str, theme: &Theme, preview_font: PreviewFont) -> AnyElement {
+    let colors = &theme.colors;
+    let (family, wraps) = card_font(theme, preview_font);
+    div()
+        .w_full()
+        .max_h(px(layout::view::DETAIL_CARD_MAX_HEIGHT))
+        .flex_none()
+        .overflow_hidden()
+        .px(px(layout::view::DETAIL_CARD_PADDING_X))
+        .py(px(layout::view::DETAIL_CARD_PADDING_Y))
+        .rounded(px(layout::view::DETAIL_CARD_RADIUS))
+        .bg(color(colors.surface_elevated))
+        .border_1()
+        .border_color(color(colors.border_subtle))
+        .text_size(type_scale::code())
+        .text_color(color(colors.text_primary))
+        .when_some(family, |card, family| {
+            card.font_family(SharedString::from(family.to_string()))
+        })
+        .when(!wraps, |card| card.whitespace_nowrap())
+        .child(code.to_string())
+        .into_any_element()
+}
+
 /// A detail's body and its metadata, stacked.
 ///
 /// `text` is drawn as written after the Markdown (F11): the text system lays
 /// out each line break as a line, and nothing in it is read as a marker.
+/// `card`, a preview drawn by [`render_card`], follows it.
 fn render_body(
     source: &str,
     text: Option<&str>,
+    card: Option<AnyElement>,
     metadata: &[MetadataRow],
     colors: &Colors,
 ) -> AnyElement {
@@ -374,6 +433,7 @@ fn render_body(
                     .child(text.to_string()),
             )
         })
+        .children(card)
         .when(!metadata.is_empty(), |body| {
             body.child(
                 div()
@@ -533,10 +593,16 @@ pub fn row_text(
     let text = div().flex().flex_1().overflow_hidden();
     match geometry.variants().row_subtitle {
         RowSubtitle::Stacked => text.flex_col().child(title).children(subtitle),
+        // The title at its own width and the subtitle in what is left; a
+        // title longer than the row shrinks into its ellipsis, since the
+        // subtitle's basis is nothing and is never what gives way first.
+        // `flex_none` here cut a long title through a letter (F16).
         RowSubtitle::Inline => text
             .items_baseline()
             .gap(geometry.subtitle_gap())
-            .child(div().flex_none().child(title))
+            // `truncate`, not `overflow_hidden` alone: the ellipsis is a
+            // text style, inherited by the drawn title inside.
+            .child(div().min_w(px(0.0)).truncate().child(title))
             .children(subtitle.map(|subtitle| subtitle.flex_1().min_w(px(0.0)))),
     }
     .into_any_element()
@@ -554,6 +620,7 @@ fn render_item(
     colors: &Colors,
     geometry: &Geometry,
     images: &ImageCache,
+    icons: &IconCache,
     cx: &mut App,
 ) -> AnyElement {
     // Inset by a wrapper's padding: `list` ignores an item's margins.
@@ -582,6 +649,7 @@ fn render_item(
                     colors,
                     geometry,
                     images,
+                    icons,
                     cx,
                 ))
                 .child(row_text(
@@ -590,7 +658,7 @@ fn render_item(
                         .font_weight(geometry.weight_title())
                         .text_color(color(colors.text_primary))
                         .truncate()
-                        .child(item.title.clone())
+                        .child(title(item, colors))
                         .into_any_element(),
                     item.subtitle.clone().map(Into::into),
                     colors,
@@ -616,6 +684,19 @@ fn render_item(
         .into_any_element()
 }
 
+/// A row's title, after its prefix dimmed when it has one (F16): one run of
+/// text, so the two truncate together into one ellipsis.
+fn title(item: &Item, colors: &Colors) -> StyledText {
+    let Some(prefix) = item.prefix.as_deref().filter(|prefix| !prefix.is_empty()) else {
+        return StyledText::new(item.title.clone());
+    };
+    let dimmed = HighlightStyle {
+        color: Some(color(colors.text_muted)),
+        ..Default::default()
+    };
+    StyledText::new(format!("{prefix}{}", item.title)).with_highlights([(0..prefix.len(), dimmed)])
+}
+
 /// An icon in a square of `size`, which is reserved whether or not there is
 /// one (I-10). A row's is the style's icon size; the action panel's is its own.
 pub(crate) fn render_icon(
@@ -624,6 +705,7 @@ pub(crate) fn render_icon(
     colors: &Colors,
     geometry: &Geometry,
     images: &ImageCache,
+    icons: &IconCache,
     cx: &mut App,
 ) -> AnyElement {
     let square = div()
@@ -667,6 +749,22 @@ pub(crate) fn render_icon(
                 },
             )
             .into_any_element(),
+        // The category's glyph until the shell's icon arrives, and for good
+        // when it cannot: a file always has something in its square.
+        Some(Icon::File {
+            path,
+            folder,
+            fallback,
+        }) => match icons.file(path, *folder, cx) {
+            Some(image) => square.child(img(image).size(size)),
+            None => square.child(
+                svg()
+                    .path(format!("icons/{fallback}.svg"))
+                    .size(size)
+                    .text_color(color(colors.icon)),
+            ),
+        }
+        .into_any_element(),
         None => square.into_any_element(),
     }
 }
@@ -780,7 +878,7 @@ fn render_empty(empty: Option<&EmptyState>, theme: &Theme, height: gpui::Pixels)
                 slot.child(swatch(value, px(layout::view::EMPTY_ICON_SIZE), colors))
             }
             // No empty state is a picture; a host view that tried gets none.
-            Icon::Image { .. } => slot,
+            Icon::Image { .. } | Icon::File { .. } => slot,
         })
         .child(
             div()
@@ -830,6 +928,7 @@ pub fn render_detail(detail: &Detail, theme: &Theme, height: gpui::Pixels) -> An
         .child(render_body(
             &detail.markdown,
             None,
+            None,
             &detail.metadata,
             &theme.colors,
         ))
@@ -865,6 +964,23 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// A preview card is in the palette's monospace family, clipped, unless
+    /// the user prefers the interface family, which inherits and wraps.
+    #[test]
+    fn a_card_is_monospace_unless_the_interface_font_is_preferred() {
+        let mut theme = Theme::default();
+        assert_eq!(
+            card_font(&theme, PreviewFont::Monospace),
+            (Some("Cascadia Mono"), false)
+        );
+        theme.font_mono = "Consolas".into();
+        assert_eq!(
+            card_font(&theme, PreviewFont::Monospace),
+            (Some("Consolas"), false)
+        );
+        assert_eq!(card_font(&theme, PreviewFont::Interface), (None, true));
     }
 
     /// A section without a title contributes no header. The alternative is a

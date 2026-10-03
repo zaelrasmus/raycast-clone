@@ -35,6 +35,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// files themselves live with the renderer that loads them.
 pub const BUNDLED_FONT: &str = "Inter";
 
+/// The monospace family, used unless a palette names another: a file's
+/// preview in *Search Files* (F16). Not bundled: Windows 11 ships it. A
+/// family that is not installed falls back as the interface family does --
+/// gpui logs it once and draws in the system's interface font.
+pub const MONO_FONT: &str = "Cascadia Mono";
+
 /// A colour as straight, non-premultiplied RGBA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
@@ -147,6 +153,10 @@ pub struct ThemeFile {
     /// deliberately not a size: sizes are geometry (AD-13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_family: Option<String>,
+    /// The monospace family: text shown as written, such as a file's
+    /// preview (F16). A family, like `font_family`, never a size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_mono: Option<String>,
     /// OpenType features of the family, by their four-letter tags: Inter's
     /// `cv11` (a single-storey a), `ss03` (rounded quotes), `tnum` (figures
     /// of one width). 1 turns one on, 0 off (F15). Typography, not geometry.
@@ -167,6 +177,8 @@ pub struct Theme {
     pub name: String,
     pub appearance: Appearance,
     pub font_family: Option<String>,
+    /// The monospace family; [`MONO_FONT`] unless the palette names one.
+    pub font_mono: String,
     /// OpenType features, as (tag, value); empty is the family's defaults.
     pub font_features: Vec<(String, u32)>,
     pub colors: Colors,
@@ -255,6 +267,7 @@ impl Theme {
             // on Hyprland. A palette may name a different family; sizes are
             // the style's (AD-13, I-11).
             font_family: Some(BUNDLED_FONT.into()),
+            font_mono: MONO_FONT.into(),
             font_features: Vec::new(),
             style: Style::base(),
             colors: Colors {
@@ -289,6 +302,7 @@ impl Theme {
             name: "Daylight".into(),
             appearance: Appearance::Light,
             font_family: Some(BUNDLED_FONT.into()),
+            font_mono: MONO_FONT.into(),
             font_features: Vec::new(),
             style: Style::base(),
             colors: Colors {
@@ -328,6 +342,9 @@ impl Theme {
         theme.appearance = file.appearance;
         if let Some(family) = &file.font_family {
             theme.font_family = Some(family.clone());
+        }
+        if let Some(family) = &file.font_mono {
+            theme.font_mono = family.clone();
         }
         // A tag is four printable ASCII characters; anything else would be
         // handed to the shaper as garbage, so it is reported and dropped.
@@ -444,6 +461,7 @@ mod tests {
             appearance: Appearance::Dark,
             colors: BTreeMap::from([("accent".to_string(), Color::rgb(1, 2, 3))]),
             font_family: None,
+            font_mono: None,
             font_features: BTreeMap::new(),
         };
 
@@ -467,6 +485,7 @@ mod tests {
             appearance: Appearance::Dark,
             colors: BTreeMap::from([("border.subtle".to_string(), Color::rgb(1, 2, 3))]),
             font_family: None,
+            font_mono: None,
             font_features: BTreeMap::new(),
         };
         assert_eq!(
@@ -485,6 +504,23 @@ mod tests {
             Theme::resolve(&apart).colors.border_window,
             Color::rgb(4, 5, 6)
         );
+    }
+
+    /// The monospace family is a palette's, like the interface family, and
+    /// a palette written before it existed draws previews in the base's
+    /// (I-12).
+    #[test]
+    fn the_monospace_family_resolves_from_the_base() {
+        let old: ThemeFile =
+            serde_json::from_str(r#"{ "schema_version": 1, "name": "Old" }"#).unwrap();
+        assert_eq!(Theme::resolve(&old).font_mono, MONO_FONT);
+        assert_eq!(Theme::base_light().font_mono, MONO_FONT);
+
+        let set: ThemeFile = serde_json::from_str(
+            r#"{ "schema_version": 1, "name": "Set", "font_mono": "Consolas" }"#,
+        )
+        .unwrap();
+        assert_eq!(Theme::resolve(&set).font_mono, "Consolas");
     }
 
     #[test]
@@ -514,6 +550,7 @@ mod tests {
                 ("token.invented.later".to_string(), Color::rgb(1, 1, 1)),
             ]),
             font_family: None,
+            font_mono: None,
             font_features: BTreeMap::new(),
         };
 
@@ -531,6 +568,7 @@ mod tests {
             appearance: Appearance::Light,
             colors: BTreeMap::new(),
             font_family: None,
+            font_mono: None,
             font_features: BTreeMap::new(),
         };
 

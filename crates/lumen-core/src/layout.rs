@@ -361,6 +361,18 @@ pub mod view {
 
     /// Between a metadata row's label and its value.
     pub const DETAIL_METADATA_GAP: f32 = 12.0;
+
+    /// A file's preview in the pane (F16): text in a card on a raised
+    /// surface, as Raycast shows it. Padded wider than tall, so the first
+    /// column is not against the edge.
+    pub const DETAIL_CARD_PADDING_X: f32 = 16.0;
+    pub const DETAIL_CARD_PADDING_Y: f32 = 12.0;
+    pub const DETAIL_CARD_RADIUS: f32 = 8.0;
+
+    /// The tallest a card grows: a picture's height, so a preview of either
+    /// kind leaves the metadata where the eye found it, a few rows down.
+    /// Its lines past it are clipped; the pane scrolls to what is under it.
+    pub const DETAIL_CARD_MAX_HEIGHT: f32 = DETAIL_IMAGE_HEIGHT;
 }
 
 /// Type sizes. Not themeable (I-11); a theme may change the family only.
@@ -374,6 +386,9 @@ pub mod text {
     pub const FOOTER: f32 = 11.5;
     /// The expression and the result in the calculator's card (F14).
     pub const CARD: f32 = 22.0;
+    /// A file's preview card (F16): a monospace face at the subtitle's size
+    /// is as wide as the title's proportional one, and fits a line of code.
+    pub const CODE: f32 = SUBTITLE;
 }
 
 /// Appearance animation, per F2: "fade plus a 0.98-to-1.0 scale over roughly

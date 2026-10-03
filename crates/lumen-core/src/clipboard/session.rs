@@ -286,6 +286,7 @@ impl Session {
         Item {
             id: entry.id.to_string(),
             title: title(entry, kind),
+            prefix: None,
             subtitle: None,
             icon: Some(self.icon(entry, kind)),
             accessories: Vec::new(),
@@ -345,6 +346,7 @@ impl Session {
         ItemDetail {
             markdown: String::new(),
             text,
+            code: None,
             image,
             metadata,
         }

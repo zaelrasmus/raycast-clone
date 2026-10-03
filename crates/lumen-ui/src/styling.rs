@@ -290,6 +290,10 @@ pub mod type_scale {
     pub fn footer() -> Pixels {
         px(layout::text::FOOTER)
     }
+
+    pub fn code() -> Pixels {
+        px(layout::text::CODE)
+    }
 }
 
 #[cfg(test)]
