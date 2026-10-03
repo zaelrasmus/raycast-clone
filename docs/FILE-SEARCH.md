@@ -63,6 +63,37 @@ without FTS, as the record of what was indexed -- paths, folders' modification
 times for the start reconcile -- so a start never walks again from nothing.
 The blob is rebuilt from it at start in milliseconds.
 
+### Against the budgets
+
+The names are only safe in memory because of a ceiling. Idle working set has
+been measured at 71--75 MB across F8 to F15, against 100 MB:
+
+| Index | Names in memory | Idle total, estimated |
+| ----- | --------------- | --------------------- |
+| This home folder, 55 000 | ~2 MB | ~76 MB |
+| Home and all of `D:\`, 405 000 | ~13 MB | ~87 MB |
+| 1 000 000 | ~30 MB | **~104 MB: over** |
+
+So:
+
+- **A hard ceiling of 500 000 entries** (~15 MB), a constant like F3's cap
+  and for the same reason: a budget number. Scopes are walked in their
+  listed order, so the scope that overflows is the one added last, never
+  home. What did not fit is said, never hidden: *"The index is full at
+  500 000 items; the rest of D:\ is not searched. Remove a scope or exclude
+  folders."*
+- **The settings page says what a scope costs.** Beside the scopes: *"Every
+  folder and drive you add is held in Lumen's memory to search it instantly.
+  Add the folders you search, not whole drives you don't."* -- with each
+  scope's item count and the index's total against the ceiling.
+- **SQLite is not left warm.** Once the names are loaded, the connection's
+  page cache is released; it holds no memory while the launcher is idle.
+- **Per-frame is untouched by the scan,** which runs off the UI thread; the
+  frame receives at most eight rows.
+
+The table is arithmetic, not a measurement of the process. Slice 1 is not
+done until it is measured (see "Slices").
+
 Also confirmed: `ignore` with hidden entries skipped does skip a file that has
 only the Windows hidden attribute, so I-1 holds without a `Platform` call. And
 `ignore` applies `.gitignore` only inside a Git repository by default
@@ -415,7 +446,9 @@ groups:
 
 1. **In root search** -- the three levels, as a segmented choice.
 2. **Where** -- scopes with *Add Folder*; internal drives as switches; the
-   exclusions; per drive, *Skipped automatically* with a switch each.
+   exclusions; per drive, *Skipped automatically* with a switch each. Above
+   the list, the memory note ("Against the budgets"); beside each scope its
+   item count, and the total against the 500 000 ceiling.
 3. **What** -- *Use ignore files*, *Include hidden files*, ignore patterns.
 4. **Index** -- status (items, last pass, or progress), *Rebuild Index*; per
    scope, Windows Search coverage with *Indexing Options*.
@@ -472,7 +505,7 @@ Measurement first, then each user-visible step on its own.
 | # | Slice | Done when |
 | - | ----- | --------- |
 | 0 | **Measure.** A synthetic index of 100 000 and 1 000 000 names; FTS5 trigram against an in-memory name table; query p95 per query length, resident memory, size on disk. Also the real entry count of this machine's home folder under the skip rules | The storage is chosen by the numbers, recorded in this file |
-| 1 | **The index.** Schema, the walker with the skip rules, scopes and exclusions with the old `roots` migration, folders as results, root's appended *Files* section, `Kind::Folder` | Root finds files and folders from the index; F3's walk is gone; budgets hold |
+| 1 | **The index.** Schema, the walker with the skip rules, scopes and exclusions with the old `roots` migration, the 500 000 ceiling, folders as results, root's appended *Files* section, `Kind::Folder` | Root finds files and folders from the index; F3's walk is gone. Measured: idle working set with home, and with home and `D:\` (`measure-idle.ps1`); find-and-rank latency at 55 000, 350 000 and 1 000 000; time to load the names at start |
 | 2 | **Fresh.** Watching without excluded subtrees, the start reconcile, *Rebuild Index* | A file created on the Desktop is found within seconds; idle CPU measured with the watcher on |
 | 3 | ***Search Files*.** The view, recents, details, actions, *Exclude from Index*, status | The view finds what root finds and more, with no cap |
 | 4 | **Settings.** The page, the three levels, ignore files, patterns, hidden | Every key in "Configuration" is settable without editing JSON |
