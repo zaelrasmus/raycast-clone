@@ -17,7 +17,7 @@
 //! Child processes of this same binary measure the cold-ish first query and
 //! the working set, so neither is polluted by the corpora this one holds.
 
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read;
@@ -905,7 +905,929 @@ fn child(args: &[String]) {
             println!("{ws} {peak} {private} {used} {high} {names_bytes}");
             drop(engine);
         }
+        "ranked" => {
+            let strategy = Strategy::parse(&args[1]);
+            let start = Instant::now();
+            let ranker = Ranker::open(Path::new(&args[2]));
+            let open = start.elapsed();
+            let query = Query::new(&args[3]);
+            let top = args[4].parse::<usize>().expect("a number of rows");
+            let start = Instant::now();
+            let found = ranker.run(strategy, &query, top).len();
+            let first = start.elapsed();
+            let start = Instant::now();
+            ranker.run(strategy, &query, top);
+            let second = start.elapsed();
+            println!("{:.2} {:.2} {:.2} {found}", ms(open), ms(first), ms(second));
+        }
         other => panic!("unknown child mode {other}"),
+    }
+}
+
+// The ranked best N: can the disk answer root's "the best N matches,
+// ranked" -- exact, name start, word start, then the shorter name, then the
+// entry -- rather than its first N in storage order? Words are split as the
+// design says, at separators and at a change to a capital or a digit.
+
+/// The queries of the ranked section: slice 0's, the design's examples and
+/// two frequent real words.
+const RANKED_QUERIES: [&str; 11] = [
+    "inv", "invoice", "report", "2024", "html", "license", "preview", "zqxj", "inv 2024", "cargo",
+    "data",
+];
+
+/// Words whose matches the split may add -- or lose, where a word typed out
+/// whole runs across a capital -- counted on the real corpora.
+const SPLIT_PROBES: [&str; 9] = [
+    "report",
+    "2024",
+    "preview",
+    "license",
+    "html",
+    "inv",
+    "powershell",
+    "javascript",
+    "github",
+];
+
+/// How many ranked rows root asks the disk for.
+const TOPS: [usize; 2] = [8, 64];
+
+/// The split word index's tokenizer. The words are split and lower-cased
+/// before it sees them, so it only cuts at the spaces between them; no
+/// diacritics are removed, as `Names` removes none.
+const SPLIT_TOKENIZER: &str = "tokenize=\"unicode61 remove_diacritics 0\", prefix='1 2 3'";
+
+/// The words `name` is indexed as, lower-cased and joined by spaces: cut at
+/// every character that is not a letter or a digit -- `unicode61` cuts there
+/// anyway, a superset of space `-` `_` `.` `(` `[` -- and where a capital
+/// follows a non-capital or a digit a non-digit. `AnnualReport2024` is
+/// `annual report 2024`; `HTMLParser` stays one word.
+fn split_words(name: &str, out: &mut String) {
+    let begin = out.len();
+    let mut previous: Option<char> = None;
+    for character in name.chars() {
+        if !character.is_alphanumeric() {
+            previous = None;
+            continue;
+        }
+        let starts = previous.is_none_or(|previous| {
+            (character.is_uppercase() && !previous.is_uppercase())
+                || (character.is_numeric() && !previous.is_numeric())
+        });
+        if starts && out.len() > begin {
+            out.push(' ');
+        }
+        out.extend(character.to_lowercase());
+        previous = Some(character);
+    }
+}
+
+/// `Names`' exact tier: the whole name, or the name without its extension.
+fn is_exact(name: &str, query: &str) -> bool {
+    let Some(rest) = name.strip_prefix(query) else {
+        return false;
+    };
+    rest.is_empty() || (!query.is_empty() && rest.starts_with('.') && !rest[1..].contains('.'))
+}
+
+/// What a ranked row is ordered by, ascending: the tier upside down (0 is
+/// exact), the folded name's length in bytes, the entry.
+type Key = (u8, u32, u32);
+
+/// A query as the ranked strategies use it.
+struct Query {
+    words: Vec<String>,
+    /// The first of the longest words, which decides the tier as in `Names`.
+    longest: usize,
+    whole: String,
+}
+
+impl Query {
+    fn new(text: &str) -> Self {
+        let words = words(text);
+        let longest = (0..words.len())
+            .rev()
+            .max_by_key(|&index| words[index].len())
+            .expect("at least one word");
+        let whole = words.join(" ");
+        Self {
+            words,
+            longest,
+            whole,
+        }
+    }
+
+    fn key_word(&self) -> &str {
+        &self.words[self.longest]
+    }
+
+    /// Every word as a word prefix; `initial` makes the longest one start
+    /// the name's first word (`^`).
+    fn fts(&self, initial: bool) -> String {
+        self.words
+            .iter()
+            .enumerate()
+            .map(|(index, word)| {
+                let caret = if initial && index == self.longest {
+                    "^"
+                } else {
+                    ""
+                };
+                format!("{caret}\"{}\"*", word.replace('"', "\"\""))
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    }
+
+    /// Whether every word starts one of the name's split words.
+    fn matches(&self, split: &str) -> bool {
+        self.words.iter().all(|word| {
+            split
+                .split(' ')
+                .any(|token| token.starts_with(word.as_str()))
+        })
+    }
+
+    /// The tier of a name that matches: 4 exact, 3 starting with the
+    /// longest word, 2 a word start.
+    fn tier(&self, folded: &str) -> u8 {
+        if is_exact(folded, &self.whole) {
+            4
+        } else if folded.starts_with(self.key_word()) {
+            3
+        } else {
+            2
+        }
+    }
+
+    fn key(&self, folded: &str, id: u32) -> Key {
+        (4 - self.tier(folded), folded.len() as u32, id)
+    }
+}
+
+/// Every name of a corpus folded and split, for the reference ranking and
+/// the builds.
+struct Prepared {
+    folded: Vec<String>,
+    split: Vec<String>,
+}
+
+fn prepare(corpus: &Corpus) -> Prepared {
+    let mut prepared = Prepared {
+        folded: Vec::with_capacity(corpus.items.len()),
+        split: Vec::with_capacity(corpus.items.len()),
+    };
+    for item in &corpus.items {
+        let mut folded = String::new();
+        fold(&item.name, &mut folded);
+        let mut split = String::new();
+        split_words(&item.name, &mut split);
+        prepared.folded.push(folded);
+        prepared.split.push(split);
+    }
+    prepared
+}
+
+/// Every match of `query`, ranked in memory: what each strategy's best N must
+/// equal. With the count of each tier, 4 to 2.
+fn reference(prepared: &Prepared, query: &Query) -> (Vec<u32>, [usize; 3]) {
+    let mut keys = prepared
+        .split
+        .iter()
+        .zip(&prepared.folded)
+        .zip(1u32..)
+        .filter(|((split, _), _)| query.matches(split))
+        .map(|((_, folded), id)| query.key(folded, id))
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    let mut tiers = [0; 3];
+    for key in &keys {
+        tiers[key.0 as usize] += 1;
+    }
+    (keys.into_iter().map(|key| key.2).collect(), tiers)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Strategy {
+    /// Every match from the word index, its name fetched, ranked in Rust in
+    /// a bounded heap.
+    All,
+    /// Exact names, then name starts, from an index on `lower(name)`; then
+    /// word starts from the word index ordered by length in SQL; stopping
+    /// once N are found.
+    Tiered,
+    /// Exact names from the same index, then the name starts and the word
+    /// starts from a word index whose row id is the name's length and its
+    /// entry: its own order is the ranking, so it stops after N.
+    Keyed,
+}
+
+impl Strategy {
+    fn name(self) -> &'static str {
+        match self {
+            Strategy::All => "all",
+            Strategy::Tiered => "tiered",
+            Strategy::Keyed => "keyed",
+        }
+    }
+
+    fn parse(text: &str) -> Self {
+        [Strategy::All, Strategy::Tiered, Strategy::Keyed]
+            .into_iter()
+            .find(|strategy| strategy.name() == text)
+            .expect("a known strategy")
+    }
+}
+
+/// One ranked row: the entry and its name, as root would show it.
+struct Row {
+    id: u32,
+    #[allow(dead_code)]
+    name: String,
+}
+
+/// A read-only connection to a split database.
+struct Ranker {
+    connection: Connection,
+}
+
+impl Ranker {
+    fn open(path: &Path) -> Self {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .expect("open a split database");
+        connection.execute_batch(CACHE).expect("bound the cache");
+        Self { connection }
+    }
+
+    fn run(&self, strategy: Strategy, query: &Query, top: usize) -> Vec<Row> {
+        match strategy {
+            Strategy::All => self.all(query, top),
+            Strategy::Tiered => self.tiered(query, top),
+            Strategy::Keyed => self.keyed(query, top),
+        }
+    }
+
+    fn name(&self, id: u32) -> String {
+        self.connection
+            .prepare_cached("SELECT name FROM files WHERE id = ?1")
+            .expect("prepare a name")
+            .query_row([id], |row| row.get(0))
+            .expect("a name")
+    }
+
+    fn all(&self, query: &Query, top: usize) -> Vec<Row> {
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT f.id, f.name FROM words CROSS JOIN files f ON f.id = words.rowid
+                 WHERE words MATCH ?1",
+            )
+            .expect("prepare every match");
+        let mut rows = statement.query([query.fts(false)]).expect("match");
+        let mut heap = BinaryHeap::<(Key, String)>::with_capacity(top + 1);
+        let mut folded = String::new();
+        while let Some(row) = rows.next().expect("read a match") {
+            let id = row.get::<_, u32>(0).expect("an id");
+            let name = row
+                .get_ref(1)
+                .and_then(|v| Ok(v.as_str()?))
+                .expect("a name");
+            folded.clear();
+            fold(name, &mut folded);
+            let key = query.key(&folded, id);
+            if heap.len() < top {
+                heap.push((key, name.to_string()));
+            } else if heap.peek().is_some_and(|(worst, _)| key < *worst) {
+                heap.pop();
+                heap.push((key, name.to_string()));
+            }
+        }
+        heap.into_sorted_vec()
+            .into_iter()
+            .map(|((_, _, id), name)| Row { id, name })
+            .collect()
+    }
+
+    /// Every exact match, ranked: the whole name, or the name and an
+    /// extension, found on the `lower(name)` index.
+    fn exact(&self, query: &Query) -> Vec<(Key, String)> {
+        let mut found = Vec::new();
+        let mut folded = String::new();
+        let mut split = String::new();
+        let stem = format!("{}.", query.whole);
+        let past = format!("{}/", query.whole);
+        for (sql, bounds) in [
+            (
+                "SELECT id, name FROM files WHERE lower(name) = ?1",
+                vec![query.whole.as_str()],
+            ),
+            (
+                "SELECT id, name FROM files WHERE lower(name) >= ?1 AND lower(name) < ?2",
+                vec![stem.as_str(), past.as_str()],
+            ),
+        ] {
+            let mut statement = self
+                .connection
+                .prepare_cached(sql)
+                .expect("prepare the exact");
+            let mut rows = statement
+                .query(rusqlite::params_from_iter(bounds))
+                .expect("the exact");
+            while let Some(row) = rows.next().expect("read an exact") {
+                let id = row.get::<_, u32>(0).expect("an id");
+                let name = row.get::<_, String>(1).expect("a name");
+                folded.clear();
+                fold(&name, &mut folded);
+                split.clear();
+                split_words(&name, &mut split);
+                if is_exact(&folded, &query.whole) && query.matches(&split) {
+                    found.push((query.key(&folded, id), name));
+                }
+            }
+        }
+        found.sort_unstable();
+        found
+    }
+
+    fn tiered(&self, query: &Query, top: usize) -> Vec<Row> {
+        let mut out = self.exact(query);
+        if out.len() >= top {
+            out.truncate(top);
+            return rows_of(out);
+        }
+        let mut known = out.iter().map(|(key, _)| key.2).collect::<HashSet<_>>();
+
+        // Name starts, the shortest first, past the exact ones.
+        let word = query.key_word();
+        let upper = format!("{word}\u{10FFFF}");
+        let need = top - out.len();
+        let mut limit = (top + known.len()) as i64;
+        let mut folded = String::new();
+        let mut split = String::new();
+        loop {
+            let mut statement = self
+                .connection
+                .prepare_cached(
+                    "SELECT id, name FROM files WHERE lower(name) >= ?1 AND lower(name) < ?2
+                     ORDER BY length(CAST(name AS BLOB)), id LIMIT ?3",
+                )
+                .expect("prepare the name starts");
+            let mut rows = statement
+                .query(params![word, upper, limit])
+                .expect("the name starts");
+            let mut read = 0;
+            let mut starts = Vec::new();
+            while let Some(row) = rows.next().expect("read a name start") {
+                read += 1;
+                let id = row.get::<_, u32>(0).expect("an id");
+                if known.contains(&id) {
+                    continue;
+                }
+                let name = row.get::<_, String>(1).expect("a name");
+                folded.clear();
+                fold(&name, &mut folded);
+                split.clear();
+                split_words(&name, &mut split);
+                if folded.starts_with(word) && query.matches(&split) {
+                    starts.push((query.key(&folded, id), name));
+                }
+            }
+            if starts.len() < need && read == limit && limit >= 0 {
+                // Filtered below what was asked: every name start, then.
+                limit = -1;
+                continue;
+            }
+            known.extend(starts.iter().map(|(key, _)| key.2));
+            out.extend(starts.into_iter().take(need));
+            break;
+        }
+        if out.len() >= top {
+            return rows_of(out);
+        }
+
+        // Word starts, the shortest first, past every row above.
+        let need = top - out.len();
+        let mut statement = self
+            .connection
+            .prepare_cached(
+                "SELECT f.id, f.name FROM words CROSS JOIN files f ON f.id = words.rowid
+                 WHERE words MATCH ?1 ORDER BY length(CAST(f.name AS BLOB)), f.id LIMIT ?2",
+            )
+            .expect("prepare the word starts");
+        let mut rows = statement
+            .query(params![query.fts(false), (need + known.len()) as i64])
+            .expect("the word starts");
+        let mut added = 0;
+        while let Some(row) = rows.next().expect("read a word start") {
+            let id = row.get::<_, u32>(0).expect("an id");
+            if known.contains(&id) {
+                continue;
+            }
+            let name = row.get::<_, String>(1).expect("a name");
+            out.push(((2, 0, id), name));
+            added += 1;
+            if added == need {
+                break;
+            }
+        }
+        rows_of(out)
+    }
+
+    fn keyed(&self, query: &Query, top: usize) -> Vec<Row> {
+        let mut out = self.exact(query);
+        if out.len() >= top {
+            out.truncate(top);
+            return rows_of(out);
+        }
+        let mut known = out.iter().map(|(key, _)| key.2).collect::<HashSet<_>>();
+        let word = query.key_word();
+        let mut folded = String::new();
+        // `^`: the name's first word starts with the longest word -- the
+        // name starts, and names such as `.cargo` that the check drops.
+        for initial in [true, false] {
+            let mut statement = self
+                .connection
+                .prepare_cached("SELECT rowid FROM ranked WHERE ranked MATCH ?1")
+                .expect("prepare the keyed words");
+            let mut rows = statement
+                .query([query.fts(initial)])
+                .expect("the keyed words");
+            while let Some(row) = rows.next().expect("read a keyed word") {
+                let id = (row.get::<_, i64>(0).expect("a key") & 0xFFFF_FFFF) as u32;
+                if known.contains(&id) {
+                    continue;
+                }
+                let name = self.name(id);
+                if initial {
+                    folded.clear();
+                    fold(&name, &mut folded);
+                    if !folded.starts_with(word) {
+                        continue;
+                    }
+                }
+                known.insert(id);
+                out.push(((0, 0, id), name));
+                if out.len() == top {
+                    return rows_of(out);
+                }
+            }
+        }
+        rows_of(out)
+    }
+}
+
+fn rows_of(found: Vec<(Key, String)>) -> Vec<Row> {
+    found
+        .into_iter()
+        .map(|((_, _, id), name)| Row { id, name })
+        .collect()
+}
+
+/// The ranked section's tables, filled corpus by corpus.
+#[derive(Default)]
+struct RankedReport {
+    sizes: String,
+    splits: String,
+    latency: String,
+    fresh: String,
+    scan: String,
+    notes: String,
+}
+
+/// One build step of a split database: its label, its time, the file after.
+struct Step {
+    label: &'static str,
+    took: Duration,
+    bytes: u64,
+}
+
+/// V1 with a column of split words and an FTS5 index of it -- `detail=none`
+/// when `compact` -- and, unless compact, the `lower(name)` index and the
+/// length-keyed contentless word index. Each step its own transaction.
+fn build_split(path: &Path, corpus: &Corpus, prepared: &Prepared, compact: bool) -> Vec<Step> {
+    remove(path);
+    let connection = Connection::open(path).expect("open a split database");
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -65536;",
+        )
+        .expect("configure the build");
+    let mut steps = Vec::new();
+    let mut step = |label: &'static str, work: &dyn Fn(&rusqlite::Transaction)| {
+        let start = Instant::now();
+        let transaction = connection.unchecked_transaction().expect("begin a step");
+        work(&transaction);
+        transaction.commit().expect("commit a step");
+        steps.push(Step {
+            label,
+            took: start.elapsed(),
+            bytes: size(path),
+        });
+    };
+
+    step(
+        "V1 + split words column",
+        &|transaction: &rusqlite::Transaction| {
+            transaction
+                .execute_batch(
+                    "CREATE TABLE folders (
+                     id        INTEGER PRIMARY KEY,
+                     parent_id INTEGER,
+                     name      TEXT NOT NULL
+                 );
+                 CREATE TABLE files (
+                     id        INTEGER PRIMARY KEY,
+                     folder_id INTEGER NOT NULL,
+                     scope     INTEGER NOT NULL,
+                     name      TEXT    NOT NULL,
+                     is_dir    INTEGER NOT NULL,
+                     modified  INTEGER,
+                     tokens    TEXT    NOT NULL
+                 );",
+                )
+                .expect("create the tree");
+            let mut insert = transaction
+                .prepare("INSERT INTO folders (id, parent_id, name) VALUES (?1, ?2, ?3)")
+                .expect("prepare the folders");
+            for (id, (parent, name)) in
+                (1i64..).zip(corpus.parents.iter().zip(&corpus.folder_names))
+            {
+                insert
+                    .execute(params![id, parent.map(|parent| parent as i64 + 1), name])
+                    .expect("insert a folder");
+            }
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO files (id, folder_id, scope, name, is_dir, modified, tokens)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .expect("prepare the files");
+            for ((id, item), split) in (1i64..).zip(&corpus.items).zip(&prepared.split) {
+                insert
+                    .execute(params![
+                        id,
+                        item.folder as i64 + 1,
+                        item.scope,
+                        item.name,
+                        item.is_dir,
+                        item.modified,
+                        split
+                    ])
+                    .expect("insert a file");
+            }
+            transaction
+                .execute_batch(
+                    "CREATE INDEX folders_path ON folders (parent_id, name);
+                 CREATE INDEX files_path ON files (folder_id, name);",
+                )
+                .expect("index the tree");
+        },
+    );
+    let detail = if compact {
+        ", detail=none, columnsize=0"
+    } else {
+        ""
+    };
+    step(
+        "FTS5 split words",
+        &|transaction: &rusqlite::Transaction| {
+            transaction
+                .execute_batch(&format!(
+                    "CREATE VIRTUAL TABLE words USING fts5(
+                     tokens, content='files', content_rowid='id', {SPLIT_TOKENIZER}{detail});
+                 INSERT INTO words(words) VALUES ('rebuild');"
+                ))
+                .expect("build the split word index");
+        },
+    );
+    if !compact {
+        step(
+            "index on lower(name)",
+            &|transaction: &rusqlite::Transaction| {
+                transaction
+                    .execute_batch("CREATE INDEX files_lower ON files (lower(name));")
+                    .expect("index the lower-cased names");
+            },
+        );
+        step(
+            "length-keyed contentless FTS5",
+            &|transaction: &rusqlite::Transaction| {
+                transaction
+                .execute_batch(&format!(
+                    "CREATE VIRTUAL TABLE ranked USING fts5(tokens, content='', {SPLIT_TOKENIZER});"
+                ))
+                .expect("create the keyed word index");
+                let mut insert = transaction
+                    .prepare("INSERT INTO ranked (rowid, tokens) VALUES (?1, ?2)")
+                    .expect("prepare the keyed words");
+                for ((id, folded), split) in (1i64..).zip(&prepared.folded).zip(&prepared.split) {
+                    insert
+                        .execute(params![((folded.len() as i64) << 32) | id, split])
+                        .expect("insert keyed words");
+                }
+            },
+        );
+    }
+    steps
+}
+
+/// Every rowid an FTS5 `words` table matches `fts` with.
+fn rowids(connection: &Connection, fts: &str) -> HashSet<i64> {
+    let mut statement = connection
+        .prepare_cached("SELECT rowid FROM words WHERE words MATCH ?1")
+        .expect("prepare the rowids");
+    statement
+        .query_map([fts], |row| row.get(0))
+        .expect("match")
+        .collect::<Result<_, _>>()
+        .expect("a rowid")
+}
+
+/// Where `found` first differs from `expected`: `ok`, or `@i` and how many
+/// of the N are missing.
+fn verdict(found: &[Row], expected: &[u32]) -> String {
+    let ids = found.iter().map(|row| row.id).collect::<Vec<_>>();
+    if ids == expected {
+        return "ok".to_string();
+    }
+    let at = ids
+        .iter()
+        .zip(expected)
+        .position(|(a, b)| a != b)
+        .unwrap_or(ids.len().min(expected.len()));
+    let wanted = expected.iter().collect::<HashSet<_>>();
+    let missing = expected.len() - ids.iter().filter(|id| wanted.contains(id)).count();
+    format!("@{at} -{missing}")
+}
+
+fn measure_ranked(label: &str, corpus: &Corpus, dir: &Path, scan: bool, report: &mut RankedReport) {
+    let entries = corpus.items.len();
+    eprintln!("[{label}] ranked: {entries} entries");
+    let dir = dir.join(format!("ranked-{}", label.replace(' ', "-")));
+    std::fs::create_dir_all(&dir).expect("create the corpus folder");
+    let prepared = prepare(corpus);
+
+    // Sizes and builds: V1, the previous V2 and V2c, then the split ones.
+    let mut row = |layer: &str, bytes: u64, took: Duration| {
+        let _ = writeln!(
+            report.sizes,
+            "| {label} | {layer} | {:.1} | {:.0} | {:.1} |",
+            mb(bytes),
+            bytes as f64 / entries as f64,
+            took.as_secs_f64()
+        );
+    };
+    let mut previous = HashMap::new();
+    for variant in [Variant::V1, Variant::V2, Variant::V2c] {
+        let path = dir.join(variant.file());
+        let took = build(&path, corpus, variant);
+        eprintln!("[{label}] built {}", variant.label());
+        row(
+            &format!("{} (previous)", variant.label()),
+            size(&path),
+            took,
+        );
+        previous.insert(variant.file(), size(&path));
+    }
+    let split = dir.join("v2s.db");
+    let steps = build_split(&split, corpus, &prepared, false);
+    eprintln!("[{label}] built V2-split");
+    let compact = dir.join("v2cs.db");
+    let compact_steps = build_split(&compact, corpus, &prepared, true);
+    eprintln!("[{label}] built V2c-split");
+    let v1 = previous[Variant::V1.file()];
+    let mut before = 0;
+    let mut delta = HashMap::new();
+    for step in &steps {
+        row(
+            &format!("V2-split step: {} (+ file growth)", step.label),
+            step.bytes - before,
+            step.took,
+        );
+        delta.insert(step.label, step.bytes - before);
+        before = step.bytes;
+    }
+    let fts_step = |steps: &[Step]| (steps[0].took + steps[1].took, steps[1].bytes);
+    let (took, bytes) = fts_step(&steps[..2]);
+    row("**V2-split** (V1 + words column + FTS5 split)", bytes, took);
+    let (took, bytes) = fts_step(&compact_steps);
+    row(
+        "**V2c-split** (V1 + words column + FTS5 split, detail=none)",
+        bytes,
+        took,
+    );
+    let _ = writeln!(
+        report.sizes,
+        "| {label} | whole V2-split file, all four steps | {:.1} | {:.0} | {:.1} |",
+        mb(steps[3].bytes),
+        steps[3].bytes as f64 / entries as f64,
+        steps
+            .iter()
+            .map(|step| step.took)
+            .sum::<Duration>()
+            .as_secs_f64()
+    );
+    let keyed_only = v1 + delta["index on lower(name)"] + delta["length-keyed contentless FTS5"];
+    let _ = writeln!(
+        report.sizes,
+        "| {label} | strategy c alone: V1 + lower(name) index + keyed FTS5 (computed) | {:.1} | {:.0} | - |",
+        mb(keyed_only),
+        keyed_only as f64 / entries as f64
+    );
+
+    // How many more names a word start finds once words are split.
+    if !label.starts_with("synth") {
+        let old = Connection::open_with_flags(
+            dir.join(Variant::V2.file()),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open V2");
+        let new = Connection::open_with_flags(&split, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open V2-split");
+        for probe in SPLIT_PROBES {
+            let fts = Query::new(probe).fts(false);
+            let before = rowids(&old, &fts);
+            let after = rowids(&new, &fts);
+            let gained = after.difference(&before).count();
+            let lost = before.difference(&after).count();
+            let union = before.union(&after).count();
+            let examples = after
+                .difference(&before)
+                .take(3)
+                .chain(before.difference(&after).take(2))
+                .map(|&id| format!("`{}`", corpus.items[id as usize - 1].name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(
+                report.splits,
+                "| {label} | `{probe}` | {} | {} | +{gained} | -{lost} | {union} | {examples} |",
+                before.len(),
+                after.len()
+            );
+        }
+    }
+    for variant in [Variant::V2, Variant::V2c] {
+        remove(&dir.join(variant.file()));
+    }
+
+    // Ranked best N, warm.
+    let full = Ranker::open(&split);
+    let small = Ranker::open(&compact);
+    let cases = [
+        (&full, Strategy::All),
+        (&small, Strategy::All),
+        (&full, Strategy::Tiered),
+        (&full, Strategy::Keyed),
+    ];
+    for text in RANKED_QUERIES {
+        let query = Query::new(text);
+        let (expected, tiers) = reference(&prepared, &query);
+        eprintln!("[{label}] ranked `{text}`");
+        for top in TOPS {
+            let wanted = &expected[..top.min(expected.len())];
+            let mut cells = Vec::new();
+            let mut verdicts = Vec::new();
+            for (index, (ranker, strategy)) in cases.iter().enumerate() {
+                let found = ranker.run(*strategy, &query, top);
+                let verdict = verdict(&found, wanted);
+                if verdict != "ok" {
+                    let at = found.iter().zip(wanted).find(|(row, id)| row.id != **id);
+                    if let Some((row, id)) = at {
+                        let _ = writeln!(
+                            report.notes,
+                            "- {label} `{text}` N={top} {}: got `{}` (#{}) where the reference has `{}` (#{id}).",
+                            ["a", "a'", "b", "c"][index],
+                            corpus.items[row.id as usize - 1].name,
+                            row.id,
+                            corpus.items[*id as usize - 1].name
+                        );
+                    }
+                }
+                verdicts.push(verdict);
+                cells.push(cell(Some(&time(|| {
+                    ranker.run(*strategy, &query, top).len()
+                }))));
+            }
+            let _ = writeln!(
+                report.latency,
+                "| {label} | `{text}` | {} ({}/{}/{}) | {top} | {} | {} |",
+                expected.len(),
+                tiers[0],
+                tiers[1],
+                tiers[2],
+                cells.join(" | "),
+                verdicts.join(" / ")
+            );
+        }
+    }
+    drop(full);
+    drop(small);
+
+    // The first query of a fresh process, the file as the build and the
+    // warm runs left it in the OS cache.
+    for (path, strategy, name) in [
+        (&split, Strategy::All, "a"),
+        (&compact, Strategy::All, "a'"),
+        (&split, Strategy::Tiered, "b"),
+        (&split, Strategy::Keyed, "c"),
+    ] {
+        for text in ["inv", "html", "data"] {
+            for top in TOPS {
+                let printed = spawn(&[
+                    "ranked",
+                    strategy.name(),
+                    &path.to_string_lossy(),
+                    text,
+                    &top.to_string(),
+                ]);
+                let cell = printed.map_or("failed".to_string(), |text| {
+                    let parts = text.split_whitespace().collect::<Vec<_>>();
+                    format!("{} + {} / {} | {}", parts[0], parts[1], parts[2], parts[3])
+                });
+                let _ = writeln!(
+                    report.fresh,
+                    "| {label} | {name} | `{text}` | {top} | {cell} |"
+                );
+            }
+        }
+    }
+
+    // Search Files' mid-word plain scan on V1.
+    let v1_path = dir.join(Variant::V1.file());
+    if scan {
+        let engine = Engine::open(&v1_path, Method::Like);
+        for text in RANKED_QUERIES {
+            eprintln!("[{label}] scan `{text}`");
+            let all = time(|| engine.search(Method::Like, text, None).unwrap_or(0));
+            let capped = time(|| engine.search(Method::Like, text, Some(LIMIT)).unwrap_or(0));
+            let _ = writeln!(
+                report.scan,
+                "| {label} | `{text}` | {} | {} | {} |",
+                all.matches,
+                cell(Some(&all)),
+                cell(Some(&capped))
+            );
+        }
+    }
+
+    for path in [&v1_path, &split, &compact] {
+        remove(path);
+    }
+    let _ = std::fs::remove_dir(&dir);
+}
+
+fn print_ranked(report: &RankedReport) {
+    println!("\n## R1. Size and build of the split word index\n");
+    println!(
+        "Built as the previous section builds: one transaction a step, `journal_mode=OFF`, 64 MB build cache. Words split before FTS5 sees them (at every non-letter-or-digit, and where a capital follows a non-capital or a digit a non-digit), lower-cased, joined by spaces; FTS5 `unicode61 remove_diacritics 0`, `prefix='1 2 3'`. A step's MB is how much the file grew.\n"
+    );
+    println!("| corpus | layer | MB | B/entry | build s |");
+    println!("| - | - | - | - | - |");
+    print!("{}", report.sizes);
+
+    println!("\n## R2. What splitting at capitals and digits finds\n");
+    println!(
+        "Word-prefix matches (`\"q\"*`) on the previous V2 (separators `-_.()[]` and unicode61's own, diacritics removed) and on V2-split.\n"
+    );
+    println!(
+        "| corpus | query | V2 | V2-split | gained | lost | union | examples (gained, then lost) |"
+    );
+    println!("| - | - | - | - | - | - | - | - |");
+    print!("{}", report.splits);
+
+    println!("\n## R3. Ranked best N, warm\n");
+    println!(
+        "Cells are p50 / p95 / max ms, 200 runs after 20 warm-ups (fewer, shown in brackets, when the first run took over 5 ms). Reference: every match ranked in memory by the Names rules on the split words -- exact, name start, word start, then the shorter folded name, then the entry; frecency omitted. Matches: all (exact / name start / word start). a: every match fetched and ranked in Rust, on V2-split; a': the same on V2c-split; b: tiered SQL; c: exact from the index, then a length-keyed word index read in its own order. Correct: `ok`, or `@i -m` (first differing position, how many of the reference's N are missing).\n"
+    );
+    println!("| corpus | query | matches (4/3/2) | N | a | a' | b | c | correct a / a' / b / c |");
+    println!("| - | - | - | - | - | - | - | - | - |");
+    print!("{}", report.latency);
+
+    println!("\n## R4. First query in a fresh process\n");
+    println!(
+        "`open + first / second` ms in a new process; the file as the build and the warm runs left it in the OS cache.\n"
+    );
+    println!("| corpus | strategy | query | N | open + first / second | rows |");
+    println!("| - | - | - | - | - | - |");
+    print!("{}", report.fresh);
+
+    println!("\n## R5. Search Files: mid-word plain scan on V1\n");
+    println!("`LIKE '%q%'` on every word, warm. Cells as above.\n");
+    println!("| corpus | query | matches | all | LIMIT {LIMIT} |");
+    println!("| - | - | - | - | - |");
+    print!("{}", report.scan);
+
+    println!("\n## R6. Where a strategy differed from the reference\n");
+    if report.notes.is_empty() {
+        println!("- Every strategy returned the reference's N, in its order.");
+    } else {
+        print!("{}", report.notes);
     }
 }
 
@@ -1164,6 +2086,9 @@ fn main() {
         return;
     }
     let started = Instant::now();
+    // `DISK_BENCH=ranked` runs only the ranked best N; the rest takes a
+    // quarter of an hour.
+    let only_ranked = std::env::var("DISK_BENCH").as_deref() == Ok("ranked");
 
     // `target/tmp` is where cargo points benches; its parent is `target`.
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -1270,19 +2195,35 @@ fn main() {
         .collect::<Vec<_>>();
 
     let mut report = Report::default();
-    measure("real", &real, &queries, &dir, &mut report);
+    let mut ranked = RankedReport::default();
+    if !only_ranked {
+        measure("real", &real, &queries, &dir, &mut report);
+    }
+    measure_ranked("real", &real, &dir, true, &mut ranked);
     drop(real);
-    measure("home", &home_corpus, &queries, &dir, &mut report);
+    if !only_ranked {
+        measure("home", &home_corpus, &queries, &dir, &mut report);
+    }
+    measure_ranked("home", &home_corpus, &dir, false, &mut ranked);
     drop(home_corpus);
     for count in SYNTHETIC {
         let corpus = synthetic(count);
-        measure(
-            &format!("synth {}M", count / 1_000_000),
-            &corpus,
-            &queries,
-            &dir,
-            &mut report,
+        let label = format!("synth {}M", count / 1_000_000);
+        if !only_ranked {
+            measure(&label, &corpus, &queries, &dir, &mut report);
+        }
+        let scan = count == SYNTHETIC[SYNTHETIC.len() - 1];
+        measure_ranked(&label, &corpus, &dir, scan, &mut ranked);
+    }
+
+    print_ranked(&ranked);
+    if only_ranked {
+        println!(
+            "\nRanked section only. Total run {:.0} s.",
+            started.elapsed().as_secs_f64()
         );
+        remove(&real_db);
+        return;
     }
 
     let columns = METHODS

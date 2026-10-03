@@ -306,6 +306,17 @@ the trade, chosen over losing entries.
   `compact` finds no less than `balanced`; only `complete` finds more. No
   level drops an entry, and *Search Files* finds mid-word matches at every
   level. Changing it builds or drops one table in the background.
+- **Ranked from disk, measured** (`DISK_BENCH=ranked`): root's best 8 or 64,
+  ranked as `Names` ranks, came out identical to an in-memory ranking of
+  every match in all 176 cases. On the real index the tiered SQL search
+  (exact, then name start, then word start, each in order of length) was
+  at most 3.4 ms at p95; fetching every match and ranking it was 60 ms.
+  At a synthetic 2M it reached 392 ms where thousands of names are
+  identical -- each tier must stop at N. Splitting at capitals found more
+  (`report` +50, `2024` +37) but lost words written with one (`JavaScript`
+  -14, `GitHub` -10), so a name is indexed as its whole words **and** their
+  parts. The real cost with the index the ranking needs is about 92 MB
+  for the real 500 000, not 63: still under today's 115.
 - **One or two letters still search only what is used.** In root, a query
   under three letters searches the hot layer -- which is what was used --
   and the names of one or two characters; from three, the disk joins. A
