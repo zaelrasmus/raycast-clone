@@ -715,6 +715,30 @@ groups:
 *Extra application folders* goes on the page that owns applications; if
 none exists when slice 7 lands, at the end of this one, under its own heading.
 
+### Slice 4: how the page was built
+
+- **Saved as it is changed**, as the Appearance page is: the level, every
+  switch and every folder are written the moment they are chosen. The ignore
+  patterns are typed, so they wait for Enter or Ctrl+S, as the clipboard's
+  limit does; the field is split on commas, trimmed, empties dropped.
+- **Through `file_search::settings`**, which edits `files` as a document
+  (`section`): unrelated keys and the order survive. A list is written whole
+  from what the file *means*, so adding a scope to a file with no `scopes`
+  keeps `~` (or F3's `roots`). A picked folder is written with `~` for home
+  and forward slashes; one already listed, in any case, is not added twice.
+- **The index's status is the launcher's.** It emits `FileIndexChanged`
+  whenever an index is installed or indexing starts or stops; the daemon
+  hands `Launcher::file_index_status` to an open settings window. *Rebuild
+  File Index* goes back as `SettingsEvent::RebuildFileIndex`. *Last updated*
+  is the time of the last full walk, recorded in the store's meta
+  (`walked_at`); changes applied in place keep it.
+- **Folders come from the system's picker**, `Platform::pick_folder`:
+  `IFileOpenDialog` with `FOS_PICKFOLDERS`, on a thread of its own, owned by
+  the settings window so it opens over it. Linux returns `None` until F5.
+- `enabled` and `preview-font` have rows too (*Index*, *What*), so every key
+  but `declined-drives` is settable. Drive switches, the per-drive skipped
+  folders and Windows Search coverage wait for slices 5 and 6.
+
 ---
 
 ## Platform changes

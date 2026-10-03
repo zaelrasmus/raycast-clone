@@ -392,6 +392,9 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         &cx.to_async(),
     );
 
+    // Created the first time settings is opened; the launcher's events
+    // reach it from the start (F16).
+    let settings = Rc::new(RefCell::new(None));
     subscribe_to_launcher(
         cx,
         &window,
@@ -400,6 +403,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         shell.clone(),
         tx.clone(),
         timers.clone(),
+        settings.clone(),
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
     let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone(), theme.clone());
@@ -407,7 +411,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     let surfaces = Surfaces {
         launcher: window,
         overlay,
-        settings: Rc::new(RefCell::new(None)),
+        settings,
         sheets: Rc::new(RefCell::new(sheets)),
         fallback: Rc::new(fallback),
         paths: paths.clone(),
@@ -687,6 +691,10 @@ fn open_settings(
         .collect::<Vec<_>>();
 
     let history = clipboard_history(surfaces, cx);
+    let files = surfaces
+        .launcher
+        .update(cx, |launcher, _window, _cx| launcher.file_index_status())
+        .ok();
     window
         .update(cx, |settings, window, cx| {
             settings.load(entries, cx);
@@ -701,6 +709,10 @@ fn open_settings(
             settings.reload_weather(cx);
             settings.reload_clipboard(history, cx);
             settings.reload_calculator(cx);
+            settings.reload_files(cx);
+            if let Some(files) = files {
+                settings.set_file_index_status(files, cx);
+            }
             settings.reload_appearance(cx);
             settings.focus(window, cx);
         })
@@ -771,7 +783,10 @@ fn create_settings_window(
             px(lumen_core::layout::settings::WIDTH),
             px(lumen_core::layout::settings::HEIGHT),
         ),
-        move |_window, cx| cx.new(|cx| Settings::new(theme, &paths, cx)),
+        {
+            let platform = platform.clone();
+            move |_window, cx| cx.new(|cx| Settings::new(theme, &paths, platform, cx))
+        },
     )?;
 
     subscribe_to_settings(cx, &window, platform.clone(), surfaces);
@@ -812,6 +827,12 @@ fn subscribe_to_settings(
                     .update(cx, |launcher, _window, cx| {
                         launcher.reindex_applications(cx)
                     })
+                    .ok();
+            }
+            // The launcher holds the file index, as for the command (F16).
+            SettingsEvent::RebuildFileIndex => {
+                launcher
+                    .update(cx, |launcher, _window, cx| launcher.rebuild_files(cx))
                     .ok();
             }
             SettingsEvent::PreviewSound(name) => {
@@ -919,6 +940,7 @@ fn open_hidden_window<V: 'static + Render>(
 }
 
 /// React to what the view asks for.
+#[allow(clippy::too_many_arguments)]
 fn subscribe_to_launcher(
     cx: &mut App,
     window: &gpui::WindowHandle<Launcher>,
@@ -927,6 +949,7 @@ fn subscribe_to_launcher(
     shell: Rc<RefCell<Shell>>,
     commands: mpsc::UnboundedSender<Message>,
     timers: timers::Timers,
+    settings: Rc<RefCell<Option<gpui::WindowHandle<Settings>>>>,
 ) {
     let Ok(entity) = window.entity(cx) else {
         return;
@@ -937,6 +960,20 @@ fn subscribe_to_launcher(
         // (F12), so none of them is held while nobody is looking.
         if matches!(event, LauncherEvent::Dismissed | LauncherEvent::Paste(_)) {
             entity.update(cx, |launcher, cx| launcher.release_images(cx));
+        }
+
+        // The file index moved (F16): an open File Search page says so. No
+        // window is shown or moved, so this stays on the callback.
+        if matches!(event, LauncherEvent::FileIndexChanged) {
+            let status = entity.read(cx).file_index_status();
+            if let Some(settings) = *settings.borrow() {
+                settings
+                    .update(cx, |settings, _window, cx| {
+                        settings.set_file_index_status(status, cx)
+                    })
+                    .ok();
+            }
+            return;
         }
 
         // Focus refused something (F8): the timers say why, in the launcher.
@@ -1063,6 +1100,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::Calculated { .. }
                 | LauncherEvent::RunCalculatorHistory
                 | LauncherEvent::Blocked { .. }
+                | LauncherEvent::FileIndexChanged
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,
@@ -1400,6 +1438,7 @@ fn reload_config(
                 settings.reload_weather(cx);
                 settings.reload_clipboard(history, cx);
                 settings.reload_calculator(cx);
+                settings.reload_files(cx);
                 settings.reload_appearance(cx);
             })
             .ok();

@@ -12,6 +12,7 @@ pub mod icon;
 pub mod preview;
 pub mod recents;
 pub mod session;
+pub mod settings;
 
 use std::path::PathBuf;
 

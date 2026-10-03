@@ -1081,7 +1081,7 @@ impl Launcher {
             self.files = None;
             self.files_watch = None;
             self.files_query.fetch_add(1, Ordering::SeqCst);
-            self.tell_file_search();
+            self.tell_file_search(cx);
             return;
         }
         self.query_files(cx);
@@ -1162,12 +1162,12 @@ impl Launcher {
         // Counted from here until the load, reconcile or build is done,
         // whichever way it ends: what *Search Files* calls indexing.
         self.files_indexing += 1;
-        self.tell_file_search();
+        self.tell_file_search(cx);
         cx.spawn(async move |this, cx| {
             opening.await;
-            this.update(cx, |this, _| {
+            this.update(cx, |this, cx| {
                 this.files_indexing = this.files_indexing.saturating_sub(1);
-                this.tell_file_search();
+                this.tell_file_search(cx);
             })
             .ok();
         })
@@ -1263,6 +1263,7 @@ impl Launcher {
     fn install_files(&mut self, index: Arc<FileIndex>, cx: &mut Context<Self>) {
         self.files = Some(index);
         self.query_files(cx);
+        cx.emit(LauncherEvent::FileIndexChanged);
     }
 
     // -- Search Files (F16) ---------------------------------------------------
@@ -1403,10 +1404,25 @@ impl Launcher {
         }
     }
 
-    /// Tell an open *Search Files* that the index's status may have moved.
-    fn tell_file_search(&self) {
+    /// Tell an open *Search Files*, and the daemon for the settings page,
+    /// that the index's status may have moved.
+    fn tell_file_search(&self, cx: &mut Context<Self>) {
         if let Some(inbox) = &self.file_search {
             inbox.push(FileSearchInput::Status);
+        }
+        cx.emit(LauncherEvent::FileIndexChanged);
+    }
+
+    /// What the settings page says about the file index (F16, slice 4):
+    /// empty, but for whether it is indexing, until one is installed.
+    pub fn file_index_status(&self) -> lumen_core::file_index::IndexStatus {
+        let indexing = self.files_indexing > 0;
+        match &self.files {
+            Some(index) => index.status(indexing),
+            None => lumen_core::file_index::IndexStatus {
+                indexing,
+                ..Default::default()
+            },
         }
     }
 
@@ -4110,6 +4126,10 @@ pub enum LauncherEvent {
     },
     /// A timer is to be started or stopped (F8). Follows `Dismissed`.
     Timer(lumen_core::timers::Command),
+    /// The file index was installed, or started or stopped indexing (F16):
+    /// the daemon hands [`Launcher::file_index_status`] to an open settings
+    /// window.
+    FileIndexChanged,
     /// A layout was chosen for the window that held the foreground.
     ///
     /// Carries no window handle: the daemon is the only thing that has one,

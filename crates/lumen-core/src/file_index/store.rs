@@ -63,6 +63,10 @@ pub struct Meta {
     /// Counted up by every write that adds or removes rows (see "Changed in
     /// place, and versioned" above).
     pub version: u64,
+    /// When the last full walk was written, in seconds since the epoch: what
+    /// the settings page calls *last updated*. Changes applied in place keep
+    /// it, since they are not a pass over everything.
+    pub walked_at: Option<u64>,
 }
 
 /// One entry, as a query result needs it.
@@ -272,6 +276,10 @@ impl Store {
                 truncated: walked.truncated.clone(),
                 roots: walked.roots.clone(),
                 version,
+                walked_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|since| since.as_secs()),
             },
         )?;
         transaction.commit().context("writing the file index")
@@ -312,6 +320,7 @@ impl Store {
                     meta.roots = value.split(',').map(|time| time.parse().ok()).collect();
                 }
                 "version" => meta.version = value.parse().unwrap_or(0),
+                "walked_at" => meta.walked_at = value.parse().ok(),
                 _ => {}
             }
         }
@@ -433,6 +442,9 @@ fn write_meta(transaction: &Transaction<'_>, meta: &Meta) -> Result<()> {
         .join(",");
     insert.execute(params!["roots", roots])?;
     insert.execute(params!["version", meta.version.to_string()])?;
+    if let Some(walked_at) = meta.walked_at {
+        insert.execute(params!["walked_at", walked_at.to_string()])?;
+    }
     insert.execute(params!["digest", meta.digest])?;
     Ok(())
 }
@@ -612,6 +624,9 @@ mod tests {
         let folders = names.find("proj", Kinds::Folders, 8, |_| 0);
         assert_eq!(folders.iter().map(|m| m.entry).collect::<Vec<_>>(), [1]);
 
+        let mut meta = meta;
+        assert!(meta.walked_at.is_some_and(|at| at > 1_700_000_000));
+        meta.walked_at = None;
         assert_eq!(
             meta,
             Meta {
@@ -620,6 +635,7 @@ mod tests {
                 truncated: Some(tree.0.join("second")),
                 roots: vec![Some(5), None],
                 version: 1,
+                walked_at: None,
             }
         );
     }

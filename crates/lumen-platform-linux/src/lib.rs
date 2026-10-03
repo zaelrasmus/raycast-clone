@@ -253,4 +253,10 @@ impl Platform for LinuxPlatform {
             path.display()
         )
     }
+
+    /// F5: the desktop portal's `FileChooser.OpenFile` with `directory: true`.
+    /// Until then nothing is picked, and the page says so by adding nothing.
+    fn pick_folder(&self, _title: &str) -> Result<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
 }

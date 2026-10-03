@@ -641,6 +641,14 @@ pub trait Platform: Send + Sync {
     /// own chooser, and open it with the one chosen (F16). Returns once the
     /// chooser is up, not when it closes.
     fn open_with(&self, path: &std::path::Path) -> Result<()>;
+
+    /// Ask the user for a folder, with the system's own picker titled
+    /// `title`, over the settings window (F16, slice 4): `None` when it is
+    /// cancelled.
+    ///
+    /// Blocks until the picker closes, which is when the user decides, so it
+    /// is called off the UI thread.
+    fn pick_folder(&self, title: &str) -> Result<Option<std::path::PathBuf>>;
 }
 
 #[cfg(test)]

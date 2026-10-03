@@ -98,6 +98,23 @@ pub struct Updated {
     pub retarget: bool,
 }
 
+/// The index as the settings page shows it (slice 4): sent from the
+/// launcher, which holds the index, to the page, which holds none of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexStatus {
+    /// Whether an index is installed at all; the rest is empty until one is.
+    pub loaded: bool,
+    pub entries: usize,
+    /// As [`FileIndex::per_scope`], in the order of the scopes walked.
+    pub per_scope: Vec<usize>,
+    /// As [`FileIndex::truncated`].
+    pub truncated: Option<PathBuf>,
+    /// As [`FileIndex::walked_at`].
+    pub walked_at: Option<u64>,
+    /// A load, reconcile or walk is running.
+    pub indexing: bool,
+}
+
 /// The index, loaded and ready to query.
 pub struct FileIndex {
     names: Names,
@@ -550,6 +567,24 @@ impl FileIndex {
     /// the rules of today.
     pub fn digest(&self) -> &str {
         &self.meta.digest
+    }
+
+    /// When the last full walk was written, in seconds since the epoch.
+    pub fn walked_at(&self) -> Option<u64> {
+        self.meta.walked_at
+    }
+
+    /// What the settings page says about the index; `indexing` is the
+    /// host's, which knows what it has started.
+    pub fn status(&self, indexing: bool) -> IndexStatus {
+        IndexStatus {
+            loaded: true,
+            entries: self.len(),
+            per_scope: self.per_scope().to_vec(),
+            truncated: self.truncated().map(Path::to_path_buf),
+            walked_at: self.walked_at(),
+            indexing,
+        }
     }
 
     pub fn len(&self) -> usize {

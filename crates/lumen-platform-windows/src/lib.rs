@@ -287,6 +287,12 @@ impl Platform for WindowsPlatform {
     fn open_with(&self, path: &std::path::Path) -> Result<()> {
         files::open_with(path)
     }
+
+    fn pick_folder(&self, title: &str) -> Result<Option<std::path::PathBuf>> {
+        // Only settings asks, so the picker is its; before it was ever shown
+        // there is no window to own it, and the picker stands alone.
+        files::pick_folder(title, self.window(WindowRole::Settings).ok())
+    }
 }
 
 /// Hand a parsing name to the shell.

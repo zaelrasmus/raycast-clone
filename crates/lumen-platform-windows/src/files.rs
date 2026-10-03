@@ -1,19 +1,22 @@
 //! Files as the shell knows them (F16): the user's recent items, an item
-//! shown selected in Explorer, and the *Open With* chooser.
+//! shown selected in Explorer, the *Open With* chooser, and the folder
+//! picker.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, Result};
-use windows::Win32::Foundation::MAX_PATH;
+use windows::Win32::Foundation::{ERROR_CANCELLED, HWND, MAX_PATH};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    FOLDERID_Recent, ILFree, IShellLinkW, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT,
-    OPENASINFO, SHOpenFolderAndSelectItems, SHOpenWithDialog, SHParseDisplayName, ShellLink,
+    FOLDERID_Recent, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog,
+    IFileOpenDialog, ILFree, IShellLinkW, OAIF_ALLOW_REGISTRATION, OAIF_EXEC, OAIF_REGISTER_EXT,
+    OPENASINFO, SHOpenFolderAndSelectItems, SHOpenWithDialog, SHParseDisplayName,
+    SIGDN_FILESYSPATH, ShellLink,
 };
 use windows::core::{Interface as _, PCWSTR};
 
@@ -155,4 +158,45 @@ pub(crate) fn open_with(path: &Path) -> Result<()> {
         })
         .context("starting the Open With chooser")?;
     Ok(())
+}
+
+/// The system's folder picker, titled `title`, over `owner`: the folder
+/// chosen, or `None` when it was cancelled.
+///
+/// Owned by the settings window, which is topmost, so the picker opens over
+/// it rather than behind it, and the window waits while it is up. On a
+/// thread of its own, in the single-threaded apartment its dialog needs, and
+/// waited for: the caller is already off the UI thread, and asked for the
+/// answer.
+pub(crate) fn pick_folder(title: &str, owner: Option<HWND>) -> Result<Option<PathBuf>> {
+    let title = title.to_string();
+    // A window handle is not `Send`; its value is all the thread needs.
+    let owner = owner.map(|hwnd| hwnd.0 as isize);
+    std::thread::Builder::new()
+        .name("pick-folder".into())
+        .spawn(move || -> Result<Option<PathBuf>> {
+            let _apartment = com::Apartment::enter()?;
+            unsafe {
+                let dialog: IFileOpenDialog =
+                    CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+                        .context("creating the folder picker")?;
+                let options = dialog.GetOptions()?;
+                dialog.SetOptions(
+                    options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST,
+                )?;
+                dialog.SetTitle(&com::wide(&title))?;
+                let owner = owner.map(|raw| HWND(raw as *mut _));
+                match dialog.Show(owner) {
+                    Ok(()) => {}
+                    Err(error) if error.code() == ERROR_CANCELLED.to_hresult() => return Ok(None),
+                    Err(error) => return Err(error).context("showing the folder picker"),
+                }
+                let item = dialog.GetResult().context("reading the folder picked")?;
+                let path = com::take_pwstr(item.GetDisplayName(SIGDN_FILESYSPATH)?)?;
+                Ok(Some(PathBuf::from(path)))
+            }
+        })
+        .context("starting the folder picker")?
+        .join()
+        .map_err(|_| anyhow::anyhow!("the thread showing the folder picker panicked"))?
 }

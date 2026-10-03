@@ -42,6 +42,7 @@ use crate::calculator_page::CalculatorPage;
 use crate::clipboard_page::ClipboardPage;
 use crate::clock_page::ClockPage;
 use crate::currency_page::CurrencyPage;
+use crate::file_search_page::{FileSearchPage, FileSearchPageEvent};
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
@@ -62,17 +63,19 @@ enum Page {
     Weather,
     Clipboard,
     Calculator,
+    Files,
 }
 
 impl Page {
     /// The nav's order: Lumen's own pages, then the features', by name, as
     /// Raycast lists its extensions (F15).
-    const ALL: [Page; 10] = [
+    const ALL: [Page; 11] = [
         Page::Appearance,
         Page::Sheets,
         Page::Calculator,
         Page::Clipboard,
         Page::Currency,
+        Page::Files,
         Page::Quicklinks,
         Page::Timers,
         Page::Translation,
@@ -96,6 +99,7 @@ impl Page {
             Page::Weather => "icons/weather-partly-cloudy.svg",
             Page::Clipboard => "icons/clipboard.svg",
             Page::Calculator => "icons/calculator.svg",
+            Page::Files => "icons/folder.svg",
         }
     }
 
@@ -111,6 +115,7 @@ impl Page {
             Page::Weather => "Weather",
             Page::Clipboard => "Clipboard History",
             Page::Calculator => "Calculator",
+            Page::Files => "File Search",
         }
     }
 
@@ -126,6 +131,7 @@ impl Page {
             Page::Weather => "Units, the report, and your home city, in config.json",
             Page::Clipboard => "How much is kept, in config.json, and clearing it",
             Page::Calculator => "How many answers are kept, in config.json, and clearing them",
+            Page::Files => "Where files are found and what is left out, in config.json",
         }
     }
 }
@@ -161,6 +167,9 @@ pub enum SettingsEvent {
     QuicklinkIconsChanged,
     /// An alert sound was chosen on the Timers page: play it once (F8).
     PreviewSound(String),
+    /// *Rebuild File Index* on the File Search page (F16): the launcher
+    /// holds the index.
+    RebuildFileIndex,
 }
 
 impl gpui::EventEmitter<SettingsEvent> for Settings {}
@@ -283,12 +292,19 @@ pub struct Settings {
     weather: Entity<WeatherPage>,
     clipboard: Entity<ClipboardPage>,
     calculator: Entity<CalculatorPage>,
+    files: Entity<FileSearchPage>,
     appearance: Entity<AppearancePage>,
 }
 
 impl Settings {
-    /// Every file a page edits is one of `paths`'.
-    pub fn new(theme: Theme, paths: &lumen_core::Paths, cx: &mut Context<Self>) -> Self {
+    /// Every file a page edits is one of `paths`'. `platform` is for what
+    /// only the system can ask, such as which folder (F16).
+    pub fn new(
+        theme: Theme,
+        paths: &lumen_core::Paths,
+        platform: std::sync::Arc<dyn lumen_platform::Platform>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let sheets_dir = paths.sheets_dir();
         let quicklinks_file = paths.quicklinks_file();
         let favicons = paths.favicons_dir();
@@ -351,6 +367,20 @@ impl Settings {
         };
         cx.observe(&calculator, |_, _, cx| cx.notify()).detach();
 
+        let files = {
+            let colors = theme.colors.clone();
+            let config_file = config_file.clone();
+            cx.new(|cx| FileSearchPage::new(config_file, platform, colors, cx))
+        };
+        cx.observe(&files, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(
+            &files,
+            |_, _, event: &FileSearchPageEvent, cx| match event {
+                FileSearchPageEvent::Rebuild => cx.emit(SettingsEvent::RebuildFileIndex),
+            },
+        )
+        .detach();
+
         let appearance = {
             let colors = theme.colors.clone();
             let config_file = config_file.clone();
@@ -403,6 +433,7 @@ impl Settings {
             weather,
             clipboard,
             calculator,
+            files,
             appearance,
         }
     }
@@ -451,6 +482,23 @@ impl Settings {
     /// (F14).
     pub fn reload_calculator(&mut self, cx: &mut Context<Self>) {
         self.calculator.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Re-read the files section of `config.json`, for the same reasons
+    /// (F16).
+    pub fn reload_files(&mut self, cx: &mut Context<Self>) {
+        self.files.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// What the launcher's file index says now, for the File Search page:
+    /// on open, and whenever it moves.
+    pub fn set_file_index_status(
+        &mut self,
+        status: lumen_core::file_index::IndexStatus,
+        cx: &mut Context<Self>,
+    ) {
+        self.files
+            .update(cx, |page, cx| page.set_status(status, cx));
     }
 
     /// Re-read the look and the arrangement in `config.json`, and what the
@@ -575,6 +623,8 @@ impl Settings {
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.calculator
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.files
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.appearance
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
@@ -593,6 +643,7 @@ impl Settings {
             Page::Weather => self.weather.read(cx).focus(window, cx),
             Page::Clipboard => self.clipboard.read(cx).focus(window, cx),
             Page::Calculator => self.calculator.read(cx).focus(window, cx),
+            Page::Files => self.files.read(cx).focus(window, cx),
         }
     }
 
@@ -680,6 +731,10 @@ impl Settings {
         }
         if self.page == Page::Calculator {
             self.calculator.update(cx, |page, cx| page.save(cx));
+            return;
+        }
+        if self.page == Page::Files {
+            self.files.update(cx, |page, cx| page.save(cx));
             return;
         }
         let Some(sheet) = self.compose(cx) else {
@@ -1025,6 +1080,12 @@ impl Render for Settings {
                 .flex_1()
                 .overflow_hidden()
                 .child(self.calculator.clone())
+                .into_any_element(),
+            Page::Files => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.files.clone())
                 .into_any_element(),
             Page::Appearance => div()
                 .flex()
@@ -1525,6 +1586,7 @@ impl Settings {
             Page::Weather => (self.weather.read(cx).status(), false),
             Page::Clipboard => (self.clipboard.read(cx).status(), false),
             Page::Calculator => (self.calculator.read(cx).status(), false),
+            Page::Files => (self.files.read(cx).status(), false),
             Page::Appearance => (self.appearance.read(cx).status(), false),
         };
 
