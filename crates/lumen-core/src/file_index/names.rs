@@ -9,6 +9,16 @@
 //! A query scans the blob with `memmem`, which answered every match of a
 //! million names in under 5 ms, where SQLite's trigram index took 19.
 //!
+//! # Entries and rows
+//!
+//! An entry is a name's place in the blob, from 0; what the store calls it
+//! is its row id, kept beside it ([`Names::row`]). The two are not one number
+//! because the index changes in place (slice 2): a deleted file leaves a gap
+//! in the rows, a new one takes a row after the last, and the names are
+//! packed again without either moving a row. Row ids only grow between
+//! rebuilds, so a row an older index remembers is that entry or no entry.
+//! Four bytes an entry: 2 MB at the ceiling.
+//!
 //! # Word start or substring, never fuzzy
 //!
 //! `inv` finds `Invoice-2026.pdf` and `2026-invoices`; `ive` scattered across
@@ -67,32 +77,86 @@ pub struct Names {
     /// Whether each entry is a folder, one bit an entry: a `Vec<bool>` would
     /// be a megabyte at a million entries, this is an eighth of one.
     dirs: Vec<u64>,
+    /// Each entry's row in the store, ascending (see "Entries and rows"
+    /// above).
+    rows: Vec<u32>,
 }
 
 impl Names {
+    /// Names numbered as a fresh store numbers them: entry `i` is row `i + 1`.
     pub fn from_entries<'a>(entries: impl IntoIterator<Item = (&'a str, bool)>) -> Self {
         let mut names = Self::default();
-        for (name, is_dir) in entries {
-            names.push(name, is_dir);
+        for (row, (name, is_dir)) in (1..).zip(entries) {
+            names.push(row, name, is_dir);
         }
         names.shrink();
         names
     }
 
-    /// Add the next entry. Its index is the number of entries before it.
-    pub(crate) fn push(&mut self, name: &str, is_dir: bool) {
-        let entry = self.starts.len();
+    /// Add the next entry, whose row is `row`: after every row before it.
+    /// Its index is the number of entries before it.
+    pub(crate) fn push(&mut self, row: u32, name: &str, is_dir: bool) {
+        debug_assert!(self.rows.last().is_none_or(|&last| last < row));
         // Offsets fit in `u32` up to a 4 GB blob: a hundred times what the
         // ceiling's worth of names takes.
         self.starts.push(self.blob.len() as u32);
         fold(name, &mut self.blob);
         self.blob.push('\n');
+        self.mark(is_dir);
+        self.rows.push(row);
+    }
+
+    /// Record whether the entry just started is a folder.
+    fn mark(&mut self, is_dir: bool) {
+        let entry = self.starts.len() - 1;
         if entry / 64 == self.dirs.len() {
             self.dirs.push(0);
         }
         if is_dir {
             self.dirs[entry / 64] |= 1 << (entry % 64);
         }
+    }
+
+    /// These names without the rows `removed` (ascending) and with `added`
+    /// after them, whose rows follow every row here: what a batch of changes
+    /// makes of the index (slice 2).
+    ///
+    /// A copy of the blob, not a fold of every name again: a few
+    /// milliseconds at the ceiling, where loading the names from the store
+    /// is two hundred.
+    pub(crate) fn updated(&self, removed: &[u32], added: &[(u32, String, bool)]) -> Names {
+        let mut names = Names {
+            blob: String::with_capacity(self.blob.len()),
+            starts: Vec::with_capacity(self.len() + added.len()),
+            dirs: Vec::with_capacity(self.dirs.len()),
+            rows: Vec::with_capacity(self.len() + added.len()),
+        };
+        for entry in 0..self.len() {
+            let row = self.rows[entry];
+            if removed.binary_search(&row).is_ok() {
+                continue;
+            }
+            names.starts.push(names.blob.len() as u32);
+            names.blob.push_str(self.name(entry));
+            names.blob.push('\n');
+            names.mark(self.is_dir(entry as u32));
+            names.rows.push(row);
+        }
+        for (row, name, is_dir) in added {
+            names.push(*row, name, *is_dir);
+        }
+        names.shrink();
+        names
+    }
+
+    /// The store's row of `entry`.
+    pub fn row(&self, entry: u32) -> u32 {
+        self.rows[entry as usize]
+    }
+
+    /// The entry whose row is `row`, if there is one.
+    pub fn entry_of(&self, row: u32) -> Option<u32> {
+        self.rows.binary_search(&row).ok().map(|entry| entry as u32)
     }
 
     /// Give back what growing by doubling over-allocated: up to half of the
@@ -102,6 +166,7 @@ impl Names {
         self.blob.shrink_to_fit();
         self.starts.shrink_to_fit();
         self.dirs.shrink_to_fit();
+        self.rows.shrink_to_fit();
     }
 
     pub fn len(&self) -> usize {
@@ -114,7 +179,10 @@ impl Names {
 
     /// What the names hold on the heap.
     pub fn memory_bytes(&self) -> usize {
-        self.blob.capacity() + self.starts.capacity() * 4 + self.dirs.capacity() * 8
+        self.blob.capacity()
+            + self.starts.capacity() * 4
+            + self.dirs.capacity() * 8
+            + self.rows.capacity() * 4
     }
 
     pub fn is_dir(&self, entry: u32) -> bool {
@@ -372,10 +440,14 @@ impl Names {
     /// characters -- `a`, `go` -- which a short query in root searches
     /// whether they were used or not, so no name is out of reach.
     pub fn short_entries(&self) -> Vec<u32> {
-        (0..self.len())
+        let mut short = (0..self.len())
             .filter(|&entry| self.name(entry).chars().count() < MIN_SUBSTRING)
             .map(|entry| entry as u32)
-            .collect()
+            .collect::<Vec<_>>();
+        // Kept for the life of the index: a few hundred, not what growing
+        // by doubling left over.
+        short.shrink_to_fit();
+        short
     }
 }
 
@@ -732,6 +804,29 @@ mod tests {
         assert!(!names.holds(0, "projects", false));
         assert!(names.holds(1, "Projects", true));
         assert!(!names.holds(2, "projects", true));
+    }
+
+    /// A batch keeps every other entry's row and kind, drops the removed
+    /// rows and appends the added ones: entries are packed, rows never move.
+    #[test]
+    fn an_update_packs_the_entries_and_keeps_their_rows() {
+        let names = names(&[("alpha", false), ("beta", true), ("gamma", false)]);
+        assert_eq!((names.row(0), names.row(2)), (1, 3));
+
+        let updated = names.updated(&[2], &[(7, "Delta".to_string(), true)]);
+
+        assert_eq!(updated.len(), 3);
+        assert_eq!(
+            (0..3).map(|entry| updated.row(entry)).collect::<Vec<_>>(),
+            [1, 3, 7]
+        );
+        assert!(updated.holds(0, "alpha", false));
+        assert!(updated.holds(1, "gamma", false));
+        assert!(updated.holds(2, "delta", true));
+        assert_eq!(updated.entry_of(7), Some(2));
+        assert_eq!(updated.entry_of(2), None);
+        assert_eq!(found(&updated, "beta"), Vec::<u32>::new());
+        assert_eq!(found(&updated, "delta"), [2]);
     }
 
     #[test]

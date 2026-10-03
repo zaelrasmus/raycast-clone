@@ -65,6 +65,10 @@ pub struct WalkRules {
 pub struct Entry {
     pub path: PathBuf,
     pub is_dir: bool,
+    /// A folder's modification time ([`modified_time`]), read before the
+    /// walk read what is inside, so a change made while it did is seen at
+    /// the next reconcile. `None` for a file.
+    pub modified: Option<i64>,
 }
 
 /// Everything the walk found.
@@ -78,6 +82,9 @@ pub struct Walked {
     pub per_scope: Vec<usize>,
     /// The scope the ceiling cut short, if one was.
     pub truncated: Option<PathBuf>,
+    /// Each scope's own modification time, taken before it was walked: the
+    /// scope is not an entry, but the start reconcile compares its time too.
+    pub roots: Vec<Option<i64>>,
 }
 
 /// Directory names never descended into.
@@ -115,12 +122,118 @@ pub(crate) const SKIPPED: &[&str] = &[
     "application data",
     "$recycle.bin",
     "system volume information",
+    // Where the Store and Xbox install to on a second drive: readable by
+    // nobody but the system, so it is never anything to find, and a watch
+    // on it fails at every start.
+    "windowsapps",
 ];
 
 pub(crate) fn is_skipped(name: &str) -> bool {
     SKIPPED
         .iter()
         .any(|skipped| name.eq_ignore_ascii_case(skipped))
+}
+
+/// When `path` was last modified, in nanoseconds since 1970; `None` when it
+/// cannot be read.
+///
+/// What the start reconcile compares: on NTFS a folder's time moves when an
+/// entry is added to it, removed from it or renamed in it, and not when a
+/// file inside is only written to -- which the index does not record anyway.
+pub fn modified_time(path: &Path) -> Option<i64> {
+    std::fs::metadata(path).ok().as_ref().and_then(modified)
+}
+
+fn modified(metadata: &std::fs::Metadata) -> Option<i64> {
+    let since = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(since.as_nanos()).ok()
+}
+
+/// The positions of the scopes that are walked: every scope not inside one
+/// listed before it, which adds nothing (see "In order, and never twice"
+/// above).
+pub(crate) fn effective_scopes(rules: &WalkRules) -> Vec<usize> {
+    let mut effective: Vec<usize> = Vec::new();
+    for (index, scope) in rules.scopes.iter().enumerate() {
+        if !effective
+            .iter()
+            .any(|&earlier| scope.starts_with(&rules.scopes[earlier]))
+        {
+            effective.push(index);
+        }
+    }
+    effective
+}
+
+/// The entries directly in `folder`, by the rules, as a walk of `scope`
+/// would find them -- the scope matters for its ignore patterns, which are
+/// written relative to it -- leaving out what is inside `nested`, the scopes
+/// walked on their own. `folder` itself is taken as allowed.
+///
+/// One directory read: how a change is applied, and a folder whose time
+/// moved is read again, without walking anything else.
+pub(crate) fn list(
+    folder: &Path,
+    scope: &Path,
+    rules: &WalkRules,
+    nested: &[PathBuf],
+) -> Vec<Entry> {
+    let mut builder = walker(folder, scope, rules, nested);
+    builder.max_depth(Some(1));
+    entries_below(builder, usize::MAX).0
+}
+
+/// Everything below `folder` by the rules, as [`list`] reads one level,
+/// until `room` entries. `true` when the room ran out before the end.
+pub(crate) fn walk_below(
+    folder: &Path,
+    scope: &Path,
+    rules: &WalkRules,
+    nested: &[PathBuf],
+    room: usize,
+) -> (Vec<Entry>, bool) {
+    entries_below(walker(folder, scope, rules, nested), room)
+}
+
+/// The entries of a walk below its root, up to `room` of them.
+fn entries_below(builder: WalkBuilder, room: usize) -> (Vec<Entry>, bool) {
+    let mut entries = Vec::new();
+    for result in builder.build() {
+        let Ok(found) = result else {
+            continue;
+        };
+        if found.depth() == 0 || found.path_is_symlink() {
+            continue;
+        }
+        if entries.len() == room {
+            return (entries, true);
+        }
+        entries.push(entry(found));
+    }
+    (entries, false)
+}
+
+/// An entry of the index from one of the walk's, with a folder's time.
+fn entry(found: ignore::DirEntry) -> Entry {
+    let is_dir = found.file_type().is_some_and(|kind| kind.is_dir());
+    // From the folder itself, not from the listing that found it: NTFS
+    // updates the copy of a folder's times in its parent's listing lazily,
+    // and the reconcile must compare the time it reads with one read the
+    // same way, or it reads folders again for nothing.
+    let modified = if is_dir {
+        modified_time(found.path())
+    } else {
+        None
+    };
+    Entry {
+        is_dir,
+        modified,
+        path: found.into_path(),
+    }
 }
 
 /// Walk every scope of `rules`, in order, until the ceiling.
@@ -133,6 +246,7 @@ pub(crate) fn is_skipped(name: &str) -> bool {
 pub fn walk(rules: &WalkRules) -> Walked {
     let mut walked = Walked {
         per_scope: vec![0; rules.scopes.len()],
+        roots: vec![None; rules.scopes.len()],
         ..Walked::default()
     };
     let mut done: Vec<PathBuf> = Vec::new();
@@ -141,25 +255,23 @@ pub fn walk(rules: &WalkRules) -> Walked {
         if done.iter().any(|earlier| scope.starts_with(earlier)) {
             continue;
         }
-        for result in walker(scope, rules, &done).build() {
-            let Ok(entry) = result else {
+        walked.roots[index] = modified_time(scope);
+        for result in walker(scope, scope, rules, &done).build() {
+            let Ok(found) = result else {
                 continue;
             };
             // The scope's own folder is where the user looks *from*, not a
             // result. A link is not followed and not listed: one back up its
             // own tree is an endless walk, and its target is almost always
             // found by its real path anyway.
-            if entry.depth() == 0 || entry.path_is_symlink() {
+            if found.depth() == 0 || found.path_is_symlink() {
                 continue;
             }
             if walked.entries.len() == rules.ceiling {
                 walked.truncated = Some(scope.clone());
                 break 'scopes;
             }
-            walked.entries.push(Entry {
-                is_dir: entry.file_type().is_some_and(|kind| kind.is_dir()),
-                path: entry.into_path(),
-            });
+            walked.entries.push(entry(found));
             walked.per_scope[index] += 1;
         }
         done.push(scope.clone());
@@ -168,10 +280,11 @@ pub fn walk(rules: &WalkRules) -> Walked {
     walked
 }
 
-/// The walker for one scope, with every rule but Lumen's applied by `ignore`
-/// and Lumen's in its entry filter.
-fn walker(scope: &Path, rules: &WalkRules, done: &[PathBuf]) -> WalkBuilder {
-    let mut builder = WalkBuilder::new(scope);
+/// The walker for `root`, in `scope`, with every rule but Lumen's applied by
+/// `ignore` and Lumen's in its entry filter. `root` is the scope itself
+/// except when a change is applied, which reads one folder of it.
+fn walker(root: &Path, scope: &Path, rules: &WalkRules, done: &[PathBuf]) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(root);
     let ignore_files = rules.use_ignore_files;
     builder
         .hidden(!rules.include_hidden)

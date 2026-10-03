@@ -1,8 +1,9 @@
 # File search, the rest of the way (F16)
 
-**Status: in progress** -- slices 0 and 1 are built (see "What was done
-differently"); slice 1's measurements of the running daemon are still to be
-taken. This is the plan. When a slice lands, its
+**Status: in progress** -- slices 0 to 2 are built (see "What was done
+differently"); slice 2's measurements of the running daemon -- idle CPU with
+the watcher on, private memory after a build -- are still to be taken. This
+is the plan. When a slice lands, its
 decisions move into `ARCHITECTURE.md` (F16 decisions, and the revisions to
 7.19, 7.20, 7.21 and 7.26 listed below), and this file records where the build
 departed from it, as `LETTER-SPACING.md` does.
@@ -109,14 +110,50 @@ only the Windows hidden attribute, so I-1 holds without a `Platform` call. And
   that row would split the files, the fallbacks go above the section
   instead, so it stays in one piece and they stay in view. Fallbacks after
   the files have no header of their own.
-- **Until slice 2, every start walks again behind the stored index.** The
-  index the store recorded is installed at once when its rules are today's,
-  then the scopes are walked again and the result swapped in -- the reconcile
-  this file describes replaces that walk in slice 2. The reload command
-  rebuilds the same way. A configuration change walks again only when the
-  walk itself changed -- the rules' digest, not the configuration -- so
-  `in-root` never walks, and turning `enabled` off and on loads the stored
-  index back without a walk.
+- **A start walks nothing it does not have to.** The index the store
+  recorded is installed at once when its rules are today's, then every
+  indexed folder's modification time (schema version 2 records them, and the
+  scopes' own) is compared with the disk and only the folders whose time
+  moved are read again; the log says how many were checked and read, and in
+  how long. A full walk is for a store that cannot be used, rules whose
+  digest changed, the reload command and *Rebuild File Index* -- a command
+  row in root for now; the view's action and the settings button come with
+  slices 3 and 4. A configuration change walks again only when the walk
+  itself changed, so `in-root` never walks, and turning `enabled` off and on
+  loads the stored index back and reconciles it.
+- **A change is applied to its folder, not its scope.** Whatever the
+  watcher reports, the folder it happened in is read again -- one directory
+  read, by the walk's own rules -- and compared with the store: what left is
+  removed with its subtree, what arrived is added, and a folder that arrived
+  is walked. A folder is read only if it is a scope or already indexed, so a
+  change under `AppData`, a hidden, excluded or ignored folder is passed
+  over without a read; a changed ignore file reads its folder's subfolders
+  again too. The reconcile at start is the same work over the folders whose
+  time moved. Updates stop adding at the ceiling and report the scope cut
+  short, as a walk does. Folder times are read from the folder itself, not
+  from its parent's listing, which NTFS updates lazily: compared with each
+  other, the two made the reconcile read folders that had not changed.
+- **The watch, as designed, settles in the daemon.** Each scope's folder is
+  watched without its subfolders and each folder in it the rules allow with
+  them; a folder that arrives at the top gets its watch when that change is
+  applied. The callback hands on the paths `notify` allocated and returns.
+  The daemon gathers them until nothing has arrived for 1.5 s (as 7.34), and
+  the launcher applies the batch off the UI thread, under the build lock; a
+  rebuild asked for since drops it. A watcher error, or a report that
+  changes were lost, makes the batch a reconcile rather than a guess.
+- **Names carry their row ids.** The names keep each entry's row id beside
+  it, four bytes an entry, rather than making entry `i` row `i + 1`: a batch
+  then removes and appends names in memory -- a copy of the blob, not a load
+  of the store -- without renumbering rows on disk. Rows are `AUTOINCREMENT`,
+  so between rebuilds a deleted row's id is never another entry's, and every
+  row a query reads is still checked against the name and kind it matched.
+  The store counts a version up on every write that changes rows; an index
+  of an older version is not patched but loaded from the store.
+- **The walk's memory is given back before the load.** The walked entries
+  are dropped once written, before the names are read back, so the two are
+  never held at once; the names and the short list are shrunk to fit, and
+  SQLite's page cache is released after every load and batch. Whether
+  private memory falls is still to be measured.
 - **One build at a time, and never a wrong file.** Every build of the index
   file holds one lock from the walk to the load; a build superseded while it
   waited or walked writes nothing. A rebuild still rewrites the database
@@ -138,7 +175,8 @@ The release build, each configuration in its own `LUMEN_HOME`, idle with
 | Home and `D:\` | 404 974 | 12.0 MB | 110 MB | 200 ms | 15.3 s | 76.7 MB | 100.9 MB | 0.009 % |
 
 The working-set budget (100 MB) holds with room in both. Two figures are
-worse than the design assumed, and are recorded rather than rounded:
+worse than the design assumed, and are recorded rather than rounded (both
+taken before slice 2):
 
 - **The database is about 270 bytes an entry**, 110 MB for home and `D:\`,
   not "tens of megabytes". It is a cache on the local disk; the full path is
@@ -152,8 +190,31 @@ worse than the design assumed, and are recorded rather than rounded:
 The load runs off the UI thread and the applications are searchable before
 it ends, so cold start to usable is unchanged. A first idle sample with
 `D:\` read 0.022 % because the start's walk had not ended inside 45 s of
-settling; with 60 s it read 0.009 %. Until slice 2 every start walks the
-scopes again, which is that cost.
+settling; with 60 s it read 0.009 %. Every start then walked the scopes
+again, which was that cost; since slice 2 a start reconciles instead.
+
+## Slice 2: what was measured
+
+The same build and `LUMEN_HOME`s, with the watcher running:
+
+| Files | Watched folders | Reconcile at start | Working set | Private | Idle CPU |
+| ----- | --------------- | ------------------ | ----------- | ------- | -------- |
+| Home | 22 | 166 ms, 4 371 folders, 0 re-read | 71.9--72.5 MB | 84.7--86.5 MB | 0.002 % (twice); one run 0.017 % |
+| Home and `D:\` | 43 | 2 990 ms, 36 161 folders, 0 re-read | 74.8 MB | 97.2 MB | 0.002 % |
+
+- **A start no longer walks.** Home's 2.5 s walk became a 166 ms check of
+  folder times, behind an index installed in 33 ms.
+- **A file on the Desktop is found within about 2.5 s** -- the 1.5 s quiet
+  period and the batch -- applied in 7 ms; its rename and its deletion the
+  same way.
+- **The watcher is silent at idle.** One home sample read 0.017 %; a debug
+  log over 100 s idle showed no batch applied and two more samples read
+  0.002 %, so that sample was the machine, not the index. Excluded subtrees
+  are never watched, so `AppData`'s churn is never delivered.
+- **Private memory with `D:\`** fell from 100.9 to 97.2 MB once the walk's
+  entries were freed before the load.
+- `D:\WindowsApps` (the Store's install folder, readable only by the system)
+  could not be watched and warned at every start; it joins the skip list.
 
 ---
 

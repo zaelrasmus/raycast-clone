@@ -14,7 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -419,6 +419,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
 
     watch_sheets(cx, &surfaces);
     watch_quicklinks(cx, &surfaces);
+    watch_files(cx, &surfaces);
 
     cx.spawn({
         let platform = platform.clone();
@@ -805,11 +806,12 @@ fn subscribe_to_settings(
                 *sheets.borrow_mut() = library;
             }
             SettingsEvent::QuicklinkIconsChanged => {
-                // The whole reindex, so the file index's scopes are walked
-                // again too: off the UI thread and swapped in when done
-                // (F16), unneeded here and left as it was for now.
+                // The quicklinks live in the application index; the file
+                // index is watched and has nothing to do with them (F16).
                 launcher
-                    .update(cx, |launcher, _window, cx| launcher.reindex(cx))
+                    .update(cx, |launcher, _window, cx| {
+                        launcher.reindex_applications(cx)
+                    })
                     .ok();
             }
             SettingsEvent::PreviewSound(name) => {
@@ -1067,11 +1069,15 @@ fn subscribe_to_launcher(
                 // and it means `lumen settings` from a terminal and "Configure
                 // Shortcuts" from the launcher take the identical path.
                 LauncherEvent::Builtin(command) => {
-                    let _ = commands.unbounded_send(match command {
+                    let message = match command {
                         Builtin::OpenSettings => Message::Settings,
                         Builtin::ReloadSheets => Message::ReloadSheets,
                         Builtin::Quit => Message::Quit,
-                    });
+                        // The launcher holds the file index and rebuilds it
+                        // itself (F16); it never sends this one.
+                        Builtin::RebuildFileIndex => return Ok(()),
+                    };
+                    let _ = commands.unbounded_send(message);
                     Ok(())
                 }
             };
@@ -1228,6 +1234,67 @@ fn watch_config(cx: &mut App, paths: &Paths, commands: mpsc::UnboundedSender<Mes
     })
     .detach();
 }
+
+/// Keep the file index current as files change (F16, slice 2).
+///
+/// The launcher holds the index and the watch over its scopes; the watch's
+/// callback pushes the paths it hears into this channel and returns (I-15).
+/// Here a burst -- an unzip, a build, a browser's download -- is let settle
+/// until nothing has arrived for [`FILES_SETTLE`], then handed back as one
+/// batch, which the launcher applies off the UI thread. A one-shot timer
+/// started by a change, as [`next_change`]'s: with nothing changing, nothing
+/// wakes.
+fn watch_files(cx: &mut App, surfaces: &Surfaces) {
+    let (sender, mut changes) = mpsc::unbounded::<Vec<PathBuf>>();
+    let launcher = surfaces.launcher;
+    let sink: lumen_ui::launcher::FileSink = Arc::new(move |paths| {
+        let _ = sender.unbounded_send(paths);
+    });
+    launcher
+        .update(cx, |launcher, _window, cx| launcher.watch_files(sink, cx))
+        .ok();
+
+    cx.spawn(async move |cx| {
+        while let Some(paths) = changes.next().await {
+            let mut batch = Vec::new();
+            gather(&mut batch, paths);
+            loop {
+                cx.background_executor().timer(FILES_SETTLE).await;
+                let mut more = false;
+                while let Ok(paths) = changes.try_recv() {
+                    gather(&mut batch, paths);
+                    more = true;
+                }
+                if !more {
+                    break;
+                }
+            }
+            let applied = launcher.update(cx, |launcher, _window, cx| {
+                launcher.apply_file_changes(batch, cx)
+            });
+            if applied.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Add what the watch pushed to `batch`. Nothing pushed is the watch saying
+/// it lost track, kept as an empty path, which the index answers by
+/// comparing every folder's time.
+fn gather(batch: &mut Vec<PathBuf>, paths: Vec<PathBuf>) {
+    if paths.is_empty() {
+        batch.push(PathBuf::new());
+    } else {
+        batch.extend(paths);
+    }
+}
+
+/// How long the file index's changes must be quiet before they are applied:
+/// as long as the application watcher waits (7.34), since a burst of file
+/// changes is as long as an installer's.
+const FILES_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// How long a burst of filesystem events is given to finish.
 ///

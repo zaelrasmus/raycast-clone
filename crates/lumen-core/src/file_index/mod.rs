@@ -39,10 +39,24 @@
 //! load ([`FileIndex::rebuild`]), so two never write the database at once,
 //! and one asked for while another walks waits for it. The one waited for
 //! sees it was superseded and writes nothing.
+//!
+//! # Kept current without walking everything
+//!
+//! Slice 2. A change the watcher reports ([`watch`]) is applied to the
+//! folder it happened in, not to the scope: that one folder is read again
+//! by the same rules, what left it is removed with everything under it,
+//! what arrived is added with everything under it ([`update`]). At start,
+//! nothing was watched while the daemon was not running, so every indexed
+//! folder's time is compared with the one recorded and only the folders
+//! whose time moved are read again ([`FileIndex::reconcile`]). A full walk
+//! is for a store that cannot be used, rules that changed, and *Rebuild
+//! File Index*.
 
 pub mod names;
 pub mod store;
+mod update;
 pub mod walk;
+pub mod watch;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -54,6 +68,7 @@ use parking_lot::{Mutex, RwLock};
 pub use names::{Kinds, MIN_SUBSTRING, Match, Names};
 pub use store::{Meta, Row, Store, digest};
 pub use walk::{CEILING, Entry, WalkRules, Walked, walk};
+pub use watch::{FileWatch, watch_targets};
 
 use lumen_platform::LaunchTarget;
 
@@ -66,6 +81,21 @@ pub struct FileHit {
     pub item: Item,
     /// Character offsets into the title, as root search's highlights are.
     pub highlights: Vec<u32>,
+}
+
+/// What applying changes to an index gave.
+pub struct Updated {
+    /// The index with the changes, when an entry was added or removed;
+    /// `None` when none was, and the index installed is still right.
+    pub index: Option<FileIndex>,
+    /// How many folders' times were compared with the disk: every indexed
+    /// one for a reconcile, none for a batch from the watcher.
+    pub checked: usize,
+    /// How many folders were read again.
+    pub reread: usize,
+    /// A scope's own folder was read again, so the folders directly in it --
+    /// the trees the watcher watches -- may not be the ones it watches.
+    pub retarget: bool,
 }
 
 /// The index, loaded and ready to query.
@@ -121,17 +151,21 @@ impl FileIndex {
     /// beyond the database: what a start does.
     pub fn load(store: Store) -> Result<FileIndex> {
         let (names, meta) = store.load()?;
+        Ok(Self::from_parts(names, meta, store))
+    }
+
+    fn from_parts(names: Names, meta: Meta, store: Store) -> FileIndex {
         // The names are in memory now; the pages that held them are not
         // needed again.
         store.release_memory();
-        Ok(Self {
+        Self {
             short: names.short_entries(),
             names,
             store: Mutex::new(store),
             boosts: RwLock::new(HashMap::new()),
             meta,
             home: directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
-        })
+        }
     }
 
     /// Walk `rules` and make the result the whole index at `path`. Seconds to
@@ -171,15 +205,111 @@ impl FileIndex {
         }
         let digest = digest(rules);
         let index = match current {
-            Some(current) => current.rebuilt(&walked, &digest, path)?,
+            Some(current) => current.rebuilt(walked, &digest, path)?,
             None => {
                 let mut store = Store::open(path)?;
                 store.replace(&walked, &digest)?;
+                // The walk's entries are on disk now: given back before the
+                // names are loaded, not after, so the two are never held at
+                // once.
+                drop(walked);
                 Self::load(store)?
             }
         };
-        drop(walked);
         Ok((!superseded()).then_some(index))
+    }
+
+    /// Apply the paths the watcher reported changed, in the store at `path`,
+    /// as this index's rules `rules` allow (see "Kept current without
+    /// walking everything" above).
+    ///
+    /// Under the build lock, so it waits for a build and a build for it;
+    /// `None` when `superseded` says so -- a rebuild was asked for, and
+    /// covers these changes. An empty path among `changed` says the watcher
+    /// lost track of what changed, and every folder is compared instead, as
+    /// at start.
+    pub fn update(
+        &self,
+        path: &Path,
+        rules: &WalkRules,
+        changed: &[PathBuf],
+        superseded: &dyn Fn() -> bool,
+    ) -> Result<Option<Updated>> {
+        let lock = build_lock(path);
+        let _building = lock.lock();
+        if superseded() {
+            return Ok(None);
+        }
+        let recorded = self.store.lock().meta()?;
+        // Rules other than the index's are a rebuild, already asked for.
+        if recorded.digest != digest(rules) {
+            return Ok(None);
+        }
+        let (checked, folders) = match update::folders(changed) {
+            Some(folders) => (0, folders),
+            None => {
+                // The folders' times are read with the store unlocked:
+                // seconds for a large index, and queries need not wait.
+                let stored = self.store.lock().folders()?;
+                update::moved(rules, &recorded, stored)
+            }
+        };
+        if superseded() {
+            return Ok(None);
+        }
+
+        // Through this index's own connection, as a rebuild writes: a
+        // query in flight waits for the batch rather than meeting half of
+        // it (see `Self::rebuilt`).
+        let mut store = self.store.lock();
+        // Patched only when the names are the store's as it is; when
+        // another write came between, they are loaded from it.
+        let current = recorded.version == self.meta.version;
+        let mut count = if current {
+            self.names.len()
+        } else {
+            store.count()?
+        };
+        let mut meta = recorded;
+        let batch = store.batch()?;
+        let delta = update::apply(&batch, rules, folders, &mut meta, &mut count)?;
+        if delta.changed() {
+            meta.version += 1;
+        }
+        batch.finish(&meta)?;
+        let mut updated = Updated {
+            index: None,
+            checked,
+            reread: delta.reread,
+            retarget: delta.retarget,
+        };
+        if !delta.changed() {
+            store.release_memory();
+            return Ok(Some(updated));
+        }
+
+        let names = if current {
+            self.names.updated(&delta.removed, &delta.added)
+        } else {
+            store.load()?.0
+        };
+        drop(delta);
+        store.release_memory();
+        drop(store);
+        updated.index = Some(Self::from_parts(names, meta, Store::open(path)?));
+        Ok((!superseded()).then_some(updated))
+    }
+
+    /// Bring the index at `path` up to date with the disk after a time
+    /// nothing watched it: every indexed folder whose time moved since it
+    /// was recorded is read again, and nothing else is.
+    pub fn reconcile(
+        &self,
+        path: &Path,
+        rules: &WalkRules,
+        superseded: &dyn Fn() -> bool,
+    ) -> Result<Option<Updated>> {
+        self.update(path, rules, &[PathBuf::new()], superseded)
     }
 
     /// Make `walked` the whole index in this index's own store, then load it
@@ -196,8 +326,9 @@ impl FileIndex {
     /// that is not that entry is left out ([`Self::query`]). Until the swap
     /// an old index can answer less than it should, never a wrong file.
     /// Called only under the build lock, by [`Self::rebuild`].
-    fn rebuilt(&self, walked: &Walked, digest: &str, path: &Path) -> Result<FileIndex> {
-        self.store.lock().replace(walked, digest)?;
+    fn rebuilt(&self, walked: Walked, digest: &str, path: &Path) -> Result<FileIndex> {
+        self.store.lock().replace(&walked, digest)?;
+        drop(walked);
         Self::load(Store::open(path)?)
     }
 
@@ -281,7 +412,10 @@ impl FileIndex {
         if found.is_empty() {
             return Vec::new();
         }
-        let ids = found.iter().map(|found| found.entry).collect::<Vec<_>>();
+        let ids = found
+            .iter()
+            .map(|found| self.names.row(found.entry))
+            .collect::<Vec<_>>();
         let rows = match self.store.lock().rows(&ids) {
             Ok(rows) => rows,
             Err(error) => {
@@ -292,7 +426,7 @@ impl FileIndex {
 
         let words = names::words(query);
         rows.into_iter()
-            .filter(|row| self.names.holds(row.id, &row.name, row.is_dir))
+            .filter(|row| self.holds(row.id, &row.name, row.is_dir))
             .map(|row| FileHit {
                 highlights: highlights(&row.name, &words),
                 item: self.item(row),
@@ -362,8 +496,10 @@ impl FileIndex {
             // Checked as a query's rows are, so a row that moved under this
             // index boosts nothing rather than another entry.
             match store.id_of(path) {
-                Ok(Some(entry)) if self.names.holds(entry, &name, is_dir) => {
-                    boosts.insert(entry, boost);
+                Ok(Some(row)) if self.holds(row, &name, is_dir) => {
+                    if let Some(entry) = self.names.entry_of(row) {
+                        boosts.insert(entry, boost);
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => log::warn!("could not read the file index: {error:#}"),
@@ -372,6 +508,15 @@ impl FileIndex {
         store.release_memory();
         drop(store);
         *self.boosts.write() = boosts;
+    }
+
+    /// Whether the store's row `row` is still the entry these names matched:
+    /// one of their rows, with the same name and kind. The one check that
+    /// keeps a row which moved under the index from answering for it.
+    fn holds(&self, row: u32, name: &str, is_dir: bool) -> bool {
+        self.names
+            .entry_of(row)
+            .is_some_and(|entry| self.names.holds(entry, name, is_dir))
     }
 
     /// How many entries each scope of the rules gave.
@@ -621,7 +766,7 @@ mod tests {
 
         let rules = tree.rules();
         let new = old
-            .rebuilt(&walk(&rules), &digest(&rules), &tree.path(".files.db"))
+            .rebuilt(walk(&rules), &digest(&rules), &tree.path(".files.db"))
             .unwrap()
             .with_home(&tree.0);
 
@@ -645,10 +790,12 @@ mod tests {
                 .map(|&(name, is_dir)| Entry {
                     path: tree.0.join(name),
                     is_dir,
+                    modified: None,
                 })
                 .collect(),
             per_scope: vec![entries.len()],
             truncated: None,
+            roots: vec![None],
         };
         let mut store = Store::open(&path).unwrap();
         store
@@ -667,7 +814,7 @@ mod tests {
 
         let new = old
             .rebuilt(
-                &walked(&[
+                walked(&[
                     ("beta.txt", false),
                     ("alpha.txt", false),
                     ("reports", false),
@@ -780,6 +927,350 @@ mod tests {
         assert_eq!(index.len(), 3);
         assert_eq!(index.per_scope(), [2, 1]);
         assert_eq!(index.truncated(), Some(second.0.as_path()));
+    }
+
+    /// A scope with the database beside it rather than in it, so writing
+    /// the database moves no time the reconcile compares.
+    struct Scope {
+        tree: Tree,
+        rules: WalkRules,
+    }
+
+    impl Scope {
+        fn new(name: &str) -> Self {
+            let tree = Tree::new(name);
+            tree.dir("home");
+            let rules = rules(&[tree.path("home")]);
+            Self { tree, rules }
+        }
+
+        fn file(&self, relative: &str) -> &Self {
+            self.tree.file(&format!("home/{relative}"));
+            self
+        }
+
+        fn path(&self, relative: &str) -> PathBuf {
+            self.tree.path("home").join(relative)
+        }
+
+        fn database(&self) -> PathBuf {
+            self.tree.path("files.db")
+        }
+
+        fn build(&self) -> FileIndex {
+            FileIndex::build(&self.database(), &self.rules).unwrap()
+        }
+
+        /// `index` with the changes at `changed` applied: the new index,
+        /// or `index` itself when nothing changed.
+        fn update(&self, index: FileIndex, changed: &[PathBuf]) -> FileIndex {
+            index
+                .update(&self.database(), &self.rules, changed, &|| false)
+                .unwrap()
+                .expect("nothing supersedes it")
+                .index
+                .unwrap_or(index)
+        }
+    }
+
+    /// What `query` finds, as paths relative to the scope, `/`-separated.
+    fn found(index: &FileIndex, scope: &Scope, query: &str) -> Vec<String> {
+        index
+            .query(query, Kinds::FoldersAndFiles, 64, &|| false)
+            .iter()
+            .map(|hit| {
+                let (_, path) = hit.item.id.split_once(':').unwrap();
+                Path::new(path)
+                    .strip_prefix(scope.path(""))
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_file_created_is_added() {
+        let scope = Scope::new("update-add");
+        scope.file("projects/notes.md");
+        let index = scope.build();
+
+        scope.file("projects/plan.md");
+        let index = scope.update(index, &[scope.path("projects/plan.md")]);
+
+        assert_eq!(found(&index, &scope, "plan"), ["projects/plan.md"]);
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.per_scope(), [3]);
+    }
+
+    #[test]
+    fn a_file_deleted_is_removed() {
+        let scope = Scope::new("update-delete");
+        scope.file("notes.md").file("plan.md");
+        let index = scope.build();
+
+        std::fs::remove_file(scope.path("plan.md")).unwrap();
+        let index = scope.update(index, &[scope.path("plan.md")]);
+
+        assert!(found(&index, &scope, "plan").is_empty());
+        assert_eq!(found(&index, &scope, "notes"), ["notes.md"]);
+        assert_eq!(index.per_scope(), [1]);
+    }
+
+    /// The watcher may report only the folder; everything under it goes.
+    #[test]
+    fn a_folder_deleted_takes_its_subtree_with_it() {
+        let scope = Scope::new("update-delete-folder");
+        scope
+            .file("keep.txt")
+            .file("old/one.txt")
+            .file("old/deeper/two.txt")
+            .file("older/three.txt");
+        let index = scope.build();
+
+        std::fs::remove_dir_all(scope.path("old")).unwrap();
+        let index = scope.update(index, &[scope.path("old")]);
+
+        assert!(found(&index, &scope, "one").is_empty());
+        assert!(found(&index, &scope, "two").is_empty());
+        assert!(found(&index, &scope, "deeper").is_empty());
+        // A sibling whose name starts with the deleted one's is not under it.
+        assert_eq!(found(&index, &scope, "three"), ["older/three.txt"]);
+        assert_eq!(index.len(), 3);
+    }
+
+    /// A rename is a path that left and one that arrived; a folder's
+    /// contents follow it.
+    #[test]
+    fn a_rename_is_followed() {
+        let scope = Scope::new("update-rename");
+        scope.file("draft.md").file("work/inner/report.txt");
+        let index = scope.build();
+
+        std::fs::rename(scope.path("draft.md"), scope.path("final.md")).unwrap();
+        std::fs::rename(scope.path("work"), scope.path("archive")).unwrap();
+        let index = scope.update(
+            index,
+            &[
+                scope.path("draft.md"),
+                scope.path("final.md"),
+                scope.path("work"),
+                scope.path("archive"),
+            ],
+        );
+
+        assert!(found(&index, &scope, "draft").is_empty());
+        assert_eq!(found(&index, &scope, "final"), ["final.md"]);
+        assert_eq!(
+            found(&index, &scope, "report"),
+            ["archive/inner/report.txt"]
+        );
+        assert!(found(&index, &scope, "work").is_empty());
+        assert_eq!(index.len(), 4);
+    }
+
+    /// A folder moved in with files already in it arrives whole.
+    #[test]
+    fn a_folder_that_arrives_is_walked() {
+        let scope = Scope::new("update-arrive");
+        scope.file("notes.md");
+        let index = scope.build();
+        let outside = scope.tree.path("outside");
+        scope.tree.file("outside/a/b/deep.txt");
+
+        std::fs::rename(&outside, scope.path("moved")).unwrap();
+        let index = scope.update(index, &[scope.path("moved")]);
+
+        assert_eq!(found(&index, &scope, "deep"), ["moved/a/b/deep.txt"]);
+        assert_eq!(index.len(), 5);
+    }
+
+    /// What the rules leave out stays out when it changes: inside a skipped
+    /// folder, an excluded one, a hidden one, or matched by a pattern or an
+    /// ignore file.
+    #[test]
+    fn a_change_the_rules_leave_out_changes_nothing() {
+        let mut scope = Scope::new("update-skipped");
+        scope
+            .file("app/node_modules/pkg/index.js")
+            .file("Videos/clip.mp4")
+            .file(".config/app.toml")
+            .file("docs/.lumenignore")
+            .file("docs/readme.md");
+        std::fs::write(scope.path("docs/.lumenignore"), "*.tmp\n").unwrap();
+        scope.rules.exclusions = vec![scope.path("Videos")];
+        scope.rules.ignore_patterns = vec!["*.log".into()];
+        let index = scope.build();
+        let before = index.len();
+
+        let changed = [
+            "app/node_modules/pkg/new.js",
+            "app/node_modules/fresh/index.js",
+            "Videos/new.mp4",
+            ".config/new.toml",
+            ".secret",
+            "debug.log",
+            "docs/scratch.tmp",
+        ];
+        for path in changed {
+            scope.file(path);
+        }
+        let paths = changed.map(|path| scope.path(path));
+        let updated = index
+            .update(&scope.database(), &scope.rules, &paths, &|| false)
+            .unwrap()
+            .unwrap();
+
+        assert!(updated.index.is_none());
+        assert_eq!(index.len(), before);
+    }
+
+    /// An index made before a batch never answers with a row the batch
+    /// removed or gave to another entry -- the row ids of what is gone are
+    /// never reused -- and the new index answers with the right paths.
+    #[test]
+    fn no_index_answers_a_wrong_file_after_an_update() {
+        let scope = Scope::new("update-wrong");
+        scope.file("alpha.txt").file("beta.txt");
+        let old = scope.build();
+
+        std::fs::remove_file(scope.path("alpha.txt")).unwrap();
+        scope.file("alpha-2.txt").file("gamma.txt");
+        let new = old
+            .update(
+                &scope.database(),
+                &scope.rules,
+                &[
+                    scope.path("alpha.txt"),
+                    scope.path("alpha-2.txt"),
+                    scope.path("gamma.txt"),
+                ],
+                &|| false,
+            )
+            .unwrap()
+            .unwrap()
+            .index
+            .unwrap();
+
+        assert!(found(&old, &scope, "alpha").is_empty());
+        assert!(found(&old, &scope, "gamma").is_empty());
+        assert_eq!(found(&old, &scope, "beta"), ["beta.txt"]);
+        assert_eq!(found(&new, &scope, "alpha"), ["alpha-2.txt"]);
+        assert_eq!(found(&new, &scope, "gamma"), ["gamma.txt"]);
+        assert_eq!(found(&new, &scope, "beta"), ["beta.txt"]);
+
+        // A second batch, applied to the index the first made.
+        std::fs::remove_file(scope.path("beta.txt")).unwrap();
+        let newer = scope.update(new, &[scope.path("beta.txt")]);
+        assert!(found(&newer, &scope, "beta").is_empty());
+        assert_eq!(found(&newer, &scope, "gamma"), ["gamma.txt"]);
+
+        // And loaded back from the store, the same.
+        let loaded = FileIndex::load(Store::open(&scope.database()).unwrap()).unwrap();
+        assert_eq!(loaded.len(), newer.len());
+        assert_eq!(found(&loaded, &scope, "alpha"), ["alpha-2.txt"]);
+    }
+
+    /// An index the store moved on from -- another write came between -- is
+    /// not patched; its update loads the names from the store.
+    #[test]
+    fn an_update_to_an_index_the_store_moved_on_from_loads_it() {
+        let scope = Scope::new("update-stale");
+        scope.file("notes.md");
+        let stale = scope.build();
+        scope.file("plan.md");
+        drop(scope.build());
+
+        scope.file("todo.md");
+        let index = scope.update(stale, &[scope.path("todo.md")]);
+
+        assert_eq!(found(&index, &scope, "plan"), ["plan.md"]);
+        assert_eq!(found(&index, &scope, "todo"), ["todo.md"]);
+        assert_eq!(index.len(), 3);
+    }
+
+    #[test]
+    fn the_ceiling_holds_under_updates() {
+        let mut scope = Scope::new("update-ceiling");
+        scope.file("a.txt").file("b.txt");
+        scope.rules.ceiling = 3;
+        let index = scope.build();
+        assert_eq!(index.truncated(), None);
+
+        scope.file("c.txt").file("d.txt").file("e.txt");
+        let index = scope.update(
+            index,
+            &[
+                scope.path("c.txt"),
+                scope.path("d.txt"),
+                scope.path("e.txt"),
+            ],
+        );
+
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.truncated(), Some(scope.path("").as_path()));
+    }
+
+    /// At start nothing was watched while the daemon was not running: only
+    /// the folders whose time moved are read again, and what arrived in
+    /// them is found.
+    #[test]
+    fn the_reconcile_reads_again_only_the_folders_that_changed() {
+        let scope = Scope::new("reconcile");
+        scope
+            .file("a/one.txt")
+            .file("b/two.txt")
+            .file("c/three.txt")
+            .file("c/d/four.txt");
+        drop(scope.build());
+
+        scope.file("b/added.txt");
+        std::fs::remove_file(scope.path("c/d/four.txt")).unwrap();
+        let stored = FileIndex::load(Store::open(&scope.database()).unwrap()).unwrap();
+        let reconciled = stored
+            .reconcile(&scope.database(), &scope.rules, &|| false)
+            .unwrap()
+            .unwrap();
+
+        // The scope and its four folders.
+        assert_eq!(reconciled.checked, 5);
+        assert_eq!(reconciled.reread, 2);
+        let index = reconciled.index.unwrap();
+        assert_eq!(found(&index, &scope, "added"), ["b/added.txt"]);
+        assert!(found(&index, &scope, "four").is_empty());
+
+        // Read again, the folders' times are recorded: a second reconcile
+        // reads nothing.
+        let again = index
+            .reconcile(&scope.database(), &scope.rules, &|| false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.reread, 0);
+        assert!(again.index.is_none());
+    }
+
+    /// A batch from a build that has since been superseded writes nothing:
+    /// the rebuild asked for covers it.
+    #[test]
+    fn a_superseded_update_writes_nothing() {
+        let scope = Scope::new("update-superseded");
+        scope.file("notes.md");
+        let index = scope.build();
+        scope.file("plan.md");
+
+        assert!(
+            index
+                .update(
+                    &scope.database(),
+                    &scope.rules,
+                    &[scope.path("plan.md")],
+                    &|| true
+                )
+                .unwrap()
+                .is_none()
+        );
+        let stored = FileIndex::load(Store::open(&scope.database()).unwrap()).unwrap();
+        assert_eq!(stored.len(), 1);
     }
 
     #[test]

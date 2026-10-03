@@ -33,7 +33,9 @@ use gpui::{
     UniformListScrollHandle, Window, actions, div, ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::favorites::Change as FavoriteChange;
-use lumen_core::file_index::{FileIndex, Store, WalkRules, digest};
+use lumen_core::file_index::{
+    FileIndex, FileWatch, Store, Updated, WalkRules, digest, watch_targets,
+};
 use lumen_core::item::ActionGroup;
 use lumen_core::providers::QuicklinkProvider;
 use lumen_core::root::{FILES_CAP, Hit};
@@ -315,6 +317,93 @@ fn build_files(
     }
 }
 
+/// Bring `current`, just loaded from the store, up to date with the disk: the
+/// folders whose time moved while nothing watched them are read again
+/// (`FileIndex::reconcile`). `None` when nothing changed, when the build
+/// `build` was superseded, or when it could not be done.
+fn reconcile_files(
+    path: &std::path::Path,
+    rules: &WalkRules,
+    current: &FileIndex,
+    frecency: &Frecency,
+    builds: &AtomicU64,
+    build: u64,
+) -> Option<Arc<FileIndex>> {
+    let started = std::time::Instant::now();
+    let superseded = || builds.load(Ordering::SeqCst) != build;
+    match current.reconcile(path, rules, &superseded) {
+        Ok(None) => None,
+        Ok(Some(updated)) => {
+            log::info!(
+                "reconciled the file index in {} ms: {} folders checked, {} read again",
+                started.elapsed().as_millis(),
+                updated.checked,
+                updated.reread
+            );
+            boosted(updated, frecency).0
+        }
+        Err(error) => {
+            log::error!("could not reconcile the file index: {error:#}");
+            None
+        }
+    }
+}
+
+/// Apply the paths the watcher reported changed to `current`
+/// (`FileIndex::update`): the new index, if an entry changed, and whether the
+/// watch's targets may have. `None` when the build `build` was superseded --
+/// the rebuild asked for covers the changes -- or when it could not be done.
+fn update_files(
+    path: &std::path::Path,
+    rules: &WalkRules,
+    current: &FileIndex,
+    changed: &[std::path::PathBuf],
+    frecency: &Frecency,
+    builds: &AtomicU64,
+    build: u64,
+) -> Option<(Option<Arc<FileIndex>>, bool)> {
+    let started = std::time::Instant::now();
+    let superseded = || builds.load(Ordering::SeqCst) != build;
+    match current.update(path, rules, changed, &superseded) {
+        Ok(None) => None,
+        Ok(Some(updated)) => {
+            let (index, retarget) = boosted(updated, frecency);
+            match &index {
+                Some(index) => log::info!(
+                    "applied {} changed paths to the file index in {} ms: {}",
+                    changed.len(),
+                    started.elapsed().as_millis(),
+                    describe_files(index)
+                ),
+                // Changes in folders the rules leave out, or that left the
+                // entries as they were: frequent, and worth no more.
+                None => log::debug!(
+                    "{} changed paths left the file index as it was",
+                    changed.len()
+                ),
+            }
+            Some((index, retarget))
+        }
+        Err(error) => {
+            log::error!("could not apply changes to the file index: {error:#}");
+            None
+        }
+    }
+}
+
+/// The index an update made, with frecency's boosts, and whether the watch's
+/// targets may have changed.
+fn boosted(updated: Updated, frecency: &Frecency) -> (Option<Arc<FileIndex>>, bool) {
+    let index = updated.index.map(|index| {
+        index.set_boosts(frecency);
+        Arc::new(index)
+    });
+    (index, updated.retarget)
+}
+
+/// Where the file index's watch pushes the paths it hears (F16, slice 2).
+pub type FileSink = Arc<dyn Fn(Vec<std::path::PathBuf>) + Send + Sync>;
+
 /// What the log says of an index: the figures slice 1 is measured by.
 fn describe_files(index: &FileIndex) -> String {
     let truncated = index
@@ -501,6 +590,13 @@ pub struct Launcher {
     /// Bumped on every keystroke, so a scan of the file index for an
     /// earlier one stops, and its answer is dropped.
     files_query: Arc<AtomicU64>,
+    /// The watch over the file index's scopes (slice 2), once the daemon
+    /// has given it somewhere to push. Behind a lock only so its targets
+    /// can be set off the UI thread; its callback never takes it (I-15).
+    files_watch: Option<Arc<parking_lot::Mutex<FileWatch>>>,
+    /// Where the watch pushes: the daemon, which lets a burst settle and
+    /// hands it back to [`Self::apply_file_changes`].
+    files_sink: Option<FileSink>,
 
     /// A copy of the field's text, updated on every edit. Ranking reads it on
     /// every keystroke, and reaching into another entity for it each time
@@ -660,6 +756,8 @@ impl Launcher {
             files: None,
             files_build: Arc::new(AtomicU64::new(0)),
             files_query: Arc::new(AtomicU64::new(0)),
+            files_watch: None,
+            files_sink: None,
             query: String::new(),
             selected: 0,
             rows: Vec::new(),
@@ -684,7 +782,7 @@ impl Launcher {
         };
 
         launcher.start_indexing(cx);
-        launcher.refresh_files(cx);
+        launcher.open_files(false, cx);
         launcher
     }
 
@@ -715,29 +813,41 @@ impl Launcher {
         self.clipboard.clone()
     }
 
-    /// Open the file index, and walk the scopes again behind it (F16).
+    /// Throw the file index away and walk every scope again (F16).
     ///
     /// Everything on the background executor, and nothing waits for it
-    /// (I-3). When nothing is installed yet, the index the store last
-    /// recorded is loaded and installed at once -- milliseconds -- if it was
-    /// walked with today's rules. Then the scopes are walked again and the
-    /// result swapped in when it is done: until slice 2 watches for changes,
-    /// that walk is what keeps the index current. Separate from
-    /// `start_indexing` and started alongside it, because the walk is much
-    /// the slower of the two and the applications must not wait for it.
+    /// (I-3): the index installed keeps answering until the new one is
+    /// swapped in. What the reload command and *Rebuild File Index* do --
+    /// the answer to "something is wrong", not how the index stays current,
+    /// which is the watch and the reconcile at start ([`Self::open_files`]).
     pub fn refresh_files(&mut self, cx: &mut Context<Self>) {
         self.open_files(true, cx);
     }
 
-    /// [`Self::refresh_files`], walking again only when `rewalk` says so or
-    /// the index at hand was walked with other rules.
+    /// *Rebuild File Index*, asked for by the user.
+    pub fn rebuild_files(&mut self, cx: &mut Context<Self>) {
+        log::info!("rebuilding the file index, as asked");
+        self.refresh_files(cx);
+    }
+
+    /// Open the file index and keep it current: walking everything only
+    /// when `rewalk` says so, when there is no usable store, or when the
+    /// index at hand was walked with other rules.
+    ///
+    /// When nothing is installed yet, the index the store last recorded is
+    /// loaded and installed at once -- milliseconds -- if it was walked with
+    /// today's rules; then, since nothing watched the scopes while it was
+    /// not installed, the folders whose time moved are read again behind it
+    /// (the reconcile). Separate from `start_indexing` and started alongside
+    /// it, because this is the slower of the two and the applications must
+    /// not wait for it.
     ///
     /// A configuration change asks with `rewalk` false: `in-root` and
     /// `enabled` are not how the index is walked, and neither is `~` written
     /// as the path it stands for, so what decides is the rules' digest, not
-    /// the configuration. Turning file search off drops the index and root's
-    /// questions to it; turning it on again loads it back from the store,
-    /// in milliseconds, without a walk.
+    /// the configuration. Turning file search off drops the index, its watch
+    /// and root's questions to it; turning it on again loads it back from
+    /// the store and reconciles, without a walk.
     fn open_files(&mut self, rewalk: bool, cx: &mut Context<Self>) {
         let build = self.files_build.fetch_add(1, Ordering::SeqCst) + 1;
         // What root showed came from the old rules, or the old level.
@@ -747,10 +857,12 @@ impl Launcher {
         }
         if !self.config.files.enabled {
             self.files = None;
+            self.files_watch = None;
             self.files_query.fetch_add(1, Ordering::SeqCst);
             return;
         }
         self.query_files(cx);
+        self.watch_file_scopes(cx);
 
         let config = self.config.files.clone();
         let path = self.paths.file_index_file();
@@ -776,13 +888,31 @@ impl Launcher {
             };
             // Loaded only when walked with these rules, so it is current too.
             let current = current || loaded.is_some();
-            if let Some(index) = loaded {
+            if let Some(index) = loaded.clone() {
                 this.update(cx, |this, cx| {
                     if this.files_build.load(Ordering::SeqCst) == build {
                         this.install_files(index, cx);
                     }
                 })
                 .ok();
+            }
+            if let (Some(loaded), false) = (loaded, rewalk) {
+                let (path, rules, builds) = (path.clone(), rules.clone(), builds.clone());
+                let reconciled = cx
+                    .background_executor()
+                    .spawn(async move {
+                        reconcile_files(&path, &rules, &loaded, &frecency, &builds, build)
+                    })
+                    .await;
+                if let Some(index) = reconciled {
+                    this.update(cx, |this, cx| {
+                        if this.files_build.load(Ordering::SeqCst) == build {
+                            this.install_files(index, cx);
+                        }
+                    })
+                    .ok();
+                }
+                return;
             }
             if current && !rewalk {
                 return;
@@ -805,6 +935,91 @@ impl Launcher {
                 })
                 .ok();
             }
+        })
+        .detach();
+    }
+
+    /// Give the file index somewhere to push what its watch hears, and start
+    /// watching (F16, slice 2). The daemon lets a burst settle and hands it
+    /// back to [`Self::apply_file_changes`].
+    pub fn watch_files(&mut self, sink: FileSink, cx: &mut Context<Self>) {
+        self.files_sink = Some(sink);
+        if self.config.files.enabled {
+            self.watch_file_scopes(cx);
+        }
+    }
+
+    /// Point the watch at today's scopes: started on first use, its targets
+    /// read off the UI thread, since that lists each scope's folder.
+    fn watch_file_scopes(&mut self, cx: &mut Context<Self>) {
+        let Some(sink) = self.files_sink.clone() else {
+            return;
+        };
+        let watch = match &self.files_watch {
+            Some(watch) => watch.clone(),
+            None => match FileWatch::start(move |paths| sink(paths)) {
+                Ok(watch) => {
+                    let watch = Arc::new(parking_lot::Mutex::new(watch));
+                    self.files_watch = Some(watch.clone());
+                    watch
+                }
+                Err(error) => {
+                    log::warn!("files changed will be found at the next start: {error:#}");
+                    return;
+                }
+            },
+        };
+        let config = self.config.files.clone();
+        cx.background_spawn(async move {
+            let targets = watch_targets(&config.walk_rules());
+            let mut watch = watch.lock();
+            watch.sync(targets);
+            log::info!(
+                "watching {} folders for the file index",
+                watch.watched().len()
+            );
+        })
+        .detach();
+    }
+
+    /// Apply what the watch heard, once the burst settled: off the UI thread,
+    /// through the build lock, and swapped in when an entry changed (F16,
+    /// slice 2). Dropped when a rebuild was asked for since: it covers them.
+    pub fn apply_file_changes(&mut self, changed: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        let Some(current) = self.files.clone() else {
+            return;
+        };
+        // Not bumped: a batch must not supersede a build, only be
+        // superseded by one.
+        let build = self.files_build.load(Ordering::SeqCst);
+        let builds = self.files_build.clone();
+        let config = self.config.files.clone();
+        let path = self.paths.file_index_file();
+        let frecency = self.root.frecency().clone();
+        cx.spawn(async move |this, cx| {
+            let updated = cx
+                .background_executor()
+                .spawn(async move {
+                    let rules = config.walk_rules();
+                    update_files(&path, &rules, &current, &changed, &frecency, &builds, build)
+                })
+                .await;
+            let Some((index, retarget)) = updated else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if this.files_build.load(Ordering::SeqCst) != build {
+                    return;
+                }
+                // A folder arrived at the top of a scope, or left it.
+                if retarget {
+                    this.watch_file_scopes(cx);
+                }
+                if let Some(index) = index {
+                    this.install_files(index, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -893,9 +1108,9 @@ impl Launcher {
     /// history -- and walk the file index's scopes again.
     ///
     /// Public so the daemon can ask for it after the user edits a script or a
-    /// snippet, rather than making them restart to see the change. Until
-    /// slice 2 watches for changes, this reload is also the way to bring the
-    /// file index up to date by hand.
+    /// snippet, rather than making them restart to see the change. The file
+    /// index is watched, so it does not need this to be current; the reload
+    /// command rebuilds it anyway, as an explicit reload of everything.
     pub fn reindex(&mut self, cx: &mut Context<Self>) {
         self.start_indexing(cx);
         self.refresh_files(cx);
@@ -2930,6 +3145,12 @@ impl Launcher {
         }
 
         cx.emit(LauncherEvent::Dismissed);
+
+        // The file index is the launcher's own, so rebuilding it is too.
+        if let Action::Builtin(lumen_core::Builtin::RebuildFileIndex) = action {
+            self.rebuild_files(cx);
+            return;
+        }
 
         // Lumen's own commands open windows or stop the process, which is the
         // shell's business and not the list's (I-4 lives out there). They go

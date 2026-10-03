@@ -216,6 +216,9 @@ pub enum ActionGroup {
 pub enum Builtin {
     OpenSettings,
     ReloadSheets,
+    /// Throw the file index away and walk every scope again (F16): the
+    /// answer to "something is wrong", not how the index stays current.
+    RebuildFileIndex,
     Quit,
 }
 
@@ -274,6 +277,7 @@ impl Action {
             Action::CopyExpression(_) => "Copy Expression",
             Action::Builtin(Builtin::OpenSettings) => "Open Settings",
             Action::Builtin(Builtin::ReloadSheets) => "Reload",
+            Action::Builtin(Builtin::RebuildFileIndex) => "Rebuild",
             Action::Builtin(Builtin::Quit) => "Quit",
             Action::ArrangeWindow(_) => "Arrange",
             Action::OpenView(_) => "Open Command",

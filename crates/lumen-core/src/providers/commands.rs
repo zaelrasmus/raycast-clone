@@ -24,6 +24,12 @@ const COMMANDS: &[(&str, &str, &str, Builtin)] = &[
         "Re-read sheets, scripts and snippets from disk",
         Builtin::ReloadSheets,
     ),
+    (
+        "rebuild-file-index",
+        "Rebuild File Index",
+        "Forget the indexed files and folders and look through every scope again",
+        Builtin::RebuildFileIndex,
+    ),
     ("quit", "Quit Lumen", "Stop the daemon", Builtin::Quit),
 ];
 
@@ -131,6 +137,23 @@ mod tests {
             .expect("the example view has a row");
 
         assert_eq!(example.primary(), Action::OpenView(ViewSource::Example));
+    }
+
+    /// The answer to "a file is missing": a row in root, as the other
+    /// commands are (F16).
+    #[test]
+    fn rebuilding_the_file_index_is_reachable_from_the_launcher() {
+        let items = CommandsProvider.catalogue();
+        let rebuild = items
+            .iter()
+            .find(|item| item.id == "command:rebuild-file-index")
+            .expect("rebuilding the file index has a row");
+
+        assert_eq!(rebuild.title, "Rebuild File Index");
+        assert_eq!(
+            rebuild.primary(),
+            Action::Builtin(Builtin::RebuildFileIndex)
+        );
     }
 
     #[test]

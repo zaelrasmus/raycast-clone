@@ -87,7 +87,10 @@ an aesthetic worth looking at fifty times a day.
   results; `Enter` opens a file with its default application and a folder in
   Explorer, `Ctrl+K` copies the path. Dependency and build trees, ignore files
   and hidden entries are skipped, so the index is about your files rather than
-  about `node_modules`.
+  about `node_modules`. It stays current by itself: changes are watched while
+  Lumen runs, and at start only the folders that changed while it was not are
+  read again; *Rebuild File Index* starts over from nothing if it ever seems
+  wrong.
 - **Extensions with views of their own** (F4, up to step 3). One ships as
   an example: **Characters**. An extension is a folder with a
   manifest and a program; its commands are in the root list without anything
@@ -205,11 +208,6 @@ Listed because a README that implies more than exists is worse than no README.
 
 - **The shortcut sheet editor has no icons.** The launcher's rows and the
   settings Quicklinks list do; the sheet editor is still text and buttons.
-- **File search is not watched yet.** The index is kept on disk and walked
-  again behind it when the daemon starts, so a file created after that is
-  found on the next restart or `lumen reload`. Watching for changes is the next
-  slice of F16 ([`docs/FILE-SEARCH.md`](docs/FILE-SEARCH.md)). (Newly installed
-  *applications* are picked up by themselves.)
 - **Windows at a higher integrity level cannot be arranged.** A layout applied
   to an elevated window does nothing, and Windows reports no error for it to
   report back.
