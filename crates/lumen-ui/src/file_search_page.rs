@@ -17,6 +17,10 @@
 //! launcher's, handed over by the daemon whenever it moves
 //! ([`FileSearchPage::set_status`]); *Rebuild File Index* goes back the same
 //! way, as an event.
+//!
+//! Whether Windows Search covers each scope, so content search finds text
+//! in it (slice 6c), is asked of the platform each time the file is read:
+//! on open, and after every change.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,6 +54,30 @@ const SCOPE_NOTE: &str = "Every folder and drive you add is indexed on disk. A w
 /// The default skip that is not like the others, and says why.
 const APPDATA: &str = "AppData";
 
+/// Whether Windows Search indexes a scope's contents (slice 6c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Coverage {
+    Covered,
+    NotCovered,
+    /// Not asked yet, or the asking failed.
+    Unknown,
+}
+
+/// A scope's description with its coverage after it, when contents are
+/// searched and the coverage is known.
+fn with_coverage(base: &str, coverage: Coverage, contents_on: bool) -> String {
+    let told = match coverage {
+        _ if !contents_on => None,
+        Coverage::Covered => Some("Contents searchable"),
+        Coverage::NotCovered => Some("Contents not indexed by Windows"),
+        Coverage::Unknown => None,
+    };
+    match told {
+        Some(told) => format!("{base} \u{b7} {told}"),
+        None => base.to_string(),
+    }
+}
+
 /// What the page asks of the settings window.
 #[derive(Debug, Clone)]
 pub enum FileSearchPageEvent {
@@ -82,6 +110,11 @@ pub struct FileSearchPage {
     /// A whole drive picked as a scope, waiting for *Add anyway* or
     /// *Cancel* (slice 5).
     whole_drive: Option<PathBuf>,
+    /// Each scope as written, and whether Windows Search covers it.
+    coverage: Vec<(PathBuf, Coverage)>,
+    /// Which asking of the coverage is the latest, so an older answer
+    /// arriving late is dropped.
+    coverage_asked: u64,
     error: Option<String>,
     status: Option<SharedString>,
 }
@@ -95,10 +128,15 @@ impl FileSearchPage {
     ) -> Self {
         let config = FileSearchConfig::default();
         let patterns = patterns_field(&config, &colors, cx);
-        let flags = [Flag::Enabled, Flag::UseIgnoreFiles, Flag::IncludeHidden]
-            .into_iter()
-            .map(|flag| (flag, cx.focus_handle()))
-            .collect();
+        let flags = [
+            Flag::Enabled,
+            Flag::UseIgnoreFiles,
+            Flag::IncludeHidden,
+            Flag::SearchContents,
+        ]
+        .into_iter()
+        .map(|flag| (flag, cx.focus_handle()))
+        .collect();
         let skips = default_skips()
             .iter()
             .map(|name| (*name, cx.focus_handle()))
@@ -117,6 +155,8 @@ impl FileSearchPage {
             skips,
             picking: false,
             whole_drive: None,
+            coverage: Vec::new(),
+            coverage_asked: 0,
             error: None,
             status: None,
         };
@@ -138,6 +178,7 @@ impl FileSearchPage {
                     Ok(config) => {
                         page.config = config;
                         page.problem = None;
+                        page.check_coverage(cx);
                         if !page.edited {
                             let written = page.config.ignore_patterns.join(", ");
                             // Only when it differs: set, the field keeps its
@@ -166,6 +207,86 @@ impl FileSearchPage {
             self.index = index;
             cx.notify();
         }
+    }
+
+    /// Ask whether Windows Search covers each scope, off the UI thread. The
+    /// last answers stay up until the new ones arrive.
+    fn check_coverage(&mut self, cx: &mut Context<Self>) {
+        self.coverage_asked += 1;
+        let asked = self.coverage_asked;
+        let platform = self.platform.clone();
+        let config = self.config.clone();
+        cx.spawn(async move |this, cx| {
+            let coverage = cx
+                .background_executor()
+                .spawn(async move {
+                    // Resolved as the walk resolves them: `~`, then the
+                    // disk's spelling. In the same order as written.
+                    let resolved = config.walk_rules().scopes;
+                    config
+                        .scopes
+                        .into_iter()
+                        .zip(resolved)
+                        .map(|(written, scope)| {
+                            let coverage = match platform.scope_covered(&scope) {
+                                Ok(true) => Coverage::Covered,
+                                Ok(false) => Coverage::NotCovered,
+                                Err(error) => {
+                                    log::debug!(
+                                        "cannot tell whether {} is indexed: {error:#}",
+                                        scope.display()
+                                    );
+                                    Coverage::Unknown
+                                }
+                            };
+                            (written, coverage)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |page, cx| {
+                if page.coverage_asked == asked && page.coverage != coverage {
+                    page.coverage = coverage;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn scope_coverage(&self, scope: &std::path::Path) -> Coverage {
+        self.coverage
+            .iter()
+            .find(|(written, _)| written == scope)
+            .map_or(Coverage::Unknown, |(_, coverage)| *coverage)
+    }
+
+    /// *Indexing Options…*: Windows' own, off the UI thread.
+    fn open_indexing_options(&mut self, cx: &mut Context<Self>) {
+        let platform = self.platform.clone();
+        cx.spawn(async move |this, cx| {
+            let opened = cx
+                .background_executor()
+                .spawn(async move { platform.open_indexing_options() })
+                .await;
+            this.update(cx, |page, cx| {
+                match opened {
+                    Ok(()) => {
+                        page.status = Some(
+                            "Indexing Options opened; reopen settings to see what changed".into(),
+                        )
+                    }
+                    Err(error) => {
+                        log::warn!("could not open Indexing Options: {error:#}");
+                        page.error = Some(format!("{error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn watch_patterns(&mut self, cx: &mut Context<Self>) {
@@ -407,10 +528,14 @@ impl FileSearchPage {
                 .find(|(flag, _)| *flag == wanted)
                 .map(|(_, focus)| focus.clone())
         };
-        let mut stops: Vec<FocusHandle> = [Flag::UseIgnoreFiles, Flag::IncludeHidden]
-            .into_iter()
-            .filter_map(flag)
-            .collect();
+        let mut stops: Vec<FocusHandle> = [
+            Flag::UseIgnoreFiles,
+            Flag::IncludeHidden,
+            Flag::SearchContents,
+        ]
+        .into_iter()
+        .filter_map(flag)
+        .collect();
         stops.push(self.patterns.focus_handle(cx));
         stops.extend(self.skips.iter().map(|(_, focus)| focus.clone()));
         stops.extend(flag(Flag::Enabled));
@@ -497,6 +622,7 @@ fn flag_on(config: &FileSearchConfig, flag: Flag) -> bool {
         Flag::Enabled => config.enabled,
         Flag::UseIgnoreFiles => config.use_ignore_files,
         Flag::IncludeHidden => config.include_hidden,
+        Flag::SearchContents => config.search_contents,
     }
 }
 
@@ -505,6 +631,7 @@ fn flag_title(flag: Flag) -> &'static str {
         Flag::Enabled => "File index",
         Flag::UseIgnoreFiles => "Use ignore files",
         Flag::IncludeHidden => "Include hidden files",
+        Flag::SearchContents => "Search file contents",
     }
 }
 
@@ -513,6 +640,7 @@ fn flag_description(flag: Flag) -> &'static str {
         Flag::Enabled => "Off drops the index and its watch; nothing is searched",
         Flag::UseIgnoreFiles => ".gitignore, .ignore and .lumenignore in the folders searched",
         Flag::IncludeHidden => "Names starting with a dot, and the hidden attribute",
+        Flag::SearchContents => "Through Windows Search, from three letters",
     }
 }
 
@@ -572,8 +700,20 @@ fn now() -> i64 {
 }
 
 impl FileSearchPage {
-    /// What a scope's row says under it: its count from the index.
+    /// What a scope's row says under it: its count from the index, and
+    /// whether Windows Search covers it.
     fn scope_description(&self, at: usize) -> SharedString {
+        let base = self.scope_count(at);
+        let coverage = self
+            .config
+            .scopes
+            .get(at)
+            .map_or(Coverage::Unknown, |scope| self.scope_coverage(scope));
+        with_coverage(&base, coverage, self.config.search_contents).into()
+    }
+
+    /// A scope's count from the index.
+    fn scope_count(&self, at: usize) -> SharedString {
         // The counts are by position in the scopes walked, so they mean
         // nothing while the list and the index disagree on how many.
         let counted = (self.index.loaded && self.index.per_scope.len() == self.config.scopes.len())
@@ -637,6 +777,25 @@ impl FileSearchPage {
                 ui::row(written, Some(self.scope_description(at)), remove, colors)
             })
             .collect();
+        let uncovered = self.config.search_contents
+            && self
+                .config
+                .scopes
+                .iter()
+                .any(|scope| self.scope_coverage(scope) == Coverage::NotCovered);
+        if uncovered {
+            scopes.push(ui::row(
+                "Windows Search",
+                Some("Contents are found only in the folders it indexes".into()),
+                text_button(
+                    "indexing-options",
+                    "Indexing Options\u{2026}",
+                    colors,
+                    cx.listener(|page, _, _, cx| page.open_indexing_options(cx)),
+                ),
+                colors,
+            ));
+        }
         if scopes.is_empty() {
             scopes.push(ui::row(
                 "No folders",
@@ -751,10 +910,14 @@ impl FileSearchPage {
                 move |_window, cx| entity.update(cx, |page, cx| page.flip_flag(flag, cx)),
             ))
         };
-        let mut rules: Vec<AnyElement> = [Flag::UseIgnoreFiles, Flag::IncludeHidden]
-            .into_iter()
-            .filter_map(|flag| flag_row(flag, entity.clone()))
-            .collect();
+        let mut rules: Vec<AnyElement> = [
+            Flag::UseIgnoreFiles,
+            Flag::IncludeHidden,
+            Flag::SearchContents,
+        ]
+        .into_iter()
+        .filter_map(|flag| flag_row(flag, entity.clone()))
+        .collect();
         rules.push(ui::row(
             "Ignore patterns",
             Some("Globs, comma separated, in every folder searched".into()),
@@ -924,5 +1087,26 @@ impl Render for FileSearchPage {
             .children(index)
             .child(ui::note(message, is_error, &colors))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coverage_is_told_only_when_contents_are_searched_and_known() {
+        let base = "12 items";
+        assert_eq!(
+            with_coverage(base, Coverage::Covered, true),
+            "12 items \u{b7} Contents searchable"
+        );
+        assert_eq!(
+            with_coverage(base, Coverage::NotCovered, true),
+            "12 items \u{b7} Contents not indexed by Windows"
+        );
+        assert_eq!(with_coverage(base, Coverage::Unknown, true), base);
+        assert_eq!(with_coverage(base, Coverage::Covered, false), base);
+        assert_eq!(with_coverage(base, Coverage::NotCovered, false), base);
     }
 }

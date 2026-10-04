@@ -287,11 +287,13 @@ impl Platform for LinuxPlatform {
         todo!("F5: content search on Linux")
     }
 
+    /// F5. An `Err` rather than a panic: the settings page asks on open,
+    /// and shows nothing for a scope it cannot know about.
     fn scope_covered(&self, _scope: &std::path::Path) -> Result<bool> {
-        todo!("F5: content index coverage on Linux")
+        anyhow::bail!("content index coverage is not yet on Linux (F5)")
     }
 
     fn open_indexing_options(&self) -> Result<()> {
-        todo!("F5: content index settings on Linux")
+        anyhow::bail!("content index settings are not yet on Linux (F5)")
     }
 }

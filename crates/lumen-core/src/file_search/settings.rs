@@ -55,6 +55,7 @@ pub enum Flag {
     Enabled,
     UseIgnoreFiles,
     IncludeHidden,
+    SearchContents,
 }
 
 impl Flag {
@@ -63,6 +64,7 @@ impl Flag {
             Flag::Enabled => "enabled",
             Flag::UseIgnoreFiles => "use-ignore-files",
             Flag::IncludeHidden => "include-hidden",
+            Flag::SearchContents => "search-contents",
         }
     }
 }
@@ -327,6 +329,7 @@ mod tests {
         set_flag(&path, Flag::IncludeHidden, true).unwrap();
         set_flag(&path, Flag::UseIgnoreFiles, false).unwrap();
         set_flag(&path, Flag::Enabled, false).unwrap();
+        set_flag(&path, Flag::SearchContents, false).unwrap();
         set_ignore_patterns(&path, &["*.log".into()]).unwrap();
         set_preview_font(&path, PreviewFont::Interface).unwrap();
         set_index_detail(&path, IndexDetail::Complete).unwrap();
@@ -338,6 +341,7 @@ mod tests {
         assert!(config.include_hidden);
         assert!(!config.use_ignore_files);
         assert!(!config.enabled);
+        assert!(!config.search_contents);
         assert_eq!(config.ignore_patterns, ["*.log"]);
         assert_eq!(config.preview_font, PreviewFont::Interface);
         assert_eq!(config.index_detail, IndexDetail::Complete);

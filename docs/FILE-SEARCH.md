@@ -1195,7 +1195,8 @@ waits for it, and an answer to an older query is dropped (I-3).
 ## Content search through Windows Search
 
 **Built:** the platform query in `a5a3bda` (6a); the view's use of it and
-the preview highlight in 6b. Coverage in settings is 6c.
+the preview highlight in 6b; coverage in settings and the *Search file
+contents* switch in 6c.
 
 Raycast does not index file contents itself either: it asks Spotlight or
 Windows Search, and greys its toggle out when the system's index does not
@@ -1232,13 +1233,20 @@ and memory budgets.
   line further in that has one, searched for in the first 4 MB on the same
   thread that reads the preview. A match past that is not drawn. The pane
   is read again for a new query's words when it has a text preview.
-- **Coverage is shown per scope.** By default Windows indexes the user's
-  folders and not `D:\`. The settings page marks each scope *covered* or *not
-  covered by Windows Search*, with a button that opens Windows' *Indexing
-  Options*. A scope that is not covered simply contributes no content
-  matches.
-- Linux: the method is `todo!()` until F5 resumes (I-2); the choice there
-  (Tracker, Baloo, or a streaming scan) is F5's.
+- **Coverage is shown per scope, in settings only.** By default Windows
+  indexes the user's folders and not `D:\`. The settings page asks
+  `Platform::scope_covered` for each scope, resolved as the walk resolves it,
+  off the UI thread, every time it reads the file: on open and after every
+  change. A scope's description then ends in *· Contents searchable* or
+  *· Contents not indexed by Windows*; an answer that failed says nothing,
+  and with `files.search-contents` off nothing about coverage is said. When
+  one scope is not covered, a *Windows Search* row in the scopes card offers
+  *Indexing Options…* (`Platform::open_indexing_options`). Windows' dialog
+  does not report back: reopening settings asks again. A scope that is not
+  covered simply contributes no content matches; the view says nothing.
+- Linux: the query is `todo!()` until F5 resumes (I-2); coverage and
+  *Indexing Options* return an `Err`, so the page shows nothing rather than
+  panic. The choice there (Tracker, Baloo, or a streaming scan) is F5's.
 
 **Revises 7.19.** "Not the system index" stays true for names, and becomes
 an exception for content. The reasons in 7.19 (a COM path with no safe
@@ -1324,13 +1332,17 @@ groups:
 2. **Where** -- scopes with *Add Folder*; the exclusions. Above
    the list, the memory note ("Against the budgets"); beside each scope its
    item count, and the index's total (the ceiling is gone, step c3a).
-3. **What** -- *Use ignore files*, *Include hidden files*, ignore patterns;
+3. **What** -- *Use ignore files*, *Include hidden files*, *Search file
+   contents* (`files.search-contents`, slice 6c), ignore patterns;
    **Excluded by default**: every default skip by name, each with a switch,
    `AppData` with a note that it changes constantly and adding it costs CPU
    and memory. Stored as `default-skips-off`, so a new default reaches
    everyone and only what the user turned off is written.
-4. **Index** -- status (items, last pass, or progress), *Rebuild Index*; per
-   scope, Windows Search coverage with *Indexing Options*.
+4. **Index** -- status (items, last pass, or progress), *Rebuild Index*.
+
+Per scope, Windows Search coverage, with *Indexing Options…* when one is not
+covered, sits in **Where** (built in 6c; "Content search through Windows
+Search").
 
 *Extra application folders* goes on the page that owns applications; if
 none exists when slice 7 lands, at the end of this one, under its own heading.
