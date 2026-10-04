@@ -324,6 +324,60 @@ the trade, chosen over losing entries.
   the real index) that nobody wants ranked. *Search Files* searches all at
   any length.
 
+### Step c2a: the store as built
+
+Schema version 3. Version 1 and 2 databases are dropped and rebuilt, as
+any other version is. Names are still loaded into memory and searched
+there. Only the storage changed; nothing reads the word index yet (c2b).
+
+- **`folders`** `(id, parent_id, name, scope, modified)`: each folder
+  once, under its parent. A scope's own folder has no parent and is
+  named by its full path. The time and the scope live here.
+- **`files`** `(id, folder_id, name, is_dir, folded, len)`: `folded` is
+  the name folded as `Names` folds it, `len` its length in bytes. A
+  folder entry also has its `folders` row, under the same parent with
+  the same name. Indexes on `(folder_id, name)` (paths) and
+  `(len, folded)` (exact and name-start, one seek a length, for c2b).
+- **`words`**: FTS5, contentless with `contentless_delete=1` (SQLite
+  3.53), `prefix='1 2 3'`, `unicode61` with no diacritics removed and
+  combining marks kept in their token. Default detail.
+
+**Tokens.** A name is cut into runs of letters and digits. Each run is
+indexed whole, and also in parts where it changes to a capital or to a
+digit: `JavaScript` is `javascript java script`, `AnnualReport2024`
+`annualreport2024 annual report 2024`, `my-invoice_v2.final.pdf`
+`my invoice v2 v 2 final pdf`. Lower-case runs (`myreport`) stay whole.
+
+**Key.** A row's FTS rowid is `(len << 32) | id`, so the index's own
+order is shortest name first. A rename changes `len` and therefore the
+key, so it is a delete of the old key and an insert of the new one,
+never an update. That is how the watcher's renames already arrive: the
+folder is read again, the old entry removed, the new one added.
+Deleting a folder removes its subtree from `folders`, `files` and
+`words`. Paths are rebuilt through the parents, each folder looked up
+once per query.
+
+**Measured on the real 500 000** (303 447 home, 196 553 `D:\`; 48 088
+folders), release build, through `Store::replace`:
+
+| | |
+| - | - |
+| On disk | 108 MB (102 MB vacuumed) |
+| Full build | 6.2--6.4 s |
+| Load into memory | 195 ms |
+| Of the vacuumed 102 | `words` 40, `(folder_id, name)` 16, `(len, folded)` 15, tables 30 (`folded` alone 10) |
+
+That is 16 MB over the projected ~92: the `folded` column, which the
+ranked bench never stored, and FTS merge slack. The FTS rows are written
+last in the same transaction, sorted by key: written in row order they
+took 28 s, since FTS5 flushes whenever a rowid comes lower than the one
+before. Writing them in a second transaction after the files measured
+the same within noise (6.1--6.5 s). Building the secondary indexes after
+the inserts (7.5--8.4 s) and a 64 MB page cache (7.9 s) were both
+slower. To reproduce: `LUMEN_V2_INDEX=<copy> LUMEN_V3_INDEX=<out> cargo
+test --release -p lumen-core --lib a_real_index_is_measured -- --ignored
+--nocapture`.
+
 ---
 
 ## The decisions

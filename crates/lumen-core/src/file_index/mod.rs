@@ -54,6 +54,7 @@
 
 pub mod names;
 pub mod store;
+mod tokens;
 mod update;
 pub mod walk;
 pub mod watch;
