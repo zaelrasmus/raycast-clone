@@ -39,7 +39,7 @@ use lumen_core::file_index::{
 };
 use lumen_core::item::ActionGroup;
 use lumen_core::providers::QuicklinkProvider;
-use lumen_core::root::{FILES_CAP, Hit};
+use lumen_core::root::{FILES_CAP, Hit, Source};
 use lumen_core::style::{
     CardDivider, CardHeader, CardLabels, CardOperators, Metrics, SectionCase, Variants,
 };
@@ -92,6 +92,8 @@ actions!(
         MoveFavoriteUp,
         /// Move the selected favourite one place down (F15).
         MoveFavoriteDown,
+        /// Complete a typed path to the selected row's name (F16).
+        CompletePath,
     ]
 );
 
@@ -101,6 +103,13 @@ actions!(
 /// list `Tab` still types a quicklink's argument. GPUI ranks a binding by how
 /// deep its context matched before anything else.
 pub const SCOPE_CONTEXT: &str = "Scoped";
+
+/// The key context around the query field while a typed path can be
+/// completed to the selected row (F16).
+///
+/// Inside the search row, and so deeper than `Scoped` as well as `Launcher`:
+/// its `Tab` beats the scope's and the argument's, and only while it is set.
+pub const TYPED_PATH_CONTEXT: &str = "TypedPath";
 
 /// The wall clock as the timers write it.
 fn timers_now() -> lumen_core::timers::Millis {
@@ -897,6 +906,10 @@ struct ViewState {
     /// Kept so that a re-rank triggered by something other than typing does not
     /// report a change that did not happen -- see `rerank`.
     sent_query: String,
+    /// *Search Files*' completion of a typed path to each row, by id, and
+    /// the trimmed query they answer (F16): the session lives in its loop,
+    /// so what `Tab` would make is handed over with every view it draws.
+    completions: Option<(String, std::collections::HashMap<String, String>)>,
 }
 
 pub struct Launcher {
@@ -1594,8 +1607,14 @@ impl Launcher {
                 for effect in effects.drain(..) {
                     match effect {
                         Effect::Render(view) => {
-                            this.update(cx, |launcher, cx| launcher.show_view(view, cx))
-                                .ok();
+                            let completions = (session.query().to_string(), session.completions());
+                            this.update(cx, |launcher, cx| {
+                                launcher.show_view(view, cx);
+                                if let Mode::View(state) = &mut launcher.mode {
+                                    state.completions = Some(completions);
+                                }
+                            })
+                            .ok();
                         }
                         Effect::Search {
                             generation,
@@ -1755,6 +1774,10 @@ impl Launcher {
         if !matches!(self.mode, Mode::Root) || self.argument.is_some() {
             return;
         }
+        if let Some(typed) = self.root.typed(&self.query) {
+            self.list_typed(typed, generation, cx);
+            return;
+        }
         let (Some(index), Some(kinds)) = (self.files.clone(), self.config.files.root_kinds())
         else {
             return;
@@ -1782,6 +1805,62 @@ impl Launcher {
                 if current {
                     this.root.set_files(&query, hits);
                     this.place_files(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// List the folder of the path typed in root, off the UI thread, and
+    /// show the listing when it is read (F16, step 6d).
+    ///
+    /// Read from the disk, so it needs no index and is asked whatever root
+    /// asks of one: a path typed answers nothing else in root. As many rows
+    /// as the view lists, [`lumen_core::file_search::LIMIT`]: root shows
+    /// this section alone, the list is virtualised, and the same path reads
+    /// the same in both. Superseded as the index's question is, by the next
+    /// keystroke's generation; until it lands, a listing of the same folder
+    /// is shown narrowed by `rerank`.
+    fn list_typed(
+        &mut self,
+        typed: lumen_core::file_search::browse::Typed,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        // Untrimmed at the end: a trailing space is part of the filter.
+        let query = self.query.trim_start().to_string();
+        let include_hidden = self.config.files.include_hidden;
+        let current = self.files_query.clone();
+        cx.spawn(async move |this, cx| {
+            let rows = cx
+                .background_executor()
+                .spawn(async move {
+                    let cancelled = || current.load(Ordering::Relaxed) != generation;
+                    lumen_core::file_search::list_folder(&typed, include_hidden, None, &cancelled)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let current = this.files_query.load(Ordering::SeqCst) == generation
+                    && this.query.trim_start() == query
+                    && matches!(this.mode, Mode::Root)
+                    && this.argument.is_none();
+                if current {
+                    // The listing comes first, above the fallbacks: a row of
+                    // the narrowed listing stays selected, and a selected
+                    // fallback -- all there was until now -- gives way to the
+                    // first entry, which is what Enter and Tab are for here.
+                    let on_file = this
+                        .hits()
+                        .get(this.selected)
+                        .is_some_and(|hit| matches!(hit.source, Source::File(_)));
+                    this.root.set_typed(&query, rows);
+                    if on_file {
+                        this.place_files(cx);
+                    } else {
+                        this.rerank(cx);
+                        cx.notify();
+                    }
                 }
             })
             .ok();
@@ -2545,6 +2624,7 @@ impl Launcher {
             rows,
             candidates: Arc::new(candidates),
             sent_query: String::new(),
+            completions: None,
             view,
         }));
 
@@ -2599,6 +2679,7 @@ impl Launcher {
             selected: 0,
             candidates: Arc::new(Vec::new()),
             sent_query: String::new(),
+            completions: None,
         }));
 
         self.resize_if_needed(previous_height, cx);
@@ -3961,6 +4042,50 @@ impl Launcher {
         }
     }
 
+    /// What `Tab` makes of a typed path with the selected row (F16): root
+    /// asks its listing, *Search Files* what its session handed over with
+    /// the view, for this very query. `None` -- and `Tab` is the scope's or
+    /// the argument's -- when no path is typed or the row is not in its
+    /// folder's listing.
+    fn path_completion(&self) -> Option<String> {
+        if self.picker.is_some() || self.action_panel.is_some() {
+            return None;
+        }
+        match &self.mode {
+            Mode::Root if self.argument.is_none() => {
+                let item = self.selected_item()?;
+                self.root.completion(&self.query, &item.id)
+            }
+            Mode::View(state) => {
+                let (query, completions) = state.completions.as_ref()?;
+                if query != self.query.trim() {
+                    return None;
+                }
+                let lumen_core::view::View::List(list) = &state.view else {
+                    return None;
+                };
+                completions.get(&list.item(state.selected)?.id).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    /// Tab on a typed path: the query becomes the selected row's path, as
+    /// if typed, so a folder's is listed next (F16).
+    fn complete_path(&mut self, _: &CompletePath, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.path_completion() else {
+            return;
+        };
+        // The field puts the caret at the end of text it is given, and does
+        // not report it back: the edit is told here as typing tells it.
+        self.query_field
+            .update(cx, |field, cx| field.set_text(text.clone(), cx));
+        self.query = text;
+        self.rerank(cx);
+        self.query_files(cx);
+        cx.notify();
+    }
+
     /// Turn the search field into `request`'s argument.
     ///
     /// Starts empty: what was typed to *find* the link is not what the user
@@ -4495,6 +4620,7 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::clear_query))
             .on_action(cx.listener(Self::toggle_action_panel))
             .on_action(cx.listener(Self::ask_argument))
+            .on_action(cx.listener(Self::complete_path))
             .on_action(cx.listener(Self::next_scope))
             .on_action(cx.listener(Self::previous_scope))
             .on_action(cx.listener(Self::toggle_favorite))
@@ -4711,7 +4837,18 @@ impl Launcher {
                         .child(argument.name.clone()),
                 )
             })
-            .child(self.query_field.clone())
+            // Always wrapped, so the field's place does not change; the
+            // context is set only while Tab has a path to complete.
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .h_full()
+                    .when(self.path_completion().is_some(), |field| {
+                        field.key_context(TYPED_PATH_CONTEXT)
+                    })
+                    .child(self.query_field.clone()),
+            )
             // A scope applies to the whole list, so it sits at the end of the
             // field rather than where the text starts: it is a setting of the
             // search, not the beginning of it. Drawn as the argument pill is,

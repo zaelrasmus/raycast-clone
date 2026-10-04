@@ -29,9 +29,9 @@ use gpui::{App, KeyBinding};
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::launcher::{
-    Activate, AskArgument, ClearQuery, Dismiss, MoveFavoriteDown, MoveFavoriteUp, NextScope,
-    PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast, SelectNext,
-    SelectPrevious, ToggleActionPanel, ToggleFavorite,
+    Activate, AskArgument, ClearQuery, CompletePath, Dismiss, MoveFavoriteDown, MoveFavoriteUp,
+    NextScope, PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast,
+    SelectNext, SelectPrevious, TYPED_PATH_CONTEXT, ToggleActionPanel, ToggleFavorite,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
@@ -171,6 +171,11 @@ const BINDINGS: &[Binding] = &[
         keys: "shift-tab",
         group: "Actions",
         description: Some("Choose languages, from the last"),
+    },
+    Binding {
+        keys: "tab",
+        group: "Actions",
+        description: Some("Complete the folder or file name of a typed path"),
     },
     Binding {
         keys: "escape",
@@ -375,16 +380,32 @@ pub(crate) fn launcher_bindings() -> Vec<KeyBinding> {
     ]
 }
 
+/// A view's scope -- the translator's presets (F7). Only in the search row
+/// of a view that has one, which is deeper than `Launcher`, so these win
+/// there and `Tab` keeps its meaning everywhere else.
+fn scope_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("tab", NextScope, Some(SCOPE_CONTEXT)),
+        KeyBinding::new("shift-tab", PreviousScope, Some(SCOPE_CONTEXT)),
+    ]
+}
+
+/// A typed path's completion (F16). Its context sits inside the search row's
+/// and only while the selected row has one, so `Tab` beats the scope's and
+/// the argument's there and nowhere else. Shift+Tab is left to the scope.
+fn typed_path_bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new(
+        "tab",
+        CompletePath,
+        Some(TYPED_PATH_CONTEXT),
+    )]
+}
+
 /// Everything else: the view's scope, the forms, the settings window, text
 /// editing.
 fn bind_other_contexts(cx: &mut App) {
-    // A view's scope -- the translator's presets (F7). Only in the search row
-    // of a view that has one, which is deeper than `Launcher`, so these win
-    // there and `Tab` keeps its meaning everywhere else.
-    cx.bind_keys([
-        KeyBinding::new("tab", NextScope, Some(SCOPE_CONTEXT)),
-        KeyBinding::new("shift-tab", PreviousScope, Some(SCOPE_CONTEXT)),
-    ]);
+    cx.bind_keys(scope_bindings());
+    cx.bind_keys(typed_path_bindings());
 
     // A quicklink form, in the launcher or in settings. Deeper than either
     // host's context, so these win there: Tab moves between fields instead of
@@ -829,6 +850,51 @@ mod tests {
             })
             .count();
         assert_eq!(taken, 1);
+    }
+
+    /// What `keys` runs with the search field focused inside `contexts`,
+    /// outermost first, as the launcher nests them.
+    fn resolves_to(keys: &str, contexts: &[&str]) -> Option<&'static str> {
+        let keymap = gpui::Keymap::new(
+            launcher_bindings()
+                .into_iter()
+                .chain(scope_bindings())
+                .chain(typed_path_bindings())
+                .collect(),
+        );
+        let stack: Vec<gpui::KeyContext> = contexts
+            .iter()
+            .chain([&SEARCH_FIELD_CONTEXT])
+            .map(|context| gpui::KeyContext::parse(context).unwrap())
+            .collect();
+        let (bindings, _) =
+            keymap.bindings_for_input(&[gpui::Keystroke::parse(keys).unwrap()], &stack);
+        bindings.first().map(|binding| binding.action().name())
+    }
+
+    /// Tab completes a typed path only where the launcher says a completion
+    /// is there, over the scope's Tab and the argument's; Shift+Tab stays
+    /// the scope's.
+    #[test]
+    fn tab_completes_a_path_only_in_its_own_context() {
+        let path = TYPED_PATH_CONTEXT;
+        assert_eq!(
+            resolves_to("tab", &[CONTEXT, path]),
+            Some("lumen::CompletePath")
+        );
+        assert_eq!(
+            resolves_to("tab", &[CONTEXT, SCOPE_CONTEXT, path]),
+            Some("lumen::CompletePath")
+        );
+        assert_eq!(
+            resolves_to("shift-tab", &[CONTEXT, SCOPE_CONTEXT, path]),
+            Some("lumen::PreviousScope")
+        );
+        assert_eq!(
+            resolves_to("tab", &[CONTEXT, SCOPE_CONTEXT]),
+            Some("lumen::NextScope")
+        );
+        assert_eq!(resolves_to("tab", &[CONTEXT]), Some("lumen::AskArgument"));
     }
 
     /// The two lists in this file must describe the same keys. If someone adds

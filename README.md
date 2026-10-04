@@ -365,6 +365,7 @@ a change without risking your configuration.
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy, cut, paste |
 | `Ctrl+K` | Show every action for the selected row |
 | `Tab` | Type a search for the selected quicklink, or the one whose name or alias is the query |
+| `Tab` on a typed path | Complete it to the selected file or folder; a folder's lists inside it |
 | `Tab` / `Shift+Tab` in *Translate* | Open the *From* / *To* language list; again, the other one. `↑`/`↓` and `Enter` choose, `Esc` closes |
 
 The query is a real text field: the mouse places the caret and drags a

@@ -1138,9 +1138,10 @@ the disk now, not the index's. In root and in the view alike:
 - **Enter** opens the row as any result does: a folder in Explorer.
 - **Tab** completes the query to the selected row -- the prefix as typed,
   the name, and for a folder the separator last typed -- so the next
-  keystroke lists inside it. It is bound in a key context deeper than the
-  list's, so it beats *NextScope* in the view and *AskArgument* in root
-  only while a path is typed; otherwise `Tab` does what it did.
+  keystroke lists inside it. It is bound in a key context, `TypedPath`
+  around the query field, deeper than the list's, so it beats *NextScope*
+  in the view and *AskArgument* in root only while the selected row has a
+  completion; otherwise `Tab` does what it did.
 - **Root** shows the listing alone, in the *Files* section, then the
   fallbacks: no application, command or answer matches a path. Typing on
   in the same folder narrows the listing held, by the same rule, until the

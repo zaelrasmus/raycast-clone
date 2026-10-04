@@ -333,6 +333,26 @@ impl Session {
         Some(browse::complete(&typed, &found))
     }
 
+    /// [`Self::completion`] for every row shown, by id: what the host holds
+    /// beside the view it draws, so it knows on its own thread whether
+    /// `Tab` is the path's. Empty when no listing of the typed folder is in.
+    pub fn completions(&self) -> HashMap<String, String> {
+        let Some(typed) = self.typed() else {
+            return HashMap::new();
+        };
+        if self.listed.as_ref() != Some(&typed.dir) {
+            return HashMap::new();
+        }
+        self.shown()
+            .map(|found| (found.id(), browse::complete(&typed, found)))
+            .collect()
+    }
+
+    /// What is typed, trimmed: the query [`Self::completions`] answers.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
     /// The path the whole query names (step 6d), whose folder is listed
     /// from the disk instead of asking the index.
     fn typed(&self) -> Option<Typed> {
@@ -1732,5 +1752,37 @@ mod tests {
         let asked = generation(&query(&mut session, "doc"));
         session.found(asked, vec![folder(r"C:\Users\me\Documents")]);
         assert_eq!(session.completion(&documents), None);
+    }
+
+    /// What the host holds to decide, on its own thread, whether `Tab` is
+    /// the path's: every shown row's completion, for the query it answers.
+    #[test]
+    fn completions_are_every_shown_rows_for_the_query_they_answer() {
+        let mut session = at_home();
+        let asked = browsed(&query(&mut session, "~/Doc "));
+        session.found(
+            asked,
+            vec![
+                folder(r"C:\Users\me\Documents"),
+                file(r"C:\Users\me\Doc.txt"),
+            ],
+        );
+        let completions = session.completions();
+        assert_eq!(session.query(), "~/Doc");
+        assert_eq!(completions.len(), 2);
+        assert_eq!(
+            completions
+                .get(&folder(r"C:\Users\me\Documents").id())
+                .map(String::as_str),
+            Some("~/Documents/")
+        );
+
+        // Another folder typed, its listing not yet in: none.
+        browsed(&query(&mut session, r"C:\"));
+        assert!(session.completions().is_empty());
+        // No path: none.
+        let asked = generation(&query(&mut session, "doc"));
+        session.found(asked, vec![folder(r"C:\Users\me\Documents")]);
+        assert!(session.completions().is_empty());
     }
 }
