@@ -2168,6 +2168,9 @@ fn main() {
     let only_ranked = std::env::var("DISK_BENCH").as_deref() == Ok("ranked");
     // `DISK_BENCH=store` measures the production store alone (step c2b).
     let only_store = std::env::var("DISK_BENCH").as_deref() == Ok("store");
+    // `DISK_BENCH=root` measures root's query, the hot layer then the disk
+    // (step c3a).
+    let only_root = std::env::var("DISK_BENCH").as_deref() == Ok("root");
 
     // `target/tmp` is where cargo points benches; its parent is `target`.
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -2185,6 +2188,10 @@ fn main() {
 
     if only_store {
         store_section(&dir, &real_db, started);
+        return;
+    }
+    if only_root {
+        root_section(&dir, &real_db, started);
         return;
     }
 
@@ -2417,6 +2424,154 @@ const FRESH_QUERIES: [&str; 2] = ["invoice", "inv 2024"];
 
 /// Root's budget for a frame, which a ranked query must stay under at p95.
 const BUDGET_MS: f64 = 8.0;
+
+/// Root's queries in step c3a: the store's, `a` and `in` -- which root
+/// answers from the hot layer alone -- and without `data`.
+const ROOT_QUERIES: [&str; 14] = [
+    "a",
+    "in",
+    "inv",
+    "invoice",
+    "report",
+    "2024",
+    "html",
+    "license",
+    "preview",
+    "zqxj",
+    "inv 2024",
+    "cargo",
+    "javascript",
+    "github",
+];
+
+/// How many entries the synthetic frecency of the root section has used.
+const USED: usize = 200;
+
+/// Step c3a: the production store of the real index, loaded as a start
+/// loads it -- the hot layer within `HOT_BUDGET` -- with a synthetic
+/// frecency of [`USED`] entries, and root's query timed on it: the hot layer,
+/// then the disk, merged.
+fn root_section(dir: &Path, real_db: &Path, started: Instant) {
+    use lumen_core::file_index::{FileIndex, HOT_BUDGET};
+    use lumen_core::frecency::Frecency;
+
+    println!("# Root's query: the hot layer, then the disk (step c3a)");
+    let rows = load_real(real_db);
+    let real = corpus_of(&rows);
+    drop(rows);
+    let walked = walked_of(&real);
+    drop(real);
+    let entries = walked.entries.len();
+    progress(started, &format!("real: {entries} entries"));
+
+    let path = dir.join("store-root.db");
+    remove(&path);
+    let mut store = Store::open_with(&path, IndexDetail::Balanced).expect("open the store");
+    store.replace(&walked, "bench").expect("write the store");
+    drop(store);
+    progress(started, "built");
+
+    // Every name, as a start loaded them before the hot layer.
+    let mut every = Vec::new();
+    for _ in 0..5 {
+        let store = Store::open(&path).expect("open the store");
+        let start = Instant::now();
+        let (names, _) = store.load().expect("load every name");
+        every.push(start.elapsed());
+        drop(names);
+    }
+    every.sort();
+    // The hot layer, as a start loads it now.
+    let mut hot = Vec::new();
+    for _ in 0..5 {
+        let store = Store::open(&path).expect("open the store");
+        let start = Instant::now();
+        let index = FileIndex::load(store).expect("load the index");
+        hot.push(start.elapsed());
+        drop(index);
+    }
+    hot.sort();
+    let every_bytes = Store::open(&path)
+        .and_then(|store| store.load())
+        .map(|(names, _)| names.memory_bytes())
+        .expect("load every name");
+
+    let index = FileIndex::load(Store::open(&path).expect("open the store")).expect("load");
+    let mut rng = Rng(0x5eed_c3a0);
+    let mut frecency = Frecency::new();
+    for _ in 0..USED {
+        let entry = &walked.entries[rng.below(entries)];
+        let prefix = if entry.is_dir { "folder" } else { "file" };
+        frecency.record(&format!("{prefix}:{}", entry.path.display()));
+    }
+    drop(walked);
+    let start = Instant::now();
+    index.set_boosts(&frecency);
+    let boosts_ms = ms(start.elapsed());
+    progress(started, "loaded");
+
+    println!("\n## The hot layer\n");
+    println!("| | |\n| - | - |");
+    println!("| entries | {} |", index.len());
+    println!(
+        "| hot entries | {} ({:.1} %) |",
+        index.hot_len(),
+        100.0 * index.hot_len() as f64 / index.len() as f64
+    );
+    println!("| complete | {} |", index.hot_is_complete());
+    println!("| `HOT_BUDGET` | {:.1} MB |", mb(HOT_BUDGET as u64));
+    println!(
+        "| in memory (hot layer, used outside it, boosts, short) | {:.1} MB |",
+        mb(index.memory_bytes() as u64)
+    );
+    println!(
+        "| every name in memory, as before | {:.1} MB |",
+        mb(every_bytes as u64)
+    );
+    println!(
+        "| load, hot layer: min / median / max | {:.0} / {:.0} / {:.0} ms |",
+        ms(hot[0]),
+        ms(hot[2]),
+        ms(hot[4])
+    );
+    println!(
+        "| load, every name: min / median / max | {:.0} / {:.0} / {:.0} ms |",
+        ms(every[0]),
+        ms(every[2]),
+        ms(every[4])
+    );
+    println!("| `set_boosts`, {USED} used | {boosts_ms:.1} ms |");
+
+    println!("\n## `FileIndex::root_query`, N = 8, warm\n");
+    println!(
+        "p50 / p95 / max ms; folders and files; {USED} entries used. Under three characters root asks the hot layer alone.\n"
+    );
+    println!("| query | ms | rows | p95 < {BUDGET_MS} |");
+    println!("| - | - | - | - |");
+    let mut worst = (0.0f64, "");
+    for query in ROOT_QUERIES {
+        let timing = time(|| {
+            index
+                .root_query(query, Kinds::FoldersAndFiles, 8, &|| false)
+                .len()
+        });
+        let p95 = ms(timing.p95);
+        if p95 > worst.0 {
+            worst = (p95, query);
+        }
+        println!(
+            "| `{query}` | {} | {} | {} |",
+            cell(Some(&timing)),
+            timing.matches,
+            if p95 < BUDGET_MS { "yes" } else { "NO" }
+        );
+    }
+    println!("\nWorst p95: {:.2} ms, `{}`.", worst.0, worst.1);
+    println!("\nTotal run {:.0} s.", started.elapsed().as_secs_f64());
+    drop(index);
+    remove(&path);
+    remove(real_db);
+}
 
 /// `corpus` as a walk returns it: every entry's full path, scope by scope,
 /// each folder before what is in it, as both generators and the real index

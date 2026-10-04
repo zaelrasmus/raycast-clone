@@ -32,7 +32,6 @@ fn count(root: &Path) {
         use_ignore_files: true,
         include_hidden: false,
         skips_off: Vec::new(),
-        ceiling: usize::MAX,
     };
     let start = Instant::now();
     let walked = walk(&rules);

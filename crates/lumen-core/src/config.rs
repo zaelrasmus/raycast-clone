@@ -15,7 +15,7 @@ use crate::clipboard::Retention;
 use crate::clock::ClockConfig;
 use crate::currency::CurrencyConfig;
 use crate::dictionary::DictionaryConfig;
-use crate::file_index::{CEILING, IndexDetail, Kinds, WalkRules};
+use crate::file_index::{IndexDetail, Kinds, WalkRules};
 use crate::places::store::PlacesConfig;
 use crate::snippets::SnippetsConfig;
 use crate::style::Metrics;
@@ -231,9 +231,7 @@ impl From<FileSearchFile> for FileSearchConfig {
             // Once a run: the file is read again on every reload.
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| {
-                log::info!(
-                    "files.limits is no longer used: the file index has its own ceiling (F16)"
-                );
+                log::info!("files.limits is no longer used: the file index has no limit (F16)");
             });
         }
         let unknown = file
@@ -324,7 +322,6 @@ impl FileSearchConfig {
             use_ignore_files: self.use_ignore_files,
             include_hidden: self.include_hidden,
             skips_off: self.skips_off(),
-            ceiling: CEILING,
         }
     }
 
@@ -1027,7 +1024,6 @@ mod tests {
             ..FileSearchConfig::default()
         };
         let rules = files.walk_rules();
-        assert_eq!(rules.ceiling, CEILING);
         assert_eq!(rules.scopes[1], PathBuf::from("no/such/folder"));
         if let Some(dirs) = directories::UserDirs::new() {
             let home = plain(&std::fs::canonicalize(dirs.home_dir()).unwrap());

@@ -17,7 +17,7 @@
 //! in the rows, a new one takes a row after the last, and the names are
 //! packed again without either moving a row. Row ids only grow between
 //! rebuilds, so a row an older index remembers is that entry or no entry.
-//! Four bytes an entry: 2 MB at the ceiling.
+//! Four bytes an entry: 2 MB at 500 000.
 //!
 //! # Word start or substring, never fuzzy
 //!
@@ -106,6 +106,17 @@ impl Names {
         self.rows.push(row);
     }
 
+    /// [`Self::push`], with the name already folded by [`fold`]: what the
+    /// store keeps beside each name, so a load does not fold it again.
+    pub(crate) fn push_folded(&mut self, row: u32, folded: &str, is_dir: bool) {
+        debug_assert!(self.rows.last().is_none_or(|&last| last < row));
+        self.starts.push(self.blob.len() as u32);
+        self.blob.push_str(folded);
+        self.blob.push('\n');
+        self.mark(is_dir);
+        self.rows.push(row);
+    }
+
     /// Record whether the entry just started is a folder.
     fn mark(&mut self, is_dir: bool) {
         let entry = self.starts.len() - 1;
@@ -149,6 +160,21 @@ impl Names {
         names
     }
 
+    /// These names with only `entries`, ascending: a copy of their part of
+    /// the blob.
+    pub(crate) fn only(&self, entries: &[u32]) -> Names {
+        let mut names = Names::default();
+        for &entry in entries {
+            names.push_folded(
+                self.rows[entry as usize],
+                self.name(entry as usize),
+                self.is_dir(entry),
+            );
+        }
+        names.shrink();
+        names
+    }
+
     /// The store's row of `entry`.
     pub fn row(&self, entry: u32) -> u32 {
         self.rows[entry as usize]
@@ -175,6 +201,25 @@ impl Names {
 
     pub fn is_empty(&self) -> bool {
         self.starts.is_empty()
+    }
+
+    /// What an entry whose folded name is `len` bytes costs these names: the
+    /// name and its newline in the blob, its start and its row. What the hot
+    /// layer's budget counts ([`super::HOT_BUDGET`]); the folder bit, an
+    /// eighth of a byte, is left out.
+    pub const fn cost(len: usize) -> usize {
+        len + 1 + 4 + 4
+    }
+
+    /// What every entry here costs, as [`Self::cost`] counts it.
+    pub fn bytes(&self) -> usize {
+        self.blob.len() + self.len() * 8
+    }
+
+    /// The length of `entry`'s folded name, in bytes: what ranks the
+    /// shorter of two matches first.
+    pub(crate) fn name_len(&self, entry: u32) -> usize {
+        self.name(entry as usize).len()
     }
 
     /// What the names hold on the heap.

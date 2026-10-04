@@ -11,11 +11,12 @@
 //! - [`walk`] finds the entries, with the skip rules;
 //! - [`Store`] keeps them in SQLite, in the cache folder, so a start loads
 //!   them instead of walking again;
-//! - [`Names`] holds only their names, folded into one blob, and answers a
-//!   query by scanning it.
+//! - [`Names`] holds the names of a hot layer of them, folded into one blob,
+//!   and answers a query by scanning it.
 //!
-//! A query asks [`Names`] for the best few entries, then the store for just
-//! those rows, in one statement.
+//! A query asks [`Names`] for the best few entries -- and the store's word
+//! index, when the hot layer is not the whole index -- then the store for
+//! just those rows (see [`FileIndex`], "A hot layer, then the disk").
 //!
 //! # One or two letters search what you use
 //!
@@ -67,8 +68,8 @@ use anyhow::Result;
 use parking_lot::{Mutex, RwLock};
 
 pub use names::{Kinds, MIN_SUBSTRING, Match, Names};
-pub use store::{IndexDetail, Meta, RankedRow, Row, Store, digest};
-pub use walk::{CEILING, Entry, WalkRules, Walked, default_skips, walk};
+pub use store::{Hot, IndexDetail, Meta, RankedRow, Row, Store, digest};
+pub use walk::{Entry, WalkRules, Walked, default_skips, walk};
 pub use watch::{FileWatch, watch_targets};
 
 use lumen_platform::LaunchTarget;
@@ -108,32 +109,105 @@ pub struct IndexStatus {
     pub entries: usize,
     /// As [`FileIndex::per_scope`], in the order of the scopes walked.
     pub per_scope: Vec<usize>,
-    /// As [`FileIndex::truncated`].
-    pub truncated: Option<PathBuf>,
     /// As [`FileIndex::walked_at`].
     pub walked_at: Option<u64>,
     /// A load, reconcile or walk is running.
     pub indexing: bool,
 }
 
+/// The most the hot layer's names may cost in memory, as [`Names::cost`]
+/// counts them (`docs/FILE-SEARCH.md`, "Step c3a").
+///
+/// Idle memory has been measured at 71--75 MB from F8 to F15, against a
+/// budget of 100. Eight megabytes of names keeps the launcher near 83 with
+/// any index, leaving the rest for SQLite's page cache, the boosts and what
+/// later phases add -- where the old ceiling's 500 000 names took 14.4. A
+/// home folder, 55 000 entries in about 1.7 MB, fits whole, so for most
+/// users the hot layer is the index and root answers exactly as before.
+/// Past it, about a quarter of a million entries are in memory -- the used,
+/// the folders and the shallowest files -- and the rest are asked of the
+/// disk by their words.
+pub const HOT_BUDGET: usize = 8 * 1024 * 1024;
+
 /// The index, loaded and ready to query.
+///
+/// # A hot layer, then the disk
+///
+/// Only part of the index is in memory: the hot layer, selected at load
+/// within [`HOT_BUDGET`] ([`Store::hot`]). Root asks it first, and a match
+/// anywhere in a name counts there. From three characters it asks the
+/// disk's word index too ([`Store::ranked`]) -- unless the hot layer is the
+/// whole index -- and the two are merged into the order the names rank in.
+/// What is only on disk is found by the start of one of its words, never
+/// inside one: the trade "Decision: B" chose over losing entries.
 pub struct FileIndex {
-    names: Names,
+    /// The hot layer.
+    hot: Names,
+    /// Whether the hot layer is every entry, so the disk has nothing more
+    /// to answer.
+    hot_is_complete: bool,
+    /// What the hot layer was selected within: [`HOT_BUDGET`], but in tests.
+    budget: usize,
+    /// How many entries the index holds, in memory or not.
+    entries: usize,
     /// Behind a lock because SQLite's connection is not `Sync`, and a query
     /// arrives from whichever thread asks.
     store: Mutex<Store>,
-    /// Frecency by entry, for the few entries that have any: looked up for
-    /// every match, so it is a map, not a call into [`Frecency`] by path.
-    /// Behind a lock so a use can update it while the index is shared with
-    /// the scans in flight; written only by [`Self::set_boosts`], briefly.
-    boosts: RwLock<HashMap<u32, u32>>,
-    /// The entries whose whole name is one or two characters, found once at
-    /// load: with the boosted ones, all a short query searches.
+    /// What frecency knows of the index. Behind a lock so a use can update
+    /// it while the index is shared with the scans in flight; written only
+    /// by [`Self::set_boosts`], briefly.
+    used: RwLock<Used>,
+    /// The hot entries whose whole name is one or two characters, found
+    /// once at load: with the used ones, all a short query searches. Every
+    /// such name is in the hot layer ([`Store::hot`]).
     short: Vec<u32>,
     meta: Meta,
     /// Resolved once rather than per row: every subtitle is shortened
     /// against it.
     home: Option<PathBuf>,
+}
+
+/// Frecency's part of the index (see [`FileIndex::set_boosts`]).
+#[derive(Default)]
+struct Used {
+    /// Frecency by row, for the few entries that have any: looked up for
+    /// every match, so it is a map, not a call into [`Frecency`] by path.
+    boosts: HashMap<u32, u32>,
+    /// The names of the used entries the hot layer was selected without --
+    /// used since it was -- so they are found as the hot layer's are: by a
+    /// short query, and inside a word.
+    outside: Names,
+}
+
+/// Where a query's match came from, until it is read as a row.
+enum Source {
+    /// An entry of the hot layer.
+    Hot(u32),
+    /// An entry of [`Used::outside`].
+    Outside(u32),
+    /// A row the disk answered, already read.
+    Disk(RankedRow),
+}
+
+/// One match and what it is ranked by: as [`Names`] ranks, the better tier,
+/// then frecency, then the shorter name, then the row.
+struct Candidate {
+    tier: u8,
+    boost: u32,
+    length: usize,
+    row: u32,
+    source: Source,
+}
+
+impl Candidate {
+    fn order(&self) -> (std::cmp::Reverse<u8>, std::cmp::Reverse<u32>, usize, u32) {
+        (
+            std::cmp::Reverse(self.tier),
+            std::cmp::Reverse(self.boost),
+            self.length,
+            self.row,
+        )
+    }
 }
 
 /// The lock of every index file a build has opened, by path.
@@ -168,19 +242,29 @@ impl FileIndex {
     /// The index as the store last recorded it, without touching the disk
     /// beyond the database: what a start does.
     pub fn load(store: Store) -> Result<FileIndex> {
-        let (names, meta) = store.load()?;
-        Ok(Self::from_parts(names, meta, store))
+        Self::load_within(store, &[], HOT_BUDGET)
     }
 
-    fn from_parts(names: Names, meta: Meta, store: Store) -> FileIndex {
+    /// [`Self::load`], with a hot layer of the rows `boosted` and what else
+    /// fits `budget`.
+    fn load_within(store: Store, boosted: &[u32], budget: usize) -> Result<FileIndex> {
+        let hot = store.hot(boosted, budget)?;
+        let meta = store.meta()?;
+        Ok(Self::from_parts(hot, budget, meta, store))
+    }
+
+    fn from_parts(hot: Hot, budget: usize, meta: Meta, store: Store) -> FileIndex {
         // The names are in memory now; the pages that held them are not
         // needed again.
         store.release_memory();
         Self {
-            short: names.short_entries(),
-            names,
+            short: hot.names.short_entries(),
+            hot: hot.names,
+            hot_is_complete: hot.complete,
+            budget,
+            entries: hot.entries,
             store: Mutex::new(store),
-            boosts: RwLock::new(HashMap::new()),
+            used: RwLock::new(Used::default()),
             meta,
             home: directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
         }
@@ -283,14 +367,9 @@ impl FileIndex {
         // Patched only when the names are the store's as it is; when
         // another write came between, they are loaded from it.
         let current = recorded.version == self.meta.version;
-        let mut count = if current {
-            self.names.len()
-        } else {
-            store.count()?
-        };
         let mut meta = recorded;
         let batch = store.batch()?;
-        let delta = update::apply(&batch, rules, folders, &mut meta, &mut count)?;
+        let delta = update::apply(&batch, rules, folders, &mut meta)?;
         if delta.changed() {
             meta.version += 1;
         }
@@ -306,15 +385,25 @@ impl FileIndex {
             return Ok(Some(updated));
         }
 
-        let names = if current {
-            self.names.updated(&delta.removed, &delta.added)
-        } else {
-            store.load()?.0
+        // What arrived joins the hot layer -- it is the newest there is --
+        // while the layer fits its budget; past it, the layer is selected
+        // again, the used first.
+        let patched = current.then(|| self.hot.updated(&delta.removed, &delta.added));
+        let hot = match patched {
+            Some(names) if names.bytes() <= self.budget => Hot {
+                names,
+                complete: self.hot_is_complete,
+                entries: store.count()?,
+            },
+            _ => {
+                let boosted = self.used.read().boosts.keys().copied().collect::<Vec<_>>();
+                store.hot(&boosted, self.budget)?
+            }
         };
         drop(delta);
         store.release_memory();
         drop(store);
-        updated.index = Some(Self::from_parts(names, meta, Store::open(path)?));
+        updated.index = Some(Self::from_parts(hot, self.budget, meta, Store::open(path)?));
         Ok((!superseded()).then_some(updated))
     }
 
@@ -347,13 +436,17 @@ impl FileIndex {
 
     /// The index the store at `path` holds, its word tables at `detail`
     /// (`files.index-detail`): what a start loads. A store built at another
-    /// level is switched first, under the build lock, from its entries and
-    /// never a walk, so a build that follows keeps the level.
+    /// level is switched first, from its entries and never a walk, so a
+    /// build that follows keeps the level.
+    ///
+    /// All of it under the build lock: opening can write too -- a store
+    /// whose words an older build laid out is laid out again
+    /// ([`Store::open`]) -- and a write never meets another.
     pub fn open(path: &Path, detail: IndexDetail) -> Result<FileIndex> {
+        let lock = build_lock(path);
+        let _building = lock.lock();
         let mut store = Store::open(path)?;
         if store.detail() != detail {
-            let lock = build_lock(path);
-            let _building = lock.lock();
             store.set_detail(detail)?;
             store.release_memory();
         }
@@ -377,7 +470,9 @@ impl FileIndex {
     fn rebuilt(&self, walked: Walked, digest: &str, path: &Path) -> Result<FileIndex> {
         self.store.lock().replace(&walked, digest)?;
         drop(walked);
-        Self::load(Store::open(path)?)
+        // The rows are numbered again, so the used ones are not known by
+        // row until frecency is asked again.
+        Self::load_within(Store::open(path)?, &[], self.budget)
     }
 
     #[cfg(test)]
@@ -403,13 +498,14 @@ impl FileIndex {
         }
     }
 
-    /// The best `limit` files and folders for `query`, best first, from the
-    /// whole index.
+    /// The best `limit` files and folders for `query`, best first: the hot
+    /// layer's, and -- unless it is the whole index -- the disk's.
     ///
     /// Ranked by how well the name matched, then frecency, then the shorter
-    /// name ([`Names::find`]). Answers nothing once `cancelled` says so: the
-    /// query was superseded. A database that cannot be read answers nothing
-    /// rather than an error: the launcher has nothing to tell the user
+    /// name, as [`Names::find`] ranks; the disk's rows take their frecency
+    /// here, by row. Answers nothing once `cancelled` says so: the query was
+    /// superseded. A database that cannot be read answers nothing rather
+    /// than an error: the launcher has nothing to tell the user
     /// mid-keystroke, and the next rebuild replaces it. A row that is no
     /// longer the entry matched is left out (see [`Self::rebuilt`]).
     pub fn query(
@@ -424,8 +520,14 @@ impl FileIndex {
 
     /// [`Self::query`] over the entries `accept` takes, asked with each
     /// matched name -- lower-cased -- and whether it is a folder: what
-    /// *Search Files*' type filter searches (F16). Applied inside the scan,
-    /// so a filtered query finds its own best `limit`.
+    /// *Search Files*' type filter searches (F16). Applied inside the scan
+    /// and while the disk is read, so a filtered query finds its own best
+    /// `limit`.
+    ///
+    /// The disk is asked for its best `limit` without frecency. That is
+    /// enough: every used entry is in memory -- the hot layer or
+    /// [`Used::outside`] -- where frecency ranks it, and frecency only ever
+    /// lifts an entry within its tier.
     pub fn query_where(
         &self,
         query: &str,
@@ -434,54 +536,138 @@ impl FileIndex {
         accept: &dyn Fn(&str, bool) -> bool,
         cancelled: &dyn Fn() -> bool,
     ) -> Vec<FileHit> {
-        let boosts = self.boosts.read();
-        let found = self.names.find_where(
+        let used = self.used.read();
+        let boost = |row: u32| used.boosts.get(&row).copied().unwrap_or(0);
+        let hot = self.hot.find_where(
             query,
             kinds,
             limit,
             accept,
-            |entry| boosts.get(&entry).copied().unwrap_or(0),
+            |entry| boost(self.hot.row(entry)),
             cancelled,
         );
-        drop(boosts);
+        let outside = used.outside.find_where(
+            query,
+            kinds,
+            limit,
+            accept,
+            |entry| boost(used.outside.row(entry)),
+            cancelled,
+        );
         if cancelled() {
             return Vec::new();
         }
-        self.hits(query, &found)
+        let disk = if self.hot_is_complete {
+            Vec::new()
+        } else {
+            match self.store.lock().ranked(query, kinds, limit, accept) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    log::warn!("could not read the file index: {error:#}");
+                    Vec::new()
+                }
+            }
+        };
+        if cancelled() {
+            return Vec::new();
+        }
+        let found = self.merge(&used, &hot, &outside, disk, limit);
+        self.hits(query, &used, found)
     }
 
     /// [`Self::query`] over the entries used from Lumen and those whose
     /// whole name is one or two characters: what a short query searches in
     /// root. A few hundred names, looked at one by one, so it is not
-    /// cancelled.
+    /// cancelled; never the disk.
     pub fn query_known(&self, query: &str, kinds: Kinds, limit: usize) -> Vec<FileHit> {
-        let boosts = self.boosts.read();
-        let mut known = boosts
+        let used = self.used.read();
+        let boost = |row: u32| used.boosts.get(&row).copied().unwrap_or(0);
+        let mut known = used
+            .boosts
             .keys()
-            .copied()
+            .filter_map(|&row| self.hot.entry_of(row))
             .chain(self.short.iter().copied())
             .collect::<Vec<_>>();
         known.sort_unstable();
         known.dedup();
-        let found = self.names.find_among(query, kinds, limit, &known, |entry| {
-            boosts.get(&entry).copied().unwrap_or(0)
+        let hot = self.hot.find_among(query, kinds, limit, &known, |entry| {
+            boost(self.hot.row(entry))
         });
-        drop(boosts);
-        self.hits(query, &found)
+        let every = (0..used.outside.len() as u32).collect::<Vec<_>>();
+        let outside = used
+            .outside
+            .find_among(query, kinds, limit, &every, |entry| {
+                boost(used.outside.row(entry))
+            });
+        let found = self.merge(&used, &hot, &outside, Vec::new(), limit);
+        self.hits(query, &used, found)
     }
 
-    /// The rows of `found`, in its order, as hits for `query` -- each only if
-    /// it is still the entry that was matched (see [`Self::rebuilt`]).
-    fn hits(&self, query: &str, found: &[Match]) -> Vec<FileHit> {
+    /// The best `limit` of what the hot layer, the used outside it and the
+    /// disk found, in the order [`Names`] ranks: each row once, at the best
+    /// tier any of them gave it.
+    fn merge(
+        &self,
+        used: &Used,
+        hot: &[Match],
+        outside: &[Match],
+        disk: Vec<RankedRow>,
+        limit: usize,
+    ) -> Vec<Candidate> {
+        let boost = |row: u32| used.boosts.get(&row).copied().unwrap_or(0);
+        let memory = |names: &Names, found: &Match, source: Source| Candidate {
+            tier: found.tier,
+            boost: found.boost,
+            length: names.name_len(found.entry),
+            row: names.row(found.entry),
+            source,
+        };
+        let mut candidates: Vec<Candidate> = hot
+            .iter()
+            .map(|found| memory(&self.hot, found, Source::Hot(found.entry)))
+            .chain(
+                outside
+                    .iter()
+                    .map(|found| memory(&used.outside, found, Source::Outside(found.entry))),
+            )
+            .collect();
+        for row in disk {
+            if let Some(known) = candidates.iter_mut().find(|known| known.row == row.id) {
+                known.tier = known.tier.max(row.tier);
+                continue;
+            }
+            let mut folded = String::with_capacity(row.name.len());
+            names::fold(&row.name, &mut folded);
+            candidates.push(Candidate {
+                tier: row.tier,
+                boost: boost(row.id),
+                length: folded.len(),
+                row: row.id,
+                source: Source::Disk(row),
+            });
+        }
+        candidates.sort_unstable_by_key(Candidate::order);
+        candidates.truncate(limit);
+        candidates
+    }
+
+    /// The rows of `found`, in its order, as hits for `query` -- each from
+    /// memory only if it is still the entry that was matched (see
+    /// [`Self::rebuilt`]); the disk's were read as they are.
+    fn hits(&self, query: &str, used: &Used, found: Vec<Candidate>) -> Vec<FileHit> {
         if found.is_empty() {
             return Vec::new();
         }
         let ids = found
             .iter()
-            .map(|found| self.names.row(found.entry))
+            .filter(|found| !matches!(found.source, Source::Disk(_)))
+            .map(|found| found.row)
             .collect::<Vec<_>>();
-        let rows = match self.store.lock().rows(&ids) {
-            Ok(rows) => rows,
+        let mut rows = match self.store.lock().rows(&ids) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| (row.id, row))
+                .collect::<HashMap<_, _>>(),
             Err(error) => {
                 log::warn!("could not read the file index: {error:#}");
                 return Vec::new();
@@ -489,15 +675,30 @@ impl FileIndex {
         };
 
         let words = names::words(query);
-        rows.into_iter()
-            .filter(|row| self.holds(row.id, &row.name, row.is_dir))
-            .map(|row| FileHit {
-                highlights: highlights(&row.name, &words),
-                item: self.item(row),
+        found
+            .into_iter()
+            .filter_map(|found| {
+                let row = match found.source {
+                    Source::Disk(row) => Row {
+                        id: row.id,
+                        path: row.path,
+                        name: row.name,
+                        is_dir: row.is_dir,
+                    },
+                    Source::Hot(entry) => rows
+                        .remove(&found.row)
+                        .filter(|row| self.hot.holds(entry, &row.name, row.is_dir))?,
+                    Source::Outside(entry) => rows
+                        .remove(&found.row)
+                        .filter(|row| used.outside.holds(entry, &row.name, row.is_dir))?,
+                };
+                Some(FileHit {
+                    highlights: highlights(&row.name, &words),
+                    item: self.item(row),
+                })
             })
             .collect()
     }
-
     fn item(&self, row: Row) -> Item {
         let path = row.path.display().to_string();
         let (prefix, kind) = if row.is_dir {
@@ -536,10 +737,14 @@ impl FileIndex {
     ///
     /// Only ids of files and folders are looked up, each once, by path; an id
     /// whose path is no longer indexed is left out. Called when the index is
-    /// loaded and again whenever frecency changes.
+    /// loaded and again whenever frecency changes. A used entry the hot
+    /// layer was selected without -- used since -- has its name kept beside
+    /// it ([`Used::outside`]), so it is found as if it were in it; a handful
+    /// of names, read here by row.
     pub fn set_boosts(&self, frecency: &Frecency) {
         let store = self.store.lock();
         let mut boosts = HashMap::new();
+        let mut outside = Vec::new();
         for id in frecency.ids() {
             let (path, is_dir) = if let Some(path) = id.strip_prefix("file:") {
                 (path, false)
@@ -557,41 +762,59 @@ impl FileIndex {
                 .file_name()
                 .map(|name| name.to_string_lossy())
                 .unwrap_or_default();
-            // Checked as a query's rows are, so a row that moved under this
-            // index boosts nothing rather than another entry.
             match store.id_of(path) {
-                Ok(Some(row)) if self.holds(row, &name, is_dir) => {
-                    if let Some(entry) = self.names.entry_of(row) {
-                        boosts.insert(entry, boost);
+                // Checked as a query's rows are, so a row that moved under
+                // this index boosts nothing rather than another entry.
+                Ok(Some(row)) => match self.hot.entry_of(row) {
+                    Some(entry) => {
+                        if self.hot.holds(entry, &name, is_dir) {
+                            boosts.insert(row, boost);
+                        }
                     }
-                }
-                Ok(_) => {}
+                    // A complete hot layer without the row is one the store
+                    // moved on from: the row is not this index's entry.
+                    None if !self.hot_is_complete => {
+                        boosts.insert(row, boost);
+                        outside.push((row, is_dir));
+                    }
+                    None => {}
+                },
+                Ok(None) => {}
                 Err(error) => log::warn!("could not read the file index: {error:#}"),
             }
         }
-        store.release_memory();
-        drop(store);
-        *self.boosts.write() = boosts;
-    }
 
-    /// Whether the store's row `row` is still the entry these names matched:
-    /// one of their rows, with the same name and kind. The one check that
-    /// keeps a row which moved under the index from answering for it.
-    fn holds(&self, row: u32, name: &str, is_dir: bool) -> bool {
-        self.names
-            .entry_of(row)
-            .is_some_and(|entry| self.names.holds(entry, name, is_dir))
+        outside.sort_unstable();
+        let ids = outside.iter().map(|&(row, _)| row).collect::<Vec<_>>();
+        let mut names = Names::default();
+        match store.rows(&ids) {
+            Ok(rows) => {
+                for row in rows {
+                    let wanted = outside
+                        .binary_search_by_key(&row.id, |&(id, _)| id)
+                        .map(|at| outside[at].1);
+                    if wanted == Ok(row.is_dir) {
+                        names.push(row.id, &row.name, row.is_dir);
+                    } else {
+                        boosts.remove(&row.id);
+                    }
+                }
+            }
+            Err(error) => log::warn!("could not read the file index: {error:#}"),
+        }
+        names.shrink();
+        store.release_memory();
+        // Unlocked first: a query holds `used` while it waits for the store.
+        drop(store);
+        *self.used.write() = Used {
+            boosts,
+            outside: names,
+        };
     }
 
     /// How many entries each scope of the rules gave.
     pub fn per_scope(&self) -> &[usize] {
         &self.meta.per_scope
-    }
-
-    /// The scope the ceiling cut short, if one was: said to the user, never
-    /// hidden.
-    pub fn truncated(&self) -> Option<&Path> {
-        self.meta.truncated.as_deref()
     }
 
     /// The [`digest`] of the rules the index was walked with, to compare with
@@ -612,24 +835,39 @@ impl FileIndex {
             loaded: true,
             entries: self.len(),
             per_scope: self.per_scope().to_vec(),
-            truncated: self.truncated().map(Path::to_path_buf),
             walked_at: self.walked_at(),
             indexing,
         }
     }
 
+    /// How many entries the index holds, in memory or not.
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.entries
     }
 
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.entries == 0
     }
 
-    /// What the index holds in memory: the names, the boosts and the short
-    /// names.
+    /// How many entries the hot layer holds.
+    pub fn hot_len(&self) -> usize {
+        self.hot.len()
+    }
+
+    /// Whether the hot layer is the whole index, so root never asks the
+    /// disk.
+    pub fn hot_is_complete(&self) -> bool {
+        self.hot_is_complete
+    }
+
+    /// What the index holds in memory: the hot layer, the used entries
+    /// outside it, the boosts and the short names.
     pub fn memory_bytes(&self) -> usize {
-        self.names.memory_bytes() + self.boosts.read().capacity() * 8 + self.short.capacity() * 4
+        let used = self.used.read();
+        self.hot.memory_bytes()
+            + used.outside.memory_bytes()
+            + used.boosts.capacity() * 8
+            + self.short.capacity() * 4
     }
 }
 
@@ -822,7 +1060,6 @@ mod tests {
         let built = index(&tree);
         assert_eq!(built.len(), 3);
         assert_eq!(built.per_scope(), [3]);
-        assert_eq!(built.truncated(), None);
         assert_eq!(built.digest(), digest(&tree.rules()));
         assert!(built.memory_bytes() > 0);
         drop(built);
@@ -927,7 +1164,6 @@ mod tests {
                 })
                 .collect(),
             per_scope: vec![entries.len()],
-            truncated: None,
             roots: vec![None],
         };
         let mut store = Store::open(&path).unwrap();
@@ -1010,6 +1246,33 @@ mod tests {
         assert_eq!(builder.join().unwrap(), Some(1));
     }
 
+    /// A store whose words an older build laid out is rebuilt at open, and
+    /// that is a write: it waits for a build of the same file, as every
+    /// write does.
+    #[test]
+    fn opening_a_store_that_must_be_laid_out_again_waits_for_a_build() {
+        let tree = Tree::new("index-open-lock");
+        tree.file("notes.md");
+        drop(index(&tree));
+        let path = tree.path(".files.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute("DELETE FROM meta WHERE key = 'words_layout'", [])
+            .unwrap();
+
+        let lock = build_lock(&path);
+        let held = lock.lock();
+        let opener = std::thread::spawn({
+            let path = path.clone();
+            move || FileIndex::open(&path, IndexDetail::Balanced).unwrap().len()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!opener.is_finished());
+
+        drop(held);
+        assert_eq!(opener.join().unwrap(), 1);
+    }
+
     /// Superseded while it walked, a build writes nothing: the newer one
     /// waiting for the lock writes its own walk.
     #[test]
@@ -1046,20 +1309,176 @@ mod tests {
         );
     }
 
+    /// No scope is cut short: each counts all it gave, and the settings
+    /// page is told every count.
     #[test]
-    fn the_scope_that_did_not_fit_is_reported() {
-        let first = Tree::new("index-full-first");
-        let second = Tree::new("index-full-second");
+    fn every_scope_is_counted_whole() {
+        let first = Tree::new("index-counts-first");
+        let second = Tree::new("index-counts-second");
         first.file("a.txt").file("b.txt");
-        second.file("c.txt").file("d.txt");
+        second.file("c.txt").file("d.txt").file("e.txt");
 
-        let mut rules = rules(&[first.0.clone(), second.0.clone()]);
-        rules.ceiling = 3;
+        let rules = rules(&[first.0.clone(), second.0.clone()]);
         let index = FileIndex::build(&first.path(".files.db"), &rules).unwrap();
 
-        assert_eq!(index.len(), 3);
-        assert_eq!(index.per_scope(), [2, 1]);
-        assert_eq!(index.truncated(), Some(second.0.as_path()));
+        assert_eq!(index.len(), 5);
+        assert_eq!(index.per_scope(), [2, 3]);
+        let status = index.status(false);
+        assert_eq!((status.entries, status.per_scope), (5, vec![2, 3]));
+    }
+
+    /// The index at `tree`, built as a start loads it, with a hot layer of
+    /// `budget` bytes.
+    fn index_within(tree: &Tree, budget: usize) -> FileIndex {
+        let path = tree.path(".files.db");
+        drop(FileIndex::build(&path, &tree.rules()).unwrap());
+        FileIndex::load_within(Store::open(&path).unwrap(), &[], budget)
+            .unwrap()
+            .with_home(&tree.0)
+    }
+
+    fn root(index: &FileIndex, query: &str, limit: usize) -> Vec<String> {
+        titles(&index.root_query(query, Kinds::FoldersAndFiles, limit, &|| false))
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn use_file(index: &FileIndex, tree: &Tree, relative: &str) {
+        let mut frecency = Frecency::new();
+        frecency.record(&format!("file:{}", tree.path(relative).display()));
+        index.set_boosts(&frecency);
+    }
+
+    /// A home-sized index fits the hot layer whole, and root answers what
+    /// the names of every entry answer -- a match inside a word included --
+    /// without asking the disk.
+    #[test]
+    fn a_home_sized_index_is_all_hot_and_root_answers_as_every_name_does() {
+        let tree = Tree::new("index-hot-whole");
+        tree.file("notes.md")
+            .file("projects/Invoice-2024.pdf")
+            .file("projects/old/myreport.txt")
+            .file("projects/old/report final.doc")
+            .file("archive/2024/invoices/march invoice.pdf")
+            .file("archive/2024/reports.md");
+        let index = index(&tree);
+        assert!(index.hot_is_complete());
+        assert_eq!(index.hot_len(), index.len());
+
+        let store = Store::open(&tree.path(".files.db")).unwrap();
+        let (every, _) = store.load().unwrap();
+        for query in [
+            "inv", "invoice", "port", "report", "2024", "inv 2024", "voic", "old",
+        ] {
+            let found = every.find(query, Kinds::FoldersAndFiles, 8, |_| 0);
+            let ids = found
+                .iter()
+                .map(|found| every.row(found.entry))
+                .collect::<Vec<_>>();
+            let expected = store
+                .rows(&ids)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.name)
+                .collect::<Vec<_>>();
+            assert_eq!(root(&index, query, 8), expected, "{query}");
+        }
+        assert!(root(&index, "port", 8).contains(&"myreport.txt".to_string()));
+    }
+
+    /// Past its budget the hot layer holds the shallow and the used. An
+    /// entry outside it is found from the disk by a word's start, and not
+    /// by a match inside a word -- the trade "Decision: B" accepted --
+    /// until it is used, when it is found as the hot layer's are.
+    #[test]
+    fn past_its_budget_root_finds_the_rest_by_word_start_and_the_used_inside_a_word() {
+        let tree = Tree::new("index-hot-partial");
+        tree.file("top.txt")
+            .file("deep/er/still/my-invoice.pdf")
+            .file("deep/er/still/annualreport.txt")
+            .file("deep/er/still/usedreport.txt");
+        let index = index_within(&tree, 0);
+        assert!(!index.hot_is_complete());
+        assert_eq!(index.len(), 7);
+        assert_eq!(index.hot_len(), 1, "only `er`, whose name is that short");
+
+        assert_eq!(root(&index, "invoice", 8), ["my-invoice.pdf"]);
+        assert_eq!(root(&index, "top", 8), ["top.txt"]);
+        assert!(root(&index, "voice", 8).is_empty());
+        assert!(root(&index, "report", 8).is_empty());
+        assert!(root(&index, "us", 8).is_empty());
+
+        use_file(&index, &tree, "deep/er/still/usedreport.txt");
+        assert_eq!(root(&index, "report", 8), ["usedreport.txt"]);
+        assert_eq!(root(&index, "port", 8), ["usedreport.txt"]);
+        assert_eq!(root(&index, "us", 8), ["usedreport.txt"]);
+        let hit = &index.root_query("port", Kinds::FoldersAndFiles, 8, &|| false)[0];
+        assert_eq!(
+            hit.item.id,
+            format!(
+                "file:{}",
+                tree.path("deep")
+                    .join("er")
+                    .join("still")
+                    .join("usedreport.txt")
+                    .display()
+            )
+        );
+        assert_eq!(hit.highlights, [6, 7, 8, 9]);
+    }
+
+    /// What the hot layer and the disk each found is ranked as the names of
+    /// every entry rank it: tier, frecency, the shorter name, the row.
+    #[test]
+    fn the_hot_layer_and_the_disk_merge_in_the_order_names_rank() {
+        let tree = Tree::new("index-hot-merge");
+        tree.file("report")
+            .file("report.txt")
+            .file("Report-2024.pdf")
+            .file("x/old-report.md")
+            .file("x/y/my report final.doc")
+            .file("x/y/reports/q3 report.xlsx")
+            .file("x/y/z/report 2024 draft.md")
+            .file("x/y/z/annual-report.md")
+            .file("x/y/z/report.md");
+        let whole = index(&tree);
+        assert!(whole.hot_is_complete());
+        let mut budget = 0;
+        let mut partial = Vec::new();
+        for _ in 0..6 {
+            let index = index_within(&tree, budget);
+            assert!(!index.hot_is_complete());
+            partial.push(index);
+            budget += 40;
+        }
+
+        for index in std::iter::once(&whole).chain(&partial) {
+            use_file(index, &tree, "x/y/z/annual-report.md");
+        }
+        for query in ["report", "rep", "report 2024", "final", "2024"] {
+            for limit in [3, 8] {
+                let expected = root(&whole, query, limit);
+                for (at, index) in partial.iter().enumerate() {
+                    assert_eq!(root(index, query, limit), expected, "{query} {limit} #{at}");
+                }
+            }
+        }
+        // Exact names, name starts, then word starts with the used first:
+        // frecency orders a tier, and never lifts a match out of it.
+        assert_eq!(
+            root(&whole, "report", 8),
+            [
+                "report",
+                "report.md",
+                "report.txt",
+                "reports",
+                "Report-2024.pdf",
+                "report 2024 draft.md",
+                "annual-report.md",
+                "old-report.md",
+            ]
+        );
     }
 
     /// A scope with the database beside it rather than in it, so writing
@@ -1357,26 +1776,46 @@ mod tests {
         assert_eq!(index.len(), 3);
     }
 
+    /// An update adds everything it finds, counted to its scope: nothing
+    /// caps it.
     #[test]
-    fn the_ceiling_holds_under_updates() {
-        let mut scope = Scope::new("update-ceiling");
+    fn an_update_adds_all_it_finds_and_counts_it() {
+        let scope = Scope::new("update-all");
         scope.file("a.txt").file("b.txt");
-        scope.rules.ceiling = 3;
         let index = scope.build();
-        assert_eq!(index.truncated(), None);
 
-        scope.file("c.txt").file("d.txt").file("e.txt");
-        let index = scope.update(
-            index,
-            &[
-                scope.path("c.txt"),
-                scope.path("d.txt"),
-                scope.path("e.txt"),
-            ],
-        );
+        scope.file("c.txt").file("d/e.txt").file("d/f.txt");
+        let index = scope.update(index, &[scope.path("c.txt"), scope.path("d")]);
 
-        assert_eq!(index.len(), 3);
-        assert_eq!(index.truncated(), Some(scope.path("").as_path()));
+        assert_eq!(index.len(), 6);
+        assert_eq!(index.per_scope(), [6]);
+        assert_eq!(found(&index, &scope, "txt").len(), 5);
+    }
+
+    /// What arrives joins the hot layer while it fits; past the budget the
+    /// layer is selected again, and what did not fit is found from disk.
+    #[test]
+    fn an_update_past_the_budget_selects_the_hot_layer_again() {
+        let scope = Scope::new("update-hot");
+        scope.file("notes.md");
+        drop(scope.build());
+        let budget = Names::cost("notes.md".len()) + Names::cost("plan.md".len());
+        let index =
+            FileIndex::load_within(Store::open(&scope.database()).unwrap(), &[], budget).unwrap();
+        assert!(index.hot_is_complete());
+
+        scope.file("plan.md");
+        let index = scope.update(index, &[scope.path("plan.md")]);
+        assert!(index.hot_is_complete());
+        assert_eq!(index.hot_len(), 2);
+
+        scope.file("deeper/todo.md");
+        let index = scope.update(index, &[scope.path("deeper")]);
+        assert!(!index.hot_is_complete());
+        assert!(index.hot.bytes() <= budget);
+        assert_eq!(index.len(), 4);
+        assert_eq!(found(&index, &scope, "todo"), ["deeper/todo.md"]);
+        assert_eq!(found(&index, &scope, "notes"), ["notes.md"]);
     }
 
     /// At start nothing was watched while the daemon was not running: only

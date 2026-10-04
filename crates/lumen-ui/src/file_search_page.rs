@@ -26,7 +26,7 @@ use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div, px,
 };
 use lumen_core::config::{FileSearchConfig, InRoot, PreviewFont};
-use lumen_core::file_index::{CEILING, IndexDetail, IndexStatus, default_skips};
+use lumen_core::file_index::{IndexDetail, IndexStatus, default_skips};
 use lumen_core::file_search::settings::{self, Flag, List};
 use lumen_core::layout::settings as metrics;
 use lumen_core::theme::Colors;
@@ -585,20 +585,10 @@ impl FileSearchPage {
         }
     }
 
-    /// The index against the ceiling, and the scope it cut short.
+    /// How many entries the index holds: every one the rules allow, since
+    /// nothing caps it.
     fn total_description(&self) -> String {
-        let total = format!(
-            "{} of {}",
-            lumen_core::places::browse::grouped(self.index.entries),
-            items(CEILING)
-        );
-        match &self.index.truncated {
-            Some(cut) => format!(
-                "{total}. Full: {} was cut short",
-                settings::written(cut, self.home.as_deref())
-            ),
-            None => total,
-        }
+        items(self.index.entries)
     }
 
     /// The index group's status line.

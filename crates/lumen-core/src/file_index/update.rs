@@ -114,14 +114,13 @@ pub(crate) fn moved(
     (checked, moved)
 }
 
-/// Read `folders` again by `rules` and make the store match, within the
-/// ceiling; `meta` and `count` -- the entries in the store -- follow.
+/// Read `folders` again by `rules` and make the store match; `meta`'s
+/// counts by scope follow.
 pub(crate) fn apply(
     batch: &Batch<'_>,
     rules: &WalkRules,
     mut folders: Vec<(PathBuf, bool)>,
     meta: &mut Meta,
-    count: &mut usize,
 ) -> Result<Delta> {
     let scopes = rules.scopes.len();
     meta.per_scope.resize(scopes, 0);
@@ -140,7 +139,7 @@ pub(crate) fn apply(
             scope,
             nested: nested(rules, &effective, scope),
         };
-        at.folder(&folder, deep, meta, count, &mut delta)?;
+        at.folder(&folder, deep, meta, &mut delta)?;
     }
     delta.finish();
     Ok(delta)
@@ -182,14 +181,7 @@ impl Reread<'_, '_> {
     }
 
     /// Read `folder` again (see "A folder at a time" above).
-    fn folder(
-        &self,
-        folder: &Path,
-        deep: bool,
-        meta: &mut Meta,
-        count: &mut usize,
-        delta: &mut Delta,
-    ) -> Result<()> {
+    fn folder(&self, folder: &Path, deep: bool, meta: &mut Meta, delta: &mut Delta) -> Result<()> {
         let is_scope = folder == self.scope_path();
         if !is_scope && !self.batch.is_folder(folder)? {
             return Ok(());
@@ -227,7 +219,6 @@ impl Reread<'_, '_> {
             }
             for (row, scope) in self.batch.remove(folder, child)? {
                 delta.removed.push(row);
-                *count = count.saturating_sub(1);
                 if let Some(counted) = meta.per_scope.get_mut(scope) {
                     *counted = counted.saturating_sub(1);
                 }
@@ -237,24 +228,12 @@ impl Reread<'_, '_> {
             if present.contains(&(name(entry).into_owned(), entry.is_dir)) {
                 continue;
             }
-            if !self.add(entry, meta, count, delta)? {
-                break;
-            }
+            self.add(entry, meta, delta)?;
             if entry.is_dir {
-                let room = self.rules.ceiling.saturating_sub(*count);
-                let (below, cut) = walk::walk_below(
-                    &entry.path,
-                    self.scope_path(),
-                    self.rules,
-                    &self.nested,
-                    room,
-                );
+                let below =
+                    walk::walk_below(&entry.path, self.scope_path(), self.rules, &self.nested);
                 for entry in &below {
-                    self.add(entry, meta, count, delta)?;
-                }
-                if cut {
-                    meta.truncated = Some(self.scope_path().to_path_buf());
-                    break;
+                    self.add(entry, meta, delta)?;
                 }
             }
         }
@@ -267,26 +246,14 @@ impl Reread<'_, '_> {
         Ok(())
     }
 
-    /// Add `entry` when the ceiling leaves room; `false`, with the scope
-    /// reported as cut short, when it does not.
-    fn add(
-        &self,
-        entry: &Entry,
-        meta: &mut Meta,
-        count: &mut usize,
-        delta: &mut Delta,
-    ) -> Result<bool> {
-        if *count >= self.rules.ceiling {
-            meta.truncated = Some(self.scope_path().to_path_buf());
-            return Ok(false);
-        }
+    /// Add `entry`, counted to its scope.
+    fn add(&self, entry: &Entry, meta: &mut Meta, delta: &mut Delta) -> Result<()> {
         let row = self.batch.insert(self.scope, entry)?;
         delta
             .added
             .push((row, name(entry).into_owned(), entry.is_dir));
-        *count += 1;
         meta.per_scope[self.scope] += 1;
-        Ok(true)
+        Ok(())
     }
 }
 

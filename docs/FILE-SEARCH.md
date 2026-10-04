@@ -80,7 +80,8 @@ been measured at 71--75 MB across F8 to F15, against 100 MB:
 
 So:
 
-- **A hard ceiling of 500 000 entries** (~15 MB), a constant like F3's cap
+- **A hard ceiling of 500 000 entries** (~15 MB) -- *removed in step c3a:
+  memory is now the hot layer's budget, and the index has no limit* -- a constant like F3's cap
   and for the same reason: a budget number. Scopes are walked in their
   listed order, so the scope that overflows is the one added last, never
   home. What did not fit is said, never hidden: *"The index is full at
@@ -89,7 +90,8 @@ So:
 - **The settings page says what a scope costs.** Beside the scopes: *"Every
   folder and drive you add is held in Lumen's memory to search it instantly.
   Add the folders you search, not whole drives you don't."* -- with each
-  scope's item count and the index's total against the ceiling.
+  scope's item count and the index's total (against the ceiling until
+  step c3a; now the total alone).
 - **SQLite is not left warm.** Once the names are loaded, the connection's
   page cache is released; it holds no memory while the launcher is idle.
 - **Per-frame is untouched by the scan,** which runs off the UI thread; the
@@ -130,8 +132,8 @@ only the Windows hidden attribute, so I-1 holds without a `Platform` call. And
   change under `AppData`, a hidden, excluded or ignored folder is passed
   over without a read; a changed ignore file reads its folder's subfolders
   again too. The reconcile at start is the same work over the folders whose
-  time moved. Updates stop adding at the ceiling and report the scope cut
-  short, as a walk does. Folder times are read from the folder itself, not
+  time moved. Updates add everything they find (until step c3a they stopped
+  at the ceiling). Folder times are read from the folder itself, not
   from its parent's listing, which NTFS updates lazily: compared with each
   other, the two made the reconcile read folders that had not changed.
 - **The watch, as designed, settles in the daemon.** Each scope's folder is
@@ -244,6 +246,8 @@ The same build and `LUMEN_HOME`s, with the watcher running:
   could not be watched and warned at every start; it joins the skip list.
 
 ## The ceiling, measured again: an index on disk
+
+*The ceiling is gone since step c3a ("Step c3a: the hot layer, as built").*
 
 The 500 000 ceiling failed the way a ceiling fails: by losing data. With
 hidden files on, home grew from 55 000 to 303 447 entries -- 81 % under
@@ -502,6 +506,110 @@ scanning.
 **`folded` stays.** A full scan of the stored `folded` takes 89 ms on the
 real index (362 at 2M). Folding `name` while scanning takes 267 ms
 (1 046). The column is 10 MB of the 102.
+
+### Step c3a: the hot layer, as built
+
+Root searches a hot layer in memory, then the disk. The ceiling is gone.
+
+**The hot layer** (`Store::hot`, `FileIndex::load`). It is a `Names` of part
+of the index, within `HOT_BUDGET` = 8 MB as `Names::cost` counts it: each
+name's folded bytes and newline, plus its start and its row (`len + 9`).
+Entries are taken in one order until the next does not fit:
+
+1. The used (boosted) entries and the names under three characters. These
+   are taken whatever the budget, since a short query in root searches only
+   them.
+2. Folders, the shallowest first.
+3. Files, the shallowest first.
+
+Within each class, entries go by row. If every entry fits, the layer is the
+whole index (`hot_is_complete`), and root never asks the disk. A home folder
+(55 000 entries, about 1.7 MB) fits whole. Why 8 MB: idle was 71--75 MB
+against 100. The old ceiling's 500 000 names took 14.4 MB; 8 MB keeps
+the launcher near 83 MB with any index.
+
+**Root** (`FileIndex::root_query`):
+
+- **Under three characters:** as before, the used and the short names
+  only, never the disk.
+- **Three or more:** `Names::find` on the hot layer (inside a word
+  counts), and `Store::ranked` for the same query, kinds and limit unless
+  the layer is complete. The two are merged by row, each at its better
+  tier, in `Names`' order: tier, frecency, shorter, row.
+
+Frecency is by row, so it applies to disk rows too. The disk's best `limit`
+is asked without frecency. That is enough, because every used entry is in
+memory and frecency only reorders within a tier. One call answers; the disk
+part is milliseconds. *Search Files* (`query_where`) takes the same path
+at any length until c3b.
+
+**Used after the load.** An entry used since the layer was selected has its
+name read by row in `set_boosts` and kept beside the layer
+(`Used::outside`). So it is found inside a word and by a short query, as
+the layer's entries are.
+
+**Updates.** What arrives joins the layer while it fits. Past the budget,
+the layer is selected again from the store, with the used rows first.
+
+**The trade.** An entry outside the hot layer is found by a word's start
+(`report` in `annual-report.md`, `Report` in `AnnualReport`), not inside a
+word (`report` in `myreport.txt`). Tests:
+`past_its_budget_root_finds_the_rest_by_word_start_and_the_used_inside_a_word`
+and `the_hot_layer_and_the_disk_merge_in_the_order_names_rank`, the second
+at six budgets against a complete index.
+
+**No ceiling.** `CEILING`, `WalkRules::ceiling`, `Walked::truncated`,
+`Meta::truncated` and `IndexStatus::truncated` are gone. Every scope is
+walked and updated to its end, and every per-scope count is still
+recorded. The digest no longer includes a ceiling. An index walked under
+one therefore matches no rules and is walked again, once, to its end. The
+settings page shows the total alone. The log line says how much of the
+index is hot.
+
+**Opening is a write.** `FileIndex::open` now holds the build lock from
+`Store::open` on, since laying out `words` again at open writes. Test:
+`opening_a_store_that_must_be_laid_out_again_waits_for_a_build`.
+
+**Measured** (`DISK_BENCH=root`, release, warm). The production store of
+the real index (500 000 entries) and 200 random entries used:
+
+| | |
+| - | - |
+| Hot layer | 281 802 entries (56.4 %), not complete |
+| In memory (layer, used outside it, boosts, short names) | 8.1 MB, where every name took 14.4 |
+| Load, hot layer | 180--183 ms (every name, as before: 193--197) |
+| `set_boosts`, 200 used | 55 ms |
+
+The load reads every row once. It keeps each stored `folded` name, not
+folded again, until the order is known, then copies out the entries taken.
+For those ~180 ms every name is held, about 14 MB, then given back.
+Reading the order first and the names in a second pass held nothing extra
+but took 280 ms.
+
+`root_query`, N = 8, p50 / p95 ms:
+
+| query | p50 | p95 |
+| - | - | - |
+| `a`, `in` (hot layer only) | 0.24 | 0.26 |
+| `inv` | 0.58 | 0.65 |
+| `invoice` | 0.50 | 0.57 |
+| `report` | 0.58 | 0.64 |
+| `2024` | 0.62 | 0.69 |
+| `html` | 0.39 | 0.42 |
+| `license` | 0.80 | 0.88 |
+| `preview` | 0.37 | 0.47 |
+| `zqxj` | 0.49 | 0.59 |
+| `inv 2024` | 1.82 | 2.09 |
+| `cargo` | 0.64 | 0.71 |
+| `javascript` | 0.34 | 0.39 |
+| `github` | 0.40 | 0.45 |
+
+Worst p95: 2.09 ms (`inv 2024`), under 8. Not yet measured: idle working
+set with the real index (`measure-idle.ps1`, which starts the launcher).
+
+**Left for c3b:** *Search Files* on the disk with mid-word matches added
+progressively (`Store::substring`, cancellable), so the view again finds
+every entry inside a word.
 
 ---
 
@@ -971,7 +1079,7 @@ groups:
 1. **In root search** -- the three levels, as a segmented choice.
 2. **Where** -- scopes with *Add Folder*; the exclusions. Above
    the list, the memory note ("Against the budgets"); beside each scope its
-   item count, and the total against the 500 000 ceiling.
+   item count, and the index's total (the ceiling is gone, step c3a).
 3. **What** -- *Use ignore files*, *Include hidden files*, ignore patterns;
    **Excluded by default**: every default skip by name, each with a switch,
    `AppData` with a note that it changes constantly and adding it costs CPU

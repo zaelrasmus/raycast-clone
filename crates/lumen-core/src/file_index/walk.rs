@@ -12,9 +12,9 @@
 //!
 //! # In order, and never twice
 //!
-//! Scopes are walked in the order they are listed, so when the index fills,
-//! the scope cut short is the one added last -- never home, which is listed
-//! first by default. A scope inside one already walked adds nothing when
+//! Scopes are walked in the order they are listed, each to its end: the
+//! index has no ceiling (`docs/FILE-SEARCH.md`, "Decision: B"), since
+//! memory holds only a hot layer of it. A scope inside one already walked adds nothing when
 //! that walk reaches it; a scope *around* one already walked lists its
 //! folder but does not walk it again. Either way an entry is found once.
 //!
@@ -34,23 +34,6 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 
-/// The most entries the index holds, across every scope.
-///
-/// A budget number, as F3's cap of 5 000 was, and for the same reason. The names are
-/// matched in memory at about 30 bytes an entry (slice 0), and idle memory
-/// has been measured at 71--75 MB from F8 to F15, against a budget of 100:
-///
-/// | Index | Names in memory | Idle total, estimated |
-/// | ----- | --------------- | --------------------- |
-/// | A home folder, 55 000 | ~2 MB | ~76 MB |
-/// | Home and all of a second drive, 405 000 | ~13 MB | ~87 MB |
-/// | 1 000 000 | ~30 MB | ~104 MB: over |
-///
-/// 500 000 is about 15 MB of names, which keeps the largest index under the
-/// budget with room for everything else. What did not fit is reported, as
-/// [`Walked::truncated`], so the user is told rather than left wondering.
-pub const CEILING: usize = 500_000;
-
 /// What to walk and what to leave out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkRules {
@@ -69,8 +52,6 @@ pub struct WalkRules {
     pub include_hidden: bool,
     /// Names from [`default_skips`] the user turned back on, lower-cased.
     pub skips_off: Vec<String>,
-    /// The most entries to keep: [`CEILING`], except in tests.
-    pub ceiling: usize,
 }
 
 /// One file or folder the walk found.
@@ -93,8 +74,6 @@ pub struct Walked {
     /// How many entries each scope gave, one count for each scope of the
     /// rules: 0 for one that was missing, inside another, or never reached.
     pub per_scope: Vec<usize>,
-    /// The scope the ceiling cut short, if one was.
-    pub truncated: Option<PathBuf>,
     /// Each scope's own modification time, taken before it was walked: the
     /// scope is not an entry, but the start reconcile compares its time too.
     pub roots: Vec<Option<i64>>,
@@ -247,23 +226,21 @@ pub(crate) fn list(
 ) -> Vec<Entry> {
     let mut builder = walker(folder, scope, rules, nested);
     builder.max_depth(Some(1));
-    entries_below(builder, usize::MAX).0
+    entries_below(builder)
 }
 
-/// Everything below `folder` by the rules, as [`list`] reads one level,
-/// until `room` entries. `true` when the room ran out before the end.
+/// Everything below `folder` by the rules, as [`list`] reads one level.
 pub(crate) fn walk_below(
     folder: &Path,
     scope: &Path,
     rules: &WalkRules,
     nested: &[PathBuf],
-    room: usize,
-) -> (Vec<Entry>, bool) {
-    entries_below(walker(folder, scope, rules, nested), room)
+) -> Vec<Entry> {
+    entries_below(walker(folder, scope, rules, nested))
 }
 
-/// The entries of a walk below its root, up to `room` of them.
-fn entries_below(builder: WalkBuilder, room: usize) -> (Vec<Entry>, bool) {
+/// The entries of a walk below its root.
+fn entries_below(builder: WalkBuilder) -> Vec<Entry> {
     let mut entries = Vec::new();
     for result in builder.build() {
         let Ok(found) = result else {
@@ -272,12 +249,9 @@ fn entries_below(builder: WalkBuilder, room: usize) -> (Vec<Entry>, bool) {
         if found.depth() == 0 || found.path_is_symlink() {
             continue;
         }
-        if entries.len() == room {
-            return (entries, true);
-        }
         entries.push(entry(found));
     }
-    (entries, false)
+    entries
 }
 
 /// An entry of the index from one of the walk's, with a folder's time.
@@ -299,7 +273,7 @@ fn entry(found: ignore::DirEntry) -> Entry {
     }
 }
 
-/// Walk every scope of `rules`, in order, until the ceiling.
+/// Walk every scope of `rules`, in order, each to its end.
 ///
 /// Touches the disk for as long as it takes -- seconds for a home folder,
 /// tens of them for a large drive -- so it is never called where anything
@@ -314,7 +288,7 @@ pub fn walk(rules: &WalkRules) -> Walked {
     };
     let mut done: Vec<PathBuf> = Vec::new();
 
-    'scopes: for index in effective_scopes(rules) {
+    for index in effective_scopes(rules) {
         let scope = &rules.scopes[index];
         walked.roots[index] = modified_time(scope);
         for result in walker(scope, scope, rules, &done).build() {
@@ -327,10 +301,6 @@ pub fn walk(rules: &WalkRules) -> Walked {
             // found by its real path anyway.
             if found.depth() == 0 || found.path_is_symlink() {
                 continue;
-            }
-            if walked.entries.len() == rules.ceiling {
-                walked.truncated = Some(scope.clone());
-                break 'scopes;
             }
             walked.entries.push(entry(found));
             walked.per_scope[index] += 1;
@@ -473,7 +443,6 @@ pub(crate) mod tests {
             use_ignore_files: true,
             include_hidden: false,
             skips_off: Vec::new(),
-            ceiling: CEILING,
         }
     }
 
@@ -513,7 +482,6 @@ pub(crate) mod tests {
             ["notes.md", "projects/", "projects/invoice.pdf"]
         );
         assert_eq!(walked.per_scope, [3]);
-        assert_eq!(walked.truncated, None);
     }
 
     /// No depth limit: F3 stopped at six, the index does not.
@@ -784,21 +752,20 @@ pub(crate) mod tests {
         assert_eq!(walked.per_scope, [3, 1, 0]);
     }
 
-    /// The ceiling still follows the listed order when a nested scope is
-    /// walked on its own: it comes where it is listed, not after the rest.
+    /// A nested scope walked on its own takes its turn where it is listed,
+    /// not after the rest, and counts what it gave.
     #[test]
-    fn a_nested_scope_takes_its_turn_under_the_ceiling() {
-        let tree = Tree::new("walk-nested-ceiling");
-        let other = Tree::new("walk-nested-ceiling-other");
+    fn a_nested_scope_takes_its_turn_in_the_listed_order() {
+        let tree = Tree::new("walk-nested-order");
+        let other = Tree::new("walk-nested-order-other");
         tree.file("a.txt").file("AppData/config/b.txt");
         other.file("c.txt").file("d.txt");
 
-        let mut rules = rules(&[tree.0.clone(), tree.path("AppData/config"), other.0.clone()]);
-        rules.ceiling = 3;
+        let rules = rules(&[tree.0.clone(), tree.path("AppData/config"), other.0.clone()]);
         let walked = walk(&rules);
 
-        assert_eq!(walked.per_scope, [1, 1, 1]);
-        assert_eq!(walked.truncated, Some(other.0.clone()));
+        assert_eq!(walked.per_scope, [1, 1, 2]);
+        assert_eq!(walked.entries[1].path, tree.path("AppData/config/b.txt"));
     }
 
     /// A default skip the user turned back on is descended into like any
@@ -822,38 +789,30 @@ pub(crate) mod tests {
         );
     }
 
-    /// Scopes are walked in order, so the one cut short is the one added
-    /// last, never the first.
+    /// The index has no ceiling (`docs/FILE-SEARCH.md`, "Decision: B"):
+    /// every scope is walked to its end, however many came before it, and
+    /// each counts all it gave. Nothing in the rules can cut one short.
     #[test]
-    fn the_ceiling_cuts_the_later_scope_short() {
-        let first = Tree::new("walk-ceiling-first");
-        let second = Tree::new("walk-ceiling-second");
+    fn every_scope_is_walked_to_its_end() {
+        let first = Tree::new("walk-all-first");
+        let second = Tree::new("walk-all-second");
         for index in 0..5 {
             first.file(&format!("a{index}.txt"));
             second.file(&format!("b{index}.txt"));
         }
 
-        let mut rules = rules(&[first.0.clone(), second.0.clone()]);
-        rules.ceiling = 7;
+        let rules = WalkRules {
+            scopes: vec![first.0.clone(), second.0.clone()],
+            exclusions: Vec::new(),
+            ignore_patterns: Vec::new(),
+            use_ignore_files: true,
+            include_hidden: false,
+            skips_off: Vec::new(),
+        };
         let walked = walk(&rules);
 
-        assert_eq!(walked.entries.len(), 7);
-        assert_eq!(walked.per_scope, [5, 2]);
-        assert_eq!(walked.truncated, Some(second.0.clone()));
-    }
-
-    /// Filling the index exactly is not overflowing it.
-    #[test]
-    fn reaching_the_ceiling_exactly_is_not_truncation() {
-        let tree = Tree::new("walk-ceiling-exact");
-        tree.file("a.txt").file("b.txt");
-
-        let mut rules = tree.rules();
-        rules.ceiling = 2;
-        let walked = walk(&rules);
-
-        assert_eq!(walked.entries.len(), 2);
-        assert_eq!(walked.truncated, None);
+        assert_eq!(walked.entries.len(), 10);
+        assert_eq!(walked.per_scope, [5, 5]);
     }
 
     #[test]

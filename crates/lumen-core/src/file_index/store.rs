@@ -3,14 +3,14 @@
 //! # A record, and a word index beside it
 //!
 //! Slice 0 measured SQLite's trigram index at 19 ms to collect every match of
-//! a million names, against a budget of 4, so the names are still matched in
-//! memory: the database is the record of what was indexed, which a start
-//! loads in milliseconds instead of walking the disk again, and from which a
-//! query fetches the paths of the few rows it found. Beside the record is a
-//! word index of the names, for root to ask the disk directly once the
-//! ceiling is gone (`docs/FILE-SEARCH.md`, "Decision: B"): kept current with
-//! every write, and asked by [`Store::ranked`] and [`Store::substring`],
-//! which root and the view switch to in step c3.
+//! a million names, against a budget of 4, so the names of a hot layer are
+//! matched in memory ([`Store::hot`]): the database is the record of what
+//! was indexed, which a start loads in milliseconds instead of walking the
+//! disk again, and from which a query fetches the paths of the few rows it
+//! found. Beside the record is a word index of the names, so root asks the
+//! disk for what the hot layer does not hold, with no ceiling on the index
+//! (`docs/FILE-SEARCH.md`, "Decision: B"): kept current with every write,
+//! and asked by [`Store::ranked`] and [`Store::substring`].
 //!
 //! # Each folder once
 //!
@@ -237,8 +237,6 @@ pub struct Meta {
     pub digest: String,
     /// As [`Walked::per_scope`].
     pub per_scope: Vec<usize>,
-    /// As [`Walked::truncated`].
-    pub truncated: Option<PathBuf>,
     /// As [`Walked::roots`], kept current as folders are read again.
     pub roots: Vec<Option<i64>>,
     /// Counted up by every write that adds or removes rows (see "Changed in
@@ -273,6 +271,16 @@ pub struct RankedRow {
     /// As [`super::Match::tier`]: 4 exact, 3 the name's start, 2 a word's
     /// start, 1 inside a word.
     pub tier: u8,
+}
+
+/// The names a start holds in memory ([`Store::hot`]).
+#[derive(Debug)]
+pub struct Hot {
+    pub names: Names,
+    /// Every entry is in `names`: root need never ask the disk.
+    pub complete: bool,
+    /// How many entries the store holds, in `names` or not.
+    pub entries: usize,
 }
 
 /// The entries, in SQLite.
@@ -322,7 +330,9 @@ pub fn digest(rules: &WalkRules) -> String {
         u8::from(rules.use_ignore_files),
         u8::from(rules.include_hidden),
     ]);
-    hash.write(&(rules.ceiling as u64).to_le_bytes());
+    // The rules once had a ceiling, written here; an index walked under it
+    // may have been cut short, so its digest matches no rules today and it
+    // is walked again, once, to its end.
     format!("{:016x}", hash.0)
 }
 
@@ -613,7 +623,6 @@ impl Store {
             &Meta {
                 digest: digest.to_string(),
                 per_scope: walked.per_scope.clone(),
-                truncated: walked.truncated.clone(),
                 roots: walked.roots.clone(),
                 version,
                 walked_at: std::time::SystemTime::now()
@@ -639,6 +648,109 @@ impl Store {
         Ok((names, self.meta()?))
     }
 
+    /// The hot layer: the names of the entries most worth matching in
+    /// memory, within `budget` bytes as [`Names::cost`] counts them, in
+    /// entry order (`docs/FILE-SEARCH.md`, "Decision: B").
+    ///
+    /// Taken in one order until the next does not fit: the rows `boosted` --
+    /// what was used -- and the names shorter than [`MIN_SUBSTRING`], which
+    /// a short query in root searches and nothing else reaches, both
+    /// whatever the budget; then folders, the shallowest first; then files,
+    /// the shallowest first; within each, by row. A folder is where a user
+    /// goes from, and a shallow entry what they name; a file five folders
+    /// down is the one they search for by its word.
+    ///
+    /// One pass over `files`, which reads every folded name as it is stored
+    /// -- not folded again -- and keeps them until the order is known; then
+    /// the ones taken are copied out and the rest given back. On the real
+    /// 500 000 that is 175 ms, where reading the order first and the names
+    /// taken in a second pass was 280: every row is read either way, and
+    /// stepping through them is the cost. A folder's depth comes from
+    /// `folders`, whose rows come after their parents'.
+    pub fn hot(&self, boosted: &[u32], budget: usize) -> Result<Hot> {
+        let _read = self.read()?;
+        let mut depths: HashMap<i64, u32> = HashMap::new();
+        {
+            let mut statement = self
+                .connection
+                .prepare("SELECT id, parent_id FROM folders ORDER BY id")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let parent: Option<i64> = row.get(1)?;
+                let depth = parent.map_or(0, |parent| depths.get(&parent).map_or(0, |d| d + 1));
+                depths.insert(row.get(0)?, depth);
+            }
+        }
+
+        let mut boosted = boosted.to_vec();
+        boosted.sort_unstable();
+        let mut every = Names::default();
+        // Each entry's place in the order, as one number: the class in the
+        // top two bits, the depth below them, the entry in the low 32.
+        let mut order: Vec<u64> = Vec::new();
+        {
+            let mut statement = self
+                .connection
+                .prepare("SELECT id, folder_id, is_dir, folded FROM files ORDER BY id")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let id: u32 = row.get(0)?;
+                let is_dir: bool = row.get(2)?;
+                let folded = row.get_ref(3)?.as_str()?;
+                // Three characters are at most twelve bytes.
+                let class: u64 = if boosted.binary_search(&id).is_ok() {
+                    0
+                } else if folded.len() < 12 && folded.chars().count() < MIN_SUBSTRING {
+                    1
+                } else if is_dir {
+                    2
+                } else {
+                    3
+                };
+                let depth = depths
+                    .get(&row.get::<_, i64>(1)?)
+                    .map_or(0, |depth| depth + 1)
+                    .min((1 << 30) - 1);
+                let entry = every.len() as u64;
+                every.push_folded(id, folded, is_dir);
+                order.push(class << 62 | u64::from(depth) << 32 | entry);
+            }
+        }
+        drop(depths);
+        order.sort_unstable();
+
+        let entries = order.len();
+        let mut spent = 0;
+        let mut taken = entries;
+        for (at, &key) in order.iter().enumerate() {
+            let cost = Names::cost(every.name_len(key as u32));
+            if key >> 62 > 1 && spent + cost > budget {
+                taken = at;
+                break;
+            }
+            spent += cost;
+        }
+        if taken == entries {
+            every.shrink();
+            return Ok(Hot {
+                names: every,
+                complete: true,
+                entries,
+            });
+        }
+        let mut chosen = order[..taken]
+            .iter()
+            .map(|&key| key as u32)
+            .collect::<Vec<_>>();
+        drop(order);
+        chosen.sort_unstable();
+        Ok(Hot {
+            names: every.only(&chosen),
+            complete: false,
+            entries,
+        })
+    }
+
     /// What was recorded besides the entries.
     pub fn meta(&self) -> Result<Meta> {
         let mut meta = Meta::default();
@@ -654,7 +766,6 @@ impl Store {
                         .filter_map(|count| count.parse().ok())
                         .collect();
                 }
-                "truncated" => meta.truncated = Some(PathBuf::from(value)),
                 // One time a scope, empty where it had none.
                 "roots" => {
                     meta.roots = value.split(',').map(|time| time.parse().ok()).collect();
@@ -1394,9 +1505,6 @@ fn write_meta(transaction: &Transaction<'_>, meta: &Meta) -> Result<()> {
         .collect::<Vec<_>>()
         .join(",");
     insert.execute(params!["per_scope", counts])?;
-    if let Some(truncated) = &meta.truncated {
-        insert.execute(params!["truncated", truncated.to_string_lossy()])?;
-    }
     let roots = meta
         .roots
         .iter()
@@ -1629,7 +1737,6 @@ mod tests {
                 },
             ],
             per_scope: vec![3, 0],
-            truncated: Some(root.join("second")),
             roots: vec![Some(5), None],
         }
     }
@@ -1655,7 +1762,6 @@ mod tests {
             Meta {
                 digest: "digest-1".into(),
                 per_scope: vec![3, 0],
-                truncated: Some(tree.0.join("second")),
                 roots: vec![Some(5), None],
                 version: 1,
                 walked_at: None,
@@ -1677,7 +1783,6 @@ mod tests {
                 modified: None,
             }],
             per_scope: vec![1],
-            truncated: None,
             roots: vec![None],
         };
         store.replace(&fewer, "two").unwrap();
@@ -1685,7 +1790,6 @@ mod tests {
         let (names, meta) = store.load().unwrap();
         assert_eq!(names.len(), 1);
         assert_eq!(meta.digest, "two");
-        assert_eq!(meta.truncated, None);
         assert_eq!(meta.per_scope, [1]);
     }
 
@@ -1812,9 +1916,6 @@ mod tests {
         let mut changed = base.clone();
         changed.skips_off.push("node_modules".into());
         variants.push(changed);
-        let mut changed = base.clone();
-        changed.ceiling = 10;
-        variants.push(changed);
 
         for variant in variants {
             assert_ne!(digest(&base), digest(&variant), "{variant:?}");
@@ -1849,9 +1950,58 @@ mod tests {
                 entry(drive.join("GitHub").join("es2024.js"), None),
             ],
             per_scope: vec![4, 2],
-            truncated: None,
             roots: vec![Some(10), Some(20)],
         }
+    }
+
+    /// The hot layer is a prefix of one order -- the used, the names too
+    /// short for a query to reach otherwise, then folders and then files,
+    /// each the shallowest first -- cut where the budget ends; the used and
+    /// the short are taken whatever the budget. Only when every entry fits
+    /// is it complete.
+    #[test]
+    fn the_hot_layer_is_the_used_then_folders_then_files_by_depth_within_its_budget() {
+        let tree = Tree::new("store-hot");
+        let mut store = Store::open(&tree.path("files.db")).unwrap();
+        // Rows 1 to 6: home/a, home/a/b, home/a/b/JavaScript Notes.md,
+        // home/top.txt, drive/GitHub, drive/GitHub/es2024.js.
+        let walked = deeper(&tree.0);
+        store.replace(&walked, "d").unwrap();
+        let cost = |row: u32| {
+            let mut folded = String::new();
+            fold(&name(&walked.entries[row as usize - 1]), &mut folded);
+            Names::cost(folded.len())
+        };
+        let rows = |hot: &Hot| {
+            (0..hot.names.len() as u32)
+                .map(|entry| hot.names.row(entry))
+                .collect::<Vec<_>>()
+        };
+
+        // Used, short, the folder, then the files by depth.
+        let order: [u32; 6] = [3, 1, 2, 5, 4, 6];
+        let all = order.iter().map(|&row| cost(row)).sum::<usize>();
+        let hot = store.hot(&[3], all).unwrap();
+        assert!(hot.complete);
+        assert_eq!(rows(&hot), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(hot.names.bytes(), all);
+
+        for taken in 3..order.len() {
+            let budget = order[..taken].iter().map(|&row| cost(row)).sum::<usize>();
+            let hot = store.hot(&[3], budget + cost(order[taken]) - 1).unwrap();
+            assert!(!hot.complete, "{taken}");
+            let mut expected = order[..taken].to_vec();
+            expected.sort_unstable();
+            assert_eq!(rows(&hot), expected, "{taken}");
+            assert!(hot.names.bytes() <= budget, "{taken}");
+        }
+
+        let hot = store.hot(&[3], 0).unwrap();
+        assert!(!hot.complete);
+        assert_eq!(rows(&hot), [1, 2, 3]);
+        let hot = store.hot(&[], 0).unwrap();
+        assert_eq!(rows(&hot), [1, 2]);
+        assert!(hot.names.holds(0, "a", true));
     }
 
     fn scalar(store: &Store, sql: &str) -> i64 {
@@ -2002,10 +2152,9 @@ mod tests {
             .map(|path| tree.path(path))
             .collect::<Vec<_>>();
         let mut meta = store.meta().unwrap();
-        let mut count = store.count().unwrap();
         let batch = store.batch().unwrap();
         let folders = update::folders(&changed).unwrap();
-        update::apply(&batch, &rules, folders, &mut meta, &mut count).unwrap();
+        update::apply(&batch, &rules, folders, &mut meta).unwrap();
         batch.finish(&meta).unwrap();
     }
 
@@ -2291,7 +2440,6 @@ mod tests {
         Walked {
             per_scope: vec![entries.len()],
             entries,
-            truncated: None,
             roots: vec![Some(1)],
         }
     }

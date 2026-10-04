@@ -420,18 +420,13 @@ pub type FileSink = Arc<dyn Fn(Vec<std::path::PathBuf>) + Send + Sync>;
 
 /// What the log says of an index: the figures slice 1 is measured by.
 fn describe_files(index: &FileIndex) -> String {
-    let truncated = index
-        .truncated()
-        .map(|scope| {
-            format!(
-                "; full at {} entries, the rest of {} is not searched",
-                lumen_core::file_index::CEILING,
-                scope.display()
-            )
-        })
-        .unwrap_or_default();
+    let hot = if index.hot_is_complete() {
+        "all of them".to_string()
+    } else {
+        format!("{} of them", index.hot_len())
+    };
     format!(
-        "{} entries, {:?} by scope, {} bytes of names in memory{truncated}",
+        "{} entries, {:?} by scope, {} bytes in memory for the hot layer: {hot}",
         index.len(),
         index.per_scope(),
         index.memory_bytes()
