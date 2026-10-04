@@ -810,37 +810,7 @@ impl FileIndex {
             .collect()
     }
     fn item(&self, row: Row) -> Item {
-        let path = row.path.display().to_string();
-        let (prefix, kind) = if row.is_dir {
-            ("folder", Kind::Folder)
-        } else {
-            ("file", Kind::File)
-        };
-        Item {
-            // The path, which is what makes an entry unique and is stable
-            // across rebuilds, so frecency remembers it. `file:` is F3's
-            // prefix, kept so the history of files opened before the index
-            // still counts.
-            id: format!("{prefix}:{path}"),
-            subtitle: Some(
-                row.path
-                    .parent()
-                    .map(|parent| for_display(parent, self.home.as_deref()))
-                    .unwrap_or_default(),
-            ),
-            title: row.name,
-            icon: None,
-            // Already matched, by the index: nothing is matched against
-            // these again.
-            keywords: Vec::new(),
-            actions: vec![
-                // Through the shell, which knows the default application for
-                // an extension and opens a folder in Explorer.
-                Action::Launch(LaunchTarget::ShellExecute(path.clone())),
-                Action::CopyToClipboard(path),
-            ],
-            kind,
-        }
+        row_item(&row.path, row.name, row.is_dir, self.home.as_deref())
     }
 
     /// Take frecency's boosts for the entries that have one.
@@ -981,6 +951,51 @@ impl FileIndex {
     }
 }
 
+/// The row for the file or folder at `path`, as the index shows it: the
+/// same id, subtitle and actions wherever it was found, so a row from a
+/// typed path's listing is the index's row for that path (F16).
+pub fn item_for(path: &Path, is_dir: bool, home: Option<&Path>) -> Item {
+    // Named as the index names an entry: the last part of its path.
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    row_item(path, name, is_dir, home)
+}
+
+fn row_item(path: &Path, name: String, is_dir: bool, home: Option<&Path>) -> Item {
+    let shown = path.display().to_string();
+    let (prefix, kind) = if is_dir {
+        ("folder", Kind::Folder)
+    } else {
+        ("file", Kind::File)
+    };
+    Item {
+        // The path, which is what makes an entry unique and is stable
+        // across rebuilds, so frecency remembers it. `file:` is F3's
+        // prefix, kept so the history of files opened before the index
+        // still counts.
+        id: format!("{prefix}:{shown}"),
+        subtitle: Some(
+            path.parent()
+                .map(|parent| for_display(parent, home))
+                .unwrap_or_default(),
+        ),
+        title: name,
+        icon: None,
+        // Already matched, by the index: nothing is matched against
+        // these again.
+        keywords: Vec::new(),
+        actions: vec![
+            // Through the shell, which knows the default application for
+            // an extension and opens a folder in Explorer.
+            Action::Launch(LaunchTarget::ShellExecute(shown.clone())),
+            Action::CopyToClipboard(shown),
+        ],
+        kind,
+    }
+}
+
 /// The characters of `title` each word matched, where it matched best.
 ///
 /// The title is folded a character at a time, as the names are, remembering
@@ -1053,6 +1068,27 @@ mod tests {
             ]
         );
         assert_eq!(hits[0].highlights, [0, 1, 2]);
+    }
+
+    /// A row built from a path alone -- a typed path's listing -- is the
+    /// row the index gives for it, so its frecency and actions are one.
+    #[test]
+    fn the_row_for_a_path_is_the_indexs_row() {
+        let tree = Tree::new("index-item-for");
+        tree.file("projects/Invoice-2024.pdf");
+        let index = index(&tree);
+
+        for (query, path, is_dir) in [
+            ("inv", tree.path("projects").join("Invoice-2024.pdf"), false),
+            ("proj", tree.path("projects"), true),
+        ] {
+            let hits = index.query(query, Kinds::FoldersAndFiles, 8, &|| false);
+            let hit = hits.iter().find(|hit| hit.item.title != ".files.db");
+            assert_eq!(
+                Some(&item_for(&path, is_dir, Some(tree.0.as_path()))),
+                hit.map(|hit| &hit.item)
+            );
+        }
     }
 
     #[test]

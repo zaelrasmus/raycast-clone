@@ -12,7 +12,7 @@
 //! survive the presentation layer being replaced. Here they are also testable
 //! without a window.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::favorites::{Change, Favorites};
 use crate::file_index::{self, FileHit, names};
+use crate::file_search::{Found, browse};
 use crate::frecency::Frecency;
 use crate::item::Item;
 use crate::paths::Paths;
@@ -197,6 +198,12 @@ pub struct RootSearch {
     /// Matched there, off the UI thread, and only placed here.
     files: Vec<FileHit>,
     files_query: String,
+    /// Whether `files` is a typed path's listing rather than the index's
+    /// answer: it answers only that path, whole and in its own order.
+    files_typed: bool,
+    /// The user's home folder, for `~\` in a typed path and the rows'
+    /// subtitles: found as the file index finds it, so the two agree.
+    user_home: Option<PathBuf>,
     /// The quicklinks, held here rather than among the providers because they
     /// are the one provider the user edits while the daemon runs (F6).
     quicklinks: QuicklinkProvider,
@@ -246,6 +253,8 @@ impl RootSearch {
             answers: Vec::new(),
             files: Vec::new(),
             files_query: String::new(),
+            files_typed: false,
+            user_home: directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
             quicklinks: QuicklinkProvider::default(),
             timer_presets: Vec::new(),
             rates: None,
@@ -380,6 +389,45 @@ impl RootSearch {
         self.forget_file_hits();
         self.files = hits;
         self.files_query = query.trim().to_string();
+        self.files_typed = false;
+    }
+
+    /// The path `query` names when the whole of it is one (F16): the
+    /// launcher lists its folder with [`browse::list`] instead of asking
+    /// the file index, and hands the listing to [`Self::set_typed`].
+    pub fn typed(&self, query: &str) -> Option<browse::Typed> {
+        match &self.user_home {
+            Some(home) => browse::parse(query, home),
+            // No home to expand `~` to: only a drive's path is one.
+            None => {
+                browse::parse(query, Path::new("")).filter(|_| !query.trim_start().starts_with('~'))
+            }
+        }
+    }
+
+    /// Take the listing of the folder typed in `query` (F16). Shown whole,
+    /// in its own order, by the next [`Self::rank`] of the same query, and
+    /// by no other.
+    pub fn set_typed(&mut self, query: &str, rows: Vec<Found>) {
+        self.forget_file_hits();
+        let words = self
+            .typed(query)
+            .map(|typed| names::words(&typed.filter))
+            .unwrap_or_default();
+        let home = self.user_home.as_deref();
+        self.files = rows
+            .into_iter()
+            .map(|found| {
+                let item = file_index::item_for(&found.path, found.is_dir, home);
+                FileHit {
+                    highlights: file_index::highlights(&item.title, &words),
+                    item,
+                }
+            })
+            .collect();
+        // Untrimmed at the end: a trailing space is part of the filter.
+        self.files_query = query.trim_start().to_string();
+        self.files_typed = true;
     }
 
     /// Forget the files: file search was turned off, or its rules changed.
@@ -388,6 +436,7 @@ impl RootSearch {
     pub fn clear_files(&mut self) -> bool {
         self.files.clear();
         self.files_query.clear();
+        self.files_typed = false;
         self.forget_file_hits()
     }
 
@@ -427,7 +476,8 @@ impl RootSearch {
     /// matches is worse than a row that has not arrived.
     fn file_rows(&self, query: &str) -> Vec<Hit> {
         let query = query.trim();
-        if query.is_empty() {
+        // A listing answers its path alone: see `Self::rank_typed`.
+        if query.is_empty() || self.files_typed {
             return Vec::new();
         }
         let current = self.files_query == query;
@@ -487,6 +537,10 @@ impl RootSearch {
             self.hits = hits;
             self.sections = sections;
             return &self.hits;
+        }
+
+        if self.typed(query).is_some() {
+            return self.rank_typed(query);
         }
 
         // Providers are contractually instant (see `crate::providers`).
@@ -680,6 +734,63 @@ impl RootSearch {
             (RESULTS, 0, results, header),
             (FILES, results, file_count, header),
             (RESULTS, results + file_count, rest, false),
+        ]
+        .into_iter()
+        .filter(|&(_, _, len, _)| len > 0)
+        .map(|(title, start, len, header)| Section {
+            title: title.into(),
+            start,
+            len,
+            header,
+        })
+        .collect();
+        self.hits = hits;
+        &self.hits
+    }
+
+    /// Rank a query that is a path (F16): its folder's listing, whole and in
+    /// the order it was listed, then the fallbacks.
+    ///
+    /// Nothing else: no application, command or answer matches a path, and
+    /// the listing is already filtered and ordered by its own rule, so the
+    /// index's word rule is not applied again. Until the listing for this
+    /// very query arrives, the section is empty -- an older listing names
+    /// another folder or another filter, and the index's rows are no answer
+    /// to a path.
+    fn rank_typed(&mut self, query: &str) -> &[Hit] {
+        self.answers.clear();
+        self.conversion = false;
+        self.asks_places = false;
+        self.wants_weather = None;
+        self.fallbacks = self.quicklinks.fallbacks(query);
+
+        let mut hits: Vec<Hit> = if self.files_typed && self.files_query == query.trim_start() {
+            self.files
+                .iter()
+                .enumerate()
+                .map(|(index, found)| Hit {
+                    source: Source::File(index),
+                    highlights: found.highlights.clone(),
+                    score: 0,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let file_count = hits.len();
+        hits.extend((0..self.fallbacks.len()).map(|index| Hit {
+            source: Source::Fallback(index),
+            highlights: Vec::new(),
+            score: 0,
+        }));
+
+        // The listing under the files' header, which follows the results'
+        // as it does for the index's rows; the fallbacks close the list with
+        // none.
+        let header = self.arrangement.results_header;
+        self.sections = [
+            (FILES, 0, file_count, header),
+            (RESULTS, file_count, self.fallbacks.len(), false),
         ]
         .into_iter()
         .filter(|&(_, _, len, _)| len > 0)
@@ -1469,6 +1580,146 @@ mod tests {
 
         assert!(kept.contains(&0) && kept.contains(&2));
         assert!(!kept.contains(&1));
+    }
+
+    /// A typed path's listing, as `browse::list` gives it.
+    fn listed(entries: &[(&str, bool)]) -> Vec<Found> {
+        entries
+            .iter()
+            .map(|&(path, is_dir)| Found {
+                path: path.into(),
+                is_dir,
+            })
+            .collect()
+    }
+
+    /// The whole query a path: its folder's listing is the first section,
+    /// the only one besides the fallbacks -- nothing the index or the
+    /// providers would match a path with.
+    #[test]
+    fn a_typed_path_shows_only_its_listing_then_the_fallbacks() {
+        let mut root = root(apps(&["Users Manager", "Calculator"]));
+        root.replace_quicklinks(google());
+        root.set_typed(
+            r"C:\Us",
+            listed(&[(r"C:\Users", true), (r"C:\Users.txt", false)]),
+        );
+
+        root.rank(r"C:\Us");
+
+        let sources: Vec<Source> = root.hits().iter().map(|hit| hit.source).collect();
+        assert!(
+            matches!(
+                sources[..],
+                [Source::File(0), Source::File(1), Source::Fallback(_)]
+            ),
+            "{sources:?}"
+        );
+        let files = &root.sections()[0];
+        assert_eq!(
+            (files.title.as_str(), files.start, files.len, files.header),
+            (FILES, 0, 2, true)
+        );
+        assert_eq!(root.sections().len(), 2);
+        assert!(!root.sections()[1].header);
+    }
+
+    /// The listing is already ordered and already filtered by the folder's
+    /// own rule: every row stays, where it was, however many there are and
+    /// whatever the words typed would say of them.
+    #[test]
+    fn a_listing_keeps_its_order_and_every_row() {
+        let many: Vec<String> = (0..12).map(|n| format!(r"C:\src\zeta {n}")).collect();
+        let mut rows: Vec<(&str, bool)> = vec![(r"C:\src\beta", true), (r"C:\src\alpha", false)];
+        rows.extend(many.iter().map(|path| (path.as_str(), false)));
+        let mut root = root(Vec::new());
+        root.set_typed(r"C:\src\", listed(&rows));
+
+        root.rank(r"C:\src\");
+
+        let shown = file_titles(&root);
+        assert_eq!(shown.len(), 14);
+        assert_eq!(shown[..3], ["beta", "alpha", "zeta 0"]);
+    }
+
+    /// A listing answers its own query and no other: not a longer path,
+    /// and not a query that is no path at all.
+    #[test]
+    fn a_listing_for_another_query_is_not_shown() {
+        let mut root = root(apps(&["Report Builder"]));
+        root.set_typed(r"C:\Re", listed(&[(r"C:\Reports", true)]));
+
+        root.rank(r"C:\Rep");
+        assert!(file_titles(&root).is_empty());
+
+        root.rank("report");
+        assert!(file_titles(&root).is_empty());
+        assert_eq!(titles(&root), ["Report Builder"]);
+    }
+
+    /// Typing a path before its listing arrives shows no rows for it: not
+    /// the index's answer to whatever was typed before, nor anything the
+    /// index matches.
+    #[test]
+    fn a_path_without_its_listing_shows_no_files() {
+        let mut root = root(apps(&["Calculator", "Code"]));
+        root.set_files(r"C:\", found(&["c notes.txt"]));
+
+        root.rank(r"C:\");
+
+        assert!(root.hits().is_empty(), "{:?}", titles(&root));
+        assert!(root.sections().is_empty());
+    }
+
+    /// Once the query is no path, the list is what it always was.
+    #[test]
+    fn a_query_that_is_no_path_is_ranked_as_before() {
+        let mut root = root(apps(&["Report Builder"]));
+        root.rank(r"C:\");
+        root.set_files("report", found(&["report.txt"]));
+
+        root.rank("report");
+
+        assert_eq!(titles(&root), ["Report Builder", "report.txt"]);
+        assert_eq!(root.sections()[1].title, FILES);
+    }
+
+    /// A listed row is the index's row for the same path: the same id, so
+    /// frecency counts it once, and the same actions.
+    #[test]
+    fn a_listed_row_is_the_indexs_row_for_its_path() {
+        let mut root = root(Vec::new());
+        root.user_home = Some(r"C:\Users\me".into());
+        let path = r"C:\Users\me\Documents";
+        root.set_typed(r"~\Doc", listed(&[(path, true)]));
+
+        root.rank(r"~\Doc");
+
+        let item = root.item(&root.hits()[0]);
+        assert_eq!(
+            *item,
+            file_index::item_for(Path::new(path), true, Some(Path::new(r"C:\Users\me")))
+        );
+        assert_eq!(item.id, format!("folder:{path}"));
+        assert_eq!(item.subtitle.as_deref(), Some("~"));
+        assert_eq!(root.hits()[0].highlights, [0, 1, 2]);
+    }
+
+    /// Whether the launcher lists a folder or asks the file index.
+    #[test]
+    fn a_path_is_recognised_with_the_users_home() {
+        let mut root = root(Vec::new());
+        root.user_home = Some(r"C:\Users\me".into());
+
+        let typed = root.typed(r"~\Doc").unwrap();
+        assert_eq!(typed.dir, Path::new(r"C:\Users\me\"));
+        assert_eq!(typed.filter, "Doc");
+        assert_eq!(root.typed(r"d:/src/lu").unwrap().filter, "lu");
+        assert_eq!(root.typed("report"), None);
+
+        root.user_home = None;
+        assert_eq!(root.typed(r"~\Doc"), None);
+        assert!(root.typed(r"C:\").is_some());
     }
 
     fn google() -> QuicklinkProvider {
