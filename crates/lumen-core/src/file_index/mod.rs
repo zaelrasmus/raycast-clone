@@ -139,7 +139,10 @@ pub const HOT_BUDGET: usize = 8 * 1024 * 1024;
 /// disk's word index too ([`Store::ranked`]) -- unless the hot layer is the
 /// whole index -- and the two are merged into the order the names rank in.
 /// What is only on disk is found by the start of one of its words, never
-/// inside one: the trade "Decision: B" chose over losing entries.
+/// inside one: the trade "Decision: B" chose over losing entries. The
+/// trade is root's alone. *Search Files* asks the disk for the rest
+/// afterwards ([`Self::query_inside`]), so the view finds every entry a
+/// match inside a word would.
 pub struct FileIndex {
     /// The hot layer.
     hot: Names,
@@ -247,7 +250,7 @@ impl FileIndex {
 
     /// [`Self::load`], with a hot layer of the rows `boosted` and what else
     /// fits `budget`.
-    fn load_within(store: Store, boosted: &[u32], budget: usize) -> Result<FileIndex> {
+    pub(crate) fn load_within(store: Store, boosted: &[u32], budget: usize) -> Result<FileIndex> {
         let hot = store.hot(boosted, budget)?;
         let meta = store.meta()?;
         Ok(Self::from_parts(hot, budget, meta, store))
@@ -573,6 +576,78 @@ impl FileIndex {
         }
         let found = self.merge(&used, &hot, &outside, disk, limit);
         self.hits(query, &used, found)
+    }
+
+    /// Whether [`Self::query_inside`] can find anything [`Self::query`]
+    /// did not: only when the hot layer is not the whole index -- a
+    /// complete one already finds inside every word -- and `query` has a
+    /// word of [`MIN_SUBSTRING`] characters, the least that matches inside
+    /// one.
+    pub fn searches_inside(&self, query: &str) -> bool {
+        !self.hot_is_complete
+            && names::words(query)
+                .iter()
+                .any(|word| word.chars().count() >= MIN_SUBSTRING)
+    }
+
+    /// What [`Self::query_where`] leaves out, and only that: the entries
+    /// outside the hot layer and the used, matched inside a word
+    /// ([`Store::substring_where`]), shortest first. *Search Files*' second
+    /// phase (`docs/FILE-SEARCH.md`, "Step c3b"), which root does without.
+    ///
+    /// Nothing here was in the first phase's answer: that one found every
+    /// entry in memory inside a word, and the disk's by a word's start,
+    /// which a match inside a word never is. A scan of the disk's names at
+    /// every level but `complete` -- tens of milliseconds to hundreds -- so
+    /// it answers nothing once `cancelled` says so, asked every few
+    /// thousand rows.
+    pub fn query_inside(
+        &self,
+        query: &str,
+        kinds: Kinds,
+        limit: usize,
+        accept: &dyn Fn(&str, bool) -> bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Vec<FileHit> {
+        if limit == 0 || !self.searches_inside(query) {
+            return Vec::new();
+        }
+        // A copy of the few used rows outside the layer, so `used` is not
+        // held through a scan: a frecency change would wait for it, and
+        // root's queries behind that.
+        let outside = {
+            let used = self.used.read();
+            (0..used.outside.len() as u32)
+                .map(|entry| used.outside.row(entry))
+                .collect::<std::collections::HashSet<_>>()
+        };
+        let skip = |row: u32| self.hot.entry_of(row).is_some() || outside.contains(&row);
+        let rows = match self
+            .store
+            .lock()
+            .substring_where(query, kinds, limit, &skip, accept, cancelled)
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                log::warn!("could not read the file index: {error:#}");
+                Vec::new()
+            }
+        };
+        if cancelled() {
+            return Vec::new();
+        }
+        let words = names::words(query);
+        rows.into_iter()
+            .map(|row| FileHit {
+                highlights: highlights(&row.name, &words),
+                item: self.item(Row {
+                    id: row.id,
+                    path: row.path,
+                    name: row.name,
+                    is_dir: row.is_dir,
+                }),
+            })
+            .collect()
     }
 
     /// [`Self::query`] over the entries used from Lumen and those whose
@@ -1426,6 +1501,97 @@ mod tests {
             )
         );
         assert_eq!(hit.highlights, [6, 7, 8, 9]);
+    }
+
+    fn inside(index: &FileIndex, query: &str, limit: usize) -> Vec<String> {
+        titles(
+            &index.query_inside(query, Kinds::FoldersAndFiles, limit, &|_, _| true, &|| {
+                false
+            }),
+        )
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
+    /// *Search Files*' second phase: what root's trade leaves out -- a
+    /// match inside a word of an entry outside the hot layer -- is found
+    /// from the disk, and nothing the first phase could find is repeated.
+    #[test]
+    fn outside_the_hot_layer_the_second_phase_finds_a_match_inside_a_word() {
+        let tree = Tree::new("index-inside");
+        tree.file("myreport.txt")
+            .file("deep/er/still/annualreport.txt")
+            .file("deep/er/still/report.md")
+            .file("deep/er/still/usedreport.txt");
+        // `er`, which a short query needs, the two other folders, and the
+        // shallowest file.
+        let budget = Names::cost("er".len())
+            + Names::cost("deep".len())
+            + Names::cost("still".len())
+            + Names::cost("myreport.txt".len());
+        let index = index_within(&tree, budget);
+        assert!(!index.hot_is_complete());
+        assert!(index.searches_inside("port"));
+        use_file(&index, &tree, "deep/er/still/usedreport.txt");
+
+        // The first phase: the hot layer inside a word, the disk by a
+        // word's start, the used inside a word.
+        let first = titles(&index.query("port", Kinds::FoldersAndFiles, 8, &|| false))
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(first, ["usedreport.txt", "myreport.txt"]);
+        // The second: only what is outside both, inside a word.
+        assert_eq!(inside(&index, "port", 8), ["report.md", "annualreport.txt"]);
+        assert!(inside(&index, "report", 8).contains(&"annualreport.txt".to_string()));
+        assert!(!inside(&index, "report", 8).contains(&"report.md".to_string()));
+        let hit =
+            &index.query_inside("port", Kinds::FoldersAndFiles, 8, &|_, _| true, &|| false)[1];
+        assert_eq!(hit.highlights, [8, 9, 10, 11]);
+        assert_eq!(hit.item.kind, Kind::File);
+    }
+
+    /// The second phase keeps to the type filter and the kinds, and a
+    /// cancelled one answers nothing.
+    #[test]
+    fn the_second_phase_keeps_to_the_filter_and_stops_when_cancelled() {
+        let tree = Tree::new("index-inside-filter");
+        tree.file("a/b/myplan.md")
+            .file("a/b/myplan.rs")
+            .file("a/b/myplans/x.txt");
+        let index = index_within(&tree, 0);
+        let code = |name: &str, _: bool| name.ends_with(".rs");
+        let found = index.query_inside("plan", Kinds::FoldersAndFiles, 8, &code, &|| false);
+        assert_eq!(titles(&found), ["myplan.rs"]);
+        let folders = index.query_inside("plan", Kinds::Folders, 8, &|_, _| true, &|| false);
+        assert_eq!(titles(&folders), ["myplans"]);
+        assert_eq!(inside(&index, "plan", 2).len(), 2);
+        assert!(
+            index
+                .query_inside("plan", Kinds::FoldersAndFiles, 8, &|_, _| true, &|| true)
+                .is_empty()
+        );
+    }
+
+    /// A complete hot layer already finds inside every word, and a query
+    /// with no word of three characters has nothing inside one: no second
+    /// phase.
+    #[test]
+    fn there_is_no_second_phase_with_a_complete_hot_layer_or_short_words() {
+        let tree = Tree::new("index-inside-none");
+        tree.file("a/b/myreport.txt");
+        let whole = index(&tree);
+        assert!(whole.hot_is_complete());
+        assert!(!whole.searches_inside("port"));
+        assert!(inside(&whole, "port", 8).is_empty());
+
+        let partial = index_within(&tree, 0);
+        assert!(partial.searches_inside(" port "));
+        assert!(!partial.searches_inside("po"));
+        assert!(!partial.searches_inside("po rt"));
+        assert!(partial.searches_inside("my port"));
+        assert!(inside(&partial, "po", 8).is_empty());
     }
 
     /// What the hot layer and the disk each found is ranked as the names of

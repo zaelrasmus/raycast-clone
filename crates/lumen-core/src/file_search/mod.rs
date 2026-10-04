@@ -74,27 +74,63 @@ impl Found {
     }
 }
 
-/// The best [`LIMIT`] entries of the whole index for `query`, of
-/// `filter`'s category when there is one. The filter is applied inside the
-/// scan, not to its answer, so a filtered query still finds its best
-/// `LIMIT` rather than what was left of everyone's.
+/// The first phase of a query: the best [`LIMIT`] entries for `query`, of
+/// `filter`'s category when there is one -- every match in the hot layer,
+/// and the disk's by a word's start ([`FileIndex::query_where`]). The
+/// filter is applied inside the scan, not to its answer, so a filtered
+/// query still finds its best `LIMIT` rather than what was left of
+/// everyone's.
 ///
-/// A scan of every name, so it runs off the UI thread, and stops once
-/// `cancelled` says the query was superseded.
+/// Milliseconds, and shown as soon as it answers. When
+/// [`searches_inside`] says so, [`search_inside`] follows for the rest.
+/// Off the UI thread, and stops once `cancelled` says the query was
+/// superseded.
 pub fn search(
     index: &FileIndex,
     query: &str,
     filter: Option<Category>,
     cancelled: &dyn Fn() -> bool,
 ) -> Vec<Found> {
-    let kinds = match filter {
-        Some(Category::Folders) => Kinds::Folders,
-        _ => Kinds::FoldersAndFiles,
-    };
+    let kinds = kinds(filter);
     let accept = |name: &str, is_dir: bool| filter.is_none_or(|filter| filter.holds(name, is_dir));
     index
         .query_where(query, kinds, LIMIT, &accept, cancelled)
         .into_iter()
         .filter_map(Found::from_hit)
         .collect()
+}
+
+/// Whether `query` has a second phase on `index`: an index larger than its
+/// hot layer, and a word long enough to match inside another
+/// ([`FileIndex::searches_inside`]).
+pub fn searches_inside(index: &FileIndex, query: &str) -> bool {
+    index.searches_inside(query)
+}
+
+/// The second phase of a query: at most `limit` matches inside a word that
+/// [`search`] could not find, of `filter`'s category, shortest first
+/// ([`FileIndex::query_inside`]). Shown below the first phase's, never
+/// among them. A scan of the disk -- up to a few hundred milliseconds on a
+/// large index -- so it stops as soon as `cancelled` says so.
+pub fn search_inside(
+    index: &FileIndex,
+    query: &str,
+    filter: Option<Category>,
+    limit: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Vec<Found> {
+    let accept = |name: &str, is_dir: bool| filter.is_none_or(|filter| filter.holds(name, is_dir));
+    index
+        .query_inside(query, kinds(filter), limit, &accept, cancelled)
+        .into_iter()
+        .filter_map(Found::from_hit)
+        .collect()
+}
+
+/// The kinds `filter` asks of the index: folders alone for *Folders*.
+fn kinds(filter: Option<Category>) -> Kinds {
+    match filter {
+        Some(Category::Folders) => Kinds::Folders,
+        _ => Kinds::FoldersAndFiles,
+    }
 }

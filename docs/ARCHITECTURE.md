@@ -123,7 +123,7 @@ once Lumen was measured well inside them (7.36).
 | **F13** | World clock and weather: any city's time and weather, compared with where the user is, from a bundled catalogue of places browsed by continent, country and city | **Done.** World Clock: the view over 34,152 bundled cities with a drill-down pill, both row layouts, *My Places*, `time in vancouver` and `3pm vancouver` in the root list, and a settings page with the working-hours overlap. Weather: Open-Meteo, a 15-minute cache, the list, `weather in vancouver` in the root list, the report at full width or beside the list, and a settings page. See F13 decisions |
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
-| **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; slice 2's watcher not yet measured idle |
+| **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b); slice 2's watcher and the idle working set with a large index not yet measured |
 
 ### F4 build order is not optional
 
@@ -2639,6 +2639,18 @@ running off the UI thread, by a name scan that answers a million names in a
 few milliseconds, and by one- and two-letter queries in root searching only
 what was used ([`FILE-SEARCH.md`](FILE-SEARCH.md), "One or two letters
 search what you use").
+
+*Revised again by F16 (steps c3a and c3b).* The ceiling is gone. Every scope
+is indexed to its end on disk, and memory holds a hot layer of names within
+`HOT_BUDGET` (8 MB): what was used, then folders and the shallowest files.
+The budget is still idle memory's. `files.index-detail` (`complete`,
+`balanced`, `compact`) decides only the word tables on disk, never the
+ranking. The trade is root's alone: outside the hot layer, root finds an
+entry by the start of one of its words, never inside one. *Search Files*
+answers in two phases. The first is root's path at the view's limit, drawn
+at once. The second scans the disk for the matches inside a word, is
+cancelled by the next keystroke, and is appended below. So the view still
+finds every entry ([`FILE-SEARCH.md`](FILE-SEARCH.md), "Step c3b").
 
 ### 7.21 Secondary indexes are searched but never browsed
 

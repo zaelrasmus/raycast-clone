@@ -541,7 +541,7 @@ Frecency is by row, so it applies to disk rows too. The disk's best `limit`
 is asked without frecency. That is enough, because every used entry is in
 memory and frecency only reorders within a tier. One call answers; the disk
 part is milliseconds. *Search Files* (`query_where`) takes the same path
-at any length until c3b.
+at any length, then a second phase for what is inside a word (c3b).
 
 **Used after the load.** An entry used since the layer was selected has its
 name read by row in `set_boosts` and kept beside the layer
@@ -609,7 +609,110 @@ set with the real index (`measure-idle.ps1`, which starts the launcher).
 
 **Left for c3b:** *Search Files* on the disk with mid-word matches added
 progressively (`Store::substring`, cancellable), so the view again finds
-every entry inside a word.
+every entry inside a word. Done below.
+
+### Step c3b: Search Files on disk, as built
+
+*Search Files* finds every match again. Its first answer is drawn at once,
+and the matches inside a word outside the hot layer follow below it.
+
+**Two phases.**
+
+1. **First** (`file_search::search`, `FileIndex::query_where`): the hot
+   layer, the used outside it, and `Store::ranked`, merged as root merges
+   them, at the view's limit (200). Any length: under three characters it
+   is word starts only, as before. Drawn as soon as it answers.
+2. **Second** (`file_search::search_inside`, `FileIndex::query_inside`):
+   `Store::substring_where` for the room the first left. It skips the rows of
+   the hot layer and the used outside it, which the first already searched
+   inside every word. Since a match inside a word is never a word's start,
+   nothing it finds was in the first answer. It is appended below, so no
+   row shown moves, and the selection stays on its id. The session
+   de-duplicates again by entry anyway.
+
+The second phase runs only when `FileIndex::searches_inside` holds: the hot
+layer is not the whole index, and a word of the query has three
+characters. A complete hot layer already finds inside every word. It also
+runs only when the first phase left room under the limit. The type filter
+and the kinds apply inside both phases, as rows are read. The limit counts
+both.
+
+**The session** (`file_search::session`):
+
+- `found_first(generation, found)` draws the first phase and asks
+  `Effect::SearchInside { generation, query, filter, limit }`.
+- `found_inside(generation, found)` appends what arrives.
+- `found` is still the whole answer, with nothing to follow.
+- An answer to an older generation is dropped, in either phase.
+- While the second phase runs, the section's subtitle says
+  *Searching...*, the slot *Indexing...* uses. Nothing new in the
+  vocabulary.
+- An empty first phase shows neither *No files match* nor the drive hint
+  until the second answers.
+
+**Cancelled by the next keystroke.** The launcher counts keystrokes and
+changes of type as before. The second phase is cancelled against the count
+its first phase was asked at, so a keystroke typed between the two
+abandons it before it scans. The scan asks every 4 096 rows. A keystroke
+that changes nothing, such as a trailing space trimmed away, still bumps
+the count. So the session now asks again when what is typed was not wholly
+answered (`Session::pending`). Before this, such a keystroke could leave a
+search abandoned and never redone.
+
+**The scan skips after it matches.** `skip` is a binary search over the hot
+layer's rows. It is asked only of a name that matched inside a word, not of
+every name scanned. Asked first, in one run, it put a balanced scan at
+215 ms p50 rather than 172.
+
+**Tests:**
+
+- `outside_the_hot_layer_the_second_phase_finds_a_match_inside_a_word`
+- `the_second_phase_keeps_to_the_filter_and_stops_when_cancelled`
+- `there_is_no_second_phase_with_a_complete_hot_layer_or_short_words`
+- `the_first_phase_is_shown_at_once_and_the_second_appended_below`
+- `a_second_phase_for_an_older_query_is_dropped`
+- `the_limit_counts_both_phases`
+- `an_empty_first_phase_says_nothing_until_the_second_answers`
+- `a_search_cut_short_by_a_keystroke_that_changed_nothing_is_asked_again`
+- `a_built_index_finds_inside_a_word_outside_the_hot_layer`: the view
+  finds `myplan.rs` outside the hot layer, which it did not before c3b.
+
+**Measured** (`DISK_BENCH=files`, release, warm). The production store of
+the real index (500 000 entries, 56.4 % hot, not complete), 200 entries
+used, folders and files, limit 200. p50 / p95 ms:
+
+| level | query | first | rows | second | both | second, room 200 | rows |
+| - | - | - | - | - | - | - | - |
+| balanced | `inv` | 7.22 / 8.45 | 200 | -- | 7.15 / 8.49 | 172 / 209 | 200 |
+| balanced | `report` | 9.45 / 11.05 | 200 | -- | 9.70 / 11.19 | 173 / 201 | 0 |
+| balanced | `html` | 9.41 / 11.20 | 200 | -- | 5.98 / 7.54 | 178 / 210 | 0 |
+| balanced | `zqxj` | 0.49 / 0.73 | 0 | 97 / 191 | 170 / 188 | 185 / 206 | 0 |
+| balanced | `license` | 4.64 / 5.56 | 200 | -- | 4.49 / 5.29 | 167 / 218 | 2 |
+| complete | `inv` | 8.37 / 9.09 | 200 | -- | 7.56 / 8.68 | 7.03 / 8.05 | 200 |
+| complete | `report` | 9.77 / 11.45 | 200 | -- | 10.53 / 11.71 | 2.91 / 3.53 | 0 |
+| complete | `html` | 9.79 / 11.25 | 200 | -- | 9.90 / 11.51 | 204 / 222 | 0 |
+| complete | `zqxj` | 1.07 / 1.30 | 0 | 0.10 / 0.14 | 1.08 / 1.32 | 0.10 / 0.14 | 0 |
+| complete | `license` | 4.05 / 4.60 | 200 | -- | 5.02 / 5.61 | 20.7 / 23.6 | 2 |
+
+*Second* is the phase for the room the first left. `--` means the first
+filled the limit, so no second phase ran. *Second, room 200* is the phase
+asked for a whole limit: what it costs when the first finds little.
+
+- **The first phase is what the user waits for:** 0.5--11 ms at either
+  level. At limit 200 it is slower than root's N = 8 (0.4--2 ms, c3a),
+  since each of the 200 rows is read.
+- **Common queries never reach the second phase.** `inv`, `report`, `html`
+  and `license` fill 200 in the first. A mid-word match then has no room,
+  as before c3a, when the limit cut the list the same way.
+- **A rare query pays for the scan at balanced:** `zqxj` finds nothing
+  in 1 ms, then scans for 100--190 ms behind *Searching...*. At complete
+  the trigram index answers in 0.1 ms. `html` at complete is the known
+  trigram case: 91 000 hits joined to `files` (c2b).
+- **The scan costs what `Store::substring` costs.** The same session's
+  c2b store bench measured plain `Store::substring` at balanced at
+  165--190 ms (`zqxj`, `inv`, `report`, `html`). c2b recorded 82--100 ms
+  for it on another day. The machine, not this step, doubled it. The
+  second phase adds the skip and the filter, asked only of matches.
 
 ---
 

@@ -2171,6 +2171,8 @@ fn main() {
     // `DISK_BENCH=root` measures root's query, the hot layer then the disk
     // (step c3a).
     let only_root = std::env::var("DISK_BENCH").as_deref() == Ok("root");
+    // `DISK_BENCH=files` measures *Search Files*' two phases (step c3b).
+    let only_files = std::env::var("DISK_BENCH").as_deref() == Ok("files");
 
     // `target/tmp` is where cargo points benches; its parent is `target`.
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -2192,6 +2194,10 @@ fn main() {
     }
     if only_root {
         root_section(&dir, &real_db, started);
+        return;
+    }
+    if only_files {
+        files_section(&dir, &real_db, started);
         return;
     }
 
@@ -2570,6 +2576,102 @@ fn root_section(dir: &Path, real_db: &Path, started: Instant) {
     println!("\nTotal run {:.0} s.", started.elapsed().as_secs_f64());
     drop(index);
     remove(&path);
+    remove(real_db);
+}
+
+/// *Search Files*' queries in step c3b.
+const FILES_QUERIES: [&str; 5] = ["inv", "report", "html", "zqxj", "license"];
+
+/// Step c3b: *Search Files* on the production store of the real index, at
+/// `balanced` and `complete`, loaded as a start loads it with [`USED`]
+/// entries used. Each query is timed to its first phase -- the hot layer
+/// and the disk's word index, what the view draws at once -- and to its
+/// second, the matches inside a word outside the hot layer, asked for what
+/// room the first left under the limit.
+fn files_section(dir: &Path, real_db: &Path, started: Instant) {
+    use lumen_core::file_index::FileIndex;
+    use lumen_core::file_search::{self, LIMIT as VIEW_LIMIT};
+    use lumen_core::frecency::Frecency;
+
+    println!("# Search Files on disk: two phases (step c3b)");
+    let rows = load_real(real_db);
+    let real = corpus_of(&rows);
+    drop(rows);
+    let walked = walked_of(&real);
+    drop(real);
+    let entries = walked.entries.len();
+    progress(started, &format!("real: {entries} entries"));
+    let mut rng = Rng(0x5eed_c3b0);
+    let mut frecency = Frecency::new();
+    for _ in 0..USED {
+        let entry = &walked.entries[rng.below(entries)];
+        let prefix = if entry.is_dir { "folder" } else { "file" };
+        frecency.record(&format!("{prefix}:{}", entry.path.display()));
+    }
+
+    println!(
+        "\np50 / p95 / max ms, warm, the store's own page cache; folders and files, no filter, limit {VIEW_LIMIT}. *First* is `file_search::search`, drawn at once. *Second* is `file_search::search_inside` for the room left, run after the first; `--` when the first filled the limit and no second runs. *Both* is the two in a row: when the list is complete. *Second, room {VIEW_LIMIT}* is the second phase asked for a whole limit, what it costs when the first phase finds little. Rows are what each gave.\n"
+    );
+    println!(
+        "| level | hot | query | first | rows | second | rows | both | second, room {VIEW_LIMIT} | rows |"
+    );
+    println!("| - | - | - | - | - | - | - | - | - | - |");
+    for level in [IndexDetail::Balanced, IndexDetail::Complete] {
+        let path = dir.join("store-files.db");
+        remove(&path);
+        let mut store = Store::open_with(&path, level).expect("open the store");
+        store.replace(&walked, "bench").expect("write the store");
+        drop(store);
+        let index = FileIndex::load(Store::open(&path).expect("open the store")).expect("load");
+        index.set_boosts(&frecency);
+        progress(started, &format!("{level:?}: built and loaded"));
+        let hot = format!(
+            "{:.1} %{}",
+            100.0 * index.hot_len() as f64 / index.len() as f64,
+            if index.hot_is_complete() {
+                ", complete"
+            } else {
+                ""
+            }
+        );
+        for query in FILES_QUERIES {
+            let first = time(|| file_search::search(&index, query, None, &|| false).len());
+            let room = VIEW_LIMIT - first.matches;
+            let inside = file_search::searches_inside(&index, query);
+            let second = (inside && room > 0).then(|| {
+                time(|| file_search::search_inside(&index, query, None, room, &|| false).len())
+            });
+            let whole = inside.then(|| {
+                time(|| {
+                    file_search::search_inside(&index, query, None, VIEW_LIMIT, &|| false).len()
+                })
+            });
+            let both = time(|| {
+                let found = file_search::search(&index, query, None, &|| false).len();
+                found
+                    + file_search::search_inside(&index, query, None, VIEW_LIMIT - found, &|| false)
+                        .len()
+            });
+            println!(
+                "| {level:?} | {hot} | `{query}` | {} | {} | {} | {} | {} | {} | {} |",
+                cell(Some(&first)),
+                first.matches,
+                second
+                    .as_ref()
+                    .map_or("--".to_string(), |second| cell(Some(second))),
+                second.as_ref().map_or(0, |second| second.matches),
+                cell(Some(&both)),
+                whole
+                    .as_ref()
+                    .map_or("--".to_string(), |whole| cell(Some(whole))),
+                whole.as_ref().map_or(0, |whole| whole.matches),
+            );
+        }
+        drop(index);
+        remove(&path);
+    }
+    drop(walked);
+    println!("\nTotal run {:.0} s.", started.elapsed().as_secs_f64());
     remove(real_db);
 }
 

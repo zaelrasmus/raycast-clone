@@ -804,11 +804,14 @@ copy the path. The full design is in
   scope; **`include-hidden`** takes dot-files and the Windows hidden attribute
   too.
 - **`index-detail`** is `"complete"`, `"balanced"` (the default) or
-  `"compact"`: how much the index keeps on disk beside the names. `complete`
-  also finds matches inside words without a scan (about 150 MB for 500 000
-  entries), `balanced` about 110 MB, `compact` about 90 MB. Changing it
-  rebuilds only the word index, in the background and never a walk; the
-  daemon applies it at start and whenever the setting changes.
+  `"compact"`: how much the index keeps on disk beside the names. Every level
+  ranks the same. `complete` also keeps a trigram index, so *Search Files*
+  usually finds a match inside a word in milliseconds rather than by a
+  scan of every name (a fifth of a second at 500 000 entries); it takes about
+  150 MB for 500 000 entries, `balanced` about 110 MB, `compact` about
+  90 MB. Changing it rebuilds only the word index, in the background and
+  never a walk; the daemon applies it at start and whenever the setting
+  changes.
 - An F3 config still loads: `roots` becomes `scopes`, and `limits` is ignored.
 - An internal drive with no scope on it is offered in *Search Files*:
   *Choose folders...* opens the picker on it, *Not now* writes it to
@@ -821,11 +824,20 @@ always walked, even inside a skipped, excluded or hidden folder (say
 `~/AppData/Roaming/Lumen/config` beside `~`), unless it is itself one of the
 `exclusions`.
 
-**Every scope you add is held in memory.** The names are matched in memory
-(about 30 bytes an entry), under a ceiling of 500 000 entries that keeps the
-largest index inside the idle-memory budget. Scopes fill it in order, and the
-log says which one did not fit. Add the folders you search, not whole drives
-you don't.
+**No ceiling: the index is on disk, and a hot layer is in memory.** Every
+scope is indexed to its end. The entries are kept on disk; memory holds a
+*hot layer* of up to 8 MB of names -- what you have used, then folders and
+the shallowest files -- which keeps the launcher inside its idle-memory
+budget with any index. A home folder (tens of thousands of entries) fits
+whole, and then nothing below changes. The log says how much of the index
+is hot.
+
+**Root trades a little for speed; *Search Files* finds everything.** In root,
+an entry outside the hot layer is found by the start of one of its words
+(`report` finds `annual-report.md` and `AnnualReport`), not inside a word
+(`report` does not find `myreport.txt` there). *Search Files* shows the same
+first answer at once, then, saying *Searching...*, adds the matches inside a
+word from the rest of the index below it, up to 200 rows.
 
 **One or two letters search what you use.** Typed in root, they find files and
 folders you have opened from Lumen and names that short (`go`); three letters

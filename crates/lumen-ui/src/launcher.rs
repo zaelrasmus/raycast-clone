@@ -599,6 +599,10 @@ struct FileSearchRun<'a> {
     platform: &'a Arc<dyn Platform>,
     /// Compared before and after a search, which is abandoned when it moved.
     keystrokes: &'a Arc<AtomicU64>,
+    /// The count of `keystrokes` the latest search was asked at, which its
+    /// second phase is cancelled against too: a keystroke between the two
+    /// phases abandons the second before it scans.
+    searched_at: std::cell::Cell<u64>,
     describer: &'a lumen_core::file_search::preview::Describer,
     /// `config.json`, which a folder chosen or a drive declined is written
     /// to (slice 5), and the home folder `~` is written against.
@@ -607,27 +611,58 @@ struct FileSearchRun<'a> {
 }
 
 impl FileSearchRun<'_> {
-    /// The index's answer to `query` in `filter`, or `None` when another
-    /// keystroke came first. No index yet answers nothing.
+    /// The first phase of the index's answer to `query` in `filter`, and
+    /// whether a second follows ([`lumen_core::file_search::searches_inside`]);
+    /// `None` when another keystroke came first. No index yet answers
+    /// nothing.
     async fn search(
         &self,
         cx: &mut gpui::AsyncApp,
         query: String,
         filter: Option<lumen_core::file_search::Category>,
-    ) -> Option<Vec<lumen_core::file_search::Found>> {
+    ) -> Option<(Vec<lumen_core::file_search::Found>, bool)> {
+        let asked = self.keystrokes.load(Ordering::SeqCst);
+        self.searched_at.set(asked);
         let index = self
             .this
             .update(cx, |launcher, _| launcher.files.clone())
             .ok()?;
         let Some(index) = index else {
-            return Some(Vec::new());
+            return Some((Vec::new(), false));
         };
-        let asked = self.keystrokes.load(Ordering::SeqCst);
         let current = self.keystrokes.clone();
         cx.background_executor()
             .spawn(async move {
                 let cancelled = || current.load(Ordering::Relaxed) != asked;
                 let found = lumen_core::file_search::search(&index, &query, filter, &cancelled);
+                let more = lumen_core::file_search::searches_inside(&index, &query);
+                (!cancelled()).then_some((found, more))
+            })
+            .await
+    }
+
+    /// The second phase of the search last asked: at most `limit` matches
+    /// inside a word that the first could not find. A scan of the disk, so
+    /// `None` as soon as a keystroke since that search says so.
+    async fn search_inside(
+        &self,
+        cx: &mut gpui::AsyncApp,
+        query: String,
+        filter: Option<lumen_core::file_search::Category>,
+        limit: usize,
+    ) -> Option<Vec<lumen_core::file_search::Found>> {
+        let index = self
+            .this
+            .update(cx, |launcher, _| launcher.files.clone())
+            .ok()??;
+        let asked = self.searched_at.get();
+        let current = self.keystrokes.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let cancelled = || current.load(Ordering::Relaxed) != asked;
+                let found = lumen_core::file_search::search_inside(
+                    &index, &query, filter, limit, &cancelled,
+                );
                 (!cancelled()).then_some(found)
             })
             .await
@@ -1517,6 +1552,7 @@ impl Launcher {
                 this: &this,
                 platform: &platform,
                 keystrokes: &keystrokes,
+                searched_at: std::cell::Cell::new(0),
                 describer: &describer,
                 config_file: &config_file,
                 home: &home,
@@ -1537,9 +1573,25 @@ impl Launcher {
                             filter,
                         } => {
                             // `None` when superseded: the next search is
-                            // already queued.
-                            if let Some(found) = run.search(cx, query, filter).await {
-                                follow.extend(session.found(generation, found));
+                            // already queued. The first phase is drawn as
+                            // soon as it answers; the second, when there is
+                            // one, is asked for by the session.
+                            if let Some((found, more)) = run.search(cx, query, filter).await {
+                                follow.extend(if more {
+                                    session.found_first(generation, found)
+                                } else {
+                                    session.found(generation, found)
+                                });
+                            }
+                        }
+                        Effect::SearchInside {
+                            generation,
+                            query,
+                            filter,
+                            limit,
+                        } => {
+                            if let Some(found) = run.search_inside(cx, query, filter, limit).await {
+                                follow.extend(session.found_inside(generation, found));
                             }
                         }
                         Effect::Describe(found) => {

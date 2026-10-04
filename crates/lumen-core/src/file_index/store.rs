@@ -1016,6 +1016,24 @@ impl Store {
         limit: usize,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<RankedRow>> {
+        self.substring_where(query, kinds, limit, &|_| false, &|_, _| true, cancelled)
+    }
+
+    /// [`Self::substring`] without the rows `skip` names, over the entries
+    /// `filter` takes -- asked, as [`Self::ranked`] asks, with the folded
+    /// name and whether it is a folder: *Search Files*' second phase, which
+    /// skips what the hot layer already searched and keeps to the type
+    /// filter. Both apply while the rows are read, so the answer is the
+    /// first `limit` of what is wanted; `skip` before a row is fetched.
+    pub fn substring_where(
+        &self,
+        query: &str,
+        kinds: Kinds,
+        limit: usize,
+        skip: &dyn Fn(u32) -> bool,
+        filter: &dyn Fn(&str, bool) -> bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<RankedRow>> {
         let Some(query) = Query::new(query) else {
             return Ok(Vec::new());
         };
@@ -1037,7 +1055,7 @@ impl Store {
         };
         let mut split = String::new();
         let mut take = |row: Fetched, found: &mut Vec<(Fetched, u8)>| {
-            if kinds == Kinds::Folders && !row.is_dir {
+            if (kinds == Kinds::Folders && !row.is_dir) || !filter(&row.folded, row.is_dir) {
                 return;
             }
             split.clear();
@@ -1075,10 +1093,11 @@ impl Store {
                 if stop() {
                     return Ok(Vec::new());
                 }
-                if !inside(row.get_ref(1)?.as_str()?) {
+                let id = row.get(0)?;
+                if !inside(row.get_ref(1)?.as_str()?) || skip(id) {
                     continue;
                 }
-                if let Some(row) = self.fetch(row.get(0)?)? {
+                if let Some(row) = self.fetch(id)? {
                     take(row, &mut found);
                     if found.len() == limit {
                         break;
@@ -1099,8 +1118,9 @@ impl Store {
                 if stop() {
                     return Ok(Vec::new());
                 }
-                if inside(row.get_ref(1)?.as_str()?) {
-                    ids.push(row.get::<_, u32>(0)?);
+                let id = row.get::<_, u32>(0)?;
+                if inside(row.get_ref(1)?.as_str()?) && !skip(id) {
+                    ids.push(id);
                 }
             }
             ids.sort_unstable();

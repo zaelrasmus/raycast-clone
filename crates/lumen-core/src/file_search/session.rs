@@ -9,6 +9,12 @@
 //! The list is [`Filtering::Extension`] either way: the host never filters
 //! it again.
 //!
+//! An answer can come in two phases (step c3b). The first is what the hot
+//! layer and the disk's word index find, in milliseconds, and is drawn at
+//! once. When the index is larger than its hot layer, a second follows:
+//! the matches inside a word the first could not see, appended below it
+//! ([`Effect::SearchInside`]), with *Searching...* said until it lands.
+//!
 //! The pane is the same: reading a file's first bytes and its times is
 //! disk work, so a row's detail is asked for ([`Effect::Describe`]) when the
 //! selection lands on it, and until it arrives the row shows what is known
@@ -58,6 +64,16 @@ pub enum Effect {
         query: String,
         filter: Option<Category>,
     },
+    /// Ask the index for the second phase of the search of `generation`
+    /// -- at most `limit` matches inside a word the first could not find
+    /// ([`super::search_inside`]) -- off the UI thread, and hand the answer
+    /// to [`Session::found_inside`].
+    SearchInside {
+        generation: u64,
+        query: String,
+        filter: Option<Category>,
+        limit: usize,
+    },
     /// Build the pane for this entry off the UI thread
     /// ([`preview::describe`]) and hand it to [`Session::described`].
     Describe(Found),
@@ -104,6 +120,8 @@ pub struct Session {
     /// The latest answer, and the query and filter it answers.
     results: Vec<Found>,
     answered: Option<(String, Option<Category>)>,
+    /// The answer shown is the first phase, and the second is under way.
+    searching: bool,
     /// Bumped for every search asked, so an older answer is known as one.
     generation: u64,
     /// Each pane built, by path, and the paths asked for.
@@ -130,6 +148,7 @@ impl Session {
             filter: None,
             results: Vec::new(),
             answered: None,
+            searching: false,
             generation: 0,
             details: HashMap::new(),
             asked: HashSet::new(),
@@ -183,7 +202,7 @@ impl Session {
         match event {
             Event::QueryChanged { query } => {
                 let query = query.trim().to_string();
-                if query == self.query {
+                if query == self.query && !self.pending() {
                     return Vec::new();
                 }
                 self.query = query;
@@ -191,7 +210,7 @@ impl Session {
             }
             Event::ScopeChanged { scope, option } if scope == TYPE_SCOPE => {
                 let filter = Category::from_id(&option);
-                if filter == self.filter {
+                if filter == self.filter && !self.pending() {
                     return Vec::new();
                 }
                 self.filter = filter;
@@ -226,15 +245,70 @@ impl Session {
         }
     }
 
-    /// The index's answer to the search of `generation`. Dropped when a
-    /// later one was asked: it answers a query nobody is looking at.
+    /// The index's whole answer to the search of `generation`. Dropped
+    /// when a later one was asked: it answers a query nobody is looking at.
     pub fn found(&mut self, generation: u64, found: Vec<Found>) -> Vec<Effect> {
         if generation != self.generation {
             return Vec::new();
         }
         self.results = found;
         self.answered = Some((self.query.clone(), self.filter));
+        self.searching = false;
         self.shown_again()
+    }
+
+    /// The first phase of the answer to the search of `generation`, with a
+    /// second to follow (`docs/FILE-SEARCH.md`, "Step c3b"): drawn at once,
+    /// saying *Searching...*, and the rest asked for up to the limit. A
+    /// first phase already at the limit is the whole answer.
+    pub fn found_first(&mut self, generation: u64, found: Vec<Found>) -> Vec<Effect> {
+        if generation != self.generation {
+            return Vec::new();
+        }
+        let room = super::LIMIT.saturating_sub(found.len());
+        self.results = found;
+        self.answered = Some((self.query.clone(), self.filter));
+        self.searching = room > 0;
+        let mut effects = self.shown_again();
+        if self.searching {
+            effects.push(Effect::SearchInside {
+                generation,
+                query: self.query.clone(),
+                filter: self.filter,
+                limit: room,
+            });
+        }
+        effects
+    }
+
+    /// The second phase of the search of `generation`: appended below the
+    /// first, without what it already shows and to the limit, so no row
+    /// shown moves and the selection stays where it is. Dropped when a
+    /// later search was asked.
+    pub fn found_inside(&mut self, generation: u64, found: Vec<Found>) -> Vec<Effect> {
+        if generation != self.generation || !self.searching {
+            return Vec::new();
+        }
+        self.searching = false;
+        let mut shown: HashSet<Found> = self.results.iter().cloned().collect();
+        for found in found {
+            if self.results.len() == super::LIMIT {
+                break;
+            }
+            if shown.insert(found.clone()) {
+                self.results.push(found);
+            }
+        }
+        self.shown_again()
+    }
+
+    /// What is typed has not been wholly answered. A keystroke that
+    /// changes nothing -- a space trimmed away -- has still cancelled the
+    /// search under way, so then it is asked again.
+    fn pending(&self) -> bool {
+        !self.query.is_empty()
+            && (self.searching
+                || self.answered.as_ref() != Some(&(self.query.clone(), self.filter)))
     }
 
     /// The pane for `path`, built.
@@ -310,6 +384,7 @@ impl Session {
     /// Search again for what is typed, or show the recents for nothing.
     fn ask(&mut self) -> Vec<Effect> {
         self.generation += 1;
+        self.searching = false;
         if self.query.is_empty() {
             self.results.clear();
             self.answered = None;
@@ -399,7 +474,12 @@ impl Session {
         if !items.is_empty() {
             sections.push(Section {
                 title: Some(title.into()),
-                subtitle: self.status.indexing.then(|| "Indexing\u{2026}".into()),
+                // The second phase is the nearer news: it ends in moments.
+                subtitle: if self.searching {
+                    Some("Searching\u{2026}".into())
+                } else {
+                    self.status.indexing.then(|| "Indexing\u{2026}".into())
+                },
                 items,
             });
         } else if let Some(drive) = self.offers.first().filter(|_| self.found_nothing()) {
@@ -428,6 +508,7 @@ impl Session {
     fn found_nothing(&self) -> bool {
         self.status.scopes
             && !self.status.indexing
+            && !self.searching
             && !self.query.is_empty()
             && self.results.is_empty()
             && self.answered.as_ref() == Some(&(self.query.clone(), self.filter))
@@ -449,9 +530,9 @@ impl Session {
                 "No recent files",
                 Some("Type to search every indexed file and folder"),
             )
-        } else if self.answered.as_ref() != Some(&(self.query.clone(), self.filter)) {
-            // Asked, and not answered yet: a search is milliseconds, and
-            // saying "no match" for them would flash.
+        } else if self.pending() {
+            // Asked, and not wholly answered yet: a search is milliseconds,
+            // and saying "no match" for them would flash.
             ("", None)
         } else {
             ("No files match", None)
@@ -823,7 +904,8 @@ mod tests {
                 filter: Some(Category::Code)
             }]
         );
-        // The same type again asks nothing.
+        // Answered, the same type again asks nothing.
+        session.found(2, vec![file("C:\\plan.rs")]);
         assert!(filter(&mut session, "code").is_empty());
     }
 
@@ -1257,6 +1339,198 @@ mod tests {
         let asked = filter(&mut session, "folders");
         answer(&mut session, asked);
         assert_eq!(titles(&session), ["plans"]);
+    }
+
+    /// The second phase the session asks for, as `(generation, query,
+    /// filter, limit)`.
+    fn inside_asked(effects: &[Effect]) -> Option<(u64, String, Option<Category>, usize)> {
+        effects.iter().find_map(|effect| match effect {
+            Effect::SearchInside {
+                generation,
+                query,
+                filter,
+                limit,
+            } => Some((*generation, query.clone(), *filter, *limit)),
+            _ => None,
+        })
+    }
+
+    fn subtitle(session: &Session) -> Option<String> {
+        list(&session.view())
+            .sections
+            .last()
+            .and_then(|section| section.subtitle.clone())
+    }
+
+    /// The first phase is drawn as it arrives, saying more is coming; the
+    /// second is appended below it, without what is already shown.
+    #[test]
+    fn the_first_phase_is_shown_at_once_and_the_second_appended_below() {
+        let mut session = Session::new(Vec::new(), READY);
+        let asked = generation(&query(&mut session, "port"));
+        let effects = session.found_first(asked, vec![file("C:\\report.txt"), file("C:\\port.md")]);
+        let Effect::Render(view) = &effects[0] else {
+            panic!("the first phase is drawn first");
+        };
+        let shown: Vec<&str> = list(view).items().map(|item| item.title.as_str()).collect();
+        assert_eq!(shown, ["report.txt", "port.md"]);
+        assert_eq!(
+            list(view).sections[0].subtitle.as_deref(),
+            Some("Searching\u{2026}")
+        );
+        assert_eq!(
+            inside_asked(&effects),
+            Some((asked, "port".into(), None, super::super::LIMIT - 2))
+        );
+
+        let effects = session.found_inside(
+            asked,
+            vec![file("C:\\port.md"), file("C:\\deep\\myreport.txt")],
+        );
+        assert!(matches!(effects[0], Effect::Render(_)));
+        assert_eq!(titles(&session), ["report.txt", "port.md", "myreport.txt"]);
+        assert_eq!(subtitle(&session), None);
+    }
+
+    #[test]
+    fn a_second_phase_for_an_older_query_is_dropped() {
+        let mut session = Session::new(Vec::new(), READY);
+        let first = generation(&query(&mut session, "port"));
+        session.found_first(first, vec![file("C:\\report.txt")]);
+        let second = generation(&query(&mut session, "porta"));
+        assert!(
+            session
+                .found_inside(first, vec![file("C:\\deep\\myreport.txt")])
+                .is_empty()
+        );
+        assert_eq!(titles(&session), ["report.txt"]);
+        session.found(second, vec![file("C:\\portable.exe")]);
+        assert!(
+            session
+                .found_inside(first, vec![file("C:\\x.txt")])
+                .is_empty()
+        );
+        assert_eq!(titles(&session), ["portable.exe"]);
+        assert_eq!(subtitle(&session), None);
+    }
+
+    /// A whole answer, or a first phase already at the limit, asks for
+    /// nothing more; the two phases together never pass the limit.
+    #[test]
+    fn the_limit_counts_both_phases() {
+        let limit = super::super::LIMIT;
+        let many = |prefix: &str, count: usize| {
+            (0..count)
+                .map(|n| file(&format!("C:\\{prefix}{n}.txt")))
+                .collect::<Vec<_>>()
+        };
+        let mut session = Session::new(Vec::new(), READY);
+        let asked = generation(&query(&mut session, "port"));
+        assert_eq!(inside_asked(&session.found(asked, many("a", 3))), None);
+
+        let asked = generation(&query(&mut session, "ports"));
+        let effects = session.found_first(asked, many("a", limit));
+        assert_eq!(inside_asked(&effects), None);
+        assert_eq!(subtitle(&session), None);
+
+        let asked = generation(&query(&mut session, "portsx"));
+        let effects = session.found_first(asked, many("a", 3));
+        assert_eq!(inside_asked(&effects).unwrap().3, limit - 3);
+        session.found_inside(asked, many("b", limit));
+        let shown = titles(&session);
+        assert_eq!(shown.len(), limit);
+        assert_eq!(shown[..4], ["a0.txt", "a1.txt", "a2.txt", "b0.txt"]);
+    }
+
+    /// Nothing yet from the first phase is not "No files match" while the
+    /// second runs.
+    #[test]
+    fn an_empty_first_phase_says_nothing_until_the_second_answers() {
+        let mut session = Session::new(Vec::new(), READY).with_drives(offered());
+        let asked = generation(&query(&mut session, "zqxj"));
+        session.found_first(asked, Vec::new());
+        assert_eq!(empty_title(&session), "");
+        assert!(list(&session.view()).is_empty(), "no hint yet");
+
+        session.found_inside(asked, Vec::new());
+        assert_eq!(
+            titles(&session),
+            ["No files match. Files on D:\\ aren't searched."]
+        );
+    }
+
+    /// A keystroke that changes nothing -- a space trimmed away -- still
+    /// cancelled the search under way, so one still pending is asked again;
+    /// one already answered is not.
+    #[test]
+    fn a_search_cut_short_by_a_keystroke_that_changed_nothing_is_asked_again() {
+        let mut session = Session::new(Vec::new(), READY);
+        let first = generation(&query(&mut session, "port"));
+        let again = generation(&query(&mut session, "port "));
+        assert!(again > first);
+
+        session.found_first(again, vec![file("C:\\report.txt")]);
+        let effects = filter(&mut session, ALL_TYPES);
+        assert!(matches!(effects[..], [Effect::Search { .. }]));
+        let asked = generation(&effects);
+
+        session.found_first(asked, vec![file("C:\\report.txt")]);
+        session.found_inside(asked, Vec::new());
+        assert!(query(&mut session, " port").is_empty());
+        assert!(filter(&mut session, ALL_TYPES).is_empty());
+    }
+
+    /// The whole loop against an index larger than its hot layer: the first
+    /// phase finds by word start, the second inside a word, both in the
+    /// filter.
+    #[test]
+    fn a_built_index_finds_inside_a_word_outside_the_hot_layer() {
+        let tree = Tree::new("session-inside");
+        tree.file("a/b/plan.rs")
+            .file("a/b/myplan.rs")
+            .file("a/b/myplan.md");
+        let path = tree.path(".files.db");
+        drop(FileIndex::build(&path, &tree.rules()).unwrap());
+        let store = crate::file_index::Store::open(&path).unwrap();
+        let index = FileIndex::load_within(store, &[], 0).unwrap();
+        assert!(!index.hot_is_complete());
+        let mut session = Session::new(Vec::new(), READY);
+
+        let answer = |session: &mut Session, effects: Vec<Effect>| {
+            let Some(Effect::Search {
+                generation,
+                query,
+                filter,
+            }) = effects
+                .into_iter()
+                .find(|e| matches!(e, Effect::Search { .. }))
+            else {
+                panic!("expected a search");
+            };
+            let found = super::super::search(&index, &query, filter, &|| false);
+            let effects = if super::super::searches_inside(&index, &query) {
+                session.found_first(generation, found)
+            } else {
+                session.found(generation, found)
+            };
+            if let Some((generation, query, filter, limit)) = inside_asked(&effects) {
+                let found = super::super::search_inside(&index, &query, filter, limit, &|| false);
+                session.found_inside(generation, found);
+            }
+        };
+
+        let asked = query(&mut session, "plan");
+        answer(&mut session, asked);
+        assert_eq!(titles(&session), ["plan.rs", "myplan.md", "myplan.rs"]);
+
+        let asked = filter(&mut session, "code");
+        answer(&mut session, asked);
+        assert_eq!(titles(&session), ["plan.rs", "myplan.rs"]);
+
+        // Under three letters, word starts only.
+        let asked = query(&mut session, "pl");
+        answer(&mut session, asked);
+        assert_eq!(titles(&session), ["plan.rs"]);
     }
 
     /// No eight-row cap: the view shows as many as the index finds, to
