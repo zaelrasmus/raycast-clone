@@ -163,8 +163,12 @@ impl Platform for WindowsPlatform {
         apps::enumerate(extra_folders)
     }
 
-    fn watch_applications(&self, sink: ApplicationsSink) -> Result<()> {
-        app_watch::start(sink)
+    fn watch_applications(
+        &self,
+        sink: ApplicationsSink,
+        extra_folders: &[std::path::PathBuf],
+    ) -> Result<()> {
+        app_watch::start(sink, extra_folders)
     }
 
     fn load_icon(&self, source: &IconSource, size_px: u32) -> Result<IconImage> {

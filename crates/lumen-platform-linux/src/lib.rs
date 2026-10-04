@@ -105,7 +105,11 @@ impl Platform for LinuxPlatform {
         todo!("F5: XDG desktop entries")
     }
 
-    fn watch_applications(&self, _sink: ApplicationsSink) -> Result<()> {
+    fn watch_applications(
+        &self,
+        _sink: ApplicationsSink,
+        _extra_folders: &[std::path::PathBuf],
+    ) -> Result<()> {
         // inotify on every `applications/` folder under `` and
         // ``. Package managers write `.desktop` files there and
         // nowhere else, so the watch is simpler than Windows', which needs a

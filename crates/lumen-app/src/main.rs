@@ -363,11 +363,16 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
 
     // Installing or removing an application re-indexes, rather than waiting
     // for the next restart. Through the queue like everything else: the
-    // platform's watch thread only pushes.
+    // platform's watch thread only pushes. The extra application folders are
+    // the ones configured now: the watch is never restarted (see
+    // `reload_config`).
     let apps_tx = tx.clone();
-    let watching = platform.watch_applications(lumen_platform::ApplicationsSink::new(move || {
-        let _ = apps_tx.unbounded_send(Message::ApplicationsChanged);
-    }));
+    let watching = platform.watch_applications(
+        lumen_platform::ApplicationsSink::new(move || {
+            let _ = apps_tx.unbounded_send(Message::ApplicationsChanged);
+        }),
+        &config.apps.folders(),
+    );
     if let Err(error) = watching {
         log::warn!(
             "newly installed applications will appear after `lumen reload` or a restart: {error:#}"
@@ -1469,6 +1474,15 @@ fn reload_config(
 
     if applied.theme != older.theme || applied.style != older.style {
         let _ = surfaces.reload_theme.unbounded_send(());
+    }
+
+    // The launcher re-indexes the new list below, at once. The watch keeps
+    // the folders it started with: its thread has no stop and lives as long
+    // as the daemon, and a second one per edit would never end.
+    if applied.apps.extra_folders != older.apps.extra_folders {
+        log::info!(
+            "application folders re-indexed; programs added to a new folder later              appear after `lumen reload` or a restart"
+        );
     }
 
     if applied.calculator.number_format != older.calculator.number_format {

@@ -23,7 +23,9 @@ an aesthetic worth looking at fifty times a day.
 - **Application index** covering Win32 shortcuts *and* packaged apps in one pass,
   read from the shell's `AppsFolder` — the same list as Start → All apps. It
   follows installs and uninstalls by itself, a few seconds after they happen,
-  by watching the Start Menu folders and the packaged-app registry.
+  by watching the Start Menu folders and the packaged-app registry. Portable
+  programs nothing registers are listed too, from the folders named in
+  `apps.extra-folders`.
 - **High-resolution icons** via `IShellItemImageFactory`, extracted off the UI
   thread, cached, and requested well above their drawn size so they stay crisp
   at any display scale.
@@ -417,6 +419,9 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
     "use-ignore-files": true,
     "include-hidden": false,
     "default-skips-off": []
+  },
+  "apps": {
+    "extra-folders": []
   },
   "preferred-browser": null
 }
@@ -820,6 +825,10 @@ copy the path. The full design is in
 - An internal drive with no scope on it is offered in *Search Files*:
   *Choose folders...* opens the picker on it, *Not now* writes it to
   **`declined-drives`** so it is not offered again.
+
+| Key | |
+| --- | --- |
+| `apps.extra-folders` | Folders whose programs are listed as **applications**, not files: `["D:/Tools"]`, `~` for home. `.exe`, `.lnk` and `.url` files in the folder and one subfolder down (`Tools\Obsidian\Obsidian.exe`, not deeper). One Start already lists is not repeated. Watched, so a program dropped in appears in seconds; a folder added while Lumen runs is indexed at once and watched from the next start. |
 
 Not walked into by default: `node_modules`, `target`, `build`, `dist`, `.git`,
 `.venv`, `AppData`, the tool caches `.rustup`, `.cargo`, `.npm`, `.nuget`,

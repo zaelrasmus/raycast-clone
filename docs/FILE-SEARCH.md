@@ -1222,19 +1222,32 @@ and out of the name index.
 
 ## Extra application folders
 
+**Built:** listing in `f8c7cfd`, watching after it (slice 7).
+
 Vicinae lets the user name folders whose files count as applications. On
 Windows that is the portable-application problem: `D:\Tools\Obsidian\
-Obsidian.exe` is not in `AppsFolder` and never appears in Lumen today.
+Obsidian.exe` is not in `AppsFolder`, so before slice 7 Lumen never listed it.
 
 - `apps.extra-folders` -- a list of folders, empty by default.
 - In each, `.exe`, `.lnk` and `.url` files up to two levels down are listed as
   **applications** (`Kind::Application`), named by file name, not as files.
-  Two levels covers `Tools\Obsidian\Obsidian.exe`; deeper is where installers
-  hide their helpers.
+  The folder's own files are the first level and its subfolders' files the
+  second: `Tools\Obsidian\Obsidian.exe` is listed, `Tools\Obsidian\bin\
+  helper.exe` is not. Deeper is where installers hide their helpers. `~`
+  resolves to home, as in `files.scopes`.
 - Launching and icons need nothing new: `LaunchTarget::ShellExecute` and
   `IconSource::ShellItem` already accept a path to an `.exe`.
-- An entry whose target `AppsFolder` already lists is not listed twice.
-- Watched like the Start Menu folders (7.34): small folders, a cheap watch.
+- An entry whose target `AppsFolder` already lists is not listed twice: a
+  program by its own path, a shortcut by what it starts. The Desktop
+  shortcuts and the extra folders are one set, so a Desktop shortcut to a
+  program in an extra folder is one application.
+- Watched like the Start Menu folders (7.34), each folder with its
+  subfolders, on the same thread and coalesced the same way. A folder that
+  is missing when the daemon starts is not watched.
+- **A config change** re-indexes at once with the new list. The watch keeps
+  the folders it started with -- its thread lives as long as the daemon and
+  has no stop -- so programs added later to a *new* folder appear after
+  `lumen reload` or a restart; the log says so.
 - On Linux this is the list of extra `.desktop` directories, at F5.
 
 It lives with the application index, not with file search: its rows are
@@ -1358,6 +1371,7 @@ none exists when slice 7 lands, at the end of this one, under its own heading.
 | `search_content(query, scopes, limit)` | Windows Search |
 | `content_coverage(scopes)` | Whether Windows Search indexes each scope |
 | `open_indexing_options()` | Opens the system's settings |
+| `enumerate_applications(extra_folders)`, `watch_applications(sink, extra_folders)` | The extra application folders, passed in resolved (slice 7) |
 | `recent_files()` | The system's recent items: the Recent folder's shortcuts on Windows (slice 3a) |
 | `show_in_folder(path)`, `open_with(path)` | Shell calls `launch` cannot express: `SHOpenFolderAndSelectItems`, `SHOpenWithDialog` (slice 3a) |
 

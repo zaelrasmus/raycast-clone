@@ -10,6 +10,10 @@
 //!   the index also lists applications that only have a Desktop shortcut.
 //!   That watch cannot tell a shortcut from any other file, so every Desktop
 //!   change re-indexes; ARCHITECTURE 7.34 records why that is accepted.
+//! - **The extra application folders** the user named (`apps.extra-folders`),
+//!   each with its subfolders, so a portable program dropped into one is
+//!   listed without a restart. A folder that does not exist when the watch
+//!   starts is not watched.
 //! - **The per-user package repository in the registry**. A packaged (MSIX or
 //!   Store) application writes no shortcut anywhere; registering it for the
 //!   user adds a subkey under `AppModel\Repository\Packages`, and removing it
@@ -30,6 +34,7 @@
 //! report about nothing Lumen lists costs one enumeration and no visible
 //! change.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -56,6 +61,9 @@ const SETTLE: Duration = Duration::from_millis(1500);
 /// How long after a report to look again, for the shell to have caught up.
 const FOLLOW_UP: Duration = Duration::from_secs(5);
 
+/// How many handles one `WaitForMultipleObjects` takes (`MAXIMUM_WAIT_OBJECTS`).
+const MAX_WAIT: usize = 64;
+
 /// Where the per-user package registrations live.
 const PACKAGES_KEY: PCWSTR = w!(
     r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages"
@@ -63,7 +71,7 @@ const PACKAGES_KEY: PCWSTR = w!(
 
 /// One thing being waited on, and how to wait on it again.
 enum Source {
-    /// A Start Menu or Desktop folder.
+    /// A Start Menu, Desktop or extra application folder.
     Folder(HANDLE),
     /// The package key, whose notification has to be re-requested after
     /// every signal, onto the same event.
@@ -108,7 +116,8 @@ impl Source {
 /// Returns once the watches are in place, so "no watch" is an error the
 /// daemon can log rather than a thread that failed silently. A source that
 /// cannot be watched is skipped as long as at least one can.
-pub fn start(sink: ApplicationsSink) -> Result<()> {
+pub fn start(sink: ApplicationsSink, extra_folders: &[PathBuf]) -> Result<()> {
+    let extra_folders = extra_folders.to_vec();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
 
     std::thread::Builder::new()
@@ -116,7 +125,7 @@ pub fn start(sink: ApplicationsSink) -> Result<()> {
         .spawn(move || {
             // Opened on this thread: a registry notification belongs to the
             // thread that asked for it, and ends when that thread does.
-            let sources = open_sources();
+            let sources = open_sources(&extra_folders);
             if sources.is_empty() {
                 let _ = ready_tx.send(Err(anyhow::anyhow!(
                     "neither the Start Menu nor the package registry could be watched"
@@ -133,7 +142,7 @@ pub fn start(sink: ApplicationsSink) -> Result<()> {
         .context("the application watcher stopped before reporting readiness")?
 }
 
-fn open_sources() -> Vec<Source> {
+fn open_sources(extra_folders: &[PathBuf]) -> Vec<Source> {
     let mut sources = Vec::new();
 
     let start_menu = [&FOLDERID_Programs, &FOLDERID_CommonPrograms].map(|folder| (folder, true));
@@ -142,6 +151,15 @@ fn open_sources() -> Vec<Source> {
         match watch_folder(folder, subtree) {
             Ok(source) => sources.push(source),
             Err(error) => log::debug!("not watching a shortcut folder: {error:#}"),
+        }
+    }
+
+    // One handle is kept back for the package key.
+    let room = MAX_WAIT.saturating_sub(sources.len() + 1);
+    for (folder, subtree) in extra_watches(extra_folders, room) {
+        match watch_path(&folder, subtree) {
+            Ok(source) => sources.push(source),
+            Err(error) => log::debug!("not watching an application folder: {error:#}"),
         }
     }
 
@@ -154,16 +172,19 @@ fn open_sources() -> Vec<Source> {
 }
 
 fn watch_folder(id: &GUID, subtree: bool) -> Result<Source> {
-    let path = known_folder(id)?;
+    watch_path(Path::new(&known_folder(id)?), subtree)
+}
+
+fn watch_path(path: &Path, subtree: bool) -> Result<Source> {
     let handle = unsafe {
         FindFirstChangeNotificationW(
-            &HSTRING::from(path.as_str()),
+            &HSTRING::from(path),
             subtree,
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
         )
     }
-    .with_context(|| format!("watching {path}"))?;
-    log::debug!("watching {path} for installs");
+    .with_context(|| format!("watching {}", path.display()))?;
+    log::debug!("watching {} for installs", path.display());
     Ok(Source::Folder(handle))
 }
 
@@ -195,6 +216,28 @@ pub(crate) fn known_folder(id: &GUID) -> Result<String> {
         CoTaskMemFree(Some(raw.as_ptr() as *const _));
         path.context("a known folder path that is not valid UTF-16")
     }
+}
+
+/// The extra folders to watch, each with its subfolders.
+///
+/// A folder that is missing, or is a file, is skipped; one named twice is
+/// watched once. No more than `room` are kept, since a single wait holds at
+/// most [`MAX_WAIT`] handles.
+fn extra_watches(folders: &[PathBuf], room: usize) -> Vec<(PathBuf, bool)> {
+    let mut watches: Vec<(PathBuf, bool)> = Vec::new();
+    for folder in folders.iter().filter(|folder| folder.is_dir()) {
+        if watches.iter().any(|(watched, _)| watched == folder) {
+            continue;
+        }
+        if watches.len() == room {
+            log::warn!(
+                "only the first {room} application folders are watched;                  programs added to the rest appear after `lumen reload`"
+            );
+            break;
+        }
+        watches.push((folder.clone(), true));
+    }
+    watches
 }
 
 /// Wait, coalesce, report; forever.
@@ -259,5 +302,62 @@ fn next_signal(sources: &[Source], handles: &[HANDLE], timeout: u32) -> Option<b
             log::warn!("the application watcher stopped: {error:#}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-scratch")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn each_existing_extra_folder_is_watched_with_its_subfolders() {
+        let root = scratch("app-watch-extra");
+        let tools = root.join("Tools");
+        let portable = root.join("Portable");
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::create_dir_all(&portable).unwrap();
+
+        let watches = extra_watches(&[tools.clone(), portable.clone()], 10);
+
+        assert_eq!(watches, vec![(tools, true), (portable, true)]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_folder_or_a_file_is_skipped_and_a_repeat_watched_once() {
+        let root = scratch("app-watch-missing");
+        let tools = root.join("Tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "").unwrap();
+
+        let watches = extra_watches(&[root.join("gone"), file, tools.clone(), tools.clone()], 10);
+
+        assert_eq!(watches, vec![(tools, true)]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_more_folders_are_watched_than_one_wait_can_hold() {
+        let root = scratch("app-watch-room");
+        let folders: Vec<PathBuf> = (0..3).map(|i| root.join(i.to_string())).collect();
+        for folder in &folders {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+
+        let watches = extra_watches(&folders, 2);
+
+        assert_eq!(watches.len(), 2);
+        assert!(extra_watches(&folders, 0).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

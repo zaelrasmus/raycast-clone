@@ -471,7 +471,12 @@ pub trait Platform: Send + Sync {
     ///
     /// Implementations should coalesce: an installer writes dozens of files,
     /// and one install should be one signal.
-    fn watch_applications(&self, sink: ApplicationsSink) -> Result<()>;
+    ///
+    /// `extra_folders` are the ones given to
+    /// [`Platform::enumerate_applications`], watched with their subfolders.
+    /// The watch lasts as long as the process, so the list is the one at
+    /// start: one that is missing then is not watched.
+    fn watch_applications(&self, sink: ApplicationsSink, extra_folders: &[PathBuf]) -> Result<()>;
 
     /// Resolve an icon to pixels at the requested size. Called off the UI thread.
     fn load_icon(&self, source: &IconSource, size_px: u32) -> Result<IconImage>;
