@@ -77,10 +77,6 @@ pub(crate) fn runs(word: &str) -> impl Iterator<Item = &str> {
 
 /// Whether a name, `folded` and with its `tokens`, holds every word of a
 /// query (see "A query" above).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "asked by step c2b's ranked query")
-)]
 pub(crate) fn matches(words: &[String], folded: &str, tokens: &str) -> bool {
     words.iter().all(|word| {
         folded.contains(word.as_str())
@@ -91,10 +87,6 @@ pub(crate) fn matches(words: &[String], folded: &str, tokens: &str) -> bool {
 /// The word index's query for `words`: every run of every word as a token
 /// prefix, all required. `None` when the words have no letter or digit, which
 /// the word index cannot be asked about.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "asked by step c2b's ranked query")
-)]
 pub(crate) fn fts_query(words: &[String]) -> Option<String> {
     let mut runs = words.iter().flat_map(|word| runs(word)).collect::<Vec<_>>();
     runs.sort_unstable();

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use lumen_core::file_index::{Kinds, Names};
+use lumen_core::file_index::{Entry, IndexDetail, Kinds, Names, Store, Walked};
 use memchr::memmem::Finder;
 use rusqlite::{Connection, OpenFlags, params};
 
@@ -277,9 +277,17 @@ struct RealRow {
     modified: Option<i64>,
 }
 
+/// The rows of the user's index, whichever layout it is in: version 2, a
+/// full path a row, or version 3 (step c2a), each folder once.
 fn load_real(path: &Path) -> Vec<RealRow> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("open the copy of the real index");
+    let version: i32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the real index's version");
+    if version >= 3 {
+        return load_real_v3(&connection);
+    }
     let mut statement = connection
         .prepare("SELECT parent, name, is_dir, scope, modified FROM entries ORDER BY id")
         .expect("prepare the real entries");
@@ -296,6 +304,56 @@ fn load_real(path: &Path) -> Vec<RealRow> {
         .expect("read the real entries")
         .collect::<Result<Vec<_>, _>>()
         .expect("read a real entry")
+}
+
+/// Version 3's rows: each folder's path through its parents -- a parent's
+/// row comes first -- and a folder entry's time from its own `folders` row.
+fn load_real_v3(connection: &Connection) -> Vec<RealRow> {
+    let mut paths: HashMap<i64, (String, i64)> = HashMap::new();
+    let mut times: HashMap<(i64, String), Option<i64>> = HashMap::new();
+    let mut statement = connection
+        .prepare("SELECT id, parent_id, name, scope, modified FROM folders ORDER BY id")
+        .expect("prepare the real folders");
+    let mut rows = statement.query([]).expect("read the real folders");
+    while let Some(row) = rows.next().expect("a real folder") {
+        let id: i64 = row.get(0).expect("an id");
+        let parent: Option<i64> = row.get(1).expect("a parent");
+        let name: String = row.get(2).expect("a name");
+        let scope: i64 = row.get(3).expect("a scope");
+        let path = match parent {
+            None => name.clone(),
+            Some(parent) => {
+                let joined = Path::new(&paths[&parent].0).join(&name);
+                times.insert((parent, name), row.get(4).expect("a time"));
+                joined.to_string_lossy().into_owned()
+            }
+        };
+        paths.insert(id, (path, scope));
+    }
+    let mut statement = connection
+        .prepare("SELECT folder_id, name, is_dir FROM files ORDER BY id")
+        .expect("prepare the real files");
+    let mut rows = statement.query([]).expect("read the real files");
+    let mut found = Vec::new();
+    while let Some(row) = rows.next().expect("a real file") {
+        let folder: i64 = row.get(0).expect("a folder");
+        let name: String = row.get(1).expect("a name");
+        let is_dir: bool = row.get(2).expect("a kind");
+        let (parent, scope) = paths[&folder].clone();
+        let modified = if is_dir {
+            times.get(&(folder, name.clone())).copied().flatten()
+        } else {
+            None
+        };
+        found.push(RealRow {
+            parent,
+            name,
+            is_dir,
+            scope,
+            modified,
+        });
+    }
+    found
 }
 
 fn corpus_of<'a>(rows: impl IntoIterator<Item = &'a RealRow>) -> Corpus {
@@ -917,6 +975,25 @@ fn child(args: &[String]) {
             let first = start.elapsed();
             let start = Instant::now();
             ranker.run(strategy, &query, top);
+            let second = start.elapsed();
+            println!("{:.2} {:.2} {:.2} {found}", ms(open), ms(first), ms(second));
+        }
+        "store" => {
+            let start = Instant::now();
+            let store = Store::open(Path::new(&args[1])).expect("open the store");
+            let open = start.elapsed();
+            let top = args[3].parse::<usize>().expect("a number of rows");
+            let ranked = || {
+                store
+                    .ranked(&args[2], Kinds::FoldersAndFiles, top, &|_, _| true)
+                    .expect("a ranked query")
+                    .len()
+            };
+            let start = Instant::now();
+            let found = ranked();
+            let first = start.elapsed();
+            let start = Instant::now();
+            ranked();
             let second = start.elapsed();
             println!("{:.2} {:.2} {:.2} {found}", ms(open), ms(first), ms(second));
         }
@@ -2089,6 +2166,8 @@ fn main() {
     // `DISK_BENCH=ranked` runs only the ranked best N; the rest takes a
     // quarter of an hour.
     let only_ranked = std::env::var("DISK_BENCH").as_deref() == Ok("ranked");
+    // `DISK_BENCH=store` measures the production store alone (step c2b).
+    let only_store = std::env::var("DISK_BENCH").as_deref() == Ok("store");
 
     // `target/tmp` is where cargo points benches; its parent is `target`.
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -2102,6 +2181,11 @@ fn main() {
         let local = std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA");
         let source = Path::new(&local).join(r"Lumen\cache\files.db");
         std::fs::copy(&source, &real_db).expect("copy the real index");
+    }
+
+    if only_store {
+        store_section(&dir, &real_db, started);
+        return;
     }
 
     println!("# File index on disk: hot layer and full index");
@@ -2301,4 +2385,446 @@ fn main() {
     );
 
     remove(&real_db);
+}
+
+// The production store (step c2b): `Store::replace` writes each corpus at
+// each `files.index-detail` level, as a rebuild does, and `Store::ranked`
+// and `Store::substring` are timed on it with the store's own page cache.
+
+/// Root's queries: slice 0's, the design's examples, frequent real words
+/// and the two typed whole across a capital.
+const STORE_QUERIES: [&str; 13] = [
+    "inv",
+    "invoice",
+    "report",
+    "2024",
+    "html",
+    "license",
+    "preview",
+    "zqxj",
+    "inv 2024",
+    "cargo",
+    "data",
+    "javascript",
+    "github",
+];
+
+/// *Search Files*' mid-word queries.
+const SUBSTRING_QUERIES: [&str; 4] = ["inv", "report", "html", "zqxj"];
+
+/// The queries whose first run is timed in a fresh process.
+const FRESH_QUERIES: [&str; 2] = ["invoice", "inv 2024"];
+
+/// Root's budget for a frame, which a ranked query must stay under at p95.
+const BUDGET_MS: f64 = 8.0;
+
+/// `corpus` as a walk returns it: every entry's full path, scope by scope,
+/// each folder before what is in it, as both generators and the real index
+/// already order them.
+fn walked_of(corpus: &Corpus) -> Walked {
+    let mut order = (0..corpus.items.len()).collect::<Vec<_>>();
+    order.sort_by_key(|&index| corpus.items[index].scope);
+    let scopes = corpus
+        .items
+        .iter()
+        .map(|item| item.scope)
+        .max()
+        .map_or(0, |last| last as usize + 1);
+    let mut walked = Walked {
+        per_scope: vec![0; scopes],
+        roots: vec![None; scopes],
+        ..Walked::default()
+    };
+    for index in order {
+        let item = &corpus.items[index];
+        walked.per_scope[item.scope as usize] += 1;
+        walked.entries.push(Entry {
+            path: Path::new(&corpus.paths[item.folder as usize]).join(&item.name),
+            is_dir: item.is_dir,
+            modified: item.modified,
+        });
+    }
+    walked
+}
+
+/// The store section's tables, filled corpus by corpus.
+#[derive(Default)]
+struct StoreReport {
+    sizes: String,
+    switches: String,
+    ranked: String,
+    fresh: String,
+    substring: String,
+    scan: String,
+    notes: String,
+    /// Each level's worst p95 at the largest corpus, and the queries over.
+    acceptance: String,
+}
+
+fn store_section(dir: &Path, real_db: &Path, started: Instant) {
+    println!("# The file index's store, ranked from disk (step c2b)");
+    let rows = load_real(real_db);
+    let real = corpus_of(&rows);
+    drop(rows);
+    let mut report = StoreReport::default();
+    let sizes = store_sizes();
+    let levels = store_levels();
+    let largest = sizes.iter().flatten().max().copied();
+    for size in sizes {
+        let (label, walked) = match size {
+            None => ("real".to_string(), walked_of(&real)),
+            Some(count) if count % 1_000_000 == 0 => (
+                format!("synth {}M", count / 1_000_000),
+                walked_of(&synthetic(count)),
+            ),
+            Some(count) => (
+                format!("synth {}k", count / 1_000),
+                walked_of(&synthetic(count)),
+            ),
+        };
+        progress(
+            started,
+            &format!("{label}: {} entries", walked.entries.len()),
+        );
+        let last = size.is_some() && size == largest;
+        measure_store(&label, &walked, dir, last, &levels, started, &mut report);
+    }
+    drop(real);
+
+    println!("\n## Size and build, per level\n");
+    println!(
+        "`Store::open_with(level)` then `Store::replace`, the write path a rebuild takes; the file as written, then vacuumed.\n"
+    );
+    println!("| corpus | level | entries | MB | vacuumed MB | build s |");
+    println!("| - | - | - | - | - | - |");
+    print!("{}", report.sizes);
+
+    println!("\n## Changing the level\n");
+    println!("`Store::set_detail` on the `balanced` store: only the word tables, no walk.\n");
+    println!("| corpus | change | s | MB after |");
+    println!("| - | - | - | - |");
+    print!("{}", report.switches);
+
+    println!("\n## `Store::ranked`, warm\n");
+    println!(
+        "p50 / p95 / max ms, 20 warm-ups and 200 runs (fewer for a slow first run, in brackets). Folders and files, no filter, the store's 1 MB page cache, OS cache warm. `rows` is what came back; `ok` is p95 under {BUDGET_MS} ms for both N.\n"
+    );
+    println!("| corpus | level | query | N=8 | rows | N=64 | rows | p95 < {BUDGET_MS} |");
+    println!("| - | - | - | - | - | - | - | - |");
+    print!("{}", report.ranked);
+
+    println!("\n## First query in a fresh process\n");
+    println!("`open / first / second` ms; the file as the build left it in the OS cache.\n");
+    println!("| corpus | level | query | N=8 | N=64 |");
+    println!("| - | - | - | - | - |");
+    print!("{}", report.fresh);
+
+    println!("\n## `Store::substring`, warm\n");
+    println!(
+        "Mid-word matches only. `complete` asks the trigram index; `balanced` and `compact` scan every folded name a length at a time.\n"
+    );
+    println!("| corpus | level | query | all | matches | limit 200 | rows |");
+    println!("| - | - | - | - | - | - | - |");
+    print!("{}", report.substring);
+
+    println!("\n## Keeping `folded`, or folding while scanning\n");
+    println!(
+        "A full pass over every name looking for `report`: the stored `folded` column, or the name folded in Rust as it is read -- what dropping the column would cost a scan.\n"
+    );
+    println!("| corpus | `folded` stored, MB | scan `folded` | scan `name` + fold |");
+    println!("| - | - | - | - |");
+    print!("{}", report.scan);
+
+    println!("\n## Acceptance: p95 < {BUDGET_MS} ms at the largest corpus\n");
+    println!("| level | N | worst query | worst p95 ms | misses |");
+    println!("| - | - | - | - | - |");
+    print!("{}", report.acceptance);
+
+    println!("\n## Notes\n");
+    if report.notes.is_empty() {
+        println!("- Every level answered every ranked query identically.");
+    } else {
+        print!("{}", report.notes);
+    }
+    println!("\nTotal run {:.0} s.", started.elapsed().as_secs_f64());
+    remove(real_db);
+}
+
+/// The corpora of the store section: `DISK_BENCH_SIZES`, a comma-separated
+/// list of `real` and entry counts (`real,100000`), else the real index and
+/// every [`SYNTHETIC`] size. `None` is the real index.
+fn store_sizes() -> Vec<Option<usize>> {
+    match std::env::var("DISK_BENCH_SIZES") {
+        Ok(list) => list
+            .split(',')
+            .map(|size| match size.trim() {
+                "real" => None,
+                count => Some(count.parse().expect("a size is `real` or a count")),
+            })
+            .collect(),
+        Err(_) => std::iter::once(None)
+            .chain(SYNTHETIC.into_iter().map(Some))
+            .collect(),
+    }
+}
+
+/// The levels of the store section: `DISK_BENCH_LEVELS`, comma-separated,
+/// else every level.
+fn store_levels() -> Vec<IndexDetail> {
+    match std::env::var("DISK_BENCH_LEVELS") {
+        Ok(list) => list
+            .split(',')
+            .map(|level| IndexDetail::parse(level.trim()).expect("a level"))
+            .collect(),
+        Err(_) => IndexDetail::ALL.to_vec(),
+    }
+}
+
+/// A step of the run, on stderr with the seconds since it started: what a
+/// stall is found by, since the report is printed only at the end.
+fn progress(started: Instant, step: &str) {
+    eprintln!("[{:7.1} s] {step}", started.elapsed().as_secs_f64());
+}
+
+fn measure_store(
+    label: &str,
+    walked: &Walked,
+    dir: &Path,
+    last: bool,
+    levels: &[IndexDetail],
+    started: Instant,
+    report: &mut StoreReport,
+) {
+    let any = |_: &str, _: bool| true;
+    let mut answers: Vec<Vec<Vec<u32>>> = Vec::new();
+    for &detail in levels {
+        let level = detail.as_str();
+        let path = dir.join(format!("store-{level}.db"));
+        remove(&path);
+        progress(started, &format!("{label} {level}: building"));
+        let mut store = Store::open_with(&path, detail).expect("open the store");
+        let start = Instant::now();
+        store.replace(walked, "bench").expect("write the store");
+        let built = start.elapsed();
+        drop(store);
+        let bytes = size(&path);
+        let vacuumed = {
+            let copy = dir.join("store-vacuumed.db");
+            remove(&copy);
+            let connection = Connection::open(&path).expect("open for vacuum");
+            connection
+                .execute("VACUUM INTO ?1", [copy.to_string_lossy()])
+                .expect("vacuum");
+            drop(connection);
+            let bytes = size(&copy);
+            remove(&copy);
+            bytes
+        };
+        let _ = writeln!(
+            report.sizes,
+            "| {label} | {level} | {} | {:.1} | {:.1} | {:.1} |",
+            walked.entries.len(),
+            mb(bytes),
+            mb(vacuumed),
+            built.as_secs_f64()
+        );
+        progress(
+            started,
+            &format!("{label} {level}: built in {:.1} s", built.as_secs_f64()),
+        );
+
+        let store = Store::open(&path).expect("open the store");
+        let mut found = Vec::new();
+        let mut worst = [(0.0f64, ""); 2];
+        let mut misses: [Vec<&str>; 2] = [Vec::new(), Vec::new()];
+        for query in STORE_QUERIES {
+            progress(started, &format!("{label} {level}: ranked `{query}`"));
+            let mut cells = Vec::new();
+            let mut fast = true;
+            for (at, top) in [8, 64].into_iter().enumerate() {
+                let ids = store
+                    .ranked(query, Kinds::FoldersAndFiles, top, &any)
+                    .expect("a ranked query")
+                    .iter()
+                    .map(|row| row.id)
+                    .collect::<Vec<_>>();
+                let timing = time(|| {
+                    store
+                        .ranked(query, Kinds::FoldersAndFiles, top, &any)
+                        .expect("a ranked query")
+                        .len()
+                });
+                let p95 = ms(timing.p95);
+                if p95 >= BUDGET_MS {
+                    fast = false;
+                    misses[at].push(query);
+                }
+                if p95 > worst[at].0 {
+                    worst[at] = (p95, query);
+                }
+                cells.push(format!("{} | {}", cell(Some(&timing)), timing.matches));
+                found.push(ids);
+            }
+            let _ = writeln!(
+                report.ranked,
+                "| {label} | {level} | `{query}` | {} | {} |",
+                cells.join(" | "),
+                if fast { "ok" } else { "**no**" }
+            );
+        }
+        if last {
+            for (at, top) in [8, 64].into_iter().enumerate() {
+                let over = if misses[at].is_empty() {
+                    "none".to_string()
+                } else {
+                    misses[at].join(", ")
+                };
+                let _ = writeln!(
+                    report.acceptance,
+                    "| {level} | {top} | `{}` | {:.2} | {over} |",
+                    worst[at].1, worst[at].0
+                );
+            }
+        }
+        answers.push(found);
+
+        for query in FRESH_QUERIES {
+            progress(started, &format!("{label} {level}: fresh `{query}`"));
+            let cells = ["8", "64"]
+                .map(|top| {
+                    spawn(&["store", &path.to_string_lossy(), query, top])
+                        .map(|line| {
+                            let parts = line.split_whitespace().collect::<Vec<_>>();
+                            format!("{} / {} / {}", parts[0], parts[1], parts[2])
+                        })
+                        .unwrap_or_else(|| "failed".into())
+                })
+                .join(" | ");
+            let _ = writeln!(report.fresh, "| {label} | {level} | `{query}` | {cells} |");
+        }
+
+        for query in SUBSTRING_QUERIES {
+            progress(started, &format!("{label} {level}: substring `{query}`"));
+            let mut cells = Vec::new();
+            for limit in [usize::MAX, 200] {
+                let timing = time(|| {
+                    store
+                        .substring(query, Kinds::FoldersAndFiles, limit, &|| false)
+                        .expect("a substring query")
+                        .len()
+                });
+                cells.push(format!("{} | {}", cell(Some(&timing)), timing.matches));
+            }
+            let _ = writeln!(
+                report.substring,
+                "| {label} | {level} | `{query}` | {} |",
+                cells.join(" | ")
+            );
+        }
+        drop(store);
+
+        if detail == IndexDetail::Balanced {
+            progress(started, &format!("{label}: scan of `folded`"));
+            measure_scan(label, &path, report);
+            measure_switches(label, &path, started, report);
+        }
+        remove(&path);
+    }
+    for (level, other) in answers.iter().enumerate().skip(1) {
+        if *other != answers[0] {
+            let _ = writeln!(
+                report.notes,
+                "- {label}: `{}` ranked differently from `{}`.",
+                levels[level].as_str(),
+                levels[0].as_str()
+            );
+        }
+    }
+}
+
+/// The scan of every folded name, against the scan of every name folded as
+/// it is read.
+fn measure_scan(label: &str, path: &Path, report: &mut StoreReport) {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("open the store");
+    connection
+        .execute_batch("PRAGMA cache_size = -1024;")
+        .expect("bound the cache");
+    let folded_bytes: i64 = connection
+        .query_row(
+            "SELECT SUM(length(CAST(folded AS BLOB))) FROM files",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the folded bytes");
+    let finder = Finder::new(b"report");
+    let stored = time(|| {
+        let mut statement = connection
+            .prepare_cached("SELECT id, folded FROM files")
+            .expect("prepare the scan");
+        let mut rows = statement.query([]).expect("scan");
+        let mut found = 0;
+        while let Some(row) = rows.next().expect("a row") {
+            let folded = row.get_ref(1).expect("folded").as_bytes().expect("text");
+            if finder.find(folded).is_some() {
+                found += 1;
+            }
+        }
+        found
+    });
+    let folding = time(|| {
+        let mut statement = connection
+            .prepare_cached("SELECT id, name FROM files")
+            .expect("prepare the scan");
+        let mut rows = statement.query([]).expect("scan");
+        let mut found = 0;
+        let mut folded = String::new();
+        while let Some(row) = rows.next().expect("a row") {
+            folded.clear();
+            fold(
+                row.get_ref(1).expect("name").as_str().expect("text"),
+                &mut folded,
+            );
+            if finder.find(folded.as_bytes()).is_some() {
+                found += 1;
+            }
+        }
+        found
+    });
+    let _ = writeln!(
+        report.scan,
+        "| {label} | {:.1} | {} | {} |",
+        mb(folded_bytes as u64),
+        cell(Some(&stored)),
+        cell(Some(&folding))
+    );
+    if stored.matches != folding.matches {
+        let _ = writeln!(
+            report.notes,
+            "- {label}: the folded scan found {} `report`, the folding one {}.",
+            stored.matches, folding.matches
+        );
+    }
+}
+
+/// The level changed on the `balanced` store and back, timed.
+fn measure_switches(label: &str, path: &Path, started: Instant, report: &mut StoreReport) {
+    let mut store = Store::open(path).expect("open the store");
+    for (change, detail) in [
+        ("balanced to complete", IndexDetail::Complete),
+        ("complete to balanced", IndexDetail::Balanced),
+        ("balanced to compact", IndexDetail::Compact),
+        ("compact to balanced", IndexDetail::Balanced),
+    ] {
+        progress(started, &format!("{label}: set_detail {change}"));
+        let start = Instant::now();
+        store.set_detail(detail).expect("change the level");
+        let took = start.elapsed();
+        let _ = writeln!(
+            report.switches,
+            "| {label} | {change} | {:.1} | {:.1} |",
+            took.as_secs_f64(),
+            mb(size(path))
+        );
+    }
 }

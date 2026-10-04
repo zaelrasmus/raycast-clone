@@ -17,6 +17,7 @@ use anyhow::{Result, bail};
 use serde_json::{Map, Value};
 
 use crate::config::{FileSearchConfig, InRoot, PreviewFont};
+use crate::file_index::IndexDetail;
 use crate::section;
 
 const SECTION: &str = "files";
@@ -83,6 +84,14 @@ pub fn set_preview_font(path: &Path, font: PreviewFont) -> Result<()> {
     let value = serde_json::to_value(font)?;
     section::edit(path, SECTION, |files| {
         files.insert("preview-font".into(), value);
+        Ok(())
+    })
+}
+
+pub fn set_index_detail(path: &Path, detail: IndexDetail) -> Result<()> {
+    let value = serde_json::to_value(detail)?;
+    section::edit(path, SECTION, |files| {
+        files.insert("index-detail".into(), value);
         Ok(())
     })
 }
@@ -320,6 +329,7 @@ mod tests {
         set_flag(&path, Flag::Enabled, false).unwrap();
         set_ignore_patterns(&path, &["*.log".into()]).unwrap();
         set_preview_font(&path, PreviewFont::Interface).unwrap();
+        set_index_detail(&path, IndexDetail::Complete).unwrap();
         assert!(add(&path, List::Exclusions, "~/Videos").unwrap());
         set_default_skip(&path, "node_modules", false).unwrap();
 
@@ -330,6 +340,8 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.ignore_patterns, ["*.log"]);
         assert_eq!(config.preview_font, PreviewFont::Interface);
+        assert_eq!(config.index_detail, IndexDetail::Complete);
+        assert!(contents(&path).contains("\"index-detail\": \"complete\""));
         assert_eq!(config.exclusions, [PathBuf::from("~/Videos")]);
         assert_eq!(config.default_skips_off, ["node_modules"]);
         assert_eq!(config.scopes, [PathBuf::from("~"), PathBuf::from("D:/Dev")]);

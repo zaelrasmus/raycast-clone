@@ -26,7 +26,7 @@ use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, SharedString, Window, div, px,
 };
 use lumen_core::config::{FileSearchConfig, InRoot, PreviewFont};
-use lumen_core::file_index::{CEILING, IndexStatus, default_skips};
+use lumen_core::file_index::{CEILING, IndexDetail, IndexStatus, default_skips};
 use lumen_core::file_search::settings::{self, Flag, List};
 use lumen_core::layout::settings as metrics;
 use lumen_core::theme::Colors;
@@ -231,6 +231,18 @@ impl FileSearchPage {
         }
         let done = format!("Previews in the {} font", font_label(font).to_lowercase());
         self.write(done, move |path| settings::set_preview_font(path, font), cx);
+    }
+
+    fn set_index_detail(&mut self, detail: IndexDetail, cx: &mut Context<Self>) {
+        if self.config.index_detail == detail {
+            return;
+        }
+        let done = format!("Index detail {}", detail_label(detail).to_lowercase());
+        self.write(
+            done,
+            move |path| settings::set_index_detail(path, detail),
+            cx,
+        );
     }
 
     fn flip_flag(&mut self, flag: Flag, cx: &mut Context<Self>) {
@@ -518,6 +530,30 @@ fn font_label(font: PreviewFont) -> &'static str {
     }
 }
 
+fn detail_label(detail: IndexDetail) -> &'static str {
+    match detail {
+        IndexDetail::Complete => "Complete",
+        IndexDetail::Balanced => "Balanced",
+        IndexDetail::Compact => "Compact",
+    }
+}
+
+/// What a level costs on disk and what it buys, in one line: measured on a
+/// real 500,000-item index (FILE-SEARCH.md, "Step c2b").
+fn detail_description(detail: IndexDetail) -> &'static str {
+    match detail {
+        IndexDetail::Complete => {
+            "Finds matches inside words without a scan; the most disk, about 150 MB for 500,000 items"
+        }
+        IndexDetail::Balanced => {
+            "Finds names by their words, inside them with a scan; about 110 MB for 500,000 items"
+        }
+        IndexDetail::Compact => {
+            "Finds the same as Balanced, a little slower on common words; about 90 MB for 500,000 items"
+        }
+    }
+}
+
 /// *1 item*, *12,345 items*.
 fn items(count: usize) -> String {
     if count == 1 {
@@ -801,6 +837,23 @@ impl FileSearchPage {
                 move |_window, cx| entity.update(cx, |page, cx| page.flip_flag(Flag::Enabled, cx)),
             ));
         }
+        let details = div()
+            .flex()
+            .gap(px(metrics::TAB_GAP))
+            .children(IndexDetail::ALL.map(|detail| {
+                choice_button(
+                    detail_label(detail),
+                    self.config.index_detail == detail,
+                    colors,
+                    cx.listener(move |page, _, _, cx| page.set_index_detail(detail, cx)),
+                )
+            }));
+        rows.push(ui::row(
+            "Detail",
+            Some(detail_description(self.config.index_detail).into()),
+            details,
+            colors,
+        ));
         rows.push(ui::row(
             "Status",
             Some(self.index_description().into()),

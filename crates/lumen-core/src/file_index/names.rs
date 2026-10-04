@@ -522,7 +522,7 @@ pub(crate) fn fold(text: &str, out: &mut String) {
 
 /// Whether `query` is the whole name, or the name without its extension.
 /// A leading dot is not an extension: `.env` is its own stem.
-fn is_exact(name: &str, query: &str) -> bool {
+pub(crate) fn is_exact(name: &str, query: &str) -> bool {
     let Some(rest) = name.strip_prefix(query) else {
         return false;
     };

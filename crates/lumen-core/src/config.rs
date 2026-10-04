@@ -15,7 +15,7 @@ use crate::clipboard::Retention;
 use crate::clock::ClockConfig;
 use crate::currency::CurrencyConfig;
 use crate::dictionary::DictionaryConfig;
-use crate::file_index::{CEILING, Kinds, WalkRules};
+use crate::file_index::{CEILING, IndexDetail, Kinds, WalkRules};
 use crate::places::store::PlacesConfig;
 use crate::snippets::SnippetsConfig;
 use crate::style::Metrics;
@@ -108,6 +108,10 @@ pub struct FileSearchConfig {
     /// Which monospace family is the palette's (`font_mono`); whether to use
     /// it is this preference.
     pub preview_font: PreviewFont,
+    /// How much the index keeps on disk beside its names, and so what it
+    /// finds without a scan. Not a rule of the walk: changing it rebuilds
+    /// the word tables from the index, and walks nothing again.
+    pub index_detail: IndexDetail,
 }
 
 /// What a text file's preview is drawn in (F16).
@@ -168,6 +172,7 @@ impl Default for FileSearchConfig {
             default_skips_off: Vec::new(),
             declined_drives: Vec::new(),
             preview_font: PreviewFont::default(),
+            index_detail: IndexDetail::default(),
         }
     }
 }
@@ -195,6 +200,8 @@ struct FileSearchFile {
     /// Read as any value, so one this build does not know is the default
     /// rather than a configuration that fails to load.
     preview_font: Option<serde_json::Value>,
+    /// Read as any value, as `preview-font` is.
+    index_detail: Option<serde_json::Value>,
 }
 
 impl Default for FileSearchFile {
@@ -213,6 +220,7 @@ impl Default for FileSearchFile {
             roots: Vec::new(),
             limits: None,
             preview_font: None,
+            index_detail: None,
         }
     }
 }
@@ -255,8 +263,26 @@ impl From<FileSearchFile> for FileSearchConfig {
             default_skips_off: file.default_skips_off,
             declined_drives: file.declined_drives,
             preview_font: PreviewFont::read(file.preview_font.as_ref()),
+            index_detail: read_index_detail(file.index_detail.as_ref()),
         }
     }
+}
+
+/// `files.index-detail` as written; anything else is the default, with one
+/// log line a read, as [`PreviewFont::read`] does.
+fn read_index_detail(value: Option<&serde_json::Value>) -> IndexDetail {
+    let Some(value) = value else {
+        return IndexDetail::default();
+    };
+    value
+        .as_str()
+        .and_then(IndexDetail::parse)
+        .unwrap_or_else(|| {
+            log::warn!(
+                "files.index-detail: ignoring {value}, expected \"complete\", \"balanced\" or \"compact\""
+            );
+            IndexDetail::default()
+        })
 }
 
 fn is_default_skip(name: &str) -> bool {
@@ -820,6 +846,58 @@ mod tests {
             serde_json::from_str::<FileSearchConfig>(&json).unwrap(),
             interface
         );
+    }
+
+    /// Balanced unless set, and a value this build does not know is that
+    /// default, never an error.
+    #[test]
+    fn the_index_detail_is_balanced_unless_set() {
+        assert_eq!(
+            FileSearchConfig::default().index_detail,
+            IndexDetail::Balanced
+        );
+        for detail in IndexDetail::ALL {
+            let source = format!(
+                r#"{{ "files": {{ "index-detail": "{}" }} }}"#,
+                detail.as_str()
+            );
+            assert_eq!(files(&source).index_detail, detail);
+        }
+        for unknown in [r#""everything""#, "3", "null", r#""Complete""#] {
+            let source = format!(r#"{{ "files": {{ "index-detail": {unknown} }} }}"#);
+            assert_eq!(
+                files(&source).index_detail,
+                IndexDetail::Balanced,
+                "{unknown}"
+            );
+        }
+
+        let compact = FileSearchConfig {
+            index_detail: IndexDetail::Compact,
+            ..FileSearchConfig::default()
+        };
+        let json = serde_json::to_string(&compact).unwrap();
+        assert!(json.contains(r#""index-detail":"compact""#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<FileSearchConfig>(&json).unwrap(),
+            compact
+        );
+    }
+
+    /// The level is not a rule of the walk: changing it walks nothing again.
+    #[test]
+    fn the_index_detail_is_not_part_of_the_walk_digest() {
+        let base = FileSearchConfig::default();
+        for detail in IndexDetail::ALL {
+            let changed = FileSearchConfig {
+                index_detail: detail,
+                ..base.clone()
+            };
+            assert_eq!(
+                crate::file_index::digest(&changed.walk_rules()),
+                crate::file_index::digest(&base.walk_rules())
+            );
+        }
     }
 
     /// F3's `roots` replaced the default folders; a scope list does the same.

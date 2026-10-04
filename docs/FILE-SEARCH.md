@@ -378,6 +378,113 @@ slower. To reproduce: `LUMEN_V2_INDEX=<copy> LUMEN_V3_INDEX=<out> cargo
 test --release -p lumen-core --lib a_real_index_is_measured -- --ignored
 --nocapture`.
 
+### Step c2b: ranked from disk, as built
+
+The store answers root's query itself. Nothing calls it yet: root and the
+view switch to it in c3.
+
+**API** (`file_index::Store`):
+
+- `ranked(query, kinds, limit, filter) -> Vec<RankedRow>`: the best
+  `limit`, ranked as `Names` ranks them, without frecency. Exact name or
+  name without its extension (tier 4), name starts with the longest word
+  (3), a word starts with it (2). Within a tier: shorter name, then row.
+  Tiers 4 and 3 come from `(len, folded)`, one seek a length. Tier 2
+  comes from `words` in key order. Each tier stops at `limit`. `kinds`
+  and `filter` apply while a tier is read, so the answer is the best
+  `limit` of a type.
+- `substring(query, kinds, limit, cancelled)`: matches inside a word only
+  (tier 1), shortest first. At `complete` they come from the `grams`
+  trigram index. At the other levels they come from a scan of `folded`, a
+  length at a time. `cancelled` is asked before the first row, then every
+  4 096 rows.
+- `IndexDetail` (`files.index-detail`: `complete`, `balanced` (default),
+  `compact`) and `Store::open_with(path, detail)`.
+
+**Levels.** A level decides only the word tables. `complete` is
+`words` with full detail plus `grams`. `balanced` is `words` with full
+detail. `compact` is `words` with `detail=none`. The level is recorded in
+`meta`. `set_detail` (and `open_with` at another level) rebuilds only the
+table that changes, from `files`. It never walks, and rows, `Meta` and
+`walked_at` stay as they were. The level is marked `changing` first and
+written last, so a change cut short is rebuilt at the next open. Every
+level ranks identically, as the bench checks on every query.
+
+**The "compact stall" was not compact.** The first c2b bench run was killed
+after 30 minutes, while it was writing `store-compact.db`. Its stderr shows
+all nine builds finished at normal times (2M compact 87 s, balanced 90 s).
+The time went to two costs, both in every level's query path:
+
+- **Rows read to be turned down.** `substring` matched `folded` and then
+  fetched each candidate row, only to reject it as a word match. On the
+  real index, `html` matches 91 000 names as a word (`x.html`): 2.6 s a
+  call, 34 timed calls a level, minutes per level at 2M. Fix: a name
+  whose every query run is in `folded` after an ASCII separator surely
+  matches as words, and is rejected without being read
+  (`surely_words`). The same applies to `ranked`'s name-start tier,
+  which now checks the other words on the indexed `folded` (`inv 2024` at
+  2M: 23 to 4.5 ms).
+- **One transaction a statement.** Outside a transaction every SQLite
+  statement is its own read transaction. On Windows that means a file
+  lock and a header read: about 25 us a seek, against 4 us inside one. A
+  query makes hundreds of seeks. `ranked` and `substring` now run in one
+  read transaction. On the real index: `zqxj` 10 to 0.35 ms, `inv` N=64
+  12.7 to 1.7 ms.
+
+Regression tests: `substring_reads_no_row_that_has_the_query_only_as_a_word`
+and `a_name_start_without_the_other_words_is_never_read` count the rows
+read.
+
+**Acceptance** (`DISK_BENCH=store DISK_BENCH_SIZES=real,2000000`, release,
+warm, 1 MB page cache; 1M not run, to keep the run under 15 minutes).
+Worst `ranked` p95 over `inv invoice report 2024 html license preview
+zqxj "inv 2024" cargo data javascript github`:
+
+| corpus | level | N=8 worst p95 | N=64 worst p95 | < 8 ms |
+| - | - | - | - | - |
+| real 500k | complete | 2.56 (`inv 2024`) | 3.65 (`inv 2024`) | yes |
+| real 500k | balanced | 2.54 (`inv 2024`) | 2.64 (`inv 2024`) | yes |
+| real 500k | compact | 2.64 (`inv 2024`) | 2.62 (`inv 2024`) | yes |
+| synth 2M | complete | 5.23 (`html`) | 7.01 (`inv 2024`) | yes |
+| synth 2M | balanced | 5.28 (`html`) | 8.09 (`inv 2024`) | **no**, by 0.09 |
+| synth 2M | compact | 29.58 (`html`) | 32.37 (`html`) | **no**: `html`, `inv 2024` |
+
+| corpus | level | MB (vacuumed) | build s | switch from balanced, s |
+| - | - | - | - | - |
+| real 500k | complete | 149 (144) | 10.1 | 3.0 |
+| real 500k | balanced | 108 (102) | 6.8 | -- |
+| real 500k | compact | 90 (85) | 6.3 | 2.6 |
+| synth 2M | complete | 523 (507) | 102 | 12.2 |
+| synth 2M | balanced | 369 (352) | 92 | -- |
+| synth 2M | compact | 316 (302) | 88 | 7.6 |
+
+First query in a fresh process: open 0.7 ms. On the real index the first
+query took 2.0 ms (`invoice`) and 3.6--4.0 (`inv 2024`). At 2M, `inv
+2024` N=64 took 8.0--8.3 ms (13.9 at compact). `substring`, warm: real
+86--104 ms scanning (`balanced`, `compact`). At `complete` it took
+0.05--4 ms, except `html` at 109 ms: 91 000 trigram hits joined to
+`files`. At 2M it took 350--400 ms scanning.
+
+**The misses.**
+
+- **2M compact, `html` and `inv 2024`.** A prefix longer than the
+  prefix index (`'1 2 3'`) makes FTS5 materialize the whole merged
+  doclist. At `detail=none` that is about 7 times slower than at full
+  detail. In SQLite alone, `"html"*` costs 26 ms at 2M against 3.6 at
+  balanced. A probe with `prefix='1 2 3 4'` at compact brought `html`
+  to 0.24 ms and `inv 2024` to 2.6, for about 20% more `words` pages,
+  but `"invoice"*` still costs 17 ms. So compact stays "slower on very
+  common words" until c3 decides between a 4-character prefix and the
+  trade as documented.
+- **2M balanced, `inv 2024` N=64 at 8.09.** Its p50 is 6.5. The
+  name-start tier reads the index entries of every name starting with
+  `2024`: tens of thousands in a synthetic corpus made of 30 common
+  words. On the real index it is 2.6 ms.
+
+**`folded` stays.** A full scan of the stored `folded` takes 89 ms on the
+real index (362 at 2M). Folding `name` while scanning takes 267 ms
+(1 046). The column is 10 MB of the 102.
+
 ---
 
 ## The decisions

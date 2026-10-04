@@ -67,7 +67,7 @@ use anyhow::Result;
 use parking_lot::{Mutex, RwLock};
 
 pub use names::{Kinds, MIN_SUBSTRING, Match, Names};
-pub use store::{Meta, Row, Store, digest};
+pub use store::{IndexDetail, Meta, RankedRow, Row, Store, digest};
 pub use walk::{CEILING, Entry, WalkRules, Walked, default_skips, walk};
 pub use watch::{FileWatch, watch_targets};
 
@@ -328,6 +328,21 @@ impl FileIndex {
         superseded: &dyn Fn() -> bool,
     ) -> Result<Option<Updated>> {
         self.update(path, rules, &[PathBuf::new()], superseded)
+    }
+
+    /// Build the word tables of the store at `path` at `detail`
+    /// (`files.index-detail`, [`Store::set_detail`]): from the entries
+    /// already stored, never a walk, and the names in memory are not
+    /// touched. Under the build lock and through this index's own
+    /// connection, as a rebuild writes, so a query waits for it rather than
+    /// meeting half of it. Seconds for a large index: off the UI thread.
+    pub fn set_detail(&self, path: &Path, detail: IndexDetail) -> Result<()> {
+        let lock = build_lock(path);
+        let _building = lock.lock();
+        let mut store = self.store.lock();
+        store.set_detail(detail)?;
+        store.release_memory();
+        Ok(())
     }
 
     /// Make `walked` the whole index in this index's own store, then load it
@@ -805,6 +820,34 @@ mod tests {
             titles(&loaded.query("plan", Kinds::FoldersAndFiles, 8, &|| false)),
             ["plan.md"]
         );
+    }
+
+    /// A file deleted since the walk is still in the index after the level
+    /// changed: the word tables were built from the store, and nothing was
+    /// walked.
+    #[test]
+    fn changing_the_index_detail_walks_nothing() {
+        let tree = Tree::new("index-detail");
+        tree.file("notes.md").file("projects/myreport.md");
+        let built = index(&tree);
+        let path = tree.path(".files.db");
+        let before = Store::open(&path).unwrap().meta().unwrap();
+        std::fs::remove_file(tree.path("notes.md")).unwrap();
+
+        built.set_detail(&path, IndexDetail::Complete).unwrap();
+
+        let store = built.store.lock();
+        assert_eq!(store.detail(), IndexDetail::Complete);
+        assert_eq!(store.meta().unwrap(), before);
+        assert_eq!(store.count().unwrap(), 3);
+        let inside = store
+            .substring("port", Kinds::FoldersAndFiles, 8, &|| false)
+            .unwrap();
+        assert_eq!(inside[0].name, "myreport.md");
+        let notes = store
+            .ranked("notes", Kinds::FoldersAndFiles, 8, &|_, _| true)
+            .unwrap();
+        assert_eq!(notes[0].name, "notes.md");
     }
 
     /// A rebuild writes through the index in place and gives back the new

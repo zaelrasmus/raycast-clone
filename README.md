@@ -790,7 +790,8 @@ copy the path. The full design is in
   "ignore-patterns": ["*.log", "**/build/**"],
   "use-ignore-files": true,
   "include-hidden": false,
-  "default-skips-off": []
+  "default-skips-off": [],
+  "index-detail": "balanced"
 }
 ```
 
@@ -802,6 +803,12 @@ copy the path. The full design is in
   and `.lumenignore`; **`ignore-patterns`** are gitignore-style globs for every
   scope; **`include-hidden`** takes dot-files and the Windows hidden attribute
   too.
+- **`index-detail`** is `"complete"`, `"balanced"` (the default) or
+  `"compact"`: how much the index keeps on disk beside the names. `complete`
+  also finds matches inside words without a scan (about 150 MB for 500 000
+  entries), `balanced` about 110 MB, `compact` about 90 MB and slower on very
+  common words. Changing it rebuilds only the word index, never a walk. Saved
+  from settings today; the daemon applies it once root searches the disk.
 - An F3 config still loads: `roots` becomes `scopes`, and `limits` is ignored.
 - An internal drive with no scope on it is offered in *Search Files*:
   *Choose folders...* opens the picker on it, *Not now* writes it to
