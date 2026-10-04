@@ -3397,6 +3397,28 @@ Across a gpui upgrade (I-6) the test is the check: if upstream has fixed the
 cache, drop the patch; if not, re-apply it. gpui is not a workspace member,
 so its tests run against its own manifest.
 
+### 7.52 A borderless window's client area is its whole rect, as a patch to gpui
+
+The launcher's list was cut a few pixels short at the bottom, in the root
+list and in every view: a row under the last one in view showed half above
+the footer. The heights were right. gpui 0.2.2 answers `WM_NCCALCSIZE` for a
+window without a title bar by insetting the client area by the resize
+frame's thickness (`SM_CXSIZEFRAME` + `SM_CXPADDEDBORDER`) at the sides and
+the bottom and by a pixel per scale step at the top. The launcher is a
+`PopUp` with no frame at all, so the window rect `SetWindowPos` set was the
+size Lumen computed and the client area gpui drew into was smaller: 941x595
+against 959x605 at 1.25, 8 logical pixels short. The region between the
+search field and the footer is the part that gives (`Launcher::render`), so
+the list lost them.
+
+The patch skips the insets for a window whose style has no `WS_THICKFRAME`:
+its client area is the whole rect, which is what `rgrc[0]` already holds.
+A window with a resize frame is unchanged. The changed lines in
+`vendor/gpui/src/platform/windows/events.rs` are marked
+`LUMEN PATCH (docs/ARCHITECTURE.md, 7.52)`; a test there checks the
+decision for a pop-up and for a framed window. Across a gpui upgrade the test
+and the window's client rect are the check.
+
 ## 8. Risk register
 
 | # | Risk | Phase | Status |

@@ -705,6 +705,13 @@ impl WindowsWindowInner {
         if !self.hide_title_bar || self.state.borrow().is_fullscreen() || wparam.0 == 0 {
             return None;
         }
+        // LUMEN PATCH (docs/ARCHITECTURE.md, 7.52): a window with no resize
+        // frame has nothing to inset; its client area is the whole window
+        // rect, left as `rgrc[0]` already holds it.
+        let style = WINDOW_STYLE(unsafe { get_window_long(handle, GWL_STYLE) } as _);
+        if !has_resize_frame(style) {
+            return Some(0);
+        }
 
         let is_maximized = self.state.borrow().is_maximized();
         let insets = get_client_area_insets(handle, is_maximized, self.windows_version);
@@ -1529,6 +1536,14 @@ fn get_client_area_insets(
     }
 }
 
+// LUMEN PATCH (docs/ARCHITECTURE.md, 7.52): whether the client area is inset
+// by the resize frame. Only a window that has one: a borderless pop-up given
+// the insets lost a frame's thickness at its sides and bottom, and what it
+// drew there was cut off.
+fn has_resize_frame(style: WINDOW_STYLE) -> bool {
+    style.contains(WS_THICKFRAME)
+}
+
 // there is some additional non-visible space when talking about window
 // borders on Windows:
 // - SM_CXSIZEFRAME: The resize handle.
@@ -1559,5 +1574,23 @@ fn notify_frame_changed(handle: HWND) {
                 | SWP_NOZORDER,
         )
         .log_err();
+    }
+}
+
+// LUMEN PATCH (docs/ARCHITECTURE.md, 7.52)
+#[cfg(test)]
+mod lumen_tests {
+    use super::has_resize_frame;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WINDOW_STYLE, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+    };
+
+    /// A borderless pop-up is drawn to its whole window rect; a window with a
+    /// resize frame keeps the insets that frame needs.
+    #[test]
+    fn only_a_window_with_a_resize_frame_is_inset() {
+        assert!(!has_resize_frame(WINDOW_STYLE(0)));
+        assert!(!has_resize_frame(WS_POPUP));
+        assert!(has_resize_frame(WS_THICKFRAME | WS_SYSMENU));
     }
 }
