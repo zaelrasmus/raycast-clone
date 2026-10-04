@@ -439,6 +439,32 @@ impl RootSearch {
         self.listing = rows;
     }
 
+    /// Take the listing of the folder typed in `query` and rank it, as
+    /// [`Self::set_typed`] then [`Self::rank`] do; returns where the row at
+    /// `selected` in the hits before it now is.
+    ///
+    /// The listed row selected stays selected, wherever it now is; when it
+    /// is gone, the first listed row is. A fallback selected while rows
+    /// were listed stays selected; one selected because nothing was listed
+    /// yet gives way to the first row, which Enter and Tab are for here.
+    /// Read before the listing is taken: taking it drops the file rows
+    /// from the hits, and the row at `selected` would then be another.
+    pub fn take_typed(&mut self, query: &str, rows: Vec<Found>, selected: usize) -> usize {
+        let listed = self
+            .hits
+            .iter()
+            .any(|hit| matches!(hit.source, Source::File(_)));
+        let kept = self
+            .hits
+            .get(selected)
+            .filter(|_| listed)
+            .map(|hit| self.item(hit).id.clone());
+        self.set_typed(query, rows);
+        self.rank(query);
+        kept.and_then(|id| self.hits.iter().position(|hit| self.item(hit).id == id))
+            .unwrap_or(0)
+    }
+
     /// What `Tab` makes of `query` with the row `selected` (an item id):
     /// the typed path completed to it ([`browse::complete`]), a folder's
     /// ending in a separator. `None` when `query` is no path or the row is
@@ -1730,6 +1756,88 @@ mod tests {
         root.set_typed(r"C:\src\LU", listed(&[(r"C:\src\lumen.txt", false)]));
         root.rank(r"C:\src\LU");
         assert_eq!(file_titles(&root), ["lumen.txt"]);
+    }
+
+    /// The title of the row selected at `at`.
+    fn title_at(root: &RootSearch, at: usize) -> String {
+        root.item(&root.hits()[at]).title.clone()
+    }
+
+    /// `C:\` listed and ranked: Users, AMD, Windows, then the fallback.
+    fn c_drive() -> RootSearch {
+        let mut root = root(Vec::new());
+        root.replace_quicklinks(google());
+        root.set_typed(
+            r"C:\",
+            listed(&[
+                (r"C:\Users", true),
+                (r"C:\AMD", true),
+                (r"C:\Windows", true),
+            ]),
+        );
+        root.rank(r"C:\");
+        root
+    }
+
+    /// Typing on in the same folder: the narrowed row selected is the one
+    /// selected when the folder's own listing lands -- not the fallback that
+    /// was at its place once the narrowed rows were dropped.
+    #[test]
+    fn a_listing_landing_keeps_the_narrowed_row_selected() {
+        let mut root = c_drive();
+        root.rank(r"C:\Us");
+        assert_eq!(title_at(&root, 0), "Users");
+
+        let at = root.take_typed(r"C:\Us", listed(&[(r"C:\Users", true)]), 0);
+
+        assert_eq!(at, 0);
+        assert_eq!(title_at(&root, at), "Users");
+        assert!(matches!(root.hits()[1].source, Source::Fallback(_)));
+    }
+
+    /// Another folder, after Tab or typing: nothing was listed for it, so
+    /// the fallback was all there was to select. Its listing takes the
+    /// selection to its first row.
+    #[test]
+    fn a_listing_of_another_folder_selects_its_first_row() {
+        let mut root = c_drive();
+        root.rank(r"C:\AMD\");
+        assert_eq!(root.hits().len(), 1);
+        assert!(matches!(root.hits()[0].source, Source::Fallback(_)));
+
+        let at = root.take_typed(
+            r"C:\AMD\",
+            listed(&[(r"C:\AMD\Chipset", true), (r"C:\AMD\Drivers", true)]),
+            0,
+        );
+
+        assert_eq!(at, 0);
+        assert_eq!(title_at(&root, at), "Chipset");
+    }
+
+    /// The same folder listed again -- the file index changed, and the
+    /// launcher asked again: the row selected stays selected, the fallback
+    /// included; a row no longer listed gives way to the first.
+    #[test]
+    fn a_listing_landing_again_keeps_the_selection() {
+        let rows = || {
+            listed(&[
+                (r"C:\Users", true),
+                (r"C:\AMD", true),
+                (r"C:\Windows", true),
+            ])
+        };
+        let mut root = c_drive();
+
+        let at = root.take_typed(r"C:\", rows(), 2);
+        assert_eq!(title_at(&root, at), "Windows");
+
+        let at = root.take_typed(r"C:\", rows(), 3);
+        assert_eq!(at, 3);
+        assert!(matches!(root.hits()[at].source, Source::Fallback(_)));
+
+        let at = root.take_typed(r"C:\", listed(&[(r"C:\Users", true)]), 1);
+        assert_eq!(title_at(&root, at), "Users");
     }
 
     /// Tab on a listed row: the query that names it, a folder's ending in

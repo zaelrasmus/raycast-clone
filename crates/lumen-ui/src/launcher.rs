@@ -39,7 +39,7 @@ use lumen_core::file_index::{
 };
 use lumen_core::item::ActionGroup;
 use lumen_core::providers::QuicklinkProvider;
-use lumen_core::root::{FILES_CAP, Hit, Source};
+use lumen_core::root::{FILES_CAP, Hit};
 use lumen_core::style::{
     CardDivider, CardHeader, CardLabels, CardOperators, Metrics, SectionCase, Variants,
 };
@@ -186,13 +186,20 @@ fn opening_selection(entries: usize) -> Option<usize> {
 ///
 /// A favourite shows the chord that names it, wherever it falls; otherwise the
 /// first row shows what `Enter` is bound to and the second what Ctrl+Enter
-/// is. Free of the launcher so it can be checked without standing one up.
-fn root_panel_entries(actions: Vec<Action>, shortcuts: &Shortcuts) -> Vec<PanelEntry> {
+/// is. Each is named as `item`, the row selected, names it. Free of the
+/// launcher so it can be checked without standing one up.
+fn root_panel_entries(
+    item: Option<&Item>,
+    actions: Vec<Action>,
+    shortcuts: &Shortcuts,
+) -> Vec<PanelEntry> {
     actions
         .into_iter()
         .enumerate()
         .map(|(index, action)| PanelEntry {
-            title: action.verb().to_string(),
+            title: item
+                .map_or_else(|| action.verb(), |item| item.verb(&action))
+                .to_string(),
             shortcut: match (&action, index) {
                 (Action::Favorite(FavoriteChange::Add | FavoriteChange::Remove), _) => {
                     shortcuts.toggle_favorite.clone()
@@ -1803,8 +1810,11 @@ impl Launcher {
                     && matches!(this.mode, Mode::Root)
                     && this.argument.is_none();
                 if current {
+                    // Read before the files are taken: taking them drops the
+                    // file rows, and the row at the selection is another.
+                    let selected = this.selected_item().map(|item| item.id.clone());
                     this.root.set_files(&query, hits);
-                    this.place_files(cx);
+                    this.place_files(selected, cx);
                 }
             })
             .ok();
@@ -1846,21 +1856,21 @@ impl Launcher {
                     && matches!(this.mode, Mode::Root)
                     && this.argument.is_none();
                 if current {
-                    // The listing comes first, above the fallbacks: a row of
-                    // the narrowed listing stays selected, and a selected
-                    // fallback -- all there was until now -- gives way to the
-                    // first entry, which is what Enter and Tab are for here.
-                    let on_file = this
-                        .hits()
-                        .get(this.selected)
-                        .is_some_and(|hit| matches!(hit.source, Source::File(_)));
-                    this.root.set_typed(&query, rows);
-                    if on_file {
-                        this.place_files(cx);
-                    } else {
-                        this.rerank(cx);
-                        cx.notify();
+                    // The listing comes first, above the fallbacks: the
+                    // listed row selected stays selected, and a fallback
+                    // selected because nothing was listed yet gives way to
+                    // the first entry, which is what Enter and Tab are for.
+                    let previous_height = this.content_height();
+                    let before = this.selected_item().map(|item| item.id.clone());
+                    this.selected = this.root.take_typed(&query, rows, this.selected);
+                    if this.selected_item().map(|item| &item.id) != before.as_ref() {
+                        // The panel described another row.
+                        this.action_panel = None;
                     }
+                    this.rebuild_rows();
+                    this.reveal_row();
+                    this.resize_if_needed(previous_height, cx);
+                    cx.notify();
                 }
             })
             .ok();
@@ -1875,9 +1885,11 @@ impl Launcher {
     /// already moving through the list. The selected row stays selected
     /// wherever it now is; when it is gone, the selection stays at its place,
     /// within the list.
-    fn place_files(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// `selected` is the id of the row selected before the files were
+    /// taken, read then: taking them drops the file rows from the hits.
+    fn place_files(&mut self, selected: Option<String>, cx: &mut Context<Self>) {
         let previous_height = self.content_height();
-        let selected = self.selected_item().map(|item| item.id.clone());
         self.root.rank(&self.query);
         let kept = selected
             .as_ref()
@@ -3451,7 +3463,11 @@ impl Launcher {
                 .collect();
         }
         match &self.mode {
-            Mode::Root => root_panel_entries(self.available_actions(), &self.shortcuts),
+            Mode::Root => root_panel_entries(
+                self.selected_item(),
+                self.available_actions(),
+                &self.shortcuts,
+            ),
             Mode::View(state) => state
                 .view
                 .actions(state.selected)
@@ -5330,7 +5346,7 @@ impl Launcher {
         let verb = match &self.mode {
             Mode::Root => self
                 .selected_item()
-                .map(|item| item.primary().verb().to_string())
+                .map(|item| item.verb(&item.primary()).to_string())
                 .unwrap_or_else(|| "Open".to_string()),
             // The extension's own word for what Enter does. It is the first
             // thing a view gets to say in the launcher's own chrome, and
@@ -6104,6 +6120,7 @@ mod tests {
             "on_shown",
             "rerank",
             "place_files",
+            "list_typed",
             "open_view",
             "begin_view",
             "leave_view",
@@ -6203,7 +6220,7 @@ mod tests {
         let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
         let shortcuts = crate::keymap::Shortcuts::read(&keymap);
 
-        let rows = root_panel_entries(firefox_actions(), &shortcuts);
+        let rows = root_panel_entries(None, firefox_actions(), &shortcuts);
 
         let titles: Vec<_> = rows.iter().map(|row| row.title.as_str()).collect();
         assert_eq!(
@@ -6248,6 +6265,7 @@ mod tests {
         let shortcuts = crate::keymap::Shortcuts::read(&keymap);
 
         let rows = root_panel_entries(
+            None,
             vec![
                 Action::Builtin(Builtin::OpenSettings),
                 Action::Favorite(FavoriteChange::Add),
@@ -6256,6 +6274,20 @@ mod tests {
         );
 
         assert_eq!(rows[1].shortcut, ["Ctrl", "Shift", "F"]);
+    }
+
+    /// A folder's panel opens it: it is no application.
+    #[test]
+    fn a_folders_panel_opens_it() {
+        let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
+        let shortcuts = crate::keymap::Shortcuts::read(&keymap);
+        let folder =
+            lumen_core::file_index::item_for(std::path::Path::new(r"C:\Users"), true, None);
+
+        let rows = root_panel_entries(Some(&folder), folder.actions.clone(), &shortcuts);
+
+        let titles: Vec<_> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(titles, ["Open", "Copy"]);
     }
 
     /// Ctrl+Enter runs the second action, and does nothing when there is

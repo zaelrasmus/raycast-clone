@@ -472,6 +472,16 @@ impl Item {
             .unwrap_or_else(|| Action::CopyToClipboard(self.title.clone()))
     }
 
+    /// The verb shown for `action` on this item: the action's own, except
+    /// that a file or a folder is opened rather than launched as an
+    /// application -- the shell opens it, with whatever opens it (F16).
+    pub fn verb(&self, action: &Action) -> &'static str {
+        match (self.kind, action) {
+            (Kind::File | Kind::Folder, Action::Launch(_)) => "Open",
+            _ => action.verb(),
+        }
+    }
+
     pub fn kind_label(&self) -> &'static str {
         self.kind.label()
     }
@@ -533,6 +543,39 @@ mod tests {
         assert_eq!(item.primary().verb(), "Open Application");
         // The id must survive the conversion, or frecency resets on reindex.
         assert_eq!(item.id, "app:Firefox.lnk");
+    }
+
+    /// A file or a folder is opened, not an application: the shell opens it
+    /// with whatever it is opened with, and the verb says only that.
+    #[test]
+    fn a_file_or_folder_is_opened_not_launched_as_an_application() {
+        for (kind, path) in [(Kind::File, r"C:\notes.txt"), (Kind::Folder, r"C:\Users")] {
+            let item = Item {
+                id: format!("file:{path}"),
+                title: path.into(),
+                subtitle: None,
+                icon: None,
+                keywords: Vec::new(),
+                actions: vec![
+                    Action::Launch(LaunchTarget::ShellExecute(path.into())),
+                    Action::CopyToClipboard(path.into()),
+                ],
+                kind,
+            };
+
+            assert_eq!(item.verb(&item.primary()), "Open");
+            assert_eq!(item.verb(&item.actions[1]), "Copy");
+        }
+
+        let app = Item::from_app(AppEntry {
+            id: "app:Firefox.lnk".into(),
+            name: "Firefox".into(),
+            detail: None,
+            target: LaunchTarget::ShellExecute("shell:AppsFolder\\Firefox.lnk".into()),
+            icon: None,
+            keywords: Vec::new(),
+        });
+        assert_eq!(app.verb(&app.primary()), "Open Application");
     }
 
     /// A provider that forgets to give a row an action must not make `Enter`
