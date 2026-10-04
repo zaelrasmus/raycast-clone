@@ -276,4 +276,22 @@ impl Platform for LinuxPlatform {
     fn internal_drives(&self) -> Result<Vec<lumen_platform::Drive>> {
         Ok(Vec::new())
     }
+
+    /// F5: a content index such as Tracker's or Recoll's, if one runs.
+    fn content_search(
+        &self,
+        _words: &str,
+        _scopes: &[std::path::PathBuf],
+        _limit: usize,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        todo!("F5: content search on Linux")
+    }
+
+    fn scope_covered(&self, _scope: &std::path::Path) -> Result<bool> {
+        todo!("F5: content index coverage on Linux")
+    }
+
+    fn open_indexing_options(&self) -> Result<()> {
+        todo!("F5: content index settings on Linux")
+    }
 }

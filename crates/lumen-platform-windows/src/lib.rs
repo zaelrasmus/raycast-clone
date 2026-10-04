@@ -27,6 +27,7 @@ mod browsers;
 mod clipboard;
 mod clipboard_watch;
 mod com;
+mod content;
 mod date;
 mod dib;
 mod files;
@@ -315,6 +316,23 @@ impl Platform for WindowsPlatform {
 
     fn internal_drives(&self) -> Result<Vec<lumen_platform::Drive>> {
         Ok(files::internal_drives())
+    }
+
+    fn content_search(
+        &self,
+        words: &str,
+        scopes: &[std::path::PathBuf],
+        limit: usize,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        content::search(words, scopes, limit)
+    }
+
+    fn scope_covered(&self, scope: &std::path::Path) -> Result<bool> {
+        content::covered(scope)
+    }
+
+    fn open_indexing_options(&self) -> Result<()> {
+        content::open_indexing_options()
     }
 }
 

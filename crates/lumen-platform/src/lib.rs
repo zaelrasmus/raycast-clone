@@ -678,6 +678,24 @@ pub trait Platform: Send + Sync {
     /// no removable, network or optical drive. Asks the system each time;
     /// called off the UI thread.
     fn internal_drives(&self) -> Result<Vec<Drive>>;
+
+    /// The files under `scopes` whose contents match `words`, by the
+    /// system's own content index (F16, slice 6): every word must match,
+    /// each as a prefix. At most `limit`; nothing for no words or no scopes.
+    ///
+    /// Reads the system's index; called off the UI thread. An `Err` when the
+    /// index is not running, which a caller treats as no matches.
+    fn content_search(&self, words: &str, scopes: &[PathBuf], limit: usize)
+    -> Result<Vec<PathBuf>>;
+
+    /// Whether the system's content index covers the folder `scope`, so
+    /// [`Platform::content_search`] can find files in it (F16, slice 6).
+    /// Reads the system's index settings; called off the UI thread.
+    fn scope_covered(&self, scope: &std::path::Path) -> Result<bool>;
+
+    /// Open the system's own settings for what its content index covers
+    /// (F16, slice 6). Returns once they are asked to open.
+    fn open_indexing_options(&self) -> Result<()>;
 }
 
 #[cfg(test)]
