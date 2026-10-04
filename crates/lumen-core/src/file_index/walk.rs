@@ -111,6 +111,16 @@ pub(crate) const SKIPPED: &[&str] = &[
     ".idea",
     ".vs",
     ".vscode",
+    // Toolchains and package caches in the home folder: with hidden files
+    // on, these were most of a home index. Whole, so `.cargo\bin` goes too.
+    ".rustup",
+    ".cargo",
+    ".npm",
+    ".nuget",
+    ".pnpm-store",
+    ".m2",
+    ".conda",
+    ".docker",
     // Windows' own. `AppData` alone is larger than everything the user made.
     "AppData",
     "Application Data",
@@ -766,6 +776,37 @@ pub(crate) mod tests {
 
         assert_eq!(walked.per_scope, [1, 1, 2]);
         assert_eq!(walked.entries[1].path, tree.path("AppData/config/b.txt"));
+    }
+
+    /// With hidden files on, a dotted folder of the user's is found and a
+    /// tool's cache is not: the skip list holds the caches by name, apart
+    /// from the hidden rule, and each can be turned back on.
+    #[test]
+    fn tool_caches_stay_out_with_hidden_files_on() {
+        let tree = Tree::new("walk-tool-caches");
+        tree.file(".rustup/x")
+            .file(".cargo/registry/y")
+            .file(".npm/z")
+            .file(".myconfig/keep.txt");
+
+        let mut rules = tree.rules();
+        rules.include_hidden = true;
+        assert_eq!(
+            relative(&walk(&rules), &tree.0),
+            [".myconfig/", ".myconfig/keep.txt"]
+        );
+
+        rules.skips_off = vec![".CARGO".into()];
+        assert_eq!(
+            relative(&walk(&rules), &tree.0),
+            [
+                ".cargo/",
+                ".cargo/registry/",
+                ".cargo/registry/y",
+                ".myconfig/",
+                ".myconfig/keep.txt",
+            ]
+        );
     }
 
     /// A default skip the user turned back on is descended into like any

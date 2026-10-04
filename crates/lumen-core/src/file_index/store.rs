@@ -106,7 +106,7 @@ use serde::{Deserialize, Serialize};
 
 use super::names::{Kinds, MIN_SUBSTRING, Names, fold, is_exact, word_tier, words};
 use super::tokens::{fts_query, matches, tokens};
-use super::walk::{Entry, WalkRules, Walked};
+use super::walk::{Entry, WalkRules, Walked, default_skips};
 
 /// Stored in SQLite's own `user_version`. Anything else is dropped: version
 /// 1 had no folder times and reused row ids, version 2 a full path a row
@@ -316,7 +316,14 @@ pub struct Store {
 /// path or pattern contains, so `["ab"]` and `["a", "b"]` differ. Not
 /// `std`'s `DefaultHasher`: its output is allowed to change between Rust
 /// releases, and a new build must not rebuild every index for nothing.
+///
+/// The default skip list ([`default_skips`]) is hashed too: a build that
+/// changes it rebuilds every index once, so what the old list let in leaves.
 pub fn digest(rules: &WalkRules) -> String {
+    digest_with(rules, default_skips())
+}
+
+fn digest_with(rules: &WalkRules, skipped: &[&str]) -> String {
     const VALUE: u8 = 0;
     const LIST: u8 = 1;
 
@@ -342,6 +349,11 @@ pub fn digest(rules: &WalkRules) -> String {
         }
         hash.write(&[LIST]);
     }
+    for name in skipped {
+        hash.write(name.as_bytes());
+        hash.write(&[VALUE]);
+    }
+    hash.write(&[LIST]);
     hash.write(&[
         u8::from(rules.use_ignore_files),
         u8::from(rules.include_hidden),
@@ -2101,6 +2113,20 @@ mod tests {
         for variant in variants {
             assert_ne!(digest(&base), digest(&variant), "{variant:?}");
         }
+    }
+
+    /// A new default skip list rebuilds every index once: what the old
+    /// one let in must leave.
+    #[test]
+    fn the_digest_follows_the_default_skip_list() {
+        let base = rules(&[PathBuf::from("C:/Users/someone")]);
+        let skipped = default_skips();
+        assert_eq!(digest(&base), digest_with(&base, skipped));
+        assert_ne!(
+            digest_with(&base, skipped),
+            digest_with(&base, &skipped[..skipped.len() - 1])
+        );
+        assert_ne!(digest_with(&base, &["ab"]), digest_with(&base, &["a", "b"]));
     }
 
     /// Two lists are not one list: `["a b"]` and `["a", "b"]` differ.

@@ -872,7 +872,11 @@ Applied in this order; any one skips the entry:
    `target`, `.git`, `AppData`, ...) plus the system folders of the system
    drive, located through the known-folder paths rather than by name. Each
    can be switched off (`default-skips-off`), and the settings page lists
-   them all.
+   them all. The list includes the toolchain and package caches of the home
+   folder (`.rustup`, `.cargo`, `.npm`, `.nuget`, `.pnpm-store`, `.m2`,
+   `.conda`, `.docker`): with *Include hidden files* on they were 81 % of a
+   measured home index. The list is part of the index digest, so a build
+   that changes it rebuilds each index once.
 
 **A scope added on purpose beats every rule.** A scope inside another
 scope is walked on its own whenever the outer walk would not reach it --
@@ -887,8 +891,10 @@ same rules, one directory read a level, and a nested scope outside the
 outer watches gets watches of its own.
 Raycast instead looks inside and curates per tool (the caches of
 `.claude`, `.npm`, `.cargo/registry`) and stops indexing folders it sees
-rewritten; Lumen does not, because a watch on `AppData` would deliver its
-churn and the idle CPU budget is measured with it never delivered.
+rewritten. Lumen does not look inside: a watch on `AppData` would deliver
+its churn and the idle CPU budget is measured with it never delivered.
+A tool's folder in the home is skipped whole, by name, so `.cargo\bin` goes
+with `.cargo\registry`; a user who wants it turns `.cargo` back on.
 3. **Ignore files**, when *Use ignore files* is on (default on): `.gitignore`,
    `.ignore`, Git's exclude file, and `.lumenignore` -- Lumen's own, for
    excluding a folder without touching a repository's Git configuration.

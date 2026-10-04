@@ -205,6 +205,31 @@ mod tests {
         );
     }
 
+    /// With hidden files on, a dotted folder is watched and a tool's cache
+    /// is not.
+    #[test]
+    fn tool_caches_get_no_watch_with_hidden_files_on() {
+        let tree = Tree::new("watch-tool-caches");
+        tree.file(".cargo/registry/index")
+            .file(".myconfig/app.toml");
+        let mut rules = rules(std::slice::from_ref(&tree.0));
+        rules.include_hidden = true;
+
+        assert_eq!(
+            watch_targets(&rules),
+            [
+                Target {
+                    path: tree.0.clone(),
+                    recursive: false,
+                },
+                Target {
+                    path: tree.path(".myconfig"),
+                    recursive: true,
+                },
+            ]
+        );
+    }
+
     /// A scope inside another is walked as part of it, and watched as part
     /// of it too.
     #[test]

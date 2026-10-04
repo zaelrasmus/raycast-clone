@@ -85,9 +85,9 @@ an aesthetic worth looking at fifty times a day.
 - **File search** across your home folder by default, or the folders and
   drives you name, with exclusions inside them. Files and folders are both
   results; `Enter` opens a file with its default application and a folder in
-  Explorer, `Ctrl+K` copies the path. Dependency and build trees, ignore files
-  and hidden entries are skipped, so the index is about your files rather than
-  about `node_modules`. It stays current by itself: changes are watched while
+  Explorer, `Ctrl+K` copies the path. Dependency and build trees, tool caches
+  such as `.cargo` and `.npm`, ignore files and hidden entries are skipped, so
+  the index is about your files rather than about `node_modules`. It stays current by itself: changes are watched while
   Lumen runs, and at start only the folders that changed while it was not are
   read again; *Rebuild File Index* starts over from nothing if it ever seems
   wrong.
@@ -818,7 +818,9 @@ copy the path. The full design is in
   **`declined-drives`** so it is not offered again.
 
 Not walked into by default: `node_modules`, `target`, `build`, `dist`, `.git`,
-`.venv`, `AppData` and about fifteen others, matched by directory name. Name
+`.venv`, `AppData`, the tool caches `.rustup`, `.cargo`, `.npm`, `.nuget`,
+`.pnpm-store`, `.m2`, `.conda` and `.docker`, and about fifteen others,
+matched by directory name, hidden files on or off. Name
 one in **`default-skips-off`** to walk it after all. A scope you add is
 always walked, even inside a skipped, excluded or hidden folder (say
 `~/AppData/Roaming/Lumen/config` beside `~`), unless it is itself one of the
