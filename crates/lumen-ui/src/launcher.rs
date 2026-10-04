@@ -1756,11 +1756,16 @@ impl Launcher {
         let action = Action::Launch(lumen_platform::LaunchTarget::ShellExecute(
             found.path.display().to_string(),
         ));
+        let kind = if found.is_dir {
+            lumen_core::item::Kind::Folder
+        } else {
+            lumen_core::item::Kind::File
+        };
         let platform = self.platform.clone();
         cx.background_spawn(async move {
             if let Err(error) = action.perform(platform.as_ref()) {
                 log::error!("could not run {action:?}: {error:#}");
-                let (title, body) = lumen_core::item::failure_notice(&action, &error);
+                let (title, body) = lumen_core::item::failure_notice_for(kind, &action, &error);
                 if let Err(error) = platform.notify(&title, &body) {
                     log::warn!("could not show the failure either: {error:#}");
                 }
@@ -3878,6 +3883,7 @@ impl Launcher {
             return;
         };
         let id = item.id.clone();
+        let kind = item.kind;
         let calculated = calculated(item, &action);
         let blocked = self
             .focus
@@ -3999,7 +4005,7 @@ impl Launcher {
                 log::error!("could not run {action:?}: {error:#}");
                 // The launcher is already gone; this is the only place left
                 // to say so.
-                let (title, body) = lumen_core::item::failure_notice(&action, &error);
+                let (title, body) = lumen_core::item::failure_notice_for(kind, &action, &error);
                 if let Err(error) = platform.notify(&title, &body) {
                     log::warn!("could not show the failure either: {error:#}");
                 }
@@ -5399,6 +5405,8 @@ impl Launcher {
                 format!("{}  Tab", next.title)
             }
             (Mode::View(_), _) if picking.is_some() => String::new(),
+            // On a typed path Tab is the path's, not the scope's (F16).
+            (Mode::View(_), _) if self.path_completion().is_some() => "Complete  Tab".to_string(),
             // What Tab does is not visible from the pills alone.
             (Mode::View(_), _) if !scopes.is_empty() => {
                 let titles: Vec<&str> = scopes.iter().map(|scope| scope.title.as_str()).collect();

@@ -823,8 +823,8 @@ copy the path. The full design is in
 
 Not walked into by default: `node_modules`, `target`, `build`, `dist`, `.git`,
 `.venv`, `AppData`, the tool caches `.rustup`, `.cargo`, `.npm`, `.nuget`,
-`.pnpm-store`, `.m2`, `.conda` and `.docker`, and about fifteen others,
-matched by directory name, hidden files on or off. Name
+`.pnpm-store`, `.yarn`, `.bun`, `.deno`, `.m2`, `.conda` and `.docker`, and
+about fifteen others, matched by directory name, hidden files on or off. Name
 one in **`default-skips-off`** to walk it after all. A scope you add is
 always walked, even inside a skipped, excluded or hidden folder (say
 `~/AppData/Roaming/Lumen/config` beside `~`), unless it is itself one of the

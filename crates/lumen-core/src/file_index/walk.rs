@@ -118,6 +118,9 @@ pub(crate) const SKIPPED: &[&str] = &[
     ".npm",
     ".nuget",
     ".pnpm-store",
+    ".yarn",
+    ".bun",
+    ".deno",
     ".m2",
     ".conda",
     ".docker",
@@ -787,6 +790,9 @@ pub(crate) mod tests {
         tree.file(".rustup/x")
             .file(".cargo/registry/y")
             .file(".npm/z")
+            .file(".bun/install/cache/w")
+            .file(".yarn/berry/v")
+            .file(".deno/bin/u")
             .file(".myconfig/keep.txt");
 
         let mut rules = tree.rules();

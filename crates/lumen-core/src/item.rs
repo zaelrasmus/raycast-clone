@@ -64,6 +64,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The verb shown for `action` on a row of this kind: see [`Item::verb`].
+    pub fn verb(self, action: &Action) -> &'static str {
+        match (self, action) {
+            (Kind::File | Kind::Folder, Action::Launch(_)) => "Open",
+            _ => action.verb(),
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Kind::Application => "Application",
@@ -433,7 +441,17 @@ impl Action {
 /// the foreground away -- so this goes to a system notification rather than
 /// a line in a window nobody is looking at.
 pub fn failure_notice(action: &Action, error: &anyhow::Error) -> (String, String) {
-    let verb = action.verb().trim_end_matches('\u{2026}').to_lowercase();
+    notice(action.verb(), error)
+}
+
+/// [`failure_notice`] for an action on a row of `kind`, in the verb the row
+/// showed: a file or folder that would not open says *Couldn't open*.
+pub fn failure_notice_for(kind: Kind, action: &Action, error: &anyhow::Error) -> (String, String) {
+    notice(kind.verb(action), error)
+}
+
+fn notice(verb: &str, error: &anyhow::Error) -> (String, String) {
+    let verb = verb.trim_end_matches('\u{2026}').to_lowercase();
     (format!("Couldn't {verb}"), format!("{error:#}"))
 }
 
@@ -476,10 +494,7 @@ impl Item {
     /// that a file or a folder is opened rather than launched as an
     /// application -- the shell opens it, with whatever opens it (F16).
     pub fn verb(&self, action: &Action) -> &'static str {
-        match (self.kind, action) {
-            (Kind::File | Kind::Folder, Action::Launch(_)) => "Open",
-            _ => action.verb(),
-        }
+        self.kind.verb(action)
     }
 
     pub fn kind_label(&self) -> &'static str {
@@ -523,6 +538,20 @@ mod tests {
         };
         let (title, _) = failure_notice(&Action::OpenLink(open), &anyhow::anyhow!("no"));
         assert_eq!(title, "Couldn't open in private window");
+    }
+
+    /// A file or folder that would not open says what its row said, Open,
+    /// not what an application's would (F16).
+    #[test]
+    fn a_failed_file_or_folder_says_open() {
+        let action = Action::Launch(LaunchTarget::ShellExecute("C:\\x.txt".into()));
+        let error = anyhow::anyhow!("no");
+        for kind in [Kind::File, Kind::Folder] {
+            let (title, _) = failure_notice_for(kind, &action, &error);
+            assert_eq!(title, "Couldn't open");
+        }
+        let (title, _) = failure_notice_for(Kind::Application, &action, &error);
+        assert_eq!(title, "Couldn't open application");
     }
 
     #[test]

@@ -873,8 +873,8 @@ Applied in this order; any one skips the entry:
    drive, located through the known-folder paths rather than by name. Each
    can be switched off (`default-skips-off`), and the settings page lists
    them all. The list includes the toolchain and package caches of the home
-   folder (`.rustup`, `.cargo`, `.npm`, `.nuget`, `.pnpm-store`, `.m2`,
-   `.conda`, `.docker`): with *Include hidden files* on they were 81 % of a
+   folder (`.rustup`, `.cargo`, `.npm`, `.nuget`, `.pnpm-store`, `.yarn`,
+   `.bun`, `.deno`, `.m2`, `.conda`, `.docker`): with *Include hidden files* on they were 81 % of a
    measured home index. The list is part of the index digest, so a build
    that changes it rebuilds each index once.
 
