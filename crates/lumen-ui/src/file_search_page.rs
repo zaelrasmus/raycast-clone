@@ -43,8 +43,9 @@ use crate::translate_page::FORM_CONTEXT;
 
 /// Above the scopes: what a scope costs (FILE-SEARCH.md, "Against the
 /// budgets").
-const MEMORY_NOTE: &str = "Every folder and drive you add is held in Lumen's memory to search it \
-                           instantly. Add the folders you search, not whole drives you don't.";
+const SCOPE_NOTE: &str = "Every folder and drive you add is indexed on disk. A whole drive makes \
+                          the index larger and its first build longer, and fills it with files \
+                          you won't look for: add the folders you search.";
 
 /// The default skip that is not like the others, and says why.
 const APPDATA: &str = "AppData";
@@ -662,7 +663,8 @@ impl FileSearchPage {
                 ));
             scopes.push(ui::row(
                 format!(
-                    "{} is the whole drive: everything on it is held in memory.",
+                    "{} is the whole drive: a larger index, slower to build, mostly of files \
+                     you won't look for.",
                     root.display()
                 ),
                 Some("Add the folders you search on it instead, or add it anyway".into()),
@@ -721,7 +723,7 @@ impl FileSearchPage {
                 .px(px(metrics::CARD_PADDING_X))
                 .text_size(px(metrics::text::ROW_DESCRIPTION))
                 .text_color(color(colors.text_muted))
-                .child(MEMORY_NOTE)
+                .child(SCOPE_NOTE)
                 .into_any_element(),
             ui::card(scopes, colors).into_any_element(),
             ui::card(exclusions, colors).into_any_element(),

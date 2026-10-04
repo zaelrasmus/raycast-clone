@@ -156,6 +156,13 @@ pub struct FileIndex {
     /// Behind a lock because SQLite's connection is not `Sync`, and a query
     /// arrives from whichever thread asks.
     store: Mutex<Store>,
+    /// *Search Files*' scan inside words reads through its own connection,
+    /// opened on the same file at its first scan, so root's queries and the
+    /// writes never wait behind it ([`Self::query_inside`]). Its lock only
+    /// keeps two scans apart.
+    reader: Mutex<Option<Store>>,
+    /// The file the store reads, for the reader.
+    path: Option<PathBuf>,
     /// What frecency knows of the index. Behind a lock so a use can update
     /// it while the index is shared with the scans in flight; written only
     /// by [`Self::set_boosts`], briefly.
@@ -266,6 +273,8 @@ impl FileIndex {
             hot_is_complete: hot.complete,
             budget,
             entries: hot.entries,
+            reader: Mutex::new(None),
+            path: store.path(),
             store: Mutex::new(store),
             used: RwLock::new(Used::default()),
             meta,
@@ -600,7 +609,15 @@ impl FileIndex {
     /// which a match inside a word never is. A scan of the disk's names at
     /// every level but `complete` -- tens of milliseconds to hundreds -- so
     /// it answers nothing once `cancelled` says so, asked every few
-    /// thousand rows.
+    /// thousand rows, and reads through [`Self::reader`]'s connection, not
+    /// the store's: root never waits for it (I-3).
+    ///
+    /// That connection sees the store's writes once committed, so a row
+    /// may have moved under this index since it was loaded. A row is
+    /// skipped as already searched only while it is still the entry the
+    /// hot layer -- or the used outside it -- has under that row: its
+    /// folded name checked, as [`Self::hits`] checks a row. Whatever is
+    /// answered was read as it is.
     pub fn query_inside(
         &self,
         query: &str,
@@ -618,15 +635,33 @@ impl FileIndex {
         let outside = {
             let used = self.used.read();
             (0..used.outside.len() as u32)
-                .map(|entry| used.outside.row(entry))
-                .collect::<std::collections::HashSet<_>>()
+                .map(|entry| {
+                    let row = used.outside.row(entry);
+                    (row, used.outside.folded_name(entry).to_string())
+                })
+                .collect::<HashMap<_, _>>()
         };
-        let skip = |row: u32| self.hot.entry_of(row).is_some() || outside.contains(&row);
-        let rows = match self
-            .store
-            .lock()
-            .substring_where(query, kinds, limit, &skip, accept, cancelled)
-        {
+        let skip = |row: u32, folded: &str| {
+            self.hot
+                .entry_of(row)
+                .is_some_and(|entry| self.hot.folded_name(entry) == folded)
+                || outside.get(&row).is_some_and(|name| name == folded)
+        };
+        let mut reader = self.reader.lock();
+        let rows = match &mut *reader {
+            Some(reader) => Ok(reader),
+            None => match &self.path {
+                Some(path) => Store::open_reader(path).map(|opened| reader.insert(opened)),
+                None => Err(anyhow::anyhow!("the file index is not a file")),
+            },
+        }
+        .and_then(|reader| {
+            let rows = reader.substring_where(query, kinds, limit, &skip, accept, cancelled);
+            reader.release_memory();
+            rows
+        });
+        drop(reader);
+        let rows = match rows {
             Ok(rows) => rows,
             Err(error) => {
                 log::warn!("could not read the file index: {error:#}");
@@ -1592,6 +1627,91 @@ mod tests {
         assert!(!partial.searches_inside("po rt"));
         assert!(partial.searches_inside("my port"));
         assert!(inside(&partial, "po", 8).is_empty());
+    }
+
+    /// The second phase reads the disk through a connection of its own,
+    /// without the store's lock: root's query does not wait for a scan in
+    /// flight (I-3).
+    #[test]
+    fn root_does_not_wait_for_a_scan_in_flight() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let tree = Tree::new("index-inside-parallel");
+        tree.file("a/b/myplan.md").file("a/b/plan.md");
+        let index = &index_within(&tree, 0);
+        assert!(!index.hot_is_complete());
+        let (entered, scanning) = channel();
+        let (release, released) = channel::<()>();
+        let (done, answered) = channel();
+        let answer = std::thread::scope(|threads| {
+            let scan = threads.spawn(move || {
+                // Parked at its first row until released.
+                let parked = |_: &str, _: bool| {
+                    entered.send(()).ok();
+                    released.recv().ok();
+                    true
+                };
+                titles(&index.query_inside("plan", Kinds::FoldersAndFiles, 8, &parked, &|| false))
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            });
+            scanning
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the scan reached a row");
+            threads.spawn(move || done.send(root(index, "plan", 8)).ok());
+            let answer = answered.recv_timeout(Duration::from_secs(2));
+            drop(release);
+            assert_eq!(scan.join().unwrap(), ["myplan.md"]);
+            answer
+        });
+        assert_eq!(
+            answer.expect("root answered while the scan was parked"),
+            ["plan.md"]
+        );
+    }
+
+    /// The scan's connection sees what was written through the store's
+    /// since it was opened.
+    #[test]
+    fn the_second_phase_sees_a_committed_update() {
+        let scope = Scope::new("index-inside-update");
+        scope.file("a/b/myplan.md");
+        drop(scope.build());
+        let index =
+            FileIndex::load_within(Store::open(&scope.database()).unwrap(), &[], 0).unwrap();
+        assert_eq!(inside(&index, "plan", 8), ["myplan.md"]);
+
+        scope.file("a/b/yourplan.md");
+        let updated = index
+            .update(
+                &scope.database(),
+                &scope.rules,
+                &[scope.path("a/b/yourplan.md")],
+                &|| false,
+            )
+            .unwrap()
+            .expect("nothing supersedes it");
+        assert!(updated.index.is_some());
+        assert_eq!(inside(&index, "plan", 8), ["myplan.md", "yourplan.md"]);
+    }
+
+    /// A rebuild renumbers the rows under an index still installed: one of
+    /// its hot rows may now be another entry, which the second phase must
+    /// not skip as already searched.
+    #[test]
+    fn the_second_phase_skips_only_rows_that_are_still_its_entries() {
+        let tree = Tree::new("index-inside-moved");
+        tree.file("a/b/longname.txt");
+        let old = index_within(&tree, 0);
+        assert!(!old.hot_is_complete());
+        std::fs::remove_dir_all(tree.path("a")).unwrap();
+        tree.file("myplan.md");
+
+        let rebuilt = FileIndex::build(&tree.path(".files.db"), &tree.rules()).unwrap();
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(inside(&old, "plan", 8), ["myplan.md"]);
     }
 
     /// What the hot layer and the disk each found is ranked as the names of

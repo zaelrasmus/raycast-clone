@@ -637,8 +637,9 @@ const WHOLE_DRIVE_ID: &str = "whole-drive:";
 /// What the pane says beside a drive's offer and the empty result's hint.
 const OFFER_DETAIL: &str = "Lumen searches the folders it is given, and none is on this drive. \
                             **Choose folders\u{2026}** opens the picker on it: add the folders \
-                            you search rather than the whole drive, since everything indexed \
-                            is held in memory. **Not now** stops offering it; a folder can \
+                            you search rather than the whole drive, which makes the index on \
+                            disk larger and its first build longer, and fills it with files \
+                            you won't look for. **Not now** stops offering it; a folder can \
                             still be added in Settings, on the File Search page.";
 
 /// *Files on D:\ (Data) aren't searched*, with *Choose folders...* and
@@ -678,12 +679,16 @@ fn whole_drive_row(root: &Path) -> Item {
     let root = root.display();
     drive_row(
         format!("{WHOLE_DRIVE_ID}{root}"),
-        format!("{root} is the whole drive: everything on it is held in memory."),
+        format!(
+            "{root} is the whole drive: a larger index, slower to build, mostly of files \
+             you won't look for."
+        ),
         vec![action(ADD_ANYWAY, "Add anyway"), action(CANCEL, "Cancel")],
         format!(
-            "Every file on {root} is indexed and kept in Lumen's memory, games and \
-             libraries included. Choosing the folders you search instead keeps \
-             the index small."
+            "Every file on {root} is indexed, games and libraries included: the \
+             index on disk grows larger, its first build takes longer, and it \
+             fills with files you won't look for. Choose the folders you search \
+             instead."
         ),
     )
 }
@@ -1247,7 +1252,7 @@ mod tests {
         let mut session = Session::new(recents(), READY).with_drives(offered());
         let effects = session.picked(Some("D:\\".into()));
         assert!(matches!(effects[..], [Effect::Render(_)]));
-        let warning = "D:\\ is the whole drive: everything on it is held in memory.";
+        let warning = "D:\\ is the whole drive: a larger index, slower to build, mostly of files you won't look for.";
         let view = session.view();
         let first = list(&view).item(0).unwrap();
         assert_eq!(first.title, warning);
@@ -1264,7 +1269,7 @@ mod tests {
         session.picked(Some("E:\\".into()));
         let id = row_id(
             &session,
-            "E:\\ is the whole drive: everything on it is held in memory.",
+            "E:\\ is the whole drive: a larger index, slower to build, mostly of files you won't look for.",
         );
         let effects = invoke(&mut session, Some(id), CANCEL);
         assert!(matches!(effects[..], [Effect::Render(_)]));

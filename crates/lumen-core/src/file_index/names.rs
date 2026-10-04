@@ -249,6 +249,12 @@ impl Names {
         self.name(entry as usize) == folded
     }
 
+    /// The folded name of `entry`: what a row read from the store is
+    /// checked against before it is fetched whole.
+    pub(crate) fn folded_name(&self, entry: u32) -> &str {
+        self.name(entry as usize)
+    }
+
     /// The entry whose name holds the byte `hit`, searching forwards from
     /// `from`, which starts at or before it.
     ///

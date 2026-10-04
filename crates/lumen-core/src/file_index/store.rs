@@ -58,11 +58,23 @@
 //!
 //! It lives in the cache folder and holds nothing that cannot be walked
 //! again, so it is never migrated: another schema version is dropped and
-//! created afresh, and a file SQLite cannot read is deleted. Writes skip the
-//! rollback journal for the same reason -- a crash halfway through a
-//! rebuild costs a rebuild, which is what the journal would have saved.
-//! That a rebuild did finish is recorded last, as the rules' digest (see
-//! [`Store::replace`]).
+//! created afresh, and a file SQLite cannot read is deleted. Nothing is
+//! synced to disk for the same reason -- a crash halfway through a rebuild
+//! costs a rebuild. That a rebuild did finish is recorded last, as the
+//! rules' digest (see [`Store::replace`]).
+//!
+//! # Read beside the writes
+//!
+//! *Search Files*' scan inside words takes up to a few hundred
+//! milliseconds, so it reads through a connection of its own
+//! ([`Store::open_reader`]) and root's queries never wait for it (I-3).
+//! The journal is SQLite's write-ahead log for that: a reader sees the last
+//! write committed before it began, never half of one, and neither waits
+//! for the other. Without a journal (`OFF`, as before step c3b) a reader and a
+//! writer lock each other out instead -- a scan would fail a rebuild's
+//! commit, or a rebuild's write every scan. The log is folded back into
+//! the file after every rebuild and kept to [`WAL_LIMIT`] otherwise, so it
+//! does not grow with the index.
 //!
 //! # Row ids
 //!
@@ -88,7 +100,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension as _, Transaction, params};
 
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +154,10 @@ const SCHEMA: &str = r#"
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );"#;
+
+/// The most the write-ahead log keeps on disk between writes, in bytes:
+/// a watcher's batch is a few pages, and a rebuild empties it anyway.
+const WAL_LIMIT: i64 = 4 * 1024 * 1024;
 
 /// The layout of `words` beside its level, recorded in `meta` as
 /// `words_layout`. A store with another -- or none: step c2b's, whose
@@ -381,6 +397,20 @@ impl Store {
                 );
                 std::fs::remove_file(path)
                     .with_context(|| format!("removing {}", path.display()))?;
+                // A log left beside it belongs to the file just removed, and
+                // must not be replayed into the new one.
+                for log in ["-wal", "-shm"] {
+                    let mut beside = path.as_os_str().to_owned();
+                    beside.push(log);
+                    match std::fs::remove_file(&beside) {
+                        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                            return Err(error).with_context(|| {
+                                format!("removing {}", Path::new(&beside).display())
+                            });
+                        }
+                        _ => {}
+                    }
+                }
                 Self::open_as_is(path, detail)
             }
         }
@@ -397,10 +427,22 @@ impl Store {
                 // only serves the few rows of a query, and is released when
                 // idle anyway.
                 "PRAGMA cache_size = -1024;
-                 PRAGMA journal_mode = OFF;
                  PRAGMA synchronous = OFF;",
             )
             .context("configuring the file index")?;
+        // See "Read beside the writes" above.
+        let journal: String = connection
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
+            .context("configuring the file index's journal")?;
+        if !journal.eq_ignore_ascii_case("wal") {
+            log::warn!("the file index's journal is {journal}, not a write-ahead log");
+        }
+        connection
+            .pragma_update(None, "journal_size_limit", WAL_LIMIT)
+            .context("configuring the file index's journal")?;
+        // Only a checkpoint waits for a reader, and a scan ends or is
+        // cancelled well within this.
+        connection.busy_timeout(std::time::Duration::from_secs(1))?;
         let version: i32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .context("reading the file index's schema version")?;
@@ -442,6 +484,9 @@ impl Store {
             detail: recorded.unwrap_or_default(),
             fetched: std::cell::Cell::new(0),
         };
+        // A log a crash left behind, or the switch from an older file's
+        // journal, folded back at once.
+        store.checkpoint();
         match (recorded, detail) {
             (None, wanted) => store.build_word_tables(None, wanted.unwrap_or_default(), true)?,
             (Some(recorded), wanted) if layout.as_deref() != Some(WORDS_LAYOUT) => {
@@ -453,9 +498,78 @@ impl Store {
         Ok(store)
     }
 
+    /// A connection to the index at `path` that only reads: *Search Files*'
+    /// scan inside words, which runs beside the store's own connection
+    /// rather than behind its lock (see "Read beside the writes" above).
+    /// The file must exist; a store has created it.
+    pub fn open_reader(path: &Path) -> Result<Store> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("opening {} to read", path.display()))?;
+        // A quarter of the store's cache: a scan reads every name once, and
+        // keeping them would only hold memory.
+        connection
+            .execute_batch(
+                "PRAGMA query_only = ON;
+                 PRAGMA cache_size = -256;",
+            )
+            .context("configuring a reader of the file index")?;
+        let store = Store {
+            connection,
+            detail: IndexDetail::default(),
+            fetched: std::cell::Cell::new(0),
+        };
+        Ok(Store {
+            detail: store.recorded_detail()?,
+            ..store
+        })
+    }
+
+    /// The file this store reads, when it is one.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.connection
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    }
+
     /// The level the word tables are built at.
     pub fn detail(&self) -> IndexDetail {
         self.detail
+    }
+
+    /// The level `meta` records now, which a reader's connection cannot
+    /// learn from the store's: [`IndexDetail::Balanced`]'s tables -- no
+    /// `grams` -- while a change is cut short or under way.
+    fn recorded_detail(&self) -> Result<IndexDetail> {
+        let recorded: Option<String> = self
+            .connection
+            .prepare_cached("SELECT value FROM meta WHERE key = 'detail'")?
+            .query_row([], |row| row.get(0))
+            .optional()
+            .context("reading the file index's level")?;
+        Ok(recorded
+            .as_deref()
+            .and_then(IndexDetail::parse)
+            .unwrap_or_default())
+    }
+
+    /// Fold the write-ahead log back into the file and empty it: after a
+    /// rebuild it holds the whole index again. A scan in flight can keep
+    /// part of it, which the next write's checkpoint folds instead.
+    fn checkpoint(&self) {
+        let result = self
+            .connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                row.get::<_, i64>(0)
+            });
+        match result {
+            Ok(0) => {}
+            Ok(_) => log::info!("the file index's log is in use: folded back later"),
+            Err(error) => log::warn!("could not fold back the file index's log: {error}"),
+        }
     }
 
     /// Build the word tables at `detail`, from `files`: what changing
@@ -476,8 +590,7 @@ impl Store {
     /// when `relayout`: built with another [`WORDS_LAYOUT`].
     ///
     /// As a rebuild records its digest, the level is marked as changing
-    /// first and written last: there is no journal (see "A cache, and
-    /// treated like one" above), so a change cut short leaves a mark that is
+    /// first and written last, so a change cut short leaves a mark that is
     /// no level, and the next open builds both tables again.
     fn build_word_tables(
         &mut self,
@@ -530,6 +643,7 @@ impl Store {
         transaction
             .commit()
             .context("writing the file index's words")?;
+        self.checkpoint();
         self.detail = to;
         log::info!(
             "built the file index's words at {} in {} ms",
@@ -542,8 +656,7 @@ impl Store {
     /// Make `walked` the whole index, walked with rules whose [`digest`] is
     /// `digest`.
     ///
-    /// One transaction, but with no journal to roll it back (see the module
-    /// documentation), so the digest is removed first and written last: an
+    /// One transaction, and the digest removed first and written last: an
     /// index whose rebuild was cut short has no digest, matches no rules,
     /// and is rebuilt again.
     ///
@@ -631,7 +744,9 @@ impl Store {
                     .map(|since| since.as_secs()),
             },
         )?;
-        transaction.commit().context("writing the file index")
+        transaction.commit().context("writing the file index")?;
+        self.checkpoint();
+        Ok(())
     }
 
     /// The names, in entry order, and what was recorded about them.
@@ -1016,7 +1131,7 @@ impl Store {
         limit: usize,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<RankedRow>> {
-        self.substring_where(query, kinds, limit, &|_| false, &|_, _| true, cancelled)
+        self.substring_where(query, kinds, limit, &|_, _| false, &|_, _| true, cancelled)
     }
 
     /// [`Self::substring`] without the rows `skip` names, over the entries
@@ -1024,13 +1139,18 @@ impl Store {
     /// name and whether it is a folder: *Search Files*' second phase, which
     /// skips what the hot layer already searched and keeps to the type
     /// filter. Both apply while the rows are read, so the answer is the
-    /// first `limit` of what is wanted; `skip` before a row is fetched.
+    /// first `limit` of what is wanted; `skip` before a row is fetched,
+    /// with its row and folded name.
+    ///
+    /// At the level `meta` records as the read begins, not [`Self::detail`]:
+    /// through [`Self::open_reader`]'s connection, the store's may have
+    /// changed it since.
     pub fn substring_where(
         &self,
         query: &str,
         kinds: Kinds,
         limit: usize,
-        skip: &dyn Fn(u32) -> bool,
+        skip: &dyn Fn(u32, &str) -> bool,
         filter: &dyn Fn(&str, bool) -> bool,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<RankedRow>> {
@@ -1071,7 +1191,7 @@ impl Store {
             read % SCAN_CHECK == 1 && cancelled()
         };
 
-        if self.detail.grams() {
+        if self.recorded_detail()?.grams() {
             // Every word of three characters or more as a phrase of its
             // trigrams; a shorter one is checked on the name.
             let fts = query
@@ -1094,7 +1214,8 @@ impl Store {
                     return Ok(Vec::new());
                 }
                 let id = row.get(0)?;
-                if !inside(row.get_ref(1)?.as_str()?) || skip(id) {
+                let folded = row.get_ref(1)?.as_str()?;
+                if !inside(folded) || skip(id, folded) {
                     continue;
                 }
                 if let Some(row) = self.fetch(id)? {
@@ -1119,7 +1240,8 @@ impl Store {
                     return Ok(Vec::new());
                 }
                 let id = row.get::<_, u32>(0)?;
-                if inside(row.get_ref(1)?.as_str()?) && !skip(id) {
+                let folded = row.get_ref(1)?.as_str()?;
+                if inside(folded) && !skip(id, folded) {
                     ids.push(id);
                 }
             }
@@ -1790,6 +1912,45 @@ mod tests {
     }
 
     /// A second replace is the whole index, not an addition to it.
+    /// A reader sees the last write committed, and a rebuild leaves the
+    /// write-ahead log empty rather than holding the index a second time.
+    #[test]
+    fn a_reader_sees_each_rebuild_and_the_log_is_folded_back() {
+        let tree = Tree::new("store-reader");
+        let path = tree.path("files.db");
+        let mut store = Store::open(&path).unwrap();
+        store.replace(&walked(&tree.0), "one").unwrap();
+        let reader = Store::open_reader(&path).unwrap();
+        let inside = |reader: &Store| {
+            reader
+                .substring("voic", Kinds::FoldersAndFiles, 8, &|| false)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(inside(&reader), ["Invoice.pdf"]);
+
+        store
+            .replace(
+                &Walked {
+                    entries: vec![Entry {
+                        path: tree.0.join("myvoicemail.txt"),
+                        is_dir: false,
+                        modified: None,
+                    }],
+                    per_scope: vec![1],
+                    roots: vec![None],
+                },
+                "two",
+            )
+            .unwrap();
+        assert_eq!(inside(&reader), ["myvoicemail.txt"]);
+        let log = std::fs::metadata(tree.path("files.db-wal")).unwrap();
+        assert_eq!(log.len(), 0);
+        assert!(reader.connection.execute_batch("DELETE FROM meta").is_err());
+    }
+
     #[test]
     fn a_replace_drops_what_was_there() {
         let tree = Tree::new("store-replace");

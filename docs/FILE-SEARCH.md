@@ -714,6 +714,42 @@ asked for a whole limit: what it costs when the first finds little.
   for it on another day. The machine, not this step, doubled it. The
   second phase adds the skip and the filter, asked only of matches.
 
+**The scan has its own connection (I-3).** A scan of up to ~200 ms ran
+under the store's lock, so root's `Store::ranked` and the watcher's writes
+waited behind it. `FileIndex::query_inside` now reads through
+`Store::open_reader`: a second connection to the same file, opened at the
+first scan, read-only (`SQLITE_OPEN_READ_ONLY`, `query_only`), with a
+256 KB cache released after each scan. Writes and root's queries stay on
+the store's connection. The reader's own lock only keeps two scans apart.
+
+- **Journal: write-ahead log, not `OFF`.** Without a journal, a reader and
+  a writer lock each other out: a scan holding its read lock fails a
+  rebuild's commit, and a rebuild holding the file fails every scan. With
+  the log, a scan reads the last commit before it began, never half of
+  one, and neither waits. `synchronous` stays `OFF`: the file is a cache.
+- **The log does not grow.** A rebuild and a change of level fold it back
+  with `wal_checkpoint(TRUNCATE)`; `journal_size_limit` keeps it to 4 MB
+  between the watcher's writes. A file deleted as unreadable takes its
+  `-wal` and `-shm` with it, so an old log is never replayed into a new
+  file. The store tests ran no slower.
+- **Rows that moved.** The reader sees a rebuild before the index is
+  swapped, so a hot row may now be another entry. `skip` now takes the
+  row's folded name and skips only while the hot layer (or the used
+  outside it) still holds that name at that row. What the scan answers is
+  read as it is on disk.
+- **The level is read from `meta`** at the start of each scan, not the
+  store's field: the reader cannot see a change of level otherwise.
+
+Tests: `root_does_not_wait_for_a_scan_in_flight` (a scan parked in its
+filter; root answers within 2 s), `the_second_phase_sees_a_committed_update`,
+`the_second_phase_skips_only_rows_that_are_still_its_entries`,
+`a_reader_sees_each_rebuild_and_the_log_is_folded_back`.
+
+**The drive texts.** The offer and the whole-drive warning said
+everything indexed is held in memory, true before c3a. They now say a
+whole drive makes the index on disk larger and its first build longer, and
+fills it with files you won't look for.
+
 ---
 
 ## The decisions
