@@ -156,8 +156,11 @@ impl Platform for WindowsPlatform {
         input::start(hotkey, timers, sink)
     }
 
-    fn enumerate_applications(&self) -> Result<Vec<AppEntry>> {
-        apps::enumerate()
+    fn enumerate_applications(
+        &self,
+        extra_folders: &[std::path::PathBuf],
+    ) -> Result<Vec<AppEntry>> {
+        apps::enumerate(extra_folders)
     }
 
     fn watch_applications(&self, sink: ApplicationsSink) -> Result<()> {

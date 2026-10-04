@@ -1107,15 +1107,17 @@ impl RootSearch {
 /// needs them too, for [`RootSearch::replace_quicklinks`]. Reading the file
 /// twice logged every broken entry twice. The translate and timer presets are
 /// passed in because they come from `config.json`, which the caller already
-/// holds.
+/// holds; so are the extra application folders, resolved
+/// ([`crate::config::AppsConfig::folders`]).
 pub fn build_index(
     platform: &dyn Platform,
     paths: &Paths,
     quicklinks: &[providers::Quicklink],
     presets: Vec<crate::translate::Preset>,
     timers: Vec<crate::timers::Preset>,
+    app_folders: &[std::path::PathBuf],
 ) -> Result<Vec<Candidate>> {
-    let entries = platform.enumerate_applications()?;
+    let entries = platform.enumerate_applications(app_folders)?;
     log::info!("indexed {} applications", entries.len());
 
     let catalogue = catalogue(

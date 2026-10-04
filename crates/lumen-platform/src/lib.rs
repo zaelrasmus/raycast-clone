@@ -455,7 +455,11 @@ pub trait Platform: Send + Sync {
     ) -> Result<()>;
 
     /// Enumerate installed applications. Called off the UI thread.
-    fn enumerate_applications(&self) -> Result<Vec<AppEntry>>;
+    ///
+    /// `extra_folders` are folders the user named, resolved, whose programs
+    /// count as applications too: the portable ones nothing registers. A
+    /// folder that is missing or unreadable adds nothing and is no error.
+    fn enumerate_applications(&self, extra_folders: &[PathBuf]) -> Result<Vec<AppEntry>>;
 
     /// Report when the set of installed applications may have changed.
     ///

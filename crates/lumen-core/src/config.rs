@@ -48,6 +48,9 @@ pub struct Config {
     pub window: WindowConfig,
     pub clipboard: ClipboardConfig,
     pub files: FileSearchConfig,
+    /// The application index (F16): folders whose programs count as
+    /// applications.
+    pub apps: AppsConfig,
     /// The browser quicklinks open in when they do not name one (F6), by the
     /// name the system knows it by: `"Zen Browser"`, or just `"zen"`.
     ///
@@ -341,6 +344,29 @@ impl FileSearchConfig {
     }
 }
 
+/// The application index (F16). `docs/FILE-SEARCH.md`, "Extra application
+/// folders".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct AppsConfig {
+    /// Folders whose `.exe`, `.lnk` and `.url` files, up to two levels down,
+    /// are listed as applications: the portable ones `AppsFolder` never
+    /// sees. `~` is the home folder, written as such, as in a file scope.
+    pub extra_folders: Vec<PathBuf>,
+}
+
+impl AppsConfig {
+    /// [`AppsConfig::extra_folders`] resolved as file scopes are: against
+    /// the home folder and then the disk.
+    pub fn folders(&self) -> Vec<PathBuf> {
+        let home = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+        self.extra_folders
+            .iter()
+            .map(|path| resolve(path, home.as_deref()))
+            .collect()
+    }
+}
+
 /// `path` with `~` and `~/...` resolved against `home`, then as the disk
 /// spells it, when it exists.
 fn resolve(path: &Path, home: Option<&Path>) -> PathBuf {
@@ -473,6 +499,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             clipboard: ClipboardConfig::default(),
             files: FileSearchConfig::default(),
+            apps: AppsConfig::default(),
             preferred_browser: None,
             translate: TranslateConfig::default(),
             timers: TimersConfig::default(),
@@ -1028,6 +1055,34 @@ mod tests {
         if let Some(dirs) = directories::UserDirs::new() {
             let home = plain(&std::fs::canonicalize(dirs.home_dir()).unwrap());
             assert_eq!(rules.scopes[0], home);
+        }
+    }
+
+    #[test]
+    fn extra_application_folders_are_read_and_empty_by_default() {
+        let config: Config =
+            serde_json::from_str(r#"{ "apps": { "extra-folders": ["~\\Tools", "D:\\Apps"] } }"#)
+                .unwrap();
+        assert_eq!(
+            config.apps.extra_folders,
+            [PathBuf::from(r"~\Tools"), PathBuf::from(r"D:\Apps")]
+        );
+        assert!(Config::default().apps.extra_folders.is_empty());
+        assert!(Config::default().apps.folders().is_empty());
+    }
+
+    /// As a file scope's: `~` is the home folder, and a folder that does not
+    /// exist is kept as written.
+    #[test]
+    fn extra_application_folders_resolve_home() {
+        let apps = AppsConfig {
+            extra_folders: vec!["~".into(), "no/such/folder".into()],
+        };
+        let folders = apps.folders();
+        assert_eq!(folders[1], PathBuf::from("no/such/folder"));
+        if let Some(dirs) = directories::UserDirs::new() {
+            let home = plain(&std::fs::canonicalize(dirs.home_dir()).unwrap());
+            assert_eq!(folders[0], home);
         }
     }
 

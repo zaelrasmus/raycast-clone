@@ -23,6 +23,12 @@
 //! counts when it starts an `.exe`, a `.url` when it opens an application's
 //! own scheme such as `steam://`. Anything the AppsFolder already lists, by
 //! name or by what it starts, is left out.
+//!
+//! # Extra folders
+//!
+//! Portable applications register nowhere. The folders the user names are
+//! read like the Desktop, two levels down, and an `.exe` in them counts as
+//! well: it starts itself.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -51,7 +57,7 @@ pub(crate) const DESKTOP: [&GUID; 2] = [&FOLDERID_Desktop, &FOLDERID_PublicDeskt
 /// The shell namespace path of the virtual folder holding every application.
 const APPS_FOLDER: &str = "shell:AppsFolder";
 
-pub fn enumerate() -> Result<Vec<AppEntry>> {
+pub fn enumerate(extra_folders: &[PathBuf]) -> Result<Vec<AppEntry>> {
     // Called from a worker thread, so this thread needs its own apartment.
     let _apartment = com::Apartment::enter()?;
 
@@ -63,7 +69,7 @@ pub fn enumerate() -> Result<Vec<AppEntry>> {
             .BindToHandler(None, &BHID_EnumItems)
             .context("binding the AppsFolder enumerator")?;
 
-        let start_menu = Shortcuts::read(&START_MENU, true);
+        let start_menu = Shortcuts::read(&START_MENU, Depth::All);
         let mut entries = Vec::new();
         loop {
             let mut fetched: [Option<IShellItem>; 1] = [None];
@@ -87,11 +93,16 @@ pub fn enumerate() -> Result<Vec<AppEntry>> {
             }
         }
 
-        let desktop = Shortcuts::read(&DESKTOP, false);
+        // One set, so a shortcut on the Desktop and the program it starts in
+        // an extra folder are one application.
+        let mut shortcuts = Shortcuts::read(&DESKTOP, Depth::Levels(1));
+        for folder in extra_folders {
+            shortcuts.collect(folder, Depth::Levels(2), true);
+        }
         let reader = LinkReader::new();
         let resolve = |path: &Path| reader.as_ref()?.target(path.to_str()?);
         let targets = listed_targets(&entries, |guid| app_watch::known_folder(guid).ok());
-        entries.extend(desktop_entries(&entries, targets, &desktop, resolve));
+        entries.extend(desktop_entries(&entries, targets, &shortcuts, resolve));
 
         Ok(entries)
     }
@@ -149,6 +160,25 @@ pub fn filesystem_path(parsing_name: &str) -> Option<String> {
     }
 }
 
+/// How far below a folder its shortcuts are read.
+#[derive(Clone, Copy)]
+enum Depth {
+    /// Every subfolder, however deep.
+    All,
+    /// The folder's own files are the first level, a subfolder's the second.
+    Levels(usize),
+}
+
+impl Depth {
+    /// The depth left inside a subfolder; `None` when it is not entered.
+    fn below(self) -> Option<Self> {
+        match self {
+            Self::All => Some(Self::All),
+            Self::Levels(levels) => (levels > 1).then(|| Self::Levels(levels - 1)),
+        }
+    }
+}
+
 /// The shortcuts found in a set of folders.
 ///
 /// Best effort throughout: a folder or file that cannot be read costs only
@@ -161,21 +191,25 @@ struct Shortcuts {
     urls: HashMap<String, PathBuf>,
     /// Every `.lnk` file.
     links: Vec<PathBuf>,
+    /// Every `.exe` file, where programs were asked for: in an extra folder,
+    /// never on the Desktop or in the Start Menu.
+    programs: Vec<PathBuf>,
 }
 
 impl Shortcuts {
-    fn read(folders: &[&GUID], recursive: bool) -> Self {
+    fn read(folders: &[&GUID], depth: Depth) -> Self {
         let mut found = Self::default();
         for folder in folders {
             match app_watch::known_folder(folder) {
-                Ok(root) => found.collect(Path::new(&root), recursive),
+                Ok(root) => found.collect(Path::new(&root), depth, false),
                 Err(error) => log::debug!("not reading a shortcut folder: {error:#}"),
             }
         }
         found
     }
 
-    fn collect(&mut self, dir: &Path, recursive: bool) {
+    /// A folder that is missing or cannot be read adds nothing.
+    fn collect(&mut self, dir: &Path, depth: Depth, programs: bool) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -185,9 +219,11 @@ impl Shortcuts {
                 continue;
             };
             if kind.is_dir() {
-                if recursive {
-                    self.collect(&path, recursive);
+                if let Some(below) = depth.below() {
+                    self.collect(&path, below, programs);
                 }
+            } else if programs && has_extension(&path, "exe") {
+                self.programs.push(path);
             } else if has_extension(&path, "url") {
                 if let Some(url) = std::fs::read(&path)
                     .ok()
@@ -248,8 +284,10 @@ fn listed_targets(
         .collect()
 }
 
-/// The Desktop shortcuts that add an application the AppsFolder lacks.
+/// The Desktop shortcuts, and the extra folders' shortcuts and programs, that
+/// add an application the AppsFolder lacks.
 ///
+/// A program starts itself, so its own path is what it is compared by.
 /// `resolve` reads what a `.lnk` starts. It is asked only about shortcuts whose
 /// name the index does not already have, which on a typical Desktop is a
 /// handful rather than all of them -- and, once the first of those turns up,
@@ -263,24 +301,26 @@ fn desktop_entries(
 ) -> Vec<AppEntry> {
     let mut names: HashSet<String> = listed.iter().map(|app| app.name.to_lowercase()).collect();
 
-    let links = desktop.links.iter().map(|path| (path, None));
+    let links = desktop.links.iter().map(|path| (path, Source::Link));
     let urls = desktop
         .urls
         .iter()
         .filter(|(url, _)| is_application_url(url))
-        .map(|(url, path)| (path, Some(url.as_str())));
+        .map(|(url, path)| (path, Source::Url(url)));
+    let programs = desktop.programs.iter().map(|path| (path, Source::Program));
 
     // Shortest name first, so two shortcuts to one program keep the tidy name
     // rather than `Program.exe - Shortcut`.
-    let mut candidates: Vec<(String, &PathBuf, Option<&str>)> = links
+    let mut candidates: Vec<(String, &PathBuf, Source)> = links
         .chain(urls)
+        .chain(programs)
         .filter_map(|(path, url)| Some((shortcut_name(path)?, path, url)))
         .collect();
     candidates.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)));
 
     let mut entries = Vec::new();
     let mut listed_links_resolved = false;
-    for (name, path, url) in candidates {
+    for (name, path, source) in candidates {
         if names.contains(&name.to_lowercase()) {
             continue;
         }
@@ -294,31 +334,46 @@ fn desktop_entries(
                 .collect();
             targets.extend(started);
         }
-        let target = match url {
-            Some(url) => url.to_lowercase(),
-            None => match resolve(path).map(|target| target.to_lowercase()) {
+        let Some(location) = path.to_str() else {
+            continue;
+        };
+        let target = match source {
+            Source::Url(url) => url.to_lowercase(),
+            Source::Program => location.to_lowercase(),
+            Source::Link => match resolve(path).map(|target| target.to_lowercase()) {
                 Some(target) if target.ends_with(".exe") => target,
                 // A shortcut to a folder or a document is not an application.
                 _ => continue,
             },
         };
-        let Some(location) = path.to_str() else {
-            continue;
-        };
         if !targets.insert(target) {
             continue;
         }
         names.insert(name.to_lowercase());
+        // The shell draws a program's own icon from its path; a shortcut's
+        // file carries the icon it was given.
+        let icon = match source {
+            Source::Program => IconSource::ShellItem(location.to_string()),
+            Source::Link | Source::Url(_) => IconSource::File(path.clone()),
+        };
         entries.push(AppEntry {
             id: format!("app:{location}"),
             name,
             detail: None,
             target: LaunchTarget::ShellExecute(location.to_string()),
-            icon: Some(IconSource::File(path.clone())),
+            icon: Some(icon),
             keywords: Vec::new(),
         });
     }
     entries
+}
+
+/// What a candidate in [`desktop_entries`] is, and so how it is compared.
+#[derive(Clone, Copy)]
+enum Source<'a> {
+    Link,
+    Url(&'a str),
+    Program,
 }
 
 fn has_extension(path: &Path, extension: &str) -> bool {
@@ -514,6 +569,7 @@ mod tests {
             ]
             .map(PathBuf::from)
             .to_vec(),
+            programs: Vec::new(),
         };
         let resolve = |path: &Path| {
             let target = match path.to_str()? {
@@ -545,6 +601,7 @@ mod tests {
         let desktop = Shortcuts {
             urls: HashMap::new(),
             links: vec![PathBuf::from("My Editor.lnk")],
+            programs: Vec::new(),
         };
         let resolve = |path: &Path| {
             let target = match path.to_str()? {
@@ -564,6 +621,7 @@ mod tests {
         let desktop = Shortcuts {
             urls: HashMap::new(),
             links: vec![PathBuf::from("Editor.lnk")],
+            programs: Vec::new(),
         };
         let resolve = |path: &Path| -> Option<String> { panic!("resolved {path:?}") };
 
@@ -602,9 +660,9 @@ mod tests {
         std::fs::write(root.join("notes.txt"), b"").unwrap();
 
         let mut nested = Shortcuts::default();
-        nested.collect(&root, true);
+        nested.collect(&root, Depth::All, false);
         let mut flat = Shortcuts::default();
-        flat.collect(&root, false);
+        flat.collect(&root, Depth::Levels(1), false);
         let _ = std::fs::remove_dir_all(&root);
 
         let mut links = nested.links.clone();
@@ -621,6 +679,81 @@ mod tests {
             flat.urls,
             HashMap::from([("steam://rungameid/1".into(), root.join("Copy of Game.url"))])
         );
+    }
+
+    #[test]
+    fn an_extra_folder_is_read_two_levels_down_with_its_programs() {
+        let root = std::env::temp_dir().join(format!("lumen-extra-apps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("Obsidian").join("resources");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(root.join("Tool.EXE"), b"").unwrap();
+        std::fs::write(root.join("Obsidian").join("Obsidian.exe"), b"").unwrap();
+        std::fs::write(root.join("Obsidian").join("Notes.lnk"), b"").unwrap();
+        std::fs::write(deep.join("helper.exe"), b"").unwrap();
+        std::fs::write(deep.join("Deep.lnk"), b"").unwrap();
+        std::fs::write(root.join("readme.txt"), b"").unwrap();
+
+        let mut found = Shortcuts::default();
+        found.collect(&root, Depth::Levels(2), true);
+        let mut desktop = Shortcuts::default();
+        desktop.collect(&root, Depth::Levels(1), false);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let mut programs = found.programs.clone();
+        programs.sort();
+        assert_eq!(
+            programs,
+            [
+                root.join("Obsidian").join("Obsidian.exe"),
+                root.join("Tool.EXE")
+            ]
+        );
+        assert_eq!(found.links, [root.join("Obsidian").join("Notes.lnk")]);
+        // The Desktop lists shortcuts, not the programs beside them.
+        assert!(desktop.programs.is_empty());
+    }
+
+    #[test]
+    fn an_extra_program_is_listed_unless_start_already_has_it() {
+        let listed = [
+            app(r"shell:AppsFolder\D:\Tools\Obsidian\Obsidian.exe"),
+            app("Paint"),
+        ];
+        let found = Shortcuts {
+            programs: [
+                r"D:\Tools\Obsidian\Obsidian.exe",
+                r"D:\Tools\paint.exe",
+                r"D:\Tools\Portable\Krita.exe",
+            ]
+            .map(PathBuf::from)
+            .to_vec(),
+            ..Shortcuts::default()
+        };
+        let resolve = |path: &Path| -> Option<String> { panic!("resolved {path:?}") };
+
+        let targets = listed_targets(&listed, |_| None);
+        let added = desktop_entries(&listed, targets, &found, resolve);
+        assert_eq!(added.len(), 1);
+        let krita = r"D:\Tools\Portable\Krita.exe";
+        assert_eq!(added[0].name, "Krita");
+        assert_eq!(added[0].id, format!("app:{krita}"));
+        assert_eq!(added[0].target, LaunchTarget::ShellExecute(krita.into()));
+        assert_eq!(added[0].icon, Some(IconSource::ShellItem(krita.into())));
+    }
+
+    #[test]
+    fn a_shortcut_beside_its_program_is_one_application() {
+        let found = Shortcuts {
+            programs: vec![PathBuf::from(r"D:\Tools\Krita\krita.exe")],
+            links: vec![PathBuf::from(r"D:\Tools\Krita Studio.lnk")],
+            ..Shortcuts::default()
+        };
+        let resolve = |_: &Path| Some(r"D:\Tools\Krita\KRITA.exe".to_string());
+
+        let added = desktop_entries(&[], HashSet::new(), &found, resolve);
+        let names: Vec<&str> = added.iter().map(|app| app.name.as_str()).collect();
+        assert_eq!(names, ["krita"]);
     }
 
     #[test]

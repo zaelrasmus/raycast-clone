@@ -1955,6 +1955,7 @@ impl Launcher {
         let presets = self.config.translate.presets();
         let timers = self.config.timers.presets();
         let timer_presets = timers.clone();
+        let apps = self.config.apps.clone();
 
         cx.spawn(async move |this, cx| {
             // Built and compared on the background thread: enumeration and
@@ -1994,6 +1995,7 @@ impl Launcher {
                         &quicklinks,
                         presets,
                         timers,
+                        &apps.folders(),
                     )
                     .map(|rebuilt| {
                         let unchanged = lumen_core::root::same_index(&current, &rebuilt);
@@ -2212,9 +2214,11 @@ impl Launcher {
         let previous_height = self.content_height();
         let files_changed = config.files != self.config.files;
         let level = level_change(&self.config.files, &config.files);
-        // Presets are rows in the index, so a changed preset is a re-index.
-        let presets_changed = config.translate.presets != self.config.translate.presets
-            || config.timers.presets != self.config.timers.presets;
+        // Presets are rows in the index, and so are the programs in the
+        // extra application folders: a change to either is a re-index.
+        let index_changed = config.translate.presets != self.config.translate.presets
+            || config.timers.presets != self.config.timers.presets
+            || config.apps.extra_folders != self.config.apps.extra_folders;
 
         self.root
             .set_visible_rows(config.visible_rows(&self.theme.style.metrics));
@@ -2231,7 +2235,7 @@ impl Launcher {
             _ if files_changed => self.open_files(false, cx),
             _ => {}
         }
-        if presets_changed {
+        if index_changed {
             self.start_indexing(cx);
         }
         self.resize_if_needed(previous_height, cx);

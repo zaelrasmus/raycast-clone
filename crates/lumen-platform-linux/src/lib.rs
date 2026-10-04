@@ -98,7 +98,10 @@ impl Platform for LinuxPlatform {
         todo!("F5: compositor-delegated activation")
     }
 
-    fn enumerate_applications(&self) -> Result<Vec<AppEntry>> {
+    fn enumerate_applications(
+        &self,
+        _extra_folders: &[std::path::PathBuf],
+    ) -> Result<Vec<AppEntry>> {
         todo!("F5: XDG desktop entries")
     }
 
