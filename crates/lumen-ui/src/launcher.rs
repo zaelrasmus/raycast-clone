@@ -781,10 +781,11 @@ impl FileSearchRun<'_> {
         &self,
         cx: &mut gpui::AsyncApp,
         found: lumen_core::file_search::Found,
+        words: Vec<String>,
     ) -> lumen_core::view::ItemDetail {
         let describer = self.describer.clone();
         cx.background_executor()
-            .spawn(async move { describer.describe(&found) })
+            .spawn(async move { describer.describe(&found, &words) })
             .await
     }
 
@@ -1732,9 +1733,9 @@ impl Launcher {
                             // Search is asked for files of any type.
                             run.search_contents(cx, generation, words);
                         }
-                        Effect::Describe(found) => {
+                        Effect::Describe(found, words) => {
                             let path = found.path.clone();
-                            let detail = run.describe(cx, found).await;
+                            let detail = run.describe(cx, found, words).await;
                             follow.extend(session.described(path, detail));
                         }
                         Effect::Open(found) => {

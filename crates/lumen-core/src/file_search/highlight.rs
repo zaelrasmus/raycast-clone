@@ -60,6 +60,11 @@ pub fn shown(text: &str, words: &[String]) -> Shown {
     }
 }
 
+/// Whether any of `words` is in `text`, in any case.
+pub(crate) fn holds_any(text: &str, words: &[String]) -> bool {
+    words.iter().any(|word| !occurrences(text, word).is_empty())
+}
+
 /// The byte the card starts from for a first match at byte `at`: the
 /// file's start when the match is on one of its first lines, otherwise
 /// [`LINES_ABOVE`] lines above the match's.

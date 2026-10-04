@@ -101,7 +101,8 @@ pub enum Effect {
     },
     /// Build the pane for this entry off the UI thread
     /// ([`preview::describe`]) and hand it to [`Session::described`].
-    Describe(Found),
+    /// A text preview opens at the first of `words`, the query's.
+    Describe(Found, Vec<String>),
     /// Open it in its application, or a folder in the file manager, and
     /// count it as used.
     Open(Found),
@@ -157,9 +158,10 @@ pub struct Session {
     asking_contents: bool,
     /// Bumped for every search asked, so an older answer is known as one.
     generation: u64,
-    /// Each pane built, by path, and the paths asked for.
+    /// Each pane built, by path, and the paths asked for with the query's
+    /// words the pane was asked with.
     details: HashMap<PathBuf, ItemDetail>,
-    asked: HashSet<PathBuf>,
+    asked: HashMap<PathBuf, Vec<String>>,
     /// Entries excluded while the view is open: gone from it at once, before
     /// the index has read the ignore file.
     gone: HashSet<PathBuf>,
@@ -187,7 +189,7 @@ impl Session {
             asking_contents: false,
             generation: 0,
             details: HashMap::new(),
-            asked: HashSet::new(),
+            asked: HashMap::new(),
             gone: HashSet::new(),
             status,
             home: None,
@@ -546,9 +548,24 @@ impl Session {
     }
 
     fn describe(&mut self, found: Found) -> Option<Effect> {
-        self.asked
-            .insert(found.path.clone())
-            .then_some(Effect::Describe(found))
+        // Asked again for other words only when the pane has a text
+        // preview, or may have: one is read from just above their match.
+        let words = super::highlight::words(&self.query);
+        let again = match self.asked.get(&found.path) {
+            None => true,
+            Some(asked) => {
+                *asked != words
+                    && self
+                        .details
+                        .get(&found.path)
+                        .is_none_or(|detail| detail.code.is_some())
+            }
+        };
+        if !again {
+            return None;
+        }
+        self.asked.insert(found.path.clone(), words.clone());
+        Some(Effect::Describe(found, words))
     }
 
     /// The rows, in order: the recents in the filter for an empty query,
@@ -977,7 +994,7 @@ mod tests {
         assert!(list.showing_detail);
         assert_eq!(
             effects[1],
-            Effect::Describe(file("C:\\styles\\carbon.json"))
+            Effect::Describe(file("C:\\styles\\carbon.json"), Vec::new())
         );
     }
 
@@ -1028,7 +1045,10 @@ mod tests {
         );
         let effects = session.found(1, vec![file("C:\\Invoice.pdf")]);
         assert!(matches!(effects[0], Effect::Render(_)));
-        assert_eq!(effects[1], Effect::Describe(file("C:\\Invoice.pdf")));
+        assert_eq!(
+            effects[1],
+            Effect::Describe(file("C:\\Invoice.pdf"), vec!["inv".into()])
+        );
         assert_eq!(titles(&session), ["Invoice.pdf"]);
         let view = session.view();
         assert_eq!(list(&view).sections[0].title.as_deref(), Some("Results"));
@@ -1073,7 +1093,10 @@ mod tests {
         session.open();
         let id = folder("C:\\projects").id();
         let effects = session.event(Event::SelectionChanged { item: id.clone() });
-        assert_eq!(effects, [Effect::Describe(folder("C:\\projects"))]);
+        assert_eq!(
+            effects,
+            [Effect::Describe(folder("C:\\projects"), Vec::new())]
+        );
         assert!(
             session
                 .event(Event::SelectionChanged { item: id.clone() })
@@ -1089,6 +1112,46 @@ mod tests {
         let view = session.view();
         let item = list(&view).items().find(|item| item.id == id).unwrap();
         assert_eq!(item.detail.as_ref(), Some(&detail));
+    }
+
+    /// A text preview opens at the query's words, so a new query asks for
+    /// it again; a pane without one is not read twice (slice 6b).
+    #[test]
+    fn a_text_preview_is_described_again_for_other_words() {
+        let mut session = Session::new(Vec::new(), READY);
+        session.open();
+        let found = vec![file("C:\\index.html"), folder("C:\\lorem")];
+        let asked = generation(&query(&mut session, "lorem"));
+        let effects = session.found(asked, found.clone());
+        assert_eq!(
+            effects[1],
+            Effect::Describe(file("C:\\index.html"), vec!["lorem".into()])
+        );
+        let code = ItemDetail {
+            code: Some("text".into()),
+            ..Default::default()
+        };
+        session.described("C:\\index.html".into(), code);
+        let folder_id = folder("C:\\lorem").id();
+        assert_eq!(
+            session.event(Event::SelectionChanged {
+                item: folder_id.clone()
+            }),
+            [Effect::Describe(folder("C:\\lorem"), vec!["lorem".into()])]
+        );
+        session.described("C:\\lorem".into(), ItemDetail::default());
+
+        let asked = generation(&query(&mut session, "ipsum"));
+        let effects = session.found(asked, found);
+        assert_eq!(
+            effects[1],
+            Effect::Describe(file("C:\\index.html"), vec!["ipsum".into()])
+        );
+        assert!(
+            session
+                .event(Event::SelectionChanged { item: folder_id })
+                .is_empty()
+        );
     }
 
     /// The pane is never blank while the disk is read.

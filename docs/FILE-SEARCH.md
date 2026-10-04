@@ -1205,7 +1205,10 @@ and memory budgets.
 
 - A `Platform` method runs the query. On Windows it asks the system index
   (`SystemIndex`, through the Windows Search OLE DB provider), restricted to
-  the scopes, and returns paths.
+  the scopes, and returns paths. Contents means the file's text
+  (`CONTAINS(System.Search.Contents, ...)`), not its properties: `*` would
+  also match a file's name and path, so a file would be found through its
+  folder's name.
 - It is called only from the view, off the UI thread, where waiting is
   allowed. Root never calls it (I-3).
 - **When.** Once the names have wholly answered (both phases), a trimmed
@@ -1224,8 +1227,11 @@ and memory budgets.
   starts two lines above the first match when it is past the first four
   lines. The card is clipped rather than scrolled, so that is how the match
   comes into view. It applies to any text preview for the current query,
-  whichever search found the row. The preview holds the first 200 lines: a
-  match deeper in the file is not drawn.
+  whichever search found the row. The preview holds 200 lines: the first,
+  or, when none of the words is in them, the lines from two above the first
+  line further in that has one, searched for in the first 4 MB on the same
+  thread that reads the preview. A match past that is not drawn. The pane
+  is read again for a new query's words when it has a text preview.
 - **Coverage is shown per scope.** By default Windows indexes the user's
   folders and not `D:\`. The settings page marks each scope *covered* or *not
   covered by Windows Search*, with a button that opens Windows' *Indexing

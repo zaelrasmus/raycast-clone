@@ -5,12 +5,13 @@
 //! folder's listing -- so it is only ever called off the UI thread, once per
 //! row the selection lands on.
 
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use jiff::{Timestamp, Zoned};
 
-use super::Found;
 use super::category::{Category, extension};
+use super::{Found, highlight};
 use crate::view::{ItemDetail, MetadataRow, Tone};
 
 /// The most of a file read for its preview. Enough for the first screen of
@@ -26,6 +27,10 @@ pub const PREVIEW_LINES: usize = 200;
 /// the pane's edge, not wrapped, so the rest is never seen; a minified file
 /// is one line of 64 KB, which would otherwise be laid out whole.
 pub const PREVIEW_COLUMNS: usize = 400;
+
+/// The most of a file searched for the query's words when its preview does
+/// not hold them (slice 6b). A match further in is not shown.
+pub const SEARCHED_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Spaces a tab is drawn as: the text system has no tab stops.
 const TAB: &str = "    ";
@@ -118,15 +123,80 @@ pub fn card_text(text: &str) -> String {
         .join("\n")
 }
 
+/// The preview text from [`highlight::LINES_ABOVE`] lines above the first
+/// line of `reader` holding any of `words`, in any case: at most
+/// [`PREVIEW_LINES`] lines and [`PREVIEW_BYTES`]. `None` when no line within
+/// `bound` bytes holds one, or what is read is not text.
+pub fn text_at_match(reader: impl BufRead, words: &[String], bound: u64) -> Option<String> {
+    if words.is_empty() {
+        return None;
+    }
+    let mut reader = reader.take(bound);
+    let mut bytes = Vec::new();
+    let mut above = std::collections::VecDeque::with_capacity(highlight::LINES_ABOVE + 1);
+    let mut first = true;
+    loop {
+        // The end, a NUL or invalid UTF-8 -- a line cut at the bound
+        // included -- all end the search.
+        let line = next_line(&mut reader, &mut bytes)?;
+        let line = if first {
+            line.strip_prefix('\u{feff}').unwrap_or(&line).to_string()
+        } else {
+            line
+        };
+        first = false;
+        let found = highlight::holds_any(&line, words);
+        above.push_back(line);
+        if found {
+            break;
+        }
+        if above.len() > highlight::LINES_ABOVE {
+            above.pop_front();
+        }
+    }
+    // The window is read past the bound, as far as a preview reads.
+    reader.set_limit(PREVIEW_BYTES as u64);
+    let mut window = Vec::from(above);
+    while window.len() < PREVIEW_LINES {
+        match next_line(&mut reader, &mut bytes) {
+            Some(line) => window.push(line),
+            None => break,
+        }
+    }
+    text_from(window.join("\n").as_bytes())
+}
+
+/// The next line of `reader` without its line feed, or `None` at the end,
+/// on an error, or when it is not text.
+fn next_line(reader: &mut impl BufRead, bytes: &mut Vec<u8>) -> Option<String> {
+    bytes.clear();
+    if reader.read_until(b'\n', bytes).ok()? == 0 || bytes.contains(&0) {
+        return None;
+    }
+    let line = std::str::from_utf8(bytes).ok()?;
+    Some(line.strip_suffix('\n').unwrap_or(line).to_string())
+}
+
 /// The first [`PREVIEW_BYTES`] of the file at `path`, as preview text.
-fn read_text(path: &Path) -> Option<String> {
-    use std::io::Read as _;
-    let file = std::fs::File::open(path).ok()?;
+/// When none of `words` is in it, the text from just above their first
+/// match further in, if there is one within [`SEARCHED_BYTES`].
+fn read_text(path: &Path, words: &[String]) -> Option<String> {
+    use std::io::{Read as _, Seek as _};
+    let mut file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::with_capacity(PREVIEW_BYTES);
-    file.take(PREVIEW_BYTES as u64)
+    (&mut file)
+        .take(PREVIEW_BYTES as u64)
         .read_to_end(&mut bytes)
         .ok()?;
-    text_from(&bytes)
+    let text = text_from(&bytes)?;
+    if words.is_empty() || highlight::holds_any(&text, words) {
+        return Some(text);
+    }
+    let deeper = file
+        .rewind()
+        .ok()
+        .and_then(|()| text_at_match(std::io::BufReader::new(file), words, SEARCHED_BYTES));
+    Some(deeper.unwrap_or(text))
 }
 
 /// What [`describe`] needs besides the entry, carried to the thread that
@@ -146,18 +216,33 @@ impl Describer {
         }
     }
 
-    pub fn describe(&self, found: &Found) -> ItemDetail {
-        describe(&found.path, found.is_dir, self.home.as_deref(), &self.now)
+    /// `words`, the query's, open a text preview at their first match.
+    pub fn describe(&self, found: &Found, words: &[String]) -> ItemDetail {
+        describe(
+            &found.path,
+            found.is_dir,
+            self.home.as_deref(),
+            &self.now,
+            words,
+        )
     }
 }
 
 /// The pane for the entry at `path`: its preview, then Name, Where, Type,
 /// Size (a folder's item count instead), Created and Modified. `home`
-/// shortens *Where* to `~`; `now` says what *Today* is.
+/// shortens *Where* to `~`; `now` says what *Today* is. A text preview
+/// without any of `words` in its first lines starts just above the first
+/// line further in that has one ([`text_at_match`]).
 ///
 /// What cannot be read is left out rather than shown as an error: a file
 /// that vanished between the query and the selection still has a name.
-pub fn describe(path: &Path, is_dir: bool, home: Option<&Path>, now: &Zoned) -> ItemDetail {
+pub fn describe(
+    path: &Path,
+    is_dir: bool,
+    home: Option<&Path>,
+    now: &Zoned,
+    words: &[String],
+) -> ItemDetail {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -167,7 +252,7 @@ pub fn describe(path: &Path, is_dir: bool, home: Option<&Path>, now: &Zoned) -> 
     match preview_of(&name, is_dir) {
         Preview::Image => detail.image = Some(path.to_path_buf()),
         Preview::Code | Preview::Prose => {
-            detail.code = read_text(path).map(|text| card_text(&text));
+            detail.code = read_text(path, words).map(|text| card_text(&text));
         }
         Preview::None => {}
     }
@@ -306,7 +391,7 @@ mod tests {
         let tree = Tree::new("preview-file");
         tree.write("config/carbon.json", "{ \"name\": \"Carbon\" }");
         let path = tree.path("config/carbon.json");
-        let detail = describe(&path, false, Some(&tree.0), &now());
+        let detail = describe(&path, false, Some(&tree.0), &now(), &[]);
 
         assert_eq!(detail.code.as_deref(), Some("{ \"name\": \"Carbon\" }"));
         assert_eq!(detail.text, None);
@@ -339,12 +424,12 @@ mod tests {
         let tree = Tree::new("preview-card");
         tree.write("notes.md", "# Notes\n\n- one");
         tree.write("main.rs", "fn main() {\n\tprintln!();\n}");
-        let notes = describe(&tree.path("notes.md"), false, None, &now());
+        let notes = describe(&tree.path("notes.md"), false, None, &now(), &[]);
         assert_eq!(notes.code.as_deref(), Some("# Notes\n\n- one"));
         assert_eq!(notes.text, None);
         assert_eq!(notes.markdown, "");
         // A tab is spaces in the card: the renderer has no tab stops.
-        let main = describe(&tree.path("main.rs"), false, None, &now());
+        let main = describe(&tree.path("main.rs"), false, None, &now(), &[]);
         assert_eq!(
             main.code.as_deref(),
             Some("fn main() {\n    println!();\n}")
@@ -365,11 +450,90 @@ mod tests {
         assert_eq!(card_text(&wide).chars().count(), PREVIEW_COLUMNS);
     }
 
+    fn words(query: &str) -> Vec<String> {
+        highlight::words(query)
+    }
+
+    /// `count` lines, `line N` each, with `lorem` on line `at` (from 0).
+    fn numbered(count: usize, at: usize) -> String {
+        (0..count)
+            .map(|line| {
+                if line == at {
+                    format!("line {line} Lorem ipsum")
+                } else {
+                    format!("line {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The live case: `lorem` on line 2209 of a 3600-line file.
+    #[test]
+    fn a_match_far_down_is_previewed_from_just_above_it() {
+        let text = numbered(3600, 2209);
+        let window = text_at_match(text.as_bytes(), &words("lorem"), SEARCHED_BYTES).unwrap();
+        let lines: Vec<&str> = window.lines().collect();
+        assert_eq!(lines[0], "line 2207");
+        assert_eq!(lines[2], "line 2209 Lorem ipsum");
+        assert_eq!(lines.len(), PREVIEW_LINES);
+        // The card shows it from its start: the match is on its third line.
+        assert_eq!(highlight::shown(&window, &words("lorem")).start, 0);
+    }
+
+    #[test]
+    fn a_match_on_the_first_lines_is_previewed_from_the_start() {
+        let text = numbered(10, 1);
+        let window = text_at_match(text.as_bytes(), &words("lorem"), SEARCHED_BYTES).unwrap();
+        assert_eq!(window, text);
+    }
+
+    #[test]
+    fn no_match_within_the_bound_is_none() {
+        let text = numbered(3600, 3500);
+        assert_eq!(text_at_match(text.as_bytes(), &words("lorem"), 1000), None);
+        assert_eq!(
+            text_at_match(text.as_bytes(), &words("zzz"), SEARCHED_BYTES),
+            None
+        );
+        assert_eq!(text_at_match(text.as_bytes(), &[], SEARCHED_BYTES), None);
+    }
+
+    #[test]
+    fn wider_characters_are_matched_in_any_case() {
+        let mut text = "café\n".repeat(300);
+        text.push_str("une ÜBERSICHT ici\nfin");
+        let window = text_at_match(text.as_bytes(), &words("übersicht"), SEARCHED_BYTES).unwrap();
+        assert_eq!(window, "café\ncafé\nune ÜBERSICHT ici\nfin");
+    }
+
+    #[test]
+    fn binary_bytes_before_a_match_are_not_previewed() {
+        let mut bytes = b"MZ\0\0\n".repeat(10);
+        bytes.extend_from_slice(b"lorem\n");
+        assert_eq!(
+            text_at_match(&bytes[..], &words("lorem"), SEARCHED_BYTES),
+            None
+        );
+    }
+
+    /// The pane reads past the first lines for the query's words.
+    #[test]
+    fn a_file_is_previewed_at_a_match_past_its_first_lines() {
+        let tree = Tree::new("preview-deep");
+        tree.write("index.html", &numbered(3600, 2209));
+        let path = tree.path("index.html");
+        let at = describe(&path, false, None, &now(), &words("lorem"));
+        assert!(at.code.unwrap().starts_with("line 2207\n"));
+        let top = describe(&path, false, None, &now(), &words("zzz"));
+        assert!(top.code.unwrap().starts_with("line 0\n"));
+    }
+
     #[test]
     fn a_folder_counts_its_items_instead_of_a_size() {
         let tree = Tree::new("preview-folder");
         tree.file("styles/a.json").file("styles/b.json");
-        let detail = describe(&tree.path("styles"), true, Some(&tree.0), &now());
+        let detail = describe(&tree.path("styles"), true, Some(&tree.0), &now(), &[]);
         let rows: Vec<(&str, &str)> = detail
             .metadata
             .iter()
@@ -393,10 +557,10 @@ mod tests {
         let tree = Tree::new("preview-binary");
         tree.write("cat.png", "not really a png");
         std::fs::write(tree.path("data.json"), b"\0\0\0").unwrap();
-        let picture = describe(&tree.path("cat.png"), false, None, &now());
+        let picture = describe(&tree.path("cat.png"), false, None, &now(), &[]);
         assert_eq!(picture.image, Some(tree.path("cat.png")));
         assert_eq!(picture.code, None);
-        let binary = describe(&tree.path("data.json"), false, None, &now());
+        let binary = describe(&tree.path("data.json"), false, None, &now(), &[]);
         assert_eq!(binary.code, None);
     }
 }

@@ -34,6 +34,12 @@ const PATH_UNITS: usize = 4096;
 /// Words are split on whitespace. A `"` would end the word's phrase early, so
 /// it is dropped; a `'` would end the string, so it is doubled, in words and
 /// scopes alike. Folders are left out: a folder's name is not its contents.
+///
+/// Contents are the file's text, `System.Search.Contents`, not `*`: every
+/// full-text property, a file's name and path among them, so a file would
+/// match through its folder's name.
+/// <https://learn.microsoft.com/en-us/windows/win32/search/-search-sql-contains>,
+/// <https://learn.microsoft.com/en-us/windows/win32/properties/props-system-search-contents>
 fn query(words: &str, scopes: &[PathBuf], limit: usize) -> Option<String> {
     let words: Vec<String> = words
         .split_whitespace()
@@ -53,7 +59,7 @@ fn query(words: &str, scopes: &[PathBuf], limit: usize) -> Option<String> {
         .collect();
     Some(format!(
         "SELECT TOP {limit} System.ItemPathDisplay FROM SystemIndex \
-         WHERE ({}) AND System.ItemType <> 'Directory' AND CONTAINS(*,'{}')",
+         WHERE ({}) AND System.ItemType <> 'Directory' AND CONTAINS(System.Search.Contents,'{}')",
         scopes.join(" OR "),
         words.join(" AND "),
     ))
@@ -237,7 +243,7 @@ mod tests {
                 "SELECT TOP 20 System.ItemPathDisplay FROM SystemIndex \
                  WHERE (SCOPE='file:C:/Users/x' OR SCOPE='file:D:/Dev') \
                  AND System.ItemType <> 'Directory' \
-                 AND CONTAINS(*,'\"budget*\" AND \"report*\"')"
+                 AND CONTAINS(System.Search.Contents,'\"budget*\" AND \"report*\"')"
             ),
         );
     }
@@ -250,7 +256,7 @@ mod tests {
                 "SELECT TOP 5 System.ItemPathDisplay FROM SystemIndex \
                  WHERE (SCOPE='file:C:/Users/x') \
                  AND System.ItemType <> 'Directory' \
-                 AND CONTAINS(*,'\"invoice*\"')"
+                 AND CONTAINS(System.Search.Contents,'\"invoice*\"')"
             ),
         );
     }
@@ -259,14 +265,17 @@ mod tests {
     fn doubles_single_quotes_in_words_and_scopes() {
         let sql = query("o'neil", &scopes(&[r"C:\Users\o'brien"]), 5).unwrap();
         assert!(sql.contains("SCOPE='file:C:/Users/o''brien'"), "{sql}");
-        assert!(sql.contains("CONTAINS(*,'\"o''neil*\"')"), "{sql}");
+        assert!(
+            sql.contains("CONTAINS(System.Search.Contents,'\"o''neil*\"')"),
+            "{sql}"
+        );
     }
 
     #[test]
     fn drops_double_quotes_from_words() {
         let sql = query("\"say\" hel\"lo \"", &scopes(&[r"C:\x"]), 5).unwrap();
         assert!(
-            sql.ends_with("CONTAINS(*,'\"say*\" AND \"hello*\"')"),
+            sql.ends_with("CONTAINS(System.Search.Contents,'\"say*\" AND \"hello*\"')"),
             "{sql}"
         );
     }
