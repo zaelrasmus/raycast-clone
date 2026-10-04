@@ -15,6 +15,10 @@
 //! the matches inside a word the first could not see, appended below it
 //! ([`Effect::SearchInside`]), with *Searching...* said until it lands.
 //!
+//! A query that is wholly a path (step 6d, [`browse`]) asks neither phase:
+//! its folder is listed from the disk ([`Effect::Browse`]), answered
+//! through [`Session::found`] by the same generation, in the *Type* filter.
+//!
 //! The pane is the same: reading a file's first bytes and its times is
 //! disk work, so a row's detail is asked for ([`Effect::Describe`]) when the
 //! selection lands on it, and until it arrives the row shows what is known
@@ -25,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use lumen_platform::Drive;
 
+use super::browse::{self, Typed};
 use super::category::{CATEGORIES, Category};
 use super::{Found, drives, preview};
 use crate::view::{
@@ -62,6 +67,13 @@ pub enum Effect {
     Search {
         generation: u64,
         query: String,
+        filter: Option<Category>,
+    },
+    /// List the folder `typed` names, of `filter`'s category, off the UI
+    /// thread, and hand the answer to [`Session::found`] with `generation`.
+    Browse {
+        generation: u64,
+        typed: Typed,
         filter: Option<Category>,
     },
     /// Ask the index for the second phase of the search of `generation`
@@ -120,6 +132,9 @@ pub struct Session {
     /// The latest answer, and the query and filter it answers.
     results: Vec<Found>,
     answered: Option<(String, Option<Category>)>,
+    /// The folder `results` lists, when they are a typed path's listing
+    /// rather than the index's answer.
+    listed: Option<PathBuf>,
     /// The answer shown is the first phase, and the second is under way.
     searching: bool,
     /// Bumped for every search asked, so an older answer is known as one.
@@ -148,6 +163,7 @@ impl Session {
             filter: None,
             results: Vec::new(),
             answered: None,
+            listed: None,
             searching: false,
             generation: 0,
             details: HashMap::new(),
@@ -253,6 +269,7 @@ impl Session {
         }
         self.results = found;
         self.answered = Some((self.query.clone(), self.filter));
+        self.listed = self.typed().map(|typed| typed.dir);
         self.searching = false;
         self.shown_again()
     }
@@ -262,8 +279,9 @@ impl Session {
     /// saying *Searching...*, and the rest asked for up to the limit. A
     /// first phase already at the limit is the whole answer.
     pub fn found_first(&mut self, generation: u64, found: Vec<Found>) -> Vec<Effect> {
-        if generation != self.generation {
-            return Vec::new();
+        // A listing read the folder whole: it has no second phase.
+        if generation != self.generation || self.typed().is_some() {
+            return self.found(generation, found);
         }
         let room = super::LIMIT.saturating_sub(found.len());
         self.results = found;
@@ -300,6 +318,25 @@ impl Session {
             }
         }
         self.shown_again()
+    }
+
+    /// What `Tab` makes of the query with the row `selected`: the typed
+    /// path completed to it ([`browse::complete`]), a folder's ending in a
+    /// separator. `None` when what is typed is no path, or the row is not
+    /// one of its folder's listing: then `Tab` is the *Type* filter's.
+    pub fn completion(&self, selected: &str) -> Option<String> {
+        let typed = self.typed()?;
+        if self.listed.as_ref() != Some(&typed.dir) {
+            return None;
+        }
+        let found = self.shown_by_id(selected)?;
+        Some(browse::complete(&typed, &found))
+    }
+
+    /// The path the whole query names (step 6d), whose folder is listed
+    /// from the disk instead of asking the index.
+    fn typed(&self) -> Option<Typed> {
+        browse::typed(&self.query, self.home.as_deref())
     }
 
     /// What is typed has not been wholly answered. A keystroke that
@@ -388,7 +425,15 @@ impl Session {
         if self.query.is_empty() {
             self.results.clear();
             self.answered = None;
+            self.listed = None;
             return self.shown_again();
+        }
+        if let Some(typed) = self.typed() {
+            return vec![Effect::Browse {
+                generation: self.generation,
+                typed,
+                filter: self.filter,
+            }];
         }
         vec![Effect::Search {
             generation: self.generation,
@@ -415,17 +460,22 @@ impl Session {
     }
 
     /// The rows, in order: the recents in the filter for an empty query,
-    /// otherwise the latest answer.
+    /// otherwise the latest answer. A typed path shows only a listing of
+    /// its folder, in the filter as well: no row of the index's answers it.
     fn shown(&self) -> impl Iterator<Item = &Found> {
         let recents = self.query.is_empty();
-        let rows = if recents {
+        let typed = self.typed().map(|typed| typed.dir);
+        let rows: &[Found] = if recents {
             &self.recents
+        } else if typed.is_some() && typed != self.listed {
+            &[]
         } else {
             &self.results
         };
+        let narrowed = recents || typed.is_some();
         rows.iter().filter(move |found| {
             !self.gone.contains(&found.path)
-                && (!recents
+                && (!narrowed
                     || self
                         .filter
                         .is_none_or(|filter| filter.holds(&found.name(), found.is_dir)))
@@ -475,8 +525,11 @@ impl Session {
             sections.push(Section {
                 title: Some(title.into()),
                 // The second phase is the nearer news: it ends in moments.
+                // A listing is the disk's, whatever the index is doing.
                 subtitle: if self.searching {
                     Some("Searching\u{2026}".into())
+                } else if self.typed().is_some() {
+                    None
                 } else {
                     self.status.indexing.then(|| "Indexing\u{2026}".into())
                 },
@@ -507,6 +560,7 @@ impl Session {
     /// still being built.
     fn found_nothing(&self) -> bool {
         self.status.scopes
+            && self.typed().is_none()
             && !self.status.indexing
             && !self.searching
             && !self.query.is_empty()
@@ -515,7 +569,14 @@ impl Session {
     }
 
     fn empty(&self) -> EmptyState {
-        let (title, description) = if !self.status.scopes {
+        // A listing needs no index: only whether it has answered.
+        let (title, description) = if self.typed().is_some() {
+            if self.pending() {
+                ("", None)
+            } else {
+                ("No files match", None)
+            }
+        } else if !self.status.scopes {
             (
                 "Nothing is indexed",
                 Some("Add a folder to \"files.scopes\" in config.json, with \"files.enabled\" on"),
@@ -1549,5 +1610,127 @@ mod tests {
         let index = FileIndex::build(&tree.path(".files.db"), &tree.rules()).unwrap();
         let found = super::super::search(&index, "no", None, &|| false);
         assert_eq!(found.len(), 30);
+    }
+
+    /// The generation of the folder listing asked for in `effects`.
+    fn browsed(effects: &[Effect]) -> u64 {
+        effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Browse { generation, .. } => Some(*generation),
+                _ => None,
+            })
+            .expect("a listing was asked")
+    }
+
+    fn at_home() -> Session {
+        Session::new(recents(), READY).with_home(Some(r"C:\Users\me".into()))
+    }
+
+    #[test]
+    fn a_typed_path_lists_its_folder_instead_of_asking_the_index() {
+        let mut session = at_home();
+        let effects = query(&mut session, r" ~\Doc");
+        assert_eq!(
+            effects,
+            [Effect::Browse {
+                generation: 1,
+                typed: browse::parse(r"~\Doc", Path::new(r"C:\Users\me")).unwrap(),
+                filter: None,
+            }]
+        );
+        let effects = filter(&mut session, "folders");
+        assert!(matches!(
+            effects[..],
+            [Effect::Browse {
+                generation: 2,
+                filter: Some(Category::Folders),
+                ..
+            }]
+        ));
+
+        // A path is not one without a home to expand `~` to; a drive's is.
+        let mut session = Session::new(Vec::new(), READY);
+        assert!(matches!(
+            query(&mut session, r"~\Doc")[..],
+            [Effect::Search { .. }]
+        ));
+        assert!(matches!(
+            query(&mut session, "d:/src/")[..],
+            [Effect::Browse { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_listing_for_an_older_query_is_dropped() {
+        let mut session = at_home();
+        let first = browsed(&query(&mut session, r"C:\Users\"));
+        let second = browsed(&query(&mut session, r"C:\Users\m"));
+        assert!(
+            session
+                .found(first, vec![folder(r"C:\Users\Public")])
+                .is_empty()
+        );
+        session.found(second, vec![folder(r"C:\Users\me")]);
+        assert_eq!(titles(&session), ["me"]);
+    }
+
+    #[test]
+    fn a_listing_is_shown_in_the_type_asked_for() {
+        let mut session = at_home();
+        filter(&mut session, "folders");
+        let asked = browsed(&query(&mut session, r"C:\src\"));
+        session.found(
+            asked,
+            vec![folder(r"C:\src\lumen"), file(r"C:\src\notes.txt")],
+        );
+        assert_eq!(titles(&session), ["lumen"]);
+    }
+
+    /// The disk was read whole: nothing inside a word is left to find.
+    #[test]
+    fn a_listing_has_no_second_phase() {
+        let mut session = at_home();
+        let asked = browsed(&query(&mut session, r"C:\src\lu"));
+        let effects = session.found_first(asked, vec![folder(r"C:\src\lumen")]);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::SearchInside { .. })),
+            "{effects:?}"
+        );
+        assert_eq!(titles(&session), ["lumen"]);
+        let view = session.view();
+        assert_eq!(list(&view).sections[0].subtitle, None);
+        assert!(session.found_inside(asked, vec![file(r"C:\x")]).is_empty());
+    }
+
+    #[test]
+    fn tab_completes_a_typed_path_to_the_selected_row() {
+        let mut session = at_home();
+        let asked = browsed(&query(&mut session, "~/Doc"));
+        session.found(
+            asked,
+            vec![
+                folder(r"C:\Users\me\Documents"),
+                file(r"C:\Users\me\Doc.txt"),
+            ],
+        );
+        let documents = folder(r"C:\Users\me\Documents").id();
+        assert_eq!(
+            session.completion(&documents).as_deref(),
+            Some("~/Documents/")
+        );
+        assert_eq!(
+            session
+                .completion(&file(r"C:\Users\me\Doc.txt").id())
+                .as_deref(),
+            Some("~/Doc.txt")
+        );
+        // A row not shown, or no path typed: Tab is the Type filter's.
+        assert_eq!(session.completion(&folder(r"C:\elsewhere").id()), None);
+        let asked = generation(&query(&mut session, "doc"));
+        session.found(asked, vec![folder(r"C:\Users\me\Documents")]);
+        assert_eq!(session.completion(&documents), None);
     }
 }

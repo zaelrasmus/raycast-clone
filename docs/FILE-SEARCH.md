@@ -1117,8 +1117,41 @@ list on the left and a pane on the right, laid out as *Clipboard History*
 | Exclude from Index | Writes `.lumenignore` (above) |
 | Rebuild Index | View only |
 
-Later, not in this phase: *Save as Quicklink*, typing a path to browse a
-folder, sorting a folder.
+Later, not in this phase: *Save as Quicklink*, sorting a folder. A typed
+path lists its folder: see "Typed paths" below.
+
+### Typed paths (step 6d)
+
+When the **whole** query is a path, the answer is the folder's, read from
+the disk now, not the index's. In root and in the view alike:
+
+- **What is a path:** a drive's root or the home folder's, then anything --
+  `C:\Users\do`, `d:/src/lu`, `~\Doc`, `~/Doc`, separators mixed. Not `C:`
+  or `~` alone, not a network share (`\\server\`), nothing relative
+  (`.\src`), and never a path inside other words.
+- **What is listed:** the folder up to the last separator, its entries
+  whose names contain what follows, in any case: those that start with it
+  first, then folders, then by name. At most 200.
+- **No rules but hidden:** the user named the folder, so the skip list,
+  ignore files and exclusions do not apply. Hidden entries follow
+  *Include hidden files*.
+- **Enter** opens the row as any result does: a folder in Explorer.
+- **Tab** completes the query to the selected row -- the prefix as typed,
+  the name, and for a folder the separator last typed -- so the next
+  keystroke lists inside it. It is bound in a key context deeper than the
+  list's, so it beats *NextScope* in the view and *AskArgument* in root
+  only while a path is typed; otherwise `Tab` does what it did.
+- **Root** shows the listing alone, in the *Files* section, then the
+  fallbacks: no application, command or answer matches a path. Typing on
+  in the same folder narrows the listing held, by the same rule, until the
+  new one arrives; another folder shows nothing until its listing does.
+- **The view** lists in the *Type* filter, applied before the cap, and asks
+  for no second phase: the folder was read whole.
+
+The listing is one directory read through `ignore`, which also reads the
+hidden attribute: core makes no OS call and `Platform` gains no method
+(I-1). It runs off the UI thread and a keystroke cancels it; root never
+waits for it, and an answer to an older query is dropped (I-3).
 
 ### Slice 3b: how the view was made to look like the reference
 
@@ -1351,8 +1384,8 @@ lands:
 
 - **7.19** -- names stay Lumen's own index; content is the exception (slice 6).
 - **7.20** -- the 5 000 cap is replaced by a query-time budget (slice 1).
-- **7.21** -- files leave the asides for an appended section; still never
-  browsed in root (slice 1).
+- **7.21** -- files leave the asides for an appended section (slice 1); a
+  typed path's folder is listed in root (step 6d).
 - **7.26** -- the aside discount no longer applies to files (slice 1).
 
 ---
@@ -1386,7 +1419,7 @@ design changes before anything is built on it.
   content is the system's index, not Lumen's.
 - **A search sensitivity setting** -- see "How a query is answered".
 - **Content in root search** -- see "Three levels".
-- Browsing a typed path, sorting a folder, *Save as Quicklink* on a file.
+- Sorting a folder, *Save as Quicklink* on a file.
 
 ## Open questions, answered by measurement
 

@@ -91,6 +91,9 @@ an aesthetic worth looking at fifty times a day.
   Lumen runs, and at start only the folders that changed while it was not are
   read again; *Rebuild File Index* starts over from nothing if it ever seems
   wrong.
+- **Typed paths:** type `C:\Users\do`, `d:/src/lu` or `~\Doc` and root or
+  *Search Files* lists that folder live, the entries whose names contain
+  what follows the last separator; `Tab` completes the selected row.
 - **Extensions with views of their own** (F4, up to step 3). One ships as
   an example: **Characters**. An extension is a folder with a
   manifest and a program; its commands are in the root list without anything

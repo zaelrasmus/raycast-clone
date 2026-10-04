@@ -128,6 +128,20 @@ pub fn search_inside(
         .collect()
 }
 
+/// A typed path's answer (step 6d): the best [`LIMIT`] entries of the
+/// folder it names, of `filter`'s category, read from the disk rather than
+/// the index ([`browse::list_where`]). Off the UI thread; nothing once
+/// `cancelled` says the query was superseded.
+pub fn list_folder(
+    typed: &browse::Typed,
+    include_hidden: bool,
+    filter: Option<Category>,
+    cancelled: &dyn Fn() -> bool,
+) -> Vec<Found> {
+    let accept = |name: &str, is_dir: bool| filter.is_none_or(|filter| filter.holds(name, is_dir));
+    browse::list_where(typed, include_hidden, LIMIT, &accept, cancelled)
+}
+
 /// The kinds `filter` asks of the index: folders alone for *Folders*.
 fn kinds(filter: Option<Category>) -> Kinds {
     match filter {

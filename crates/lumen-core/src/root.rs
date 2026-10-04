@@ -201,6 +201,10 @@ pub struct RootSearch {
     /// Whether `files` is a typed path's listing rather than the index's
     /// answer: it answers only that path, whole and in its own order.
     files_typed: bool,
+    /// That listing as it was given, row for row with `files`: what is
+    /// narrowed while the same folder's next listing is read, and what a
+    /// row is completed to.
+    listing: Vec<Found>,
     /// The user's home folder, for `~\` in a typed path and the rows'
     /// subtitles: found as the file index finds it, so the two agree.
     user_home: Option<PathBuf>,
@@ -254,6 +258,7 @@ impl RootSearch {
             files: Vec::new(),
             files_query: String::new(),
             files_typed: false,
+            listing: Vec::new(),
             user_home: directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
             quicklinks: QuicklinkProvider::default(),
             timer_presets: Vec::new(),
@@ -390,19 +395,22 @@ impl RootSearch {
         self.files = hits;
         self.files_query = query.trim().to_string();
         self.files_typed = false;
+        self.listing.clear();
     }
 
     /// The path `query` names when the whole of it is one (F16): the
     /// launcher lists its folder with [`browse::list`] instead of asking
     /// the file index, and hands the listing to [`Self::set_typed`].
     pub fn typed(&self, query: &str) -> Option<browse::Typed> {
-        match &self.user_home {
-            Some(home) => browse::parse(query, home),
-            // No home to expand `~` to: only a drive's path is one.
-            None => {
-                browse::parse(query, Path::new("")).filter(|_| !query.trim_start().starts_with('~'))
-            }
-        }
+        browse::typed(query, self.user_home.as_deref())
+    }
+
+    /// The path `query` names, when the listing held is of the same folder:
+    /// shown narrowed by its filter until its own listing arrives.
+    fn same_folder(&self, query: &str) -> Option<browse::Typed> {
+        let typed = self.typed(query)?;
+        let held = self.typed(&self.files_query).filter(|_| self.files_typed)?;
+        (held.dir == typed.dir).then_some(typed)
     }
 
     /// Take the listing of the folder typed in `query` (F16). Shown whole,
@@ -416,7 +424,7 @@ impl RootSearch {
             .unwrap_or_default();
         let home = self.user_home.as_deref();
         self.files = rows
-            .into_iter()
+            .iter()
             .map(|found| {
                 let item = file_index::item_for(&found.path, found.is_dir, home);
                 FileHit {
@@ -428,6 +436,17 @@ impl RootSearch {
         // Untrimmed at the end: a trailing space is part of the filter.
         self.files_query = query.trim_start().to_string();
         self.files_typed = true;
+        self.listing = rows;
+    }
+
+    /// What `Tab` makes of `query` with the row `selected` (an item id):
+    /// the typed path completed to it ([`browse::complete`]), a folder's
+    /// ending in a separator. `None` when `query` is no path or the row is
+    /// not in its folder's listing.
+    pub fn completion(&self, query: &str, selected: &str) -> Option<String> {
+        let typed = self.same_folder(query)?;
+        let found = self.listing.iter().find(|found| found.id() == selected)?;
+        Some(browse::complete(&typed, found))
     }
 
     /// Forget the files: file search was turned off, or its rules changed.
@@ -437,6 +456,7 @@ impl RootSearch {
         self.files.clear();
         self.files_query.clear();
         self.files_typed = false;
+        self.listing.clear();
         self.forget_file_hits()
     }
 
@@ -754,9 +774,10 @@ impl RootSearch {
     /// Nothing else: no application, command or answer matches a path, and
     /// the listing is already filtered and ordered by its own rule, so the
     /// index's word rule is not applied again. Until the listing for this
-    /// very query arrives, the section is empty -- an older listing names
-    /// another folder or another filter, and the index's rows are no answer
-    /// to a path.
+    /// very query arrives, a listing of the same folder is shown narrowed
+    /// by the new filter, by the listing's own rule ([`browse::narrow`]);
+    /// one of another folder, or the index's rows, answer nothing here and
+    /// the section is empty.
     fn rank_typed(&mut self, query: &str) -> &[Hit] {
         self.answers.clear();
         self.conversion = false;
@@ -771,6 +792,16 @@ impl RootSearch {
                 .map(|(index, found)| Hit {
                     source: Source::File(index),
                     highlights: found.highlights.clone(),
+                    score: 0,
+                })
+                .collect()
+        } else if let Some(typed) = self.same_folder(query) {
+            let words = names::words(&typed.filter);
+            browse::narrow(&self.listing, &typed.filter)
+                .into_iter()
+                .map(|index| Hit {
+                    source: Source::File(index),
+                    highlights: file_index::highlights(&self.files[index].item.title, &words),
                     score: 0,
                 })
                 .collect()
@@ -1642,14 +1673,16 @@ mod tests {
         assert_eq!(shown[..3], ["beta", "alpha", "zeta 0"]);
     }
 
-    /// A listing answers its own query and no other: not a longer path,
-    /// and not a query that is no path at all.
+    /// A listing answers its own folder and no other: not a folder inside
+    /// it, and not a query that is no path at all.
     #[test]
-    fn a_listing_for_another_query_is_not_shown() {
+    fn a_listing_for_another_folder_is_not_shown() {
         let mut root = root(apps(&["Report Builder"]));
         root.set_typed(r"C:\Re", listed(&[(r"C:\Reports", true)]));
 
-        root.rank(r"C:\Rep");
+        root.rank(r"C:\Reports\");
+        assert!(file_titles(&root).is_empty());
+        root.rank(r"D:\Re");
         assert!(file_titles(&root).is_empty());
 
         root.rank("report");
@@ -1669,6 +1702,61 @@ mod tests {
 
         assert!(root.hits().is_empty(), "{:?}", titles(&root));
         assert!(root.sections().is_empty());
+    }
+
+    /// Typing on in the same folder narrows the listing held at once, by
+    /// the listing's own rule, until the folder's new listing arrives: no
+    /// keystroke empties the section only to fill it again.
+    #[test]
+    fn the_same_folder_with_another_filter_narrows_the_listing_held() {
+        let mut root = root(Vec::new());
+        root.set_typed(
+            r"C:\src\",
+            listed(&[
+                (r"C:\src\old-lumen", true),
+                (r"C:\src\lumen.txt", false),
+                (r"C:\src\Lumen", true),
+                (r"C:\src\notes", true),
+            ]),
+        );
+
+        root.rank(r"C:\src\LU");
+
+        assert_eq!(file_titles(&root), ["Lumen", "lumen.txt", "old-lumen"]);
+        assert_eq!(root.hits()[0].highlights, [0, 1]);
+        assert_eq!(root.sections()[0].title, FILES);
+
+        // Its own listing, when it comes, is shown as it is.
+        root.set_typed(r"C:\src\LU", listed(&[(r"C:\src\lumen.txt", false)]));
+        root.rank(r"C:\src\LU");
+        assert_eq!(file_titles(&root), ["lumen.txt"]);
+    }
+
+    /// Tab on a listed row: the query that names it, a folder's ending in
+    /// the separator typed, so the next keystroke lists inside it.
+    #[test]
+    fn a_listed_row_completes_the_typed_path() {
+        let mut root = root(Vec::new());
+        root.set_typed(
+            r"c:/src/lu",
+            listed(&[(r"c:/src/lumen", true), (r"c:/src/lu.txt", false)]),
+        );
+        root.rank(r"c:/src/lu");
+
+        assert_eq!(
+            root.completion(r"c:/src/lu", r"folder:c:/src/lumen")
+                .as_deref(),
+            Some("c:/src/lumen/")
+        );
+        assert_eq!(
+            root.completion(r"c:/src/lu", r"file:c:/src/lu.txt")
+                .as_deref(),
+            Some("c:/src/lu.txt")
+        );
+        // Not a listed row, or no path typed: Tab is not a completion.
+        assert_eq!(root.completion(r"c:/src/lu", "app:calculator"), None);
+        assert_eq!(root.completion(r"c:/src/lu", r"folder:c:/elsewhere"), None);
+        assert_eq!(root.completion("lumen", r"folder:c:/src/lumen"), None);
     }
 
     /// Once the query is no path, the list is what it always was.

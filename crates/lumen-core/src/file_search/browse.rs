@@ -67,16 +67,38 @@ pub fn parse(query: &str, home: &Path) -> Option<Typed> {
     })
 }
 
+/// [`parse`] with the home folder when there is one; without it, only a
+/// drive's path is one, since `~` has nothing to expand to.
+pub fn typed(query: &str, home: Option<&Path>) -> Option<Typed> {
+    match home {
+        Some(home) => parse(query, home),
+        None => parse(query, Path::new("")).filter(|_| !query.trim_start().starts_with('~')),
+    }
+}
+
 /// At most `cap` entries of `typed.dir` whose names contain `typed.filter`,
-/// in any case: those that start with it first, then folders, then by
-/// name. Hidden ones only with `include_hidden`. A folder that is missing,
-/// is a file or cannot be read lists nothing.
+/// in [`narrow`]'s order. Hidden ones only with `include_hidden`. A folder
+/// that is missing, is a file or cannot be read lists nothing.
 ///
 /// The order needs every match, so a huge folder is read whole before the
 /// cap applies: one directory read and a sort of its matches, which is
 /// milliseconds for tens of thousands of entries. Stops, with nothing, as
 /// soon as `cancelled` says the query was superseded.
 pub fn list(typed: &Typed, include_hidden: bool, cap: usize, cancelled: &AtomicBool) -> Vec<Found> {
+    let cancelled = || cancelled.load(Ordering::Relaxed);
+    list_where(typed, include_hidden, cap, &|_, _| true, &cancelled)
+}
+
+/// [`list`], of the entries `accept` takes by name and kind: the *Type*
+/// filter, applied before the cap so a filtered listing still has its
+/// first `cap`. Cancelled as the index's search is, by asking.
+pub fn list_where(
+    typed: &Typed,
+    include_hidden: bool,
+    cap: usize,
+    accept: &dyn Fn(&str, bool) -> bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Vec<Found> {
     let filter = typed.filter.to_lowercase();
     let mut builder = WalkBuilder::new(&typed.dir);
     builder
@@ -86,41 +108,66 @@ pub fn list(typed: &Typed, include_hidden: bool, cap: usize, cancelled: &AtomicB
         .follow_links(false)
         .max_depth(Some(1));
 
-    // (starts with the filter, is a folder, lowercase name), to sort by.
-    let mut matches: Vec<(bool, bool, String, Found)> = Vec::new();
+    let mut entries = Vec::new();
     for entry in builder.build() {
-        if cancelled.load(Ordering::Relaxed) {
+        if cancelled() {
             return Vec::new();
         }
         let Ok(entry) = entry else { continue };
         if entry.depth() == 0 {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        let Some(at) = name.find(&filter) else {
+        let name = entry.file_name().to_string_lossy();
+        if !name.to_lowercase().contains(&filter) {
             continue;
-        };
+        }
         // A link to a folder is listed as the folder it opens.
         let is_dir = match entry.file_type() {
             Some(kind) if kind.is_symlink() => entry.path().is_dir(),
             Some(kind) => kind.is_dir(),
             None => false,
         };
-        let found = Found {
+        if !accept(&name, is_dir) {
+            continue;
+        }
+        entries.push(Found {
             path: entry.into_path(),
             is_dir,
-        };
-        matches.push((at == 0, is_dir, name, found));
+        });
     }
 
+    let mut order = narrow(&entries, &typed.filter);
+    order.truncate(cap);
+    let mut entries: Vec<Option<Found>> = entries.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|index| entries[index].take())
+        .collect()
+}
+
+/// The positions in `entries` of those whose names contain `filter`, in
+/// any case, in the listing's order: those that start with it first, then
+/// folders, then by name. The one rule for a listing read from the disk
+/// and for one held while the next is read (root, same folder).
+pub fn narrow(entries: &[Found], filter: &str) -> Vec<usize> {
+    let filter = filter.to_lowercase();
+    // (starts with the filter, is a folder, lowercase name, position).
+    let mut matches: Vec<(bool, bool, String, usize)> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, found)| {
+            let name = found.name().to_lowercase();
+            let at = name.find(&filter)?;
+            Some((at == 0, found.is_dir, name, index))
+        })
+        .collect();
     matches.sort_by(|a, b| {
         (b.0, b.1)
             .cmp(&(a.0, a.1))
             .then_with(|| a.2.cmp(&b.2))
-            .then_with(|| a.3.path.cmp(&b.3.path))
+            .then_with(|| entries[a.3].path.cmp(&entries[b.3].path))
     });
-    matches.truncate(cap);
-    matches.into_iter().map(|(.., found)| found).collect()
+    matches.into_iter().map(|(.., index)| index).collect()
 }
 
 /// The query that completes `typed` to `found`: the prefix as typed, the
@@ -271,6 +318,42 @@ mod tests {
 
         assert_eq!(listed(&typed(&tree.0, ""), false, 3), ["y/", "z/", "a.txt"]);
         assert!(listed(&typed(&tree.0, ""), false, 0).is_empty());
+    }
+
+    #[test]
+    fn the_type_filter_applies_before_the_cap() {
+        let tree = Tree::new("browse-accept");
+        tree.file("a.txt").file("b.txt").dir("y").dir("z");
+
+        let files = |_: &str, is_dir: bool| !is_dir;
+        let found = list_where(&typed(&tree.0, ""), false, 1, &files, &|| false);
+        assert_eq!(names(&found), ["a.txt"]);
+    }
+
+    /// A listing held is narrowed by the rule a listing is read with.
+    #[test]
+    fn narrowing_orders_as_the_listing_does() {
+        let entries: Vec<Found> = [
+            ("C:\\src\\old-lumen", true),
+            ("C:\\src\\lumen.txt", false),
+            ("C:\\src\\Lumen", true),
+            ("C:\\src\\notes", true),
+        ]
+        .into_iter()
+        .map(|(path, is_dir)| Found {
+            path: path.into(),
+            is_dir,
+        })
+        .collect();
+        assert_eq!(narrow(&entries, "LU"), [2, 1, 0]);
+        assert_eq!(narrow(&entries, ""), [2, 3, 0, 1]);
+    }
+
+    #[test]
+    fn without_a_home_only_a_drives_path_is_one() {
+        assert!(super::typed("~\\Doc", None).is_none());
+        assert!(super::typed("C:\\Doc", None).is_some());
+        assert!(super::typed("~\\Doc", Some(Path::new("H:\\home"))).is_some());
     }
 
     #[test]

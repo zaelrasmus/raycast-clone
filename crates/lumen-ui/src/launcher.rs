@@ -641,6 +641,36 @@ impl FileSearchRun<'_> {
             .await
     }
 
+    /// The listing of the folder a typed path names, in `filter`, read from
+    /// the disk ([`lumen_core::file_search::list_folder`]) with hidden
+    /// entries as file search is set to; `None` when another keystroke
+    /// came first. Needs no index.
+    async fn browse(
+        &self,
+        cx: &mut gpui::AsyncApp,
+        typed: lumen_core::file_search::browse::Typed,
+        filter: Option<lumen_core::file_search::Category>,
+    ) -> Option<Vec<lumen_core::file_search::Found>> {
+        let asked = self.keystrokes.load(Ordering::SeqCst);
+        let include_hidden = self
+            .this
+            .update(cx, |launcher, _| launcher.config.files.include_hidden)
+            .ok()?;
+        let current = self.keystrokes.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let cancelled = || current.load(Ordering::Relaxed) != asked;
+                let found = lumen_core::file_search::list_folder(
+                    &typed,
+                    include_hidden,
+                    filter,
+                    &cancelled,
+                );
+                (!cancelled()).then_some(found)
+            })
+            .await
+    }
+
     /// The second phase of the search last asked: at most `limit` matches
     /// inside a word that the first could not find. A scan of the disk, so
     /// `None` as soon as a keystroke since that search says so.
@@ -1582,6 +1612,17 @@ impl Launcher {
                                 } else {
                                     session.found(generation, found)
                                 });
+                            }
+                        }
+                        Effect::Browse {
+                            generation,
+                            typed,
+                            filter,
+                        } => {
+                            // Whole in one answer: a listing has no second
+                            // phase.
+                            if let Some(found) = run.browse(cx, typed, filter).await {
+                                follow.extend(session.found(generation, found));
                             }
                         }
                         Effect::SearchInside {
