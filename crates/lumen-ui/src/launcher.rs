@@ -531,11 +531,16 @@ impl ViewSink {
     }
 }
 
-/// What the *Search Files* loop hears: the view's events, and that the file
-/// index started or finished indexing.
+/// What the *Search Files* loop hears: the view's events, that the file
+/// index started or finished indexing, and Windows Search's answer for
+/// contents (slice 6b), which the loop does not wait for.
 enum FileSearchInput {
     View(lumen_core::view::Event),
     Status,
+    Contents {
+        generation: u64,
+        found: Vec<lumen_core::file_search::Found>,
+    },
 }
 
 /// A queue a view's sink pushes to and its loop awaits, on the UI thread.
@@ -624,6 +629,8 @@ struct FileSearchRun<'a> {
     /// to (slice 5), and the home folder `~` is written against.
     config_file: &'a std::path::Path,
     home: &'a Option<std::path::PathBuf>,
+    /// Where an answer the loop does not wait for is delivered.
+    inbox: &'a Arc<Inbox<FileSearchInput>>,
 }
 
 impl FileSearchRun<'_> {
@@ -712,6 +719,61 @@ impl FileSearchRun<'_> {
                 (!cancelled()).then_some(found)
             })
             .await
+    }
+
+    /// Ask Windows Search for the files under the scopes whose contents
+    /// hold `words`, and deliver them to the inbox as `generation`'s. Not
+    /// awaited: a query of the system's index cannot be cancelled once
+    /// asked, and the next keystroke must not wait for it (I-3). A keystroke
+    /// since the search was asked abandons it; an unavailable service is
+    /// no contents.
+    fn search_contents(&self, cx: &mut gpui::AsyncApp, generation: u64, words: String) {
+        let Ok(files) = self
+            .this
+            .update(cx, |launcher, _| launcher.config.files.clone())
+        else {
+            return;
+        };
+        let asked = self.searched_at.get();
+        let current = self.keystrokes.clone();
+        let platform = self.platform.clone();
+        let inbox = self.inbox.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let cancelled = || current.load(Ordering::Relaxed) != asked;
+                if cancelled() {
+                    return;
+                }
+                let rules = files.walk_rules();
+                let paths = match platform.content_search(
+                    &words,
+                    &rules.scopes,
+                    lumen_core::file_search::LIMIT,
+                ) {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        static ONCE: std::sync::Once = std::sync::Once::new();
+                        ONCE.call_once(|| {
+                            log::warn!("could not search file contents: {error:#}");
+                        });
+                        Vec::new()
+                    }
+                };
+                if cancelled() {
+                    return;
+                }
+                // An excluded folder may still be in the system's index.
+                let found = paths
+                    .into_iter()
+                    .filter(|path| !rules.exclusions.iter().any(|out| path.starts_with(out)))
+                    .map(|path| lumen_core::file_search::Found {
+                        path,
+                        is_dir: false,
+                    })
+                    .collect();
+                inbox.push(FileSearchInput::Contents { generation, found });
+            })
+            .detach();
     }
 
     /// The pane for `found`, read from the disk.
@@ -1591,7 +1653,8 @@ impl Launcher {
                         };
                         let session = Session::new(recents, status)
                             .with_home(home.clone())
-                            .with_drives(offers);
+                            .with_drives(offers)
+                            .with_contents(files.enabled && files.search_contents);
                         // Here rather than on the UI thread: the first call
                         // reads the system's time zone.
                         (session, Describer::new(home.clone()), home)
@@ -1606,6 +1669,7 @@ impl Launcher {
                 describer: &describer,
                 config_file: &config_file,
                 home: &home,
+                inbox: &inbox,
             };
             let mut effects = session.open();
 
@@ -1661,6 +1725,13 @@ impl Launcher {
                                 follow.extend(session.found_inside(generation, found));
                             }
                         }
+                        Effect::SearchContents {
+                            generation, words, ..
+                        } => {
+                            // The filter is the session's to apply: Windows
+                            // Search is asked for files of any type.
+                            run.search_contents(cx, generation, words);
+                        }
                         Effect::Describe(found) => {
                             let path = found.path.clone();
                             let detail = run.describe(cx, found).await;
@@ -1706,6 +1777,9 @@ impl Launcher {
                 effects = match inbox.next().await {
                     None | Some(FileSearchInput::View(Event::Dismissed)) => break,
                     Some(FileSearchInput::View(event)) => session.event(event),
+                    Some(FileSearchInput::Contents { generation, found }) => {
+                        session.found_contents(generation, found)
+                    }
                     Some(FileSearchInput::Status) => {
                         match this.update(cx, |launcher, _| launcher.file_search_status()) {
                             Ok(status) => session.set_status(status),
@@ -5021,6 +5095,13 @@ impl Launcher {
                 &self.images,
                 &self.icons,
                 self.config.files.preview_font,
+                // Only *Search Files* says what it answers: its query's
+                // words are highlighted in a text preview (slice 6b).
+                &state
+                    .completions
+                    .as_ref()
+                    .map(|(query, _)| lumen_core::file_search::highlight::words(query))
+                    .unwrap_or_default(),
                 cx,
             ),
             lumen_core::view::View::Detail(detail) => {

@@ -115,6 +115,9 @@ pub struct FileSearchConfig {
     /// finds without a scan. Not a rule of the walk: changing it rebuilds
     /// the word tables from the index, and walks nothing again.
     pub index_detail: IndexDetail,
+    /// *Search Files* also asks Windows Search for files whose contents
+    /// hold the query, from three letters (slice 6b). Never root search.
+    pub search_contents: bool,
 }
 
 /// What a text file's preview is drawn in (F16).
@@ -176,6 +179,7 @@ impl Default for FileSearchConfig {
             declined_drives: Vec::new(),
             preview_font: PreviewFont::default(),
             index_detail: IndexDetail::default(),
+            search_contents: true,
         }
     }
 }
@@ -205,6 +209,7 @@ struct FileSearchFile {
     preview_font: Option<serde_json::Value>,
     /// Read as any value, as `preview-font` is.
     index_detail: Option<serde_json::Value>,
+    search_contents: bool,
 }
 
 impl Default for FileSearchFile {
@@ -224,6 +229,7 @@ impl Default for FileSearchFile {
             limits: None,
             preview_font: None,
             index_detail: None,
+            search_contents: defaults.search_contents,
         }
     }
 }
@@ -265,6 +271,7 @@ impl From<FileSearchFile> for FileSearchConfig {
             declined_drives: file.declined_drives,
             preview_font: PreviewFont::read(file.preview_font.as_ref()),
             index_detail: read_index_detail(file.index_detail.as_ref()),
+            search_contents: file.search_contents,
         }
     }
 }
@@ -837,6 +844,21 @@ mod tests {
 
     /// A preview is monospace unless the user prefers the interface font,
     /// and a value this build does not know is that default, never an error.
+    /// *Search Files* asks Windows Search for contents unless told not to.
+    #[test]
+    fn contents_are_searched_unless_turned_off() {
+        assert!(FileSearchConfig::default().search_contents);
+        assert!(files(r#"{ "files": {} }"#).search_contents);
+        let off = files(r#"{ "files": { "search-contents": false } }"#);
+        assert!(!off.search_contents);
+        let json = serde_json::to_string(&off).unwrap();
+        assert!(json.contains(r#""search-contents":false"#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<FileSearchConfig>(&json).unwrap(),
+            off
+        );
+    }
+
     #[test]
     fn the_preview_font_is_monospace_unless_set_to_the_interface() {
         assert_eq!(

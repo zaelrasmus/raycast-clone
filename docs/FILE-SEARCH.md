@@ -1099,9 +1099,9 @@ list on the left and a pane on the right, laid out as *Clipboard History*
   scrolls as every pane does.
 - **Metadata:** Name, Where (`~`-shortened), Type, Size, Created, Modified;
   a folder shows its item count instead of a size.
-- **Contents:** a toggle in the view's filter (the *Type* filter's
-  pattern from F12) that adds content matches **after** name matches, from
-  Windows Search.
+- **Contents:** content matches from Windows Search, **after** the name
+  matches, from three letters, unless `files.search-contents` is off (see
+  "Content search through Windows Search"). Not a toggle in the view.
 - **Status:** indexing progress or the last pass, in the footer.
 - **Empty states:** "nothing indexed" when there are no scopes, and the drive
   suggestions described above.
@@ -1194,6 +1194,9 @@ waits for it, and an answer to an older query is dropped (I-3).
 
 ## Content search through Windows Search
 
+**Built:** the platform query in `a5a3bda` (6a); the view's use of it and
+the preview highlight in 6b. Coverage in settings is 6c.
+
 Raycast does not index file contents itself either: it asks Spotlight or
 Windows Search, and greys its toggle out when the system's index does not
 cover the scopes. Lumen does the same, for the same reason -- a content index
@@ -1205,6 +1208,24 @@ and memory budgets.
   the scopes, and returns paths.
 - It is called only from the view, off the UI thread, where waiting is
   allowed. Root never calls it (I-3).
+- **When.** Once the names have wholly answered (both phases), a trimmed
+  query of **three characters or more** asks for contents, always, unless
+  `files.search-contents` (default `true`) is off. Never for a typed path:
+  that is a folder's listing. *Searching...* is said until it answers.
+- **How it lands.** Appended below the names like the second phase: rows
+  already shown are not repeated, the *Type* filter applies, the list stays
+  within its limit, and an answer for a query since replaced is dropped by
+  its generation. The loop does not wait for it: the query is pushed back
+  to the view's inbox, and a keystroke since abandons it. An unavailable
+  service is no content matches, with one warning a run.
+- **No mark on the row.** Instead, when the selected row's preview is text,
+  the query's words (from three characters, single letters left out) are
+  drawn in the match colour wherever they appear, in any case, and the card
+  starts two lines above the first match when it is past the first four
+  lines. The card is clipped rather than scrolled, so that is how the match
+  comes into view. It applies to any text preview for the current query,
+  whichever search found the row. The preview holds the first 200 lines: a
+  match deeper in the file is not drawn.
 - **Coverage is shown per scope.** By default Windows indexes the user's
   folders and not `D:\`. The settings page marks each scope *covered* or *not
   covered by Windows Search*, with a button that opens Windows' *Indexing

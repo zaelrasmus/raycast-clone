@@ -10,6 +10,7 @@ pub mod browse;
 pub mod category;
 pub mod drives;
 pub mod exclude;
+pub mod highlight;
 pub mod icon;
 pub mod preview;
 pub mod recents;

@@ -800,7 +800,8 @@ copy the path. The full design is in
   "use-ignore-files": true,
   "include-hidden": false,
   "default-skips-off": [],
-  "index-detail": "balanced"
+  "index-detail": "balanced",
+  "search-contents": true
 }
 ```
 
@@ -828,6 +829,7 @@ copy the path. The full design is in
 
 | Key | |
 | --- | --- |
+| `files.search-contents` | `true` by default. *Search Files* also asks Windows Search for files whose **contents** hold the query, from three letters, and adds them below the name matches. A text preview highlights the query's words and starts near the first one. Only folders Windows Search indexes answer; never in root search, never for a typed path. |
 | `apps.extra-folders` | Folders whose programs are listed as **applications**, not files: `["D:/Tools"]`, `~` for home. `.exe`, `.lnk` and `.url` files in the folder and one subfolder down (`Tools\Obsidian\Obsidian.exe`, not deeper). One Start already lists is not repeated. Watched, so a program dropped in appears in seconds; a folder added while Lumen runs is indexed at once and watched from the next start. |
 
 Not walked into by default: `node_modules`, `target`, `build`, `dist`, `.git`,

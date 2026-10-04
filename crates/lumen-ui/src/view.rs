@@ -234,6 +234,7 @@ pub fn render_list(
     images: &ImageCache,
     icons: &IconCache,
     preview_font: PreviewFont,
+    words: &[String],
     cx: &mut App,
 ) -> AnyElement {
     if source.is_empty() {
@@ -300,6 +301,7 @@ pub fn render_list(
             height,
             images,
             preview_font,
+            words,
             cx,
         ))
         .into_any_element()
@@ -315,6 +317,7 @@ fn render_pane(
     height: gpui::Pixels,
     images: &ImageCache,
     preview_font: PreviewFont,
+    words: &[String],
     cx: &mut App,
 ) -> AnyElement {
     let colors = &theme.colors;
@@ -357,7 +360,7 @@ fn render_pane(
                 detail
                     .code
                     .as_deref()
-                    .map(|code| render_card(code, theme, preview_font)),
+                    .map(|code| render_card(code, theme, preview_font, words)),
                 &detail.metadata,
                 colors,
             ))
@@ -380,9 +383,26 @@ fn card_font(theme: &Theme, preview_font: PreviewFont) -> (Option<&str>, bool) {
 /// so the metadata under it stays a short scroll away. Monospace lines run
 /// off the right edge rather than wrap: a wrapped line of code is two lines
 /// that are not in the file.
-fn render_card(code: &str, theme: &Theme, preview_font: PreviewFont) -> AnyElement {
+///
+/// `words`, the query's, are drawn in the match colour wherever they are,
+/// and the card starts a few lines above the first when it is further down
+/// (slice 6b): the card is clipped, not scrolled, so that is how the match
+/// is brought into view.
+fn render_card(
+    code: &str,
+    theme: &Theme,
+    preview_font: PreviewFont,
+    words: &[String],
+) -> AnyElement {
     let colors = &theme.colors;
     let (family, wraps) = card_font(theme, preview_font);
+    let shown = lumen_core::file_search::highlight::shown(code, words);
+    let matched = HighlightStyle {
+        color: Some(color(colors.match_highlight)),
+        ..Default::default()
+    };
+    let text = StyledText::new(code[shown.start..].to_string())
+        .with_highlights(shown.ranges.into_iter().map(|range| (range, matched)));
     div()
         .w_full()
         .max_h(px(layout::view::DETAIL_CARD_MAX_HEIGHT))
@@ -400,7 +420,7 @@ fn render_card(code: &str, theme: &Theme, preview_font: PreviewFont) -> AnyEleme
             card.font_family(SharedString::from(family.to_string()))
         })
         .when(!wraps, |card| card.whitespace_nowrap())
-        .child(code.to_string())
+        .child(text)
         .into_any_element()
 }
 

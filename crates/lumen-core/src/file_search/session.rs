@@ -14,6 +14,10 @@
 //! once. When the index is larger than its hot layer, a second follows:
 //! the matches inside a word the first could not see, appended below it
 //! ([`Effect::SearchInside`]), with *Searching...* said until it lands.
+//! Once the names are in, a query of three letters or more asks Windows
+//! Search for the files whose contents hold it ([`Effect::SearchContents`],
+//! slice 6b), appended below the same way; their row is not marked, the
+//! preview highlights the query instead ([`super::highlight`]).
 //!
 //! A query that is wholly a path (step 6d, [`browse`]) asks neither phase:
 //! its folder is listed from the disk ([`Effect::Browse`]), answered
@@ -86,6 +90,15 @@ pub enum Effect {
         filter: Option<Category>,
         limit: usize,
     },
+    /// Ask Windows Search for the files whose contents hold `words`
+    /// (slice 6b), in the file-search scopes, off the UI thread, and hand
+    /// the answer to [`Session::found_contents`] with `generation`. Asked
+    /// once the names have wholly answered, from three letters.
+    SearchContents {
+        generation: u64,
+        words: String,
+        filter: Option<Category>,
+    },
     /// Build the pane for this entry off the UI thread
     /// ([`preview::describe`]) and hand it to [`Session::described`].
     Describe(Found),
@@ -135,8 +148,13 @@ pub struct Session {
     /// The folder `results` lists, when they are a typed path's listing
     /// rather than the index's answer.
     listed: Option<PathBuf>,
-    /// The answer shown is the first phase, and the second is under way.
+    /// The answer shown is the first phase, and the second is under way,
+    /// or the contents are.
     searching: bool,
+    /// Windows Search is asked for contents (`files.search-contents`).
+    contents: bool,
+    /// What `searching` waits for is the contents, not the second phase.
+    asking_contents: bool,
     /// Bumped for every search asked, so an older answer is known as one.
     generation: u64,
     /// Each pane built, by path, and the paths asked for.
@@ -165,6 +183,8 @@ impl Session {
             answered: None,
             listed: None,
             searching: false,
+            contents: false,
+            asking_contents: false,
             generation: 0,
             details: HashMap::new(),
             asked: HashSet::new(),
@@ -201,6 +221,12 @@ impl Session {
         self.offers
             .retain(|drive| !drives::same_drive(&drive.root, folder));
         vec![Effect::Render(self.view())]
+    }
+
+    /// Whether contents are asked for (`files.search-contents`).
+    pub fn with_contents(mut self, contents: bool) -> Self {
+        self.contents = contents;
+        self
     }
 
     /// The user's home folder, to shorten *Where*.
@@ -271,7 +297,10 @@ impl Session {
         self.answered = Some((self.query.clone(), self.filter));
         self.listed = self.typed().map(|typed| typed.dir);
         self.searching = false;
-        self.shown_again()
+        let contents = self.ask_contents(generation);
+        let mut effects = self.shown_again();
+        effects.extend(contents);
+        effects
     }
 
     /// The first phase of the answer to the search of `generation`, with a
@@ -304,20 +333,62 @@ impl Session {
     /// shown moves and the selection stays where it is. Dropped when a
     /// later search was asked.
     pub fn found_inside(&mut self, generation: u64, found: Vec<Found>) -> Vec<Effect> {
-        if generation != self.generation || !self.searching {
+        if generation != self.generation || !self.searching || self.asking_contents {
             return Vec::new();
         }
         self.searching = false;
+        self.append(found, None);
+        let contents = self.ask_contents(generation);
+        let mut effects = self.shown_again();
+        effects.extend(contents);
+        effects
+    }
+
+    /// Windows Search's answer for the contents of `generation` (slice
+    /// 6b): appended below the names as the second phase is, in the *Type*
+    /// filter, the search then whole. Dropped when a later search was asked.
+    pub fn found_contents(&mut self, generation: u64, found: Vec<Found>) -> Vec<Effect> {
+        if generation != self.generation || !self.asking_contents {
+            return Vec::new();
+        }
+        self.searching = false;
+        self.asking_contents = false;
+        self.append(found, self.filter);
+        self.shown_again()
+    }
+
+    /// `found` below the rows shown, without one already there, in
+    /// `filter`, and to the limit: no row shown moves.
+    fn append(&mut self, found: Vec<Found>, filter: Option<Category>) {
         let mut shown: HashSet<Found> = self.results.iter().cloned().collect();
         for found in found {
             if self.results.len() == super::LIMIT {
                 break;
             }
-            if shown.insert(found.clone()) {
+            let held = filter.is_none_or(|filter| filter.holds(&found.name(), found.is_dir));
+            if held && shown.insert(found.clone()) {
                 self.results.push(found);
             }
         }
-        self.shown_again()
+    }
+
+    /// The contents asked for, once the names of `generation` are in: from
+    /// three letters, never for a typed path, and only with room left.
+    fn ask_contents(&mut self, generation: u64) -> Option<Effect> {
+        let asked = self.contents
+            && self.query.chars().count() >= super::highlight::FROM_CHARACTERS
+            && self.typed().is_none()
+            && self.results.len() < super::LIMIT;
+        if !asked {
+            return None;
+        }
+        self.searching = true;
+        self.asking_contents = true;
+        Some(Effect::SearchContents {
+            generation,
+            words: self.query.clone(),
+            filter: self.filter,
+        })
     }
 
     /// What `Tab` makes of the query with the row `selected`: the typed
@@ -442,6 +513,7 @@ impl Session {
     fn ask(&mut self) -> Vec<Effect> {
         self.generation += 1;
         self.searching = false;
+        self.asking_contents = false;
         if self.query.is_empty() {
             self.results.clear();
             self.answered = None;
@@ -1784,5 +1856,125 @@ mod tests {
         let asked = generation(&query(&mut session, "doc"));
         session.found(asked, vec![folder(r"C:\Users\me\Documents")]);
         assert!(session.completions().is_empty());
+    }
+
+    fn contents_asked(effects: &[Effect]) -> Option<(u64, String, Option<Category>)> {
+        effects.iter().find_map(|effect| match effect {
+            Effect::SearchContents {
+                generation,
+                words,
+                filter,
+            } => Some((*generation, words.clone(), *filter)),
+            _ => None,
+        })
+    }
+
+    fn with_contents() -> Session {
+        Session::new(Vec::new(), READY).with_contents(true)
+    }
+
+    /// From three letters, once the names have answered, Windows Search is
+    /// asked for the contents; *Searching...* is said until it answers.
+    #[test]
+    fn contents_are_asked_after_the_names_from_three_letters() {
+        let mut session = with_contents();
+        let asked = generation(&query(&mut session, "rep"));
+        let effects = session.found(asked, vec![file(r"C:\report.txt")]);
+        assert_eq!(contents_asked(&effects), Some((asked, "rep".into(), None)));
+        assert_eq!(subtitle(&session), Some("Searching\u{2026}".into()));
+
+        // After a second phase, not before it.
+        let asked = generation(&query(&mut session, "repo"));
+        let effects = session.found_first(asked, vec![file(r"C:\report.txt")]);
+        assert_eq!(contents_asked(&effects), None);
+        let effects = session.found_inside(asked, Vec::new());
+        assert_eq!(contents_asked(&effects), Some((asked, "repo".into(), None)));
+        assert_eq!(subtitle(&session), Some("Searching\u{2026}".into()));
+
+        session.found_contents(asked, vec![file(r"C:\notes\minutes.txt")]);
+        assert_eq!(titles(&session), ["report.txt", "minutes.txt"]);
+        assert_eq!(subtitle(&session), None);
+    }
+
+    #[test]
+    fn contents_are_not_asked_for_two_letters_a_path_or_when_turned_off() {
+        let mut session = with_contents();
+        let asked = generation(&query(&mut session, "re"));
+        assert_eq!(contents_asked(&session.found(asked, Vec::new())), None);
+        assert_eq!(subtitle(&session), None);
+
+        let mut session = Session::new(Vec::new(), READY).with_contents(false);
+        let asked = generation(&query(&mut session, "report"));
+        assert_eq!(contents_asked(&session.found(asked, Vec::new())), None);
+
+        let mut session = at_home().with_contents(true);
+        let asked = browsed(&query(&mut session, r"C:\src\lumen"));
+        let effects = session.found(asked, vec![folder(r"C:\src\lumen")]);
+        assert_eq!(contents_asked(&effects), None);
+
+        // A list already at the limit has no room for them.
+        let mut session = with_contents();
+        let asked = generation(&query(&mut session, "report"));
+        let full = (0..super::super::LIMIT)
+            .map(|n| file(&format!(r"C:\{n}.txt")))
+            .collect();
+        assert_eq!(contents_asked(&session.found(asked, full)), None);
+    }
+
+    /// Appended below the names, without a row already shown, in the type
+    /// asked for and to the limit; an answer to an older query is dropped.
+    #[test]
+    fn contents_are_appended_once_in_the_filter_and_stale_ones_dropped() {
+        let mut session = with_contents();
+        filter(&mut session, "documents");
+        let first = generation(&query(&mut session, "budget"));
+        session.found(first, vec![file(r"C:\budget.txt")]);
+        let second = generation(&query(&mut session, "budgets"));
+        assert!(
+            session
+                .found_contents(first, vec![file(r"C:\stale.txt")])
+                .is_empty()
+        );
+        session.found(second, vec![file(r"C:\budgets.txt")]);
+        let effects = session.found_contents(
+            second,
+            vec![
+                file(r"C:\budgets.txt"),
+                file(r"C:\photo.png"),
+                file(r"C:\plan.txt"),
+            ],
+        );
+        assert!(matches!(effects[0], Effect::Render(_)));
+        assert_eq!(titles(&session), ["budgets.txt", "plan.txt"]);
+        assert!(
+            session
+                .found_contents(second, vec![file(r"C:\again.txt")])
+                .is_empty(),
+            "answered once"
+        );
+
+        let mut session = with_contents();
+        let asked = generation(&query(&mut session, "report"));
+        let limit = super::super::LIMIT;
+        let names = (0..limit - 1)
+            .map(|n| file(&format!(r"C:\a{n}.txt")))
+            .collect();
+        session.found(asked, names);
+        session.found_contents(asked, vec![file(r"C:\b0.txt"), file(r"C:\b1.txt")]);
+        assert_eq!(titles(&session).len(), limit);
+    }
+
+    /// A query waiting for its contents is not wholly answered: it says no
+    /// "No files match" yet, and a keystroke that changes nothing asks again.
+    #[test]
+    fn a_search_waiting_for_its_contents_is_pending() {
+        let mut session = with_contents();
+        let asked = generation(&query(&mut session, "report"));
+        session.found(asked, Vec::new());
+        assert_eq!(empty_title(&session), "");
+        assert!(matches!(
+            query(&mut session, "report ")[..],
+            [Effect::Search { .. }]
+        ));
     }
 }
