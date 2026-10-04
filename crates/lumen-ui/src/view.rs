@@ -397,21 +397,21 @@ fn render_pane(
         .into_any_element()
 }
 
-/// The family a preview card is drawn in, and whether its lines wrap (F16):
-/// the palette's monospace family, clipped, or -- when the user prefers
-/// the interface font for previews -- the family inherited, wrapped.
-fn card_font(theme: &Theme, preview_font: PreviewFont) -> (Option<&str>, bool) {
+/// The family a preview card is drawn in (F16): the palette's monospace
+/// family or -- when the user prefers the interface font for previews --
+/// the family inherited.
+fn card_font(theme: &Theme, preview_font: PreviewFont) -> Option<&str> {
     match preview_font {
-        PreviewFont::Monospace => (Some(theme.font_mono.as_str()), false),
-        PreviewFont::Interface => (None, true),
+        PreviewFont::Monospace => Some(theme.font_mono.as_str()),
+        PreviewFont::Interface => None,
     }
 }
 
 /// Text as written, in a card on a raised surface (F16): a file's first
 /// lines. As tall as its lines up to a bound, past which they scroll inside
-/// the card, so the metadata under it stays in view. Monospace lines run
-/// off the right edge rather than wrap: a wrapped line of code is two lines
-/// that are not in the file.
+/// the card, so the metadata under it stays in view. Lines wrap at the
+/// card's edge in either family: a paragraph of prose is one line, and a
+/// line cut at the edge hides the rest of it.
 ///
 /// `words`, the query's, are drawn as [`card_match`] wherever they are, and
 /// the card starts a few lines above the first when it is further down
@@ -425,7 +425,7 @@ fn render_card(
     words: &[String],
 ) -> AnyElement {
     let colors = &theme.colors;
-    let (family, wraps) = card_font(theme, preview_font);
+    let family = card_font(theme, preview_font);
     let shown = lumen_core::file_search::highlight::shown(code, words);
     let matched = card_match(colors);
     let key = card_scroll_key(selected, &code[shown.start..]);
@@ -449,7 +449,6 @@ fn render_card(
         .when_some(family, |card, family| {
             card.font_family(SharedString::from(family.to_string()))
         })
-        .when(!wraps, |card| card.whitespace_nowrap())
         .child(text)
         .into_any_element()
 }
@@ -1041,21 +1040,18 @@ mod tests {
         }
     }
 
-    /// A preview card is in the palette's monospace family, clipped, unless
-    /// the user prefers the interface family, which inherits and wraps.
+    /// A preview card is in the palette's monospace family unless the user
+    /// prefers the interface family, which inherits.
     #[test]
     fn a_card_is_monospace_unless_the_interface_font_is_preferred() {
         let mut theme = Theme::default();
         assert_eq!(
             card_font(&theme, PreviewFont::Monospace),
-            (Some("Cascadia Mono"), false)
+            Some("Cascadia Mono")
         );
         theme.font_mono = "Consolas".into();
-        assert_eq!(
-            card_font(&theme, PreviewFont::Monospace),
-            (Some("Consolas"), false)
-        );
-        assert_eq!(card_font(&theme, PreviewFont::Interface), (None, true));
+        assert_eq!(card_font(&theme, PreviewFont::Monospace), Some("Consolas"));
+        assert_eq!(card_font(&theme, PreviewFont::Interface), None);
     }
 
     /// A match in a preview card is the match colour on a tint of itself,

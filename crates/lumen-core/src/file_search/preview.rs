@@ -23,10 +23,10 @@ pub const PREVIEW_BYTES: usize = 64 * 1024;
 /// frame the pane is drawn.
 pub const PREVIEW_LINES: usize = 200;
 
-/// The most characters of a line the card keeps. Its lines are clipped at
-/// the pane's edge, not wrapped, so the rest is never seen; a minified file
+/// The most characters of a line the card keeps. Its lines wrap at the
+/// pane's edge, so this keeps a paragraph of prose whole; a minified file
 /// is one line of 64 KB, which would otherwise be laid out whole.
-pub const PREVIEW_COLUMNS: usize = 400;
+pub const PREVIEW_COLUMNS: usize = 4000;
 
 /// The most of a file searched for the query's words when its preview does
 /// not hold them (slice 6b). A match further in is not shown.
@@ -85,7 +85,8 @@ pub fn preview_of(name: &str, is_dir: bool) -> Preview {
 ///
 /// The bytes may have been cut mid-character by [`PREVIEW_BYTES`]; a
 /// character left incomplete at the end is dropped, not taken as a sign of
-/// a binary file. At most [`PREVIEW_LINES`] lines are kept.
+/// a binary file. Every line ending becomes a line feed, then at most
+/// [`PREVIEW_LINES`] lines are kept.
 pub fn text_from(bytes: &[u8]) -> Option<String> {
     let bytes = &bytes[..bytes.len().min(PREVIEW_BYTES)];
     if bytes.contains(&0) {
@@ -99,7 +100,7 @@ pub fn text_from(bytes: &[u8]) -> Option<String> {
         }
         Err(_) => return None,
     };
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let text = line_feeds(text.strip_prefix('\u{feff}').unwrap_or(text));
     let mut end = text.len();
     if let Some((at, _)) = text.match_indices('\n').nth(PREVIEW_LINES - 1) {
         end = at;
@@ -107,13 +108,20 @@ pub fn text_from(bytes: &[u8]) -> Option<String> {
     Some(text[..end].trim_end().to_string())
 }
 
-/// Preview text as the card shows it: each tab as spaces, a Windows line
-/// ending as a line ending, and each line cut at [`PREVIEW_COLUMNS`]
+/// `text` with each Windows (`\r\n`) and old Mac (`\r`) line ending as a
+/// line feed: the text system would draw a carriage return.
+fn line_feeds(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// Preview text as the card shows it: each tab as spaces, every line
+/// ending as a line feed, and each line cut at [`PREVIEW_COLUMNS`]
 /// characters.
 pub fn card_text(text: &str) -> String {
-    text.split('\n')
+    line_feeds(text)
+        .split('\n')
         .map(|line| {
-            let line = line.strip_suffix('\r').unwrap_or(line).replace('\t', TAB);
+            let line = line.replace('\t', TAB);
             match line.char_indices().nth(PREVIEW_COLUMNS) {
                 Some((end, _)) => line[..end].to_string(),
                 None => line,
@@ -448,6 +456,32 @@ mod tests {
         // Cut on a character, never inside one.
         let wide = "é".repeat(PREVIEW_COLUMNS + 1);
         assert_eq!(card_text(&wide).chars().count(), PREVIEW_COLUMNS);
+    }
+
+    /// A paragraph of prose is one line; the card wraps it, so it keeps
+    /// all of it.
+    #[test]
+    fn a_paragraph_is_kept_whole_for_the_card() {
+        let paragraph = "word ".repeat(233);
+        let paragraph = paragraph.trim_end();
+        assert_eq!(card_text(paragraph), paragraph);
+    }
+
+    /// Every line ending is a line feed before anything counts lines or
+    /// places a highlight: a carriage return is never drawn.
+    #[test]
+    fn every_line_ending_is_a_line_feed() {
+        assert_eq!(text_from(b"a\r\nb\rc\r\n").as_deref(), Some("a\nb\nc"));
+        assert_eq!(card_text("a\rb\r\nc"), "a\nb\nc");
+        // Lines are counted after: a file of lone returns is still cut.
+        let old_mac = "line\r".repeat(PREVIEW_LINES + 5);
+        let text = text_from(old_mac.as_bytes()).unwrap();
+        assert_eq!(text.lines().count(), PREVIEW_LINES);
+        assert!(!text.contains('\r'));
+        // The highlight is placed on the text the card draws.
+        let card = card_text("one\r\nLorem");
+        let shown = highlight::shown(&card, &words("lorem"));
+        assert_eq!(&card[shown.ranges[0].clone()], "Lorem");
     }
 
     fn words(query: &str) -> Vec<String> {

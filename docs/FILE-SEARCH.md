@@ -1165,12 +1165,15 @@ waits for it, and an answer to an older query is dropped (I-3).
 - **The card is a field of the view vocabulary,** `ItemDetail::code`: text
   as written, in a card, after the Markdown. One field rather than a flag
   on `text`, which *Clipboard History* and *Snippets* draw plain. Which
-  family is the host's: the palette's `font_mono` with lines clipped, or the
-  interface family with lines wrapped under `preview-font: "interface"`.
+  family is the host's: the palette's `font_mono`, or the interface family
+  under `preview-font: "interface"`; in either, lines wrap at the card's
+  edge, since a paragraph of prose is one line.
   The card is as tall as its lines up to the picture's height
   (`DETAIL_CARD_MAX_HEIGHT`), so the metadata is where it is for an image.
-  Each line is cut at 400 characters and tabs are four spaces: a minified
-  file is one line of 64 KB, and the text system has no tab stops.
+  Every line ending is a line feed (`
+` and a lone `` alike), each
+  line is cut at 4000 characters and tabs are four spaces: a minified file
+  is one line of 64 KB, and the text system has no tab stops.
 - **The parent folder before a shared name** is `Item::prefix`, drawn
   dimmed in the same run as the title, so the two end in one ellipsis. The
   session sets it when two shown rows have a name in common, in any case;
