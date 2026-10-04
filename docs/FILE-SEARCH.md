@@ -1095,8 +1095,9 @@ list on the left and a pane on the right, laid out as *Clipboard History*
     font is the look's, so it is the palette's; whether to use it is a
     preference, so it is the configuration's;
   - anything else, or a file that is not text: no preview, the metadata only.
-  At most 64 KB is read and the card is clipped to its height; the pane
-  scrolls as every pane does.
+  At most 64 KB is read; past its height the card scrolls on its own, and
+  the metadata under it scrolls apart from it. The card's scroll is kept
+  for one preview and starts at the top for a new selection or text.
 - **Metadata:** Name, Where (`~`-shortened), Type, Size, Created, Modified;
   a folder shows its item count instead of a size.
 - **Contents:** content matches from Windows Search, **after** the name
@@ -1224,10 +1225,9 @@ and memory budgets.
   service is no content matches, with one warning a run.
 - **No mark on the row.** Instead, when the selected row's preview is text,
   the query's words (from three characters, single letters left out) are
-  drawn in the match colour wherever they appear, in any case, and the card
-  starts two lines above the first match when it is past the first four
-  lines. The card is clipped rather than scrolled, so that is how the match
-  comes into view. It applies to any text preview for the current query,
+  drawn in the match colour, bold, on a tint of it, wherever they appear,
+  in any case, and the card starts two lines above the first match when it
+  is past the first four lines, so the match is in view before scrolling. It applies to any text preview for the current query,
   whichever search found the row. The preview holds 200 lines: the first,
   or, when none of the words is in them, the lines from two above the first
   line further in that has one, searched for in the first 4 MB on the same

@@ -31,6 +31,8 @@
 //! a different application. That is AD-07 in practice: the extension chose what
 //! to show and had no say at all in how it looks.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, FontStyle, FontWeight, HighlightStyle, ListAlignment, ListState, SharedString,
@@ -297,6 +299,7 @@ pub fn render_list(
         )
         .child(render_pane(
             detail.as_ref(),
+            selected,
             theme,
             height,
             images,
@@ -311,8 +314,13 @@ pub fn render_list(
 ///
 /// It scrolls with the wheel when the body is longer than the window; the
 /// keys stay the list's, so arrowing moves between items as it always does.
+/// With a preview card the card and what follows it scroll apart, each
+/// under the wheel over it: GPUI hands a wheel event to every scrolling
+/// element under the pointer, so the pane itself does not scroll then.
+#[allow(clippy::too_many_arguments)]
 fn render_pane(
     detail: Option<&ItemDetail>,
+    selected: usize,
     theme: &Theme,
     height: gpui::Pixels,
     images: &ImageCache,
@@ -342,25 +350,46 @@ fn render_pane(
                 )
         });
 
-    div()
-        .id("detail-pane")
+    let pane = div()
         .h(height)
         .flex_1()
         .min_w(px(0.0))
         .border_l_1()
         .border_color(color(colors.border_subtle))
         .px(Geometry::of(theme).gutter())
-        .py(px(layout::view::DETAIL_PADDING_Y))
+        .py(px(layout::view::DETAIL_PADDING_Y));
+
+    if let Some((detail, code)) = detail.and_then(|detail| Some((detail, detail.code.as_deref()?)))
+    {
+        return pane
+            .flex()
+            .flex_col()
+            .children(picture)
+            .child(render_card(code, selected, theme, preview_font, words))
+            .child(
+                div()
+                    .id(("detail-rest", selected))
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .mt(px(layout::view::DETAIL_BLOCK_GAP))
+                    .overflow_y_scroll()
+                    .child(render_body(
+                        &detail.markdown,
+                        detail.text.as_deref(),
+                        &detail.metadata,
+                        colors,
+                    )),
+            )
+            .into_any_element();
+    }
+
+    pane.id("detail-pane")
         .overflow_y_scroll()
         .children(picture)
         .when_some(detail, |pane, detail| {
             pane.child(render_body(
                 &detail.markdown,
                 detail.text.as_deref(),
-                detail
-                    .code
-                    .as_deref()
-                    .map(|code| render_card(code, theme, preview_font, words)),
                 &detail.metadata,
                 colors,
             ))
@@ -379,17 +408,18 @@ fn card_font(theme: &Theme, preview_font: PreviewFont) -> (Option<&str>, bool) {
 }
 
 /// Text as written, in a card on a raised surface (F16): a file's first
-/// lines. As tall as its lines up to a bound, past which they are clipped,
-/// so the metadata under it stays a short scroll away. Monospace lines run
+/// lines. As tall as its lines up to a bound, past which they scroll inside
+/// the card, so the metadata under it stays in view. Monospace lines run
 /// off the right edge rather than wrap: a wrapped line of code is two lines
 /// that are not in the file.
 ///
-/// `words`, the query's, are drawn in the match colour wherever they are,
-/// and the card starts a few lines above the first when it is further down
-/// (slice 6b): the card is clipped, not scrolled, so that is how the match
-/// is brought into view.
+/// `words`, the query's, are drawn as [`card_match`] wherever they are, and
+/// the card starts a few lines above the first when it is further down
+/// (slice 6b), so the match is in view before any scrolling. Its scroll
+/// position is kept under [`card_scroll_key`], for this preview only.
 fn render_card(
     code: &str,
+    selected: usize,
     theme: &Theme,
     preview_font: PreviewFont,
     words: &[String],
@@ -397,17 +427,17 @@ fn render_card(
     let colors = &theme.colors;
     let (family, wraps) = card_font(theme, preview_font);
     let shown = lumen_core::file_search::highlight::shown(code, words);
-    let matched = HighlightStyle {
-        color: Some(color(colors.match_highlight)),
-        ..Default::default()
-    };
+    let matched = card_match(colors);
+    let key = card_scroll_key(selected, &code[shown.start..]);
     let text = StyledText::new(code[shown.start..].to_string())
         .with_highlights(shown.ranges.into_iter().map(|range| (range, matched)));
     div()
+        .id(("detail-card", key))
         .w_full()
         .max_h(px(layout::view::DETAIL_CARD_MAX_HEIGHT))
         .flex_none()
         .overflow_hidden()
+        .overflow_y_scroll()
         .px(px(layout::view::DETAIL_CARD_PADDING_X))
         .py(px(layout::view::DETAIL_CARD_PADDING_Y))
         .rounded(px(layout::view::DETAIL_CARD_RADIUS))
@@ -424,15 +454,37 @@ fn render_card(
         .into_any_element()
 }
 
+/// How a match in a preview card is drawn: the match colour, in bold, on a
+/// tint of itself. Only the card's; a list row's match keeps the colour.
+fn card_match(colors: &Colors) -> HighlightStyle {
+    HighlightStyle {
+        color: Some(color(colors.match_highlight)),
+        background_color: Some(color(colors.match_highlight.with_alpha(MATCH_ALPHA))),
+        font_weight: Some(FontWeight::BOLD),
+        ..Default::default()
+    }
+}
+
+/// The key a preview card's scroll position is kept under.
+///
+/// GPUI keeps a scrolled element's offset under its id, so an id that names
+/// the selection and the text shown keeps the offset across renders of one
+/// preview and starts a new one at the top.
+fn card_scroll_key(selected: usize, shown: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    selected.hash(&mut hasher);
+    shown.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// A detail's body and its metadata, stacked.
 ///
 /// `text` is drawn as written after the Markdown (F11): the text system lays
 /// out each line break as a line, and nothing in it is read as a marker.
-/// `card`, a preview drawn by [`render_card`], follows it.
+/// A preview card, when there is one, is drawn above it by [`render_pane`].
 fn render_body(
     source: &str,
     text: Option<&str>,
-    card: Option<AnyElement>,
     metadata: &[MetadataRow],
     colors: &Colors,
 ) -> AnyElement {
@@ -453,7 +505,6 @@ fn render_body(
                     .child(text.to_string()),
             )
         })
-        .children(card)
         .when(!metadata.is_empty(), |body| {
             body.child(
                 div()
@@ -867,6 +918,11 @@ fn tone_background(tone: Tone, colors: &Colors) -> lumen_core::theme::Color {
 const TAG_ALPHA: u8 = 0x30;
 const TAG_ALPHA_STRONG: u8 = 0x48;
 
+/// How much of the match colour the tint behind a preview card's match
+/// keeps: enough to find the match at a glance, little enough that the
+/// match colour on it still reads.
+const MATCH_ALPHA: u8 = 0x30;
+
 fn render_empty(empty: Option<&EmptyState>, theme: &Theme, height: gpui::Pixels) -> AnyElement {
     let colors = &theme.colors;
     let Some(empty) = empty else {
@@ -948,7 +1004,6 @@ pub fn render_detail(detail: &Detail, theme: &Theme, height: gpui::Pixels) -> An
         .child(render_body(
             &detail.markdown,
             None,
-            None,
             &detail.metadata,
             &theme.colors,
         ))
@@ -1001,6 +1056,31 @@ mod tests {
             (Some("Consolas"), false)
         );
         assert_eq!(card_font(&theme, PreviewFont::Interface), (None, true));
+    }
+
+    /// A match in a preview card is the match colour on a tint of itself,
+    /// in bold: a change of colour alone is easy to read past.
+    #[test]
+    fn a_card_match_is_tinted_coloured_and_bold() {
+        let colors = Theme::default().colors;
+        let style = card_match(&colors);
+        assert_eq!(style.color, Some(color(colors.match_highlight)));
+        assert_eq!(
+            style.background_color,
+            Some(color(colors.match_highlight.with_alpha(MATCH_ALPHA)))
+        );
+        assert_eq!(style.font_weight, Some(FontWeight::BOLD));
+    }
+
+    /// The card's scroll position belongs to one row's preview: it starts at
+    /// the top again when the selection or the text it shows changes, and
+    /// is kept across renders of the same one.
+    #[test]
+    fn a_card_scrolls_back_to_the_top_only_for_a_new_preview() {
+        let key = card_scroll_key(3, "fn main() {}");
+        assert_eq!(key, card_scroll_key(3, "fn main() {}"));
+        assert_ne!(key, card_scroll_key(4, "fn main() {}"));
+        assert_ne!(key, card_scroll_key(3, "fn other() {}"));
     }
 
     /// A section without a title contributes no header. The alternative is a
