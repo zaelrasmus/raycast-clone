@@ -750,6 +750,31 @@ everything indexed is held in memory, true before c3a. They now say a
 whole drive makes the index on disk larger and its first build longer, and
 fills it with files you won't look for.
 
+### Step c4: the daemon at idle, without the ceiling
+
+The release build at `7897b19`, each configuration in its own
+`LUMEN_HOME`, run once beforehand so the rebuild (the digest changed when
+the ceiling left) finished before `scripts/measure-idle.ps1` sampled 60 s:
+
+| Files | Entries | Hot layer | Rebuild: walk, build | Database | Working set | Private | Idle CPU | Cold start |
+| ----- | ------: | --------- | -------------------- | -------: | ----------: | ------: | -------: | ---------: |
+| Home | 54 627 | 1.94 MB, every entry | 1.5 s, 2.3 s | 16.6 MB | 72.8 MB | 84.1 MB | 0.000 % | 384 ms |
+| Home and `D:\` | 404 992 | 8.44 MB, 244 849 entries | 17.9 s, 26.1 s | 110.9 MB | 80.8 MB | 97.0 MB | 0.004 % | 374 ms |
+
+- **Both budgets hold.** Idle memory is under 100 MB and idle CPU under
+  0.02 %. Slice 1, with every name in memory, read 73.9 and 76.7 MB working
+  set; private memory is the same or lower. The 4 MB more working set with
+  `D:\` is within the spread between runs.
+- **Nothing is cut.** The 404 992 entries are all indexed; before c3a, home and
+  `D:\` with hidden files on reached the 500 000 ceiling and were cut.
+- **The log during a rebuild** was read every 2 s: 20.8, 62.2, then
+  94.6 MB at 24 s, folded back to 0 by the rebuild's checkpoint. The true
+  peak may be a little higher. A rebuild of 400 000 entries therefore
+  needs about as much free disk again as the database, for seconds. After
+  the run the log held 16.5 KB.
+- **Cold start is close to its budget**: 374--384 ms against 400 ms. It
+  passes, with little room left.
+
 ---
 
 ## The decisions
