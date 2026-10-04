@@ -806,9 +806,9 @@ copy the path. The full design is in
 - **`index-detail`** is `"complete"`, `"balanced"` (the default) or
   `"compact"`: how much the index keeps on disk beside the names. `complete`
   also finds matches inside words without a scan (about 150 MB for 500 000
-  entries), `balanced` about 110 MB, `compact` about 90 MB and slower on very
-  common words. Changing it rebuilds only the word index, never a walk. Saved
-  from settings today; the daemon applies it once root searches the disk.
+  entries), `balanced` about 110 MB, `compact` about 90 MB. Changing it
+  rebuilds only the word index, in the background and never a walk; the
+  daemon applies it at start and whenever the setting changes.
 - An F3 config still loads: `roots` becomes `scopes`, and `limits` is ignored.
 - An internal drive with no scope on it is offered in *Search Files*:
   *Choose folders...* opens the picker on it, *Not now* writes it to

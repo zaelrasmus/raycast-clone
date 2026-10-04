@@ -50,7 +50,9 @@
 //! whether `grams`, a trigram index of the folded names, exists -- so
 //! changing it rebuilds those from `files` and never walks the disk. The
 //! level is recorded in `meta`; a store opened at another one rebuilds its
-//! word tables and nothing else ([`Store::set_detail`]).
+//! word tables and nothing else ([`Store::set_detail`]). So is the layout of
+//! `words` itself ([`WORDS_LAYOUT`]): a store built with another rebuilds
+//! `words` the same way at open.
 //!
 //! # A cache, and treated like one
 //!
@@ -141,7 +143,17 @@ const SCHEMA: &str = r#"
         value TEXT NOT NULL
     );"#;
 
+/// The layout of `words` beside its level, recorded in `meta` as
+/// `words_layout`. A store with another -- or none: step c2b's, whose
+/// prefixes stopped at 3 -- rebuilds `words` from `files` at open, never a
+/// walk. Counted up whenever [`words_table`] changes.
+const WORDS_LAYOUT: &str = "2";
+
 /// The word index at `detail`.
+///
+/// Prefixes up to 4 characters: a longer one makes SQLite gather every
+/// match before it can order them, which at `detail=none` is the full list
+/// of a common prefix (step c2b's `html` and `inv 2024`, ~30 ms at 2M).
 ///
 /// The tokens come split and folded, so the tokenizer only cuts at the
 /// spaces between them: no diacritic removed, as the names remove none, and
@@ -152,7 +164,7 @@ fn words_table(detail: IndexDetail) -> String {
              tokens,
              content = '',
              contentless_delete = 1,
-             prefix = '1 2 3',
+             prefix = '1 2 3 4',
              detail = {},
              tokenize = \"unicode61 remove_diacritics 0 categories 'L* N* Co M*'\"
          );",
@@ -184,7 +196,8 @@ pub enum IndexDetail {
     #[default]
     Balanced,
     /// The word index without positions (`detail=none`): the same matches
-    /// and the same ranking, a little slower on very common words.
+    /// and the same ranking in a smaller file. With prefixes up to four
+    /// letters indexed, as fast as `Balanced` at 2M entries.
     Compact,
 }
 
@@ -389,6 +402,7 @@ impl Store {
                 .execute_batch(&words_table(IndexDetail::Balanced))
                 .context("creating the file index's words")?;
             record_detail(&connection, IndexDetail::Balanced.as_str())?;
+            record_words_layout(&connection)?;
             connection
                 .pragma_update(None, "user_version", SCHEMA_VERSION)
                 .context("recording the file index's schema version")?;
@@ -405,13 +419,24 @@ impl Store {
             None => Some(IndexDetail::Balanced),
             Some(text) => IndexDetail::parse(&text),
         };
+        let layout: Option<String> = connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'words_layout'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("reading the file index's word layout")?;
         let mut store = Store {
             connection,
             detail: recorded.unwrap_or_default(),
             fetched: std::cell::Cell::new(0),
         };
         match (recorded, detail) {
-            (None, wanted) => store.build_word_tables(None, wanted.unwrap_or_default())?,
+            (None, wanted) => store.build_word_tables(None, wanted.unwrap_or_default(), true)?,
+            (Some(recorded), wanted) if layout.as_deref() != Some(WORDS_LAYOUT) => {
+                store.build_word_tables(Some(recorded), wanted.unwrap_or(recorded), true)?
+            }
             (Some(recorded), Some(wanted)) if recorded != wanted => store.set_detail(wanted)?,
             _ => {}
         }
@@ -433,19 +458,25 @@ impl Store {
         if detail == self.detail {
             return Ok(());
         }
-        self.build_word_tables(Some(self.detail), detail)
+        self.build_word_tables(Some(self.detail), detail, false)
     }
 
     /// Make the word tables `to`'s, from `from`'s -- or from nothing known,
-    /// when `from` is `None`, rebuilding both.
+    /// when `from` is `None`, rebuilding both. `words` is rebuilt as well
+    /// when `relayout`: built with another [`WORDS_LAYOUT`].
     ///
     /// As a rebuild records its digest, the level is marked as changing
     /// first and written last: there is no journal (see "A cache, and
     /// treated like one" above), so a change cut short leaves a mark that is
     /// no level, and the next open builds both tables again.
-    fn build_word_tables(&mut self, from: Option<IndexDetail>, to: IndexDetail) -> Result<()> {
+    fn build_word_tables(
+        &mut self,
+        from: Option<IndexDetail>,
+        to: IndexDetail,
+        relayout: bool,
+    ) -> Result<()> {
         let started = std::time::Instant::now();
-        let words = from.is_none_or(|from| from.words_detail() != to.words_detail());
+        let words = relayout || from.is_none_or(|from| from.words_detail() != to.words_detail());
         let grams = to.grams() && from.is_none_or(|from| !from.grams());
         record_detail(&self.connection, "changing")?;
         let transaction = self.connection.transaction()?;
@@ -481,6 +512,9 @@ impl Store {
                     write_grams(&transaction, *key, name, &mut scratch)?;
                 }
             }
+        }
+        if words {
+            record_words_layout(&transaction)?;
         }
         record_detail(&transaction, to.as_str())?;
         transaction
@@ -522,7 +556,8 @@ impl Store {
         // the old ones checks its name before trusting it. The level is not
         // the walk's, and stays.
         transaction.execute_batch(
-            "DELETE FROM files; DELETE FROM folders; DELETE FROM meta WHERE key <> 'detail';
+            "DELETE FROM files; DELETE FROM folders;
+             DELETE FROM meta WHERE key NOT IN ('detail', 'words_layout');
              INSERT INTO words (words) VALUES ('delete-all');
              DELETE FROM sqlite_sequence WHERE name IN ('files', 'folders');",
         )?;
@@ -1251,6 +1286,17 @@ fn write_grams(connection: &Connection, key: i64, name: &str, folded: &mut Strin
     Ok(())
 }
 
+/// Record that `words` is built with [`WORDS_LAYOUT`].
+fn record_words_layout(connection: &Connection) -> Result<()> {
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('words_layout', ?1)",
+            params![WORDS_LAYOUT],
+        )
+        .context("recording the file index's word layout")?;
+    Ok(())
+}
+
 /// Record the word tables' level, or `changing` while they are rebuilt.
 fn record_detail(connection: &Connection, detail: &str) -> Result<()> {
     connection
@@ -1334,9 +1380,12 @@ fn folder_path(
 }
 
 /// Write `meta` in place of what was recorded, the digest last. The level
-/// is not the walk's, and stays.
+/// and the word layout are not the walk's, and stay.
 fn write_meta(transaction: &Transaction<'_>, meta: &Meta) -> Result<()> {
-    transaction.execute("DELETE FROM meta WHERE key <> 'detail'", [])?;
+    transaction.execute(
+        "DELETE FROM meta WHERE key NOT IN ('detail', 'words_layout')",
+        [],
+    )?;
     let mut insert = transaction.prepare("INSERT INTO meta (key, value) VALUES (?1, ?2)")?;
     let counts = meta
         .per_scope
@@ -2740,6 +2789,68 @@ mod tests {
             .ranked("invoice", Kinds::FoldersAndFiles, 64, &any)
             .unwrap();
         assert_eq!(found, expected);
+    }
+
+    /// A store whose `words` has step c2b's layout -- prefixes up to 3, no
+    /// `words_layout` -- is known at open and its `words` rebuilt from
+    /// `files`: the entries, their rows and the walk's meta stay as they were.
+    #[test]
+    fn a_store_with_the_old_word_layout_rebuilds_its_words_at_open() {
+        let tree = Tree::new("store-layout");
+        let path = tree.path("files.db");
+        let walked = walked_names(&tree.0, &corpus(300));
+        let store = store_of(&tree, "files.db", IndexDetail::Compact, &walked);
+        let meta = store.meta().unwrap();
+        let rows = every_row(&store);
+        let expected = store
+            .ranked("invoice", Kinds::FoldersAndFiles, 64, &any)
+            .unwrap();
+        assert!(expected.len() > 8);
+        // Step c2b's table, and empty: only a rebuild can find the words.
+        store
+            .connection
+            .execute_batch(
+                "DROP TABLE words;
+                 CREATE VIRTUAL TABLE words USING fts5(
+                     tokens, content = '', contentless_delete = 1,
+                     prefix = '1 2 3', detail = none);
+                 DELETE FROM meta WHERE key = 'words_layout';",
+            )
+            .unwrap();
+        drop(store);
+
+        let words_sql = |store: &Store| {
+            store
+                .connection
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name = 'words'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.detail(), IndexDetail::Compact);
+        assert!(words_sql(&store).contains("prefix = '1 2 3 4'"));
+        assert!(words_sql(&store).contains("detail = none"));
+        assert_eq!(store.meta().unwrap(), meta);
+        assert_eq!(every_row(&store), rows);
+        let found = store
+            .ranked("invoice", Kinds::FoldersAndFiles, 64, &any)
+            .unwrap();
+        assert_eq!(found, expected);
+        drop(store);
+
+        // Recorded: the next open rebuilds nothing, and a walk keeps it.
+        let mut store = Store::open(&path).unwrap();
+        store.replace(&walked, "rules").unwrap();
+        assert_eq!(
+            scalar(
+                &store,
+                "SELECT COUNT(*) FROM meta WHERE key = 'words_layout' AND value = '2'"
+            ),
+            1
+        );
     }
 
     /// At `complete`, what arrives is found inside its words by the trigram

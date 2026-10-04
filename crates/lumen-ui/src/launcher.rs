@@ -32,9 +32,10 @@ use gpui::{
     MouseButton, ScrollHandle, ScrollStrategy, Styled, StyledText, Subscription, Task,
     UniformListScrollHandle, Window, actions, div, ease_out_quint, img, svg, uniform_list,
 };
+use lumen_core::config::FileSearchConfig;
 use lumen_core::favorites::Change as FavoriteChange;
 use lumen_core::file_index::{
-    FileIndex, FileWatch, Store, Updated, WalkRules, digest, watch_targets,
+    FileIndex, FileWatch, IndexDetail, Updated, WalkRules, digest, watch_targets,
 };
 use lumen_core::item::ActionGroup;
 use lumen_core::providers::QuicklinkProvider;
@@ -249,6 +250,17 @@ fn refiltered_selection(open: Option<usize>) -> Option<usize> {
     open.map(|_| 0)
 }
 
+/// The level `new` asks for when it differs from `old` in that alone: a
+/// change the store makes from its entries, without the walk any other
+/// change of `files` may need.
+fn level_change(old: &FileSearchConfig, new: &FileSearchConfig) -> Option<IndexDetail> {
+    let same_otherwise = FileSearchConfig {
+        index_detail: old.index_detail,
+        ..new.clone()
+    } == *old;
+    (new.index_detail != old.index_detail && same_otherwise).then_some(new.index_detail)
+}
+
 /// What Ctrl+Enter runs: the second action, when there is one.
 fn second_action(actions: Vec<Action>) -> Option<Action> {
     actions.into_iter().nth(1)
@@ -256,14 +268,16 @@ fn second_action(actions: Vec<Action>) -> Option<Action> {
 
 /// The file index the store at `path` holds, when it was walked with
 /// `rules`: what a start installs at once, in milliseconds, instead of
-/// waiting for a walk.
+/// waiting for a walk. Its word tables at `detail`, switched first when the
+/// store was built at another level (`FileIndex::open`).
 fn load_files(
     path: &std::path::Path,
     rules: &WalkRules,
+    detail: IndexDetail,
     frecency: &Frecency,
 ) -> Option<Arc<FileIndex>> {
     let started = std::time::Instant::now();
-    let index = match Store::open(path).and_then(FileIndex::load) {
+    let index = match FileIndex::open(path, detail) {
         Ok(index) => index,
         Err(error) => {
             log::warn!("could not open the file index: {error:#}");
@@ -1180,7 +1194,7 @@ impl Launcher {
                         let current = installed.as_deref() == Some(digest(&rules).as_str());
                         let loaded = installed
                             .is_none()
-                            .then(|| load_files(&path, &rules, &frecency))
+                            .then(|| load_files(&path, &rules, config.index_detail, &frecency))
                             .flatten();
                         (rules, loaded, current)
                     })
@@ -1330,6 +1344,92 @@ impl Launcher {
                 if let Some(index) = index {
                     this.install_files(index, cx);
                 }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Build the installed index's word tables at `detail`, the only thing
+    /// `files.index-detail` changes: from the store's entries, off the UI
+    /// thread, never a walk -- the digest is the same -- and the index is
+    /// installed again once they are built.
+    ///
+    /// A rebuild finished in the meantime installed an index whose store
+    /// was opened at the old level, so that one is loaded again instead.
+    fn set_files_detail(&mut self, detail: IndexDetail, cx: &mut Context<Self>) {
+        let Some(index) = self.files.clone() else {
+            return;
+        };
+        let config = self.config.files.clone();
+        let path = self.paths.file_index_file();
+        let frecency = self.root.frecency().clone();
+        let switching = cx.spawn(async move |this, cx| {
+            let switched = {
+                let (index, path) = (index.clone(), path.clone());
+                cx.background_executor()
+                    .spawn(async move {
+                        let started = std::time::Instant::now();
+                        match index.set_detail(&path, detail) {
+                            Ok(()) => {
+                                log::info!(
+                                    "switched the file index to {} in {} ms",
+                                    detail.as_str(),
+                                    started.elapsed().as_millis()
+                                );
+                                true
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "could not switch the file index to {}: {error:#}",
+                                    detail.as_str()
+                                );
+                                false
+                            }
+                        }
+                    })
+                    .await
+            };
+            let Ok((same, build)) = this.update(cx, |this, _| {
+                let same = this
+                    .files
+                    .as_ref()
+                    .is_some_and(|files| Arc::ptr_eq(files, &index));
+                (same, this.files_build.load(Ordering::SeqCst))
+            }) else {
+                return;
+            };
+            let index = if !switched {
+                None
+            } else if same {
+                Some(index)
+            } else {
+                cx.background_executor()
+                    .spawn(
+                        async move { load_files(&path, &config.walk_rules(), detail, &frecency) },
+                    )
+                    .await
+            };
+            if let Some(index) = index {
+                this.update(cx, |this, cx| {
+                    if this.files_build.load(Ordering::SeqCst) == build {
+                        // What root showed came from the old level.
+                        if this.root.clear_files() && matches!(this.mode, Mode::Root) {
+                            this.rerank(cx);
+                        }
+                        this.install_files(index, cx);
+                    }
+                })
+                .ok();
+            }
+        });
+        self.files_indexing += 1;
+        self.tell_file_search(cx);
+        cx.spawn(async move |this, cx| {
+            switching.await;
+            this.update(cx, |this, cx| {
+                this.files_indexing = this.files_indexing.saturating_sub(1);
+                this.tell_file_search(cx);
             })
             .ok();
         })
@@ -1927,6 +2027,7 @@ impl Launcher {
     pub fn apply_config(&mut self, config: Config, cx: &mut Context<Self>) {
         let previous_height = self.content_height();
         let files_changed = config.files != self.config.files;
+        let level = level_change(&self.config.files, &config.files);
         // Presets are rows in the index, so a changed preset is a re-index.
         let presets_changed = config.translate.presets != self.config.translate.presets
             || config.timers.presets != self.config.timers.presets;
@@ -1941,8 +2042,10 @@ impl Launcher {
             self.rerank(cx);
         }
 
-        if files_changed {
-            self.open_files(false, cx);
+        match level {
+            Some(detail) if self.files.is_some() => self.set_files_detail(detail, cx),
+            _ if files_changed => self.open_files(false, cx),
+            _ => {}
         }
         if presets_changed {
             self.start_indexing(cx);
@@ -5595,10 +5698,30 @@ fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
 mod tests {
 
     use super::{
-        LauncherEvent, calculated, card_extent, card_label, opening_selection, operator_ranges,
-        panel_matches, query_to_send, refiltered_selection, root_panel_entries, second_action,
-        visible_panel_rows,
+        LauncherEvent, calculated, card_extent, card_label, level_change, opening_selection,
+        operator_ranges, panel_matches, query_to_send, refiltered_selection, root_panel_entries,
+        second_action, visible_panel_rows,
     };
+    use lumen_core::config::FileSearchConfig;
+    use lumen_core::file_index::IndexDetail;
+
+    /// A change of `files.index-detail` alone is a switch of level, made
+    /// from the store; anything else changed with it goes through a reopen.
+    #[test]
+    fn only_a_change_of_level_alone_switches_the_level() {
+        let old = FileSearchConfig::default();
+        let compact = FileSearchConfig {
+            index_detail: IndexDetail::Compact,
+            ..old.clone()
+        };
+        assert_eq!(level_change(&old, &compact), Some(IndexDetail::Compact));
+        assert_eq!(level_change(&old, &old), None);
+        let more = FileSearchConfig {
+            include_hidden: !old.include_hidden,
+            ..compact.clone()
+        };
+        assert_eq!(level_change(&old, &more), None);
+    }
     use lumen_core::favorites::Change as FavoriteChange;
     use lumen_core::item::{ActionGroup, Builtin, Kind};
     use lumen_core::providers::Provider;

@@ -345,6 +345,21 @@ impl FileIndex {
         Ok(())
     }
 
+    /// The index the store at `path` holds, its word tables at `detail`
+    /// (`files.index-detail`): what a start loads. A store built at another
+    /// level is switched first, under the build lock, from its entries and
+    /// never a walk, so a build that follows keeps the level.
+    pub fn open(path: &Path, detail: IndexDetail) -> Result<FileIndex> {
+        let mut store = Store::open(path)?;
+        if store.detail() != detail {
+            let lock = build_lock(path);
+            let _building = lock.lock();
+            store.set_detail(detail)?;
+            store.release_memory();
+        }
+        Self::load(store)
+    }
+
     /// Make `walked` the whole index in this index's own store, then load it
     /// from the database at `path` -- the same file -- as a new index.
     ///
@@ -848,6 +863,29 @@ mod tests {
             .ranked("notes", Kinds::FoldersAndFiles, 8, &|_, _| true)
             .unwrap();
         assert_eq!(notes[0].name, "notes.md");
+    }
+
+    /// The configured level reaches a store built at another when it is
+    /// opened, without a walk; the build after it keeps that level.
+    #[test]
+    fn opening_at_a_level_switches_the_store_and_walks_nothing() {
+        let tree = Tree::new("index-open-detail");
+        tree.file("notes.md").file("projects/myreport.md");
+        drop(index(&tree));
+        let path = tree.path(".files.db");
+        let before = Store::open(&path).unwrap().meta().unwrap();
+        std::fs::remove_file(tree.path("notes.md")).unwrap();
+
+        let opened = FileIndex::open(&path, IndexDetail::Compact).unwrap();
+        assert_eq!(opened.len(), 3);
+        assert_eq!(opened.store.lock().detail(), IndexDetail::Compact);
+        assert_eq!(opened.store.lock().meta().unwrap(), before);
+        drop(opened);
+        assert_eq!(Store::open(&path).unwrap().detail(), IndexDetail::Compact);
+
+        let rebuilt = FileIndex::build(&path, &tree.rules()).unwrap();
+        assert_eq!(rebuilt.len(), 2);
+        assert_eq!(rebuilt.store.lock().detail(), IndexDetail::Compact);
     }
 
     /// A rebuild writes through the index in place and gives back the new

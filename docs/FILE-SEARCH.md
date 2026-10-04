@@ -339,7 +339,7 @@ there. Only the storage changed; nothing reads the word index yet (c2b).
   the same name. Indexes on `(folder_id, name)` (paths) and
   `(len, folded)` (exact and name-start, one seek a length, for c2b).
 - **`words`**: FTS5, contentless with `contentless_delete=1` (SQLite
-  3.53), `prefix='1 2 3'`, `unicode61` with no diacritics removed and
+  3.53), `prefix='1 2 3 4'` (`'1 2 3'` until c2b's fix), `unicode61` with no diacritics removed and
   combining marks kept in their token. Default detail.
 
 **Tokens.** A name is cut into runs of letters and digits. Each run is
@@ -400,6 +400,8 @@ view switch to it in c3.
   4 096 rows.
 - `IndexDetail` (`files.index-detail`: `complete`, `balanced` (default),
   `compact`) and `Store::open_with(path, detail)`.
+- `FileIndex::open(path, detail)`: what the launcher loads at start, the
+  store switched to the configured level first, under the build lock.
 
 **Levels.** A level decides only the word tables. `complete` is
 `words` with full detail plus `grams`. `balanced` is `words` with full
@@ -409,6 +411,20 @@ table that changes, from `files`. It never walks, and rows, `Meta` and
 `walked_at` stay as they were. The level is marked `changing` first and
 written last, so a change cut short is rebuilt at the next open. Every
 level ranks identically, as the bench checks on every query.
+
+**The setting is applied.** The launcher opens the store at
+`files.index-detail` (`FileIndex::open`), so a build after it keeps that
+level. A configuration change of the level alone calls `set_detail` on the
+installed index in the background -- no walk, the digest unchanged --
+then installs it again; the log says `switched the file index to <level>
+in <n> ms`. Any other change of `files` goes through the reopen as before.
+
+**Prefixes up to 4.** `words` is `prefix = '1 2 3 4'` (`grams` is
+unchanged). The layout is recorded in `meta` as `words_layout` (`2`). A
+store without it -- built with `'1 2 3'` -- rebuilds `words` from `files`
+at open, through the level-switch path: no walk, rows and `Meta` as they
+were. Test:
+`a_store_with_the_old_word_layout_rebuilds_its_words_at_open`.
 
 **The "compact stall" was not compact.** The first c2b bench run was killed
 after 30 minutes, while it was writing `store-compact.db`. Its stderr shows
@@ -440,46 +456,48 @@ warm, 1 MB page cache; 1M not run, to keep the run under 15 minutes).
 Worst `ranked` p95 over `inv invoice report 2024 html license preview
 zqxj "inv 2024" cargo data javascript github`:
 
+With `prefix = '1 2 3 4'` (before it, `'1 2 3'`, in brackets):
+
 | corpus | level | N=8 worst p95 | N=64 worst p95 | < 8 ms |
 | - | - | - | - | - |
-| real 500k | complete | 2.56 (`inv 2024`) | 3.65 (`inv 2024`) | yes |
-| real 500k | balanced | 2.54 (`inv 2024`) | 2.64 (`inv 2024`) | yes |
-| real 500k | compact | 2.64 (`inv 2024`) | 2.62 (`inv 2024`) | yes |
-| synth 2M | complete | 5.23 (`html`) | 7.01 (`inv 2024`) | yes |
-| synth 2M | balanced | 5.28 (`html`) | 8.09 (`inv 2024`) | **no**, by 0.09 |
-| synth 2M | compact | 29.58 (`html`) | 32.37 (`html`) | **no**: `html`, `inv 2024` |
+| real 500k | complete | 1.63 `inv 2024` (2.56) | 2.42 `report` (3.65) | yes |
+| real 500k | balanced | 1.91 `inv 2024` (2.54) | 2.70 `report` (2.64) | yes |
+| real 500k | compact | 1.86 `inv 2024` (2.64) | 2.57 `report` (2.62) | yes |
+| synth 2M | complete | 3.16 `inv 2024` (5.23 `html`) | 5.71 `inv 2024` (7.01) | yes |
+| synth 2M | balanced | 2.99 `inv 2024` (5.28 `html`) | 5.35 `inv 2024` (8.09) | yes (was no) |
+| synth 2M | compact | 3.14 `inv 2024` (29.58 `html`) | 5.36 `inv 2024` (32.37 `html`) | yes (was no) |
 
-| corpus | level | MB (vacuumed) | build s | switch from balanced, s |
-| - | - | - | - | - |
-| real 500k | complete | 149 (144) | 10.1 | 3.0 |
-| real 500k | balanced | 108 (102) | 6.8 | -- |
-| real 500k | compact | 90 (85) | 6.3 | 2.6 |
-| synth 2M | complete | 523 (507) | 102 | 12.2 |
-| synth 2M | balanced | 369 (352) | 92 | -- |
-| synth 2M | compact | 316 (302) | 88 | 7.6 |
+At 2M, `html` N=8 is now 0.24--0.30 ms at every level, and `invoice`
+N=64 2.2--2.3.
 
-First query in a fresh process: open 0.7 ms. On the real index the first
-query took 2.0 ms (`invoice`) and 3.6--4.0 (`inv 2024`). At 2M, `inv
-2024` N=64 took 8.0--8.3 ms (13.9 at compact). `substring`, warm: real
-86--104 ms scanning (`balanced`, `compact`). At `complete` it took
-0.05--4 ms, except `html` at 109 ms: 91 000 trigram hits joined to
-`files`. At 2M it took 350--400 ms scanning.
+| corpus | level | MB (vacuumed) | prefix 4 cost, vacuumed | build s | switch from balanced, s |
+| - | - | - | - | - | - |
+| real 500k | complete | 154 (150) | +5.7 MB, +4.0% | 11.0 (10.1) | 3.1 |
+| real 500k | balanced | 113 (108) | +5.7 MB, +5.6% | 7.9 (6.8) | -- |
+| real 500k | compact | 94 (88) | +3.3 MB, +3.9% | 6.8 (6.3) | 3.1 |
+| synth 2M | complete | 539 (524) | +16.8 MB, +3.3% | 104 (102) | 12.4 |
+| synth 2M | balanced | 383 (369) | +16.8 MB, +4.8% | 92 (92) | -- |
+| synth 2M | compact | 325 (310) | +7.9 MB, +2.6% | 90 (88) | 8.5 |
 
-**The misses.**
+First query in a fresh process: open 0.8--1.0 ms. On the real index the
+first query took 1.9--2.4 ms (`invoice`) and 2.9 (`inv 2024`). At 2M,
+`inv 2024` N=64 took 6.3--6.5 ms at every level (8.0--8.3 before, 13.9
+at compact). `substring` is unchanged: real 82--100 ms scanning
+(`balanced`, `compact`); at `complete` 0.05--4 ms, except `html` at
+110--118 ms, 91 000 trigram hits joined to `files`. At 2M, 340--420 ms
+scanning.
 
-- **2M compact, `html` and `inv 2024`.** A prefix longer than the
-  prefix index (`'1 2 3'`) makes FTS5 materialize the whole merged
-  doclist. At `detail=none` that is about 7 times slower than at full
-  detail. In SQLite alone, `"html"*` costs 26 ms at 2M against 3.6 at
-  balanced. A probe with `prefix='1 2 3 4'` at compact brought `html`
-  to 0.24 ms and `inv 2024` to 2.6, for about 20% more `words` pages,
-  but `"invoice"*` still costs 17 ms. So compact stays "slower on very
-  common words" until c3 decides between a 4-character prefix and the
-  trade as documented.
-- **2M balanced, `inv 2024` N=64 at 8.09.** Its p50 is 6.5. The
-  name-start tier reads the index entries of every name starting with
-  `2024`: tens of thousands in a synthetic corpus made of 30 common
-  words. On the real index it is 2.6 ms.
+**The misses, and what fixed them.**
+
+- **2M compact, `html` and `inv 2024` (~30 ms).** A prefix longer than
+  the prefix index (`'1 2 3'`) made FTS5 materialize the whole merged
+  doclist, about 7 times slower at `detail=none` than at full detail
+  (`"html"*` 26 ms in SQLite alone at 2M, against 3.6 at balanced).
+  Fixed by the 4-character prefix index: `html` 0.24 ms, `inv 2024`
+  5.4 at N=64.
+- **2M balanced, `inv 2024` N=64 at 8.09.** Its p50 was 6.5, from the
+  name-start tier reading the entries of every name starting with
+  `2024`. Measured with prefix 4: 5.35 (p50 5.0).
 
 **`folded` stays.** A full scan of the stored `folded` takes 89 ms on the
 real index (362 at 2M). Folding `name` while scanning takes 267 ms
