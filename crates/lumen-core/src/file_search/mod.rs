@@ -6,6 +6,7 @@
 //! they are tested; the host holds the index and the platform, and does
 //! what the session asks off the UI thread.
 
+pub mod browse;
 pub mod category;
 pub mod drives;
 pub mod exclude;
