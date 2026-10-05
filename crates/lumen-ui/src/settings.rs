@@ -50,12 +50,14 @@ use crate::text_field::{TextField, TextFieldEvent};
 use crate::timers_page::{TimersPage, TimersPageEvent};
 use crate::translate_page::TranslatePage;
 use crate::weather_page::WeatherPage;
+use crate::window_management_page::{WindowManagementEvent, WindowManagementPage};
 
 /// Which page the window shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Appearance,
     Shortcuts,
+    WindowManagement,
     Sheets,
     Quicklinks,
     Translation,
@@ -71,9 +73,10 @@ enum Page {
 impl Page {
     /// The nav's order: Lumen's own pages, then the features', by name, as
     /// Raycast lists its extensions (F15).
-    const ALL: [Page; 12] = [
+    const ALL: [Page; 13] = [
         Page::Appearance,
         Page::Shortcuts,
+        Page::WindowManagement,
         Page::Sheets,
         Page::Calculator,
         Page::Clipboard,
@@ -87,13 +90,14 @@ impl Page {
     ];
 
     /// How many of [`Page::ALL`] are Lumen's own, before the gap in the nav.
-    const OWN: usize = 3;
+    const OWN: usize = 4;
 
     /// The glyph beside its name in the nav.
     fn icon(self) -> &'static str {
         match self {
             Page::Appearance => "icons/palette.svg",
             Page::Shortcuts => "icons/command.svg",
+            Page::WindowManagement => "icons/window.svg",
             Page::Sheets => "icons/keyboard.svg",
             Page::Quicklinks => "icons/link.svg",
             Page::Translation => "icons/text.svg",
@@ -111,6 +115,7 @@ impl Page {
         match self {
             Page::Appearance => "Appearance",
             Page::Shortcuts => "Shortcuts",
+            Page::WindowManagement => "Window Management",
             Page::Sheets => "Shortcut Sheets",
             Page::Quicklinks => "Quicklinks",
             Page::Translation => "Translation",
@@ -128,6 +133,7 @@ impl Page {
         match self {
             Page::Appearance => "The look, and the root list's sections, in config.json",
             Page::Shortcuts => "Aliases and hotkeys for any command, in shortcuts.json",
+            Page::WindowManagement => "Gaps and cycling for arranged windows, in config.json",
             Page::Sheets => "Hold the gesture key to see these while you work",
             Page::Quicklinks => "Saved links and web searches, in quicklinks.json",
             Page::Translation => "The service and your presets, in config.json",
@@ -305,6 +311,10 @@ pub struct Settings {
     files: Entity<FileSearchPage>,
     appearance: Entity<AppearancePage>,
     shortcuts: Entity<ShortcutsPage>,
+    window_management: Entity<WindowManagementPage>,
+    /// Focus the page shown at the next render: when a page switched to
+    /// another from an event, which has no window to focus with.
+    refocus: bool,
 }
 
 impl Settings {
@@ -417,6 +427,28 @@ impl Settings {
         )
         .detach();
 
+        let window_management = {
+            let colors = theme.colors.clone();
+            let config_file = config_file.clone();
+            cx.new(|cx| WindowManagementPage::new(config_file, colors, cx))
+        };
+        cx.observe(&window_management, |_, _, cx| cx.notify())
+            .detach();
+        cx.subscribe(
+            &window_management,
+            |settings, _, event: &WindowManagementEvent, cx| match event {
+                WindowManagementEvent::OpenShortcuts => {
+                    settings
+                        .shortcuts
+                        .update(cx, |page, cx| page.set_query("window", cx));
+                    settings.page = Page::Shortcuts;
+                    settings.refocus = true;
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
         let timers = {
             let colors = theme.colors.clone();
             cx.new(|cx| TimersPage::new(config_file, colors, cx))
@@ -463,6 +495,8 @@ impl Settings {
             files,
             appearance,
             shortcuts,
+            window_management,
+            refocus: false,
         }
     }
 
@@ -549,6 +583,13 @@ impl Settings {
     /// (F14).
     pub fn reload_calculator(&mut self, cx: &mut Context<Self>) {
         self.calculator.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// Re-read the window-management section of `config.json`, for the same
+    /// reasons (F17).
+    pub fn reload_window_management(&mut self, cx: &mut Context<Self>) {
+        self.window_management
+            .update(cx, |page, cx| page.reload(cx));
     }
 
     /// Re-read the files section of `config.json`, for the same reasons
@@ -694,6 +735,8 @@ impl Settings {
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.shortcuts
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.window_management
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.appearance
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
@@ -704,6 +747,7 @@ impl Settings {
         match self.page {
             Page::Appearance => self.appearance.read(cx).focus(window, cx),
             Page::Shortcuts => self.shortcuts.read(cx).focus(window, cx),
+            Page::WindowManagement => self.window_management.read(cx).focus(window, cx),
             Page::Sheets => window.focus(&self.focus_handle),
             Page::Quicklinks => self.quicklinks.read(cx).focus(window, cx),
             Page::Translation => self.translation.read(cx).focus(window, cx),
@@ -791,9 +835,12 @@ impl Settings {
             self.weather.update(cx, |page, cx| page.save(cx));
             return;
         }
-        // Appearance and Shortcuts write each change as it is made; nothing
-        // waits.
-        if matches!(self.page, Page::Appearance | Page::Shortcuts) {
+        // Appearance, Shortcuts and Window Management write each change as
+        // it is made; nothing waits.
+        if matches!(
+            self.page,
+            Page::Appearance | Page::Shortcuts | Page::WindowManagement
+        ) {
             return;
         }
         if self.page == Page::Clipboard {
@@ -1083,7 +1130,10 @@ impl Focusable for Settings {
 }
 
 impl Render for Settings {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.refocus) {
+            self.focus(window, cx);
+        }
         let colors = self.theme.colors.clone();
 
         let mut root = div()
@@ -1177,6 +1227,12 @@ impl Render for Settings {
                 .flex_1()
                 .overflow_hidden()
                 .child(self.shortcuts.clone())
+                .into_any_element(),
+            Page::WindowManagement => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.window_management.clone())
                 .into_any_element(),
         };
         let dialog = match self.page {
@@ -1674,6 +1730,7 @@ impl Settings {
             Page::Files => (self.files.read(cx).status(), false),
             Page::Appearance => (self.appearance.read(cx).status(), false),
             Page::Shortcuts => (self.shortcuts.read(cx).status(), false),
+            Page::WindowManagement => (self.window_management.read(cx).status(), false),
         };
 
         // The content column's status: what was saved, or why not, and the

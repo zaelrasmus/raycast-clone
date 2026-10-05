@@ -283,7 +283,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
 
     // Gaps and cycling for arranged windows (7.58), before anything can be
     // arranged; every reload hands them over again.
-    platform.set_window_settings(config.window.window_settings());
+    platform.set_window_settings(config.window_management.window_settings());
 
     // One channel for both sources. The gesture listener and the IPC listener
     // are different threads, and both must do nothing but push (I-15).
@@ -976,6 +976,7 @@ fn open_settings(
             settings.reload_weather(cx);
             settings.reload_clipboard(history, cx);
             settings.reload_calculator(cx);
+            settings.reload_window_management(cx);
             settings.reload_files(cx);
             if let Some(files) = files {
                 settings.set_file_index_status(files, cx);
@@ -1752,6 +1753,7 @@ fn reload_config(
                 settings.reload_weather(cx);
                 settings.reload_clipboard(history, cx);
                 settings.reload_calculator(cx);
+                settings.reload_window_management(cx);
                 settings.reload_files(cx);
                 settings.reload_appearance(cx);
             })
@@ -1763,7 +1765,7 @@ fn reload_config(
         return Ok(());
     }
     surfaces.timers.configure(&applied.timers, cx);
-    platform.set_window_settings(applied.window.window_settings());
+    platform.set_window_settings(applied.window_management.window_settings());
     *surfaces.config.borrow_mut() = applied.clone();
     log::info!("reloaded the configuration");
 

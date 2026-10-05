@@ -33,7 +33,8 @@ pub const ROWS: std::ops::RangeInclusive<usize> = 3..=20;
 /// budget (I-8).
 pub const HOT_MEMORY: std::ops::RangeInclusive<u32> = 1..=32;
 
-/// What `window.gap` and `window.screen-gap` may be, in logical pixels
+/// What `window-management.gap` and `window-management.screen-gap` may be,
+/// in logical pixels
 /// (F17, 7.58): past 64 a half is mostly margin on a small screen.
 pub const GAP: std::ops::RangeInclusive<i32> = 0..=64;
 use crate::timers::TimersConfig;
@@ -55,6 +56,9 @@ pub struct Config {
     pub root: crate::root::RootConfig,
     pub backdrop: BackdropMode,
     pub window: WindowConfig,
+    /// Arranging other windows (F17, 7.58): their gaps, and what pressing a
+    /// half again does.
+    pub window_management: WindowManagementConfig,
     pub clipboard: ClipboardConfig,
     pub files: FileSearchConfig,
     /// The application index (F16): folders whose programs count as
@@ -529,8 +533,27 @@ pub struct WindowConfig {
     /// people who drive it entirely from the keyboard sometimes want it to sit
     /// there while they read something behind it.
     pub dismiss_on_focus_loss: bool,
-    /// Logical pixels between two windows Lumen arranges side by side
-    /// (F17, 7.58). Kept within [`GAP`].
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            width: None,
+            visible_rows: None,
+            vertical_bias: 0.22,
+            horizontal_bias: 0.5,
+            dismiss_on_focus_loss: true,
+        }
+    }
+}
+
+/// How Lumen arranges other windows (F17, 7.58), apart from `window`, which
+/// is the launcher's own. Read on every arrangement, so a reload applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct WindowManagementConfig {
+    /// Logical pixels between two windows Lumen arranges side by side. Kept
+    /// within [`GAP`].
     pub gap: i32,
     /// Logical pixels between an arranged window and the edge of the work
     /// area. Kept within [`GAP`]. Above zero, *Maximise* leaves it too, so
@@ -542,22 +565,10 @@ pub struct WindowConfig {
     pub cycling: Cycling,
 }
 
-impl Default for WindowConfig {
-    fn default() -> Self {
-        Self {
-            width: None,
-            visible_rows: None,
-            vertical_bias: 0.22,
-            horizontal_bias: 0.5,
-            dismiss_on_focus_loss: true,
-            gap: 0,
-            screen_gap: 0,
-            cycling: Cycling::default(),
-        }
-    }
-}
+impl WindowManagementConfig {
+    /// The section's name in `config.json`.
+    pub const SECTION: &'static str = "window-management";
 
-impl WindowConfig {
     /// The window management settings handed to the platform, the gaps
     /// within [`GAP`]. Applied live on every reload.
     pub fn window_settings(&self) -> WindowSettings {
@@ -567,6 +578,21 @@ impl WindowConfig {
             screen_gap: gap(self.screen_gap),
             cycling: self.cycling,
         }
+    }
+
+    /// The section as the file has it, defaults for what it does not say:
+    /// for the settings window.
+    pub fn read(path: &Path) -> Result<Self> {
+        crate::section::read(path, Self::SECTION)
+    }
+
+    /// Write one of the section's keys -- `gap`, `screen-gap` or `cycling` --
+    /// leaving the rest of the file as it is.
+    pub fn set(path: &Path, key: &str, value: serde_json::Value) -> Result<()> {
+        crate::section::edit(path, Self::SECTION, |section| {
+            section.insert(key.into(), value);
+            Ok(())
+        })
     }
 }
 
@@ -579,6 +605,7 @@ impl Default for Config {
             root: crate::root::RootConfig::default(),
             backdrop: BackdropMode::default(),
             window: WindowConfig::default(),
+            window_management: WindowManagementConfig::default(),
             clipboard: ClipboardConfig::default(),
             files: FileSearchConfig::default(),
             apps: AppsConfig::default(),
@@ -1354,7 +1381,7 @@ mod tests {
     fn window_management_defaults_to_no_gaps_and_cycling_sizes() {
         let config: Config = serde_json::from_str(r#"{ "window": { "width": 700 } }"#).unwrap();
         assert_eq!(
-            config.window.window_settings(),
+            config.window_management.window_settings(),
             WindowSettings {
                 gap: 0,
                 screen_gap: 0,
@@ -1362,34 +1389,48 @@ mod tests {
             }
         );
         assert_eq!(
-            Config::default().window.window_settings(),
-            config.window.window_settings()
+            Config::default().window_management,
+            config.window_management
         );
     }
 
     #[test]
     fn window_management_keys_are_read_in_kebab_case() {
         let config: Config = serde_json::from_str(
-            r#"{ "window": { "gap": 8, "screen-gap": 12, "cycling": "displays" } }"#,
+            r#"{ "window-management": { "gap": 8, "screen-gap": 12, "cycling": "displays" } }"#,
         )
         .unwrap();
         assert_eq!(
-            config.window.window_settings(),
+            config.window_management.window_settings(),
             WindowSettings {
                 gap: 8,
                 screen_gap: 12,
                 cycling: Cycling::Displays,
             }
         );
-        let off: Config = serde_json::from_str(r#"{ "window": { "cycling": "off" } }"#).unwrap();
-        assert_eq!(off.window.cycling, Cycling::Off);
+        let off: Config =
+            serde_json::from_str(r#"{ "window-management": { "cycling": "off" } }"#).unwrap();
+        assert_eq!(off.window_management.cycling, Cycling::Off);
+    }
+
+    /// The keys briefly lived in `window` during F17. A file written then
+    /// still loads, and they no longer mean anything there.
+    #[test]
+    fn the_old_window_keys_are_ignored() {
+        let config: Config = serde_json::from_str(
+            r#"{ "window": { "width": 700, "gap": 8, "screen-gap": 12, "cycling": "off" } }"#,
+        )
+        .unwrap();
+        assert_eq!(config.window.width, Some(700.0));
+        assert_eq!(config.window_management, WindowManagementConfig::default());
     }
 
     #[test]
     fn the_gaps_are_kept_within_range() {
         let config: Config =
-            serde_json::from_str(r#"{ "window": { "gap": -4, "screen-gap": 500 } }"#).unwrap();
-        let settings = config.window.window_settings();
+            serde_json::from_str(r#"{ "window-management": { "gap": -4, "screen-gap": 500 } }"#)
+                .unwrap();
+        let settings = config.window_management.window_settings();
         assert_eq!((settings.gap, settings.screen_gap), (0, 64));
     }
 
@@ -1399,11 +1440,42 @@ mod tests {
     fn window_management_applies_without_a_restart() {
         let before = Config::default();
         let mut after = before.clone();
-        after.window.gap = 10;
-        after.window.screen_gap = 6;
-        after.window.cycling = Cycling::Off;
+        after.window_management = WindowManagementConfig {
+            gap: 10,
+            screen_gap: 6,
+            cycling: Cycling::Off,
+        };
         assert!(before.restart_required(&after).is_empty());
-        assert_eq!(before.merge_live(&after).window, after.window);
+        assert_eq!(
+            before.merge_live(&after).window_management,
+            after.window_management
+        );
+    }
+
+    /// The settings window writes one key and leaves the rest of the file.
+    #[test]
+    fn the_settings_window_writes_one_window_management_key() {
+        let dir = std::env::temp_dir().join(format!("lumen-wm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{ "theme": "daylight" }"#).unwrap();
+        assert_eq!(
+            WindowManagementConfig::read(&path).unwrap(),
+            WindowManagementConfig::default()
+        );
+        WindowManagementConfig::set(&path, "screen-gap", 16.into()).unwrap();
+        WindowManagementConfig::set(&path, "cycling", "displays".into()).unwrap();
+        let config = Config::try_load(&path).unwrap();
+        assert_eq!(config.theme, "daylight");
+        assert_eq!(
+            config.window_management,
+            WindowManagementConfig {
+                gap: 0,
+                screen_gap: 16,
+                cycling: Cycling::Displays,
+            }
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A config written before translation existed gets the keyless service

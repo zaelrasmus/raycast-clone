@@ -296,6 +296,15 @@ impl ShortcutsPage {
         self.search.read(cx).focus(window);
     }
 
+    /// Search for `query`, as if it had been typed: for another page that
+    /// sends someone here, as Window Management does (F17).
+    pub fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |field, cx| field.set_text(query, cx));
+        self.query = query.trim().to_lowercase();
+        self.refilter(cx);
+    }
+
     pub fn status(&self) -> Option<SharedString> {
         self.status.clone()
     }

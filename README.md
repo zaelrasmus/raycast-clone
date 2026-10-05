@@ -415,7 +415,9 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
     "visible-rows": null,
     "horizontal-bias": 0.5,
     "vertical-bias": 0.22,
-    "dismiss-on-focus-loss": true,
+    "dismiss-on-focus-loss": true
+  },
+  "window-management": {
     "gap": 0,
     "screen-gap": 0,
     "cycling": "sizes"
@@ -469,8 +471,11 @@ already is rather than wherever the launcher has been moved to.
 
 ### Gaps and cycling for arranged windows
 
-Three keys in `window` shape the window-management layouts (halves,
-thirds, quarters and the rest). All three apply as soon as the file is saved.
+Three keys in `window-management` shape the window-management layouts
+(halves, thirds, quarters and the rest); `window` is the launcher's own
+window. All three apply as soon as the file is saved, and the settings
+window's *Window Management* page sets them too, with a row that opens
+*Shortcuts* searching for the window commands to give them hotkeys.
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
