@@ -38,7 +38,7 @@ use lumen_core::file_index::{
     FileIndex, FileWatch, IndexDetail, Updated, WalkRules, digest, watch_targets,
 };
 use lumen_core::item::ActionGroup;
-use lumen_core::providers::QuicklinkProvider;
+use lumen_core::providers::{QuicklinkProvider, arrange};
 use lumen_core::root::{FILES_CAP, Hit};
 use lumen_core::style::{
     CardDivider, CardHeader, CardLabels, CardOperators, Metrics, SectionCase, Variants,
@@ -1142,7 +1142,13 @@ impl Launcher {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> Self {
-        let frecency = Frecency::load(&paths.frecency_file());
+        let mut frecency = Frecency::load(&paths.frecency_file());
+        // Written back once, the first start after window commands got slugs.
+        if arrange::migrate_frecency(&mut frecency)
+            && let Err(error) = frecency.save(&paths.frecency_file())
+        {
+            log::warn!("could not persist usage statistics: {error:#}");
+        }
         let icons = IconCache::new(platform.clone(), theme.style.metrics.icon_resolution());
 
         let query_field =
@@ -1177,9 +1183,13 @@ impl Launcher {
         });
 
         let mut root = RootSearch::new(Providers::builtin(), frecency);
-        root.set_favorites(lumen_core::favorites::Favorites::load(
-            &paths.favorites_file(),
-        ));
+        let mut favorites = lumen_core::favorites::Favorites::load(&paths.favorites_file());
+        if arrange::migrate_favorites(&mut favorites)
+            && let Err(error) = favorites.save(&paths.favorites_file())
+        {
+            log::warn!("could not save the favourites: {error:#}");
+        }
+        root.set_favorites(favorites);
         root.set_visible_rows(config.visible_rows(&theme.style.metrics));
         root.set_arrangement(config.root.clone());
         root.set_weather_units(config.weather.units);

@@ -13,81 +13,120 @@
 
 use lumen_platform::WindowLayout;
 
+use crate::favorites::Favorites;
+use crate::frecency::Frecency;
 use crate::item::{Action, Item, Kind};
 use crate::providers::Provider;
 
-/// Every layout, its title, and what else finds it.
+/// Every layout, its slug, its title, and what else finds it.
 ///
 /// A table rather than a `match` with seventeen arms so that adding a layout is
 /// one line and cannot half-happen: a variant with no row here fails the
 /// exhaustiveness test below.
-const LAYOUTS: &[(WindowLayout, &str, &[&str])] = &[
+///
+/// The slug is the item id, written out rather than derived from the title:
+/// ids are persisted in frecency, favourites and hotkeys, and a title is
+/// wording that may be changed. Once shipped, a slug never changes.
+const LAYOUTS: &[(WindowLayout, &str, &str, &[&str])] = &[
     (
         WindowLayout::Maximize,
+        "maximize",
         "Maximise Window",
         &["maximize", "full", "fill", "fullscreen"],
     ),
     (
         WindowLayout::Center,
+        "center",
         "Centre Window",
         &["center", "middle", "focus"],
     ),
-    (WindowLayout::LeftHalf, "Left Half", &["snap", "tile"]),
-    (WindowLayout::RightHalf, "Right Half", &["snap", "tile"]),
+    (
+        WindowLayout::LeftHalf,
+        "left-half",
+        "Left Half",
+        &["snap", "tile"],
+    ),
+    (
+        WindowLayout::RightHalf,
+        "right-half",
+        "Right Half",
+        &["snap", "tile"],
+    ),
     (
         WindowLayout::TopHalf,
+        "top-half",
         "Top Half",
         &["snap", "tile", "upper"],
     ),
     (
         WindowLayout::BottomHalf,
+        "bottom-half",
         "Bottom Half",
         &["snap", "tile", "lower"],
     ),
     (
         WindowLayout::TopLeftQuarter,
+        "top-left-quarter",
         "Top Left Quarter",
         &["snap", "corner"],
     ),
     (
         WindowLayout::TopRightQuarter,
+        "top-right-quarter",
         "Top Right Quarter",
         &["snap", "corner"],
     ),
     (
         WindowLayout::BottomLeftQuarter,
+        "bottom-left-quarter",
         "Bottom Left Quarter",
         &["snap", "corner"],
     ),
     (
         WindowLayout::BottomRightQuarter,
+        "bottom-right-quarter",
         "Bottom Right Quarter",
         &["snap", "corner"],
     ),
-    (WindowLayout::LeftThird, "Left Third", &["snap", "column"]),
+    (
+        WindowLayout::LeftThird,
+        "left-third",
+        "Left Third",
+        &["snap", "column"],
+    ),
     (
         WindowLayout::MiddleThird,
+        "middle-third",
         "Middle Third",
         &["snap", "column"],
     ),
-    (WindowLayout::RightThird, "Right Third", &["snap", "column"]),
+    (
+        WindowLayout::RightThird,
+        "right-third",
+        "Right Third",
+        &["snap", "column"],
+    ),
     (
         WindowLayout::LeftTwoThirds,
+        "left-two-thirds",
         "Left Two Thirds",
         &["snap", "column"],
     ),
     (
         WindowLayout::RightTwoThirds,
+        "right-two-thirds",
         "Right Two Thirds",
         &["snap", "column"],
     ),
     (
         WindowLayout::NextMonitor,
+        "next-monitor",
         "Move to Next Monitor",
         &["screen", "display", "throw"],
     ),
     (
         WindowLayout::PreviousMonitor,
+        "previous-monitor",
         "Move to Previous Monitor",
         &["screen", "display", "throw"],
     ),
@@ -113,9 +152,62 @@ impl Provider for ArrangeProvider {
     }
 }
 
-fn item(&(layout, title, keywords): &(WindowLayout, &str, &[&str])) -> Item {
+/// The titles the layouts had when their ids were built from them, frozen.
+///
+/// A copy rather than a read of `LAYOUTS`, so a title renamed later cannot
+/// quietly stop its old history from being carried over.
+const LEGACY_TITLES: &[(&str, &str)] = &[
+    ("maximize", "Maximise Window"),
+    ("center", "Centre Window"),
+    ("left-half", "Left Half"),
+    ("right-half", "Right Half"),
+    ("top-half", "Top Half"),
+    ("bottom-half", "Bottom Half"),
+    ("top-left-quarter", "Top Left Quarter"),
+    ("top-right-quarter", "Top Right Quarter"),
+    ("bottom-left-quarter", "Bottom Left Quarter"),
+    ("bottom-right-quarter", "Bottom Right Quarter"),
+    ("left-third", "Left Third"),
+    ("middle-third", "Middle Third"),
+    ("right-third", "Right Third"),
+    ("left-two-thirds", "Left Two Thirds"),
+    ("right-two-thirds", "Right Two Thirds"),
+    ("next-monitor", "Move to Next Monitor"),
+    ("previous-monitor", "Move to Previous Monitor"),
+];
+
+/// Pairs of (title-based id, slug id) for every layout that had one.
+///
+/// The one-time migration from the ids these items had before they had
+/// slugs, `window:{title}`, which is what frecency and favourites written by
+/// older builds hold (F17).
+pub fn legacy_ids() -> impl Iterator<Item = (String, String)> {
+    LEGACY_TITLES
+        .iter()
+        .map(|&(slug, title)| (format!("window:{title}"), id(slug)))
+}
+
+/// Move `frecency` off the legacy ids. Whether anything changed.
+pub fn migrate_frecency(frecency: &mut Frecency) -> bool {
+    legacy_ids().fold(false, |changed, (from, to)| {
+        frecency.rename(&from, &to) | changed
+    })
+}
+
+/// Move `favorites` off the legacy ids. Whether anything changed.
+pub fn migrate_favorites(favorites: &mut Favorites) -> bool {
+    legacy_ids().fold(false, |changed, (from, to)| {
+        favorites.rename(&from, &to) | changed
+    })
+}
+
+fn id(slug: &str) -> String {
+    format!("window:{slug}")
+}
+
+fn item(&(layout, slug, title, keywords): &(WindowLayout, &str, &str, &[&str])) -> Item {
     Item {
-        id: format!("window:{title}"),
+        id: id(slug),
         title: title.to_string(),
         subtitle: Some(SUBTITLE.to_string()),
         icon: None,
@@ -146,7 +238,59 @@ mod tests {
     }
 
     #[test]
-    fn titles_are_unique_so_the_ids_cannot_collide() {
+    fn ids_are_window_and_a_kebab_slug() {
+        for item in ArrangeProvider.catalogue() {
+            let slug = item.id.strip_prefix("window:").unwrap();
+            assert!(!slug.is_empty(), "{} has no slug", item.id);
+            assert!(
+                slug.split('-')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase())),
+                "{} is not lowercase kebab",
+                item.id
+            );
+        }
+        let left = ArrangeProvider
+            .catalogue()
+            .into_iter()
+            .find(|item| item.title == "Left Half")
+            .unwrap();
+        assert_eq!(left.id, "window:left-half");
+    }
+
+    #[test]
+    fn legacy_ids_map_title_ids_to_slug_ids_that_exist() {
+        let ids: Vec<String> = ArrangeProvider
+            .catalogue()
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        let pairs: Vec<(String, String)> = legacy_ids().collect();
+        assert_eq!(pairs.len(), 17, "the layouts that had title-based ids");
+        for (from, to) in &pairs {
+            assert!(ids.contains(to), "{from} migrates to missing {to}");
+        }
+        assert!(pairs.contains(&("window:Left Half".into(), "window:left-half".into())));
+    }
+
+    #[test]
+    fn migration_moves_frecency_and_favourites() {
+        let mut frecency = crate::frecency::Frecency::new();
+        frecency.record("window:Maximise Window");
+        assert!(migrate_frecency(&mut frecency));
+        assert!(frecency.boost("window:maximize") > 0);
+        assert_eq!(frecency.boost("window:Maximise Window"), 0);
+        assert!(!migrate_frecency(&mut frecency));
+
+        let mut favorites = crate::favorites::Favorites::new();
+        favorites.apply(crate::favorites::Change::Add, "app:code", &[]);
+        favorites.apply(crate::favorites::Change::Add, "window:Left Half", &[]);
+        assert!(migrate_favorites(&mut favorites));
+        assert_eq!(favorites.ids(), ["app:code", "window:left-half"]);
+        assert!(!migrate_favorites(&mut favorites));
+    }
+
+    #[test]
+    fn ids_are_unique() {
         let mut ids: Vec<String> = ArrangeProvider
             .catalogue()
             .into_iter()

@@ -86,6 +86,28 @@ impl Frecency {
         usage.last_used = now();
     }
 
+    /// Move the history of `from` to `to`, for an item whose id changed.
+    ///
+    /// If `to` already has a history the two are merged: launches add up and
+    /// the later use wins. Whether anything changed, so a caller saves only
+    /// when it must.
+    pub fn rename(&mut self, from: &str, to: &str) -> bool {
+        if from == to {
+            return false;
+        }
+        let Some(moved) = self.entries.remove(from) else {
+            return false;
+        };
+        self.entries
+            .entry(to.to_string())
+            .and_modify(|usage| {
+                usage.launches = usage.launches.saturating_add(moved.launches);
+                usage.last_used = usage.last_used.max(moved.last_used);
+            })
+            .or_insert(moved);
+        true
+    }
+
     /// The ranking bonus for `id`, to be added to a match score.
     pub fn boost(&self, id: &str) -> u32 {
         self.boost_at(id, now())
@@ -194,6 +216,50 @@ mod tests {
         );
 
         assert!(frecency.boost_at("app:obsession", now) <= MAX_BOOST as u32);
+    }
+
+    #[test]
+    fn rename_moves_the_history() {
+        let mut frecency = Frecency::new();
+        frecency.record("old");
+        let usage = frecency.entries["old"];
+        assert!(frecency.rename("old", "new"));
+        assert!(!frecency.entries.contains_key("old"));
+        assert_eq!(frecency.entries["new"].launches, usage.launches);
+        assert_eq!(frecency.entries["new"].last_used, usage.last_used);
+    }
+
+    #[test]
+    fn rename_onto_an_existing_entry_merges() {
+        let mut frecency = Frecency::new();
+        frecency.entries.insert(
+            "old".into(),
+            Usage {
+                launches: u32::MAX - 1,
+                last_used: 50,
+            },
+        );
+        frecency.entries.insert(
+            "new".into(),
+            Usage {
+                launches: 3,
+                last_used: 40,
+            },
+        );
+        assert!(frecency.rename("old", "new"));
+        assert_eq!(frecency.entries.len(), 1);
+        assert_eq!(frecency.entries["new"].launches, u32::MAX);
+        assert_eq!(frecency.entries["new"].last_used, 50);
+    }
+
+    #[test]
+    fn rename_of_an_absent_entry_changes_nothing() {
+        let mut frecency = Frecency::new();
+        frecency.record("new");
+        let before = frecency.entries["new"];
+        assert!(!frecency.rename("old", "new"));
+        assert_eq!(frecency.entries["new"].launches, before.launches);
+        assert_eq!(frecency.entries.len(), 1);
     }
 
     #[test]

@@ -81,6 +81,24 @@ impl Favorites {
         self.ids.iter().any(|each| each == id)
     }
 
+    /// Replace `from` with `to` where it stands, for an item whose id
+    /// changed. If `to` is already a favourite it keeps its own place and
+    /// `from` is dropped. Whether anything changed.
+    pub fn rename(&mut self, from: &str, to: &str) -> bool {
+        if from == to {
+            return false;
+        }
+        let Some(at) = self.ids.iter().position(|each| each == from) else {
+            return false;
+        };
+        if self.contains(to) {
+            self.ids.retain(|each| each != from);
+        } else {
+            self.ids[at] = to.to_string();
+        }
+        true
+    }
+
     /// What can be done to `id` from where it is now, in the order the
     /// action panel offers them. `visible` is the ids of the favourites that
     /// are drawn, in order: moving steps over the ones that are not, or a
@@ -194,6 +212,22 @@ mod tests {
         assert!(list.apply(Change::MoveUp, "c", &visible));
         assert_eq!(list.ids(), ["c", "gone", "a"]);
         assert!(!list.apply(Change::MoveUp, "c", &["c", "a"]));
+    }
+
+    #[test]
+    fn rename_keeps_the_position() {
+        let mut list = favorites(&["a", "old", "c"]);
+        assert!(list.rename("old", "new"));
+        assert_eq!(list.ids(), ["a", "new", "c"]);
+        assert!(!list.rename("old", "new"));
+    }
+
+    /// The target already has its own place; the old entry is the duplicate.
+    #[test]
+    fn rename_onto_an_existing_id_drops_the_old_one() {
+        let mut list = favorites(&["new", "a", "old"]);
+        assert!(list.rename("old", "new"));
+        assert_eq!(list.ids(), ["new", "a"]);
     }
 
     #[test]
