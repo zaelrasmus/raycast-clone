@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile. The window-management presets are next |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile. The window-management presets are next |
 
 ### F4 build order is not optional
 
@@ -3515,7 +3515,25 @@ window in front when the key is pressed is the one the user is looking at:
 own windows, the desktop and the taskbar.
 
 A command that needs the launcher -- a view, a form, a question -- shows the
-launcher for now. Opening it straight into that command is A7's.
+launcher already in it, as `Enter` on its row would have left it: the view,
+the form, or the argument field with the caret in it. `Enter` and the hotkey
+make that transition in one function, `Launcher::enter`, so the two cannot
+drift apart; the use is recorded by the same rule, which records nothing for
+a question until it is answered. The command is entered in the update that
+resets the launcher for showing, before the window is mapped, so the first
+frame is the command and not a flash of the root list. A view the daemon
+opens (the clipboard, the timers) is queued from that update and handled
+before the event loop yields to the window. It is the launcher's own show
+path, so the window to paste or arrange into is captured as for any summons
+(7.15), and the summons budget covers it through the same first-frame
+report. Escape leaves the command for the root list, as it does from `Enter`.
+
+The hotkey is a toggle, like the launcher's own key. Pressed while the
+launcher is up in that command, it hides it, and records nothing; pressed
+while the launcher is up anywhere else, it switches into the command where
+the window is, leaving what was open the way Escape would. "In the command"
+is the item that opened something last, while that something is still open:
+back at the root list, the command has been left.
 
 An id whose item is gone keeps its binding, for the favourites' reason: an
 update that briefly removes a shortcut must not cost the user their hotkey.

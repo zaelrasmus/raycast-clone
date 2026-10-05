@@ -282,6 +282,57 @@ fn second_action(actions: Vec<Action>) -> Option<Action> {
     actions.into_iter().nth(1)
 }
 
+/// Whether `action` is carried out inside the launcher -- a view, a form, a
+/// question -- rather than by the platform once the launcher has gone. What
+/// `Launcher::enter` goes into, and what a command hotkey shows the launcher
+/// for (F17).
+fn opens_in_launcher(action: &Action) -> bool {
+    opens_nothing_yet(action)
+        || matches!(
+            action,
+            Action::OpenView(_)
+                | Action::CreateQuicklink
+                | Action::CreateSnippet
+                | Action::SaveAsQuicklink { .. }
+                | Action::OpenTimerForm { .. }
+        )
+}
+
+/// The questions among them: a browser or an argument still to choose, so
+/// nothing has been used yet and nothing is recorded.
+fn opens_nothing_yet(action: &Action) -> bool {
+    matches!(action, Action::ChooseBrowser(_) | Action::AskArgument(_))
+}
+
+/// Whether the launcher is still in what the root item `id` opened: `entered`
+/// is the item that opened something last, and `at_root` that the root list
+/// is back, with no argument and no browser page on it.
+fn inside_command(entered: Option<&str>, id: &str, at_root: bool) -> bool {
+    !at_root && entered == Some(id)
+}
+
+/// What a hotkey for a command that opens in the launcher does (F17), the way
+/// the launcher's own key toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Summons {
+    /// Show the launcher, already in the command.
+    Show,
+    /// The launcher is up somewhere else: go into the command where it is.
+    Switch,
+    /// The launcher is up in the command already: hide it.
+    Hide,
+}
+
+/// The [`Summons`] for a press, from whether the launcher is `visible` and
+/// whether it is `inside` the command ([`Launcher::is_inside`]).
+pub fn summons(visible: bool, inside: bool) -> Summons {
+    match (visible, inside) {
+        (false, _) => Summons::Show,
+        (true, true) => Summons::Hide,
+        (true, false) => Summons::Switch,
+    }
+}
+
 /// The file index the store at `path` holds, when it was walked with
 /// `rules`: what a start installs at once, in milliseconds, instead of
 /// waiting for a walk. Its word tables at `detail`, switched first when the
@@ -1078,6 +1129,12 @@ pub struct Launcher {
     /// says `Mode::Root`.
     argument: Option<lumen_core::providers::quicklinks::ArgumentRequest>,
 
+    /// The root item whose view, form or question was entered last, by
+    /// `Enter` or by its hotkey: what a second press of that hotkey hides
+    /// (F17). Only meaningful while something is entered, see
+    /// [`inside_command`].
+    entered: Option<String>,
+
     /// Which action is highlighted in the action panel, when it is open.
     ///
     /// `None` means the panel is closed. Holding the selection here rather than
@@ -1233,6 +1290,7 @@ impl Launcher {
             list: crate::view::list_state(0),
             mode: Mode::Root,
             argument: None,
+            entered: None,
             focused_once: false,
             _activation: None,
             action_panel: None,
@@ -2234,6 +2292,7 @@ impl Launcher {
         self.picker = None;
         self.mode = Mode::Root;
         self.argument = None;
+        self.entered = None;
         self.action_panel = None;
 
         // Point GPUI's focus tree at this view. Without it GPUI has nothing to
@@ -4050,17 +4109,11 @@ impl Launcher {
             return;
         }
 
-        // Choosing a browser has opened nothing yet, so, like asking for an
-        // argument, it records no use.
-        if let Action::ChooseBrowser(open) = action {
-            self.choose_browser(open, cx);
-            return;
-        }
-
-        // Asking for an argument has used nothing yet, so it is not recorded:
-        // the link is recorded once, when it is actually opened.
-        if let Action::AskArgument(request) = action {
-            self.enter_argument(request, cx);
+        // Choosing a browser or asking for an argument has opened nothing
+        // yet, so it records no use: the link is recorded once, when it is
+        // actually opened.
+        if opens_nothing_yet(&action) {
+            self.enter(&id, action, window, cx);
             return;
         }
 
@@ -4087,30 +4140,11 @@ impl Launcher {
             return;
         }
 
-        // A view replaces the list rather than doing something and going away,
-        // so this neither dismisses nor reaches the platform.
-        if let Action::OpenView(source) = action {
-            self.open_view(&source, window, cx);
+        // A view or a form replaces the list rather than doing something and
+        // going away, so this neither dismisses nor reaches the platform.
+        let Some(action) = self.enter(&id, action, window, cx) else {
             return;
-        }
-
-        // So do the forms.
-        if action == Action::CreateSnippet {
-            self.open_snippet_form(Default::default(), None, false, window, cx);
-            return;
-        }
-        if action == Action::CreateQuicklink {
-            self.open_form(None, window, cx);
-            return;
-        }
-        if let Action::SaveAsQuicklink { name, link } = action {
-            self.open_form(Some((name, link)), window, cx);
-            return;
-        }
-        if let Action::OpenTimerForm { preset, replacing } = action {
-            self.open_timer_form(preset, replacing, window, cx);
-            return;
-        }
+        };
 
         cx.emit(LauncherEvent::Dismissed);
 
@@ -4159,6 +4193,87 @@ impl Launcher {
         .detach();
     }
 
+    /// Go into what `action` opens in the launcher for the root item `id` --
+    /// a view, a form, a question -- as `Enter` does. The action back when it
+    /// is not one of those, for the caller to carry out.
+    ///
+    /// The one place these transitions happen: `Enter` comes here through
+    /// `run_action`, a command hotkey through [`Launcher::enter_command`].
+    fn enter(
+        &mut self,
+        id: &str,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Action> {
+        match action {
+            Action::ChooseBrowser(open) => self.choose_browser(open, cx),
+            Action::AskArgument(request) => self.enter_argument(request, cx),
+            Action::OpenView(source) => self.open_view(&source, window, cx),
+            Action::CreateSnippet => {
+                self.open_snippet_form(Default::default(), None, false, window, cx)
+            }
+            Action::CreateQuicklink => self.open_form(None, window, cx),
+            Action::SaveAsQuicklink { name, link } => {
+                self.open_form(Some((name, link)), window, cx)
+            }
+            Action::OpenTimerForm { preset, replacing } => {
+                self.open_timer_form(preset, replacing, window, cx)
+            }
+            action => {
+                debug_assert!(!opens_in_launcher(&action));
+                return Some(action);
+            }
+        }
+        self.entered = Some(id.to_string());
+        None
+    }
+
+    /// Go into `action` for the root item `id`, which [`Launcher::hotkeyed`]
+    /// answered with [`Hotkeyed::InLauncher`]: the view, form or question
+    /// `Enter` on its row opens, from a clean root list (F17). Called just
+    /// before the launcher is shown, or while it is up somewhere else.
+    pub fn enter_command(
+        &mut self,
+        id: &str,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Whatever is open is left the way Escape leaves it, so a view's
+        // extension hears that it was dismissed.
+        match self.mode {
+            Mode::View(_) => self.leave_view(cx),
+            Mode::Form(_) => self.leave_form(None, window, cx),
+            Mode::Root => {}
+        }
+        self.close_picker(cx);
+        self.close_action_panel(cx);
+        self.argument = None;
+        self.clear_query_text(cx);
+        self.query_field.read(cx).focus(window);
+        self.rerank(cx);
+        // On the row, as if chosen there: what the browser page and the
+        // argument act on. The first row when the list does not show it.
+        self.selected = self
+            .hits()
+            .iter()
+            .position(|hit| self.item(hit).id == id)
+            .unwrap_or(0);
+        if let Some(action) = self.enter(id, action, window, cx) {
+            log::debug!("{id:?}: {} has nothing to open", action.verb());
+        }
+        cx.notify();
+    }
+
+    /// Whether the launcher is still in what the root item `id` opened, by
+    /// `Enter` or by its hotkey: a second press of the hotkey hides it (F17).
+    pub fn is_inside(&self, id: &str) -> bool {
+        let at_root =
+            matches!(self.mode, Mode::Root) && self.argument.is_none() && !self.showing_browsers();
+        inside_command(self.entered.as_deref(), id, at_root)
+    }
+
     /// What a command hotkey bound to `id` should do (F17): the item's
     /// primary action, settled the way `run_action` settles it, with the
     /// launcher hidden throughout. `None` when no item has that id now.
@@ -4194,14 +4309,13 @@ impl Launcher {
             Action::Builtin(command) => Hotkeyed::Builtin(command),
             Action::Timer(command) => Hotkeyed::Timer(command),
             // Nothing opened yet, so nothing is recorded, as with `Enter`.
-            Action::AskArgument(_) | Action::ChooseBrowser(_) | Action::Favorite(_) => {
+            action if opens_nothing_yet(&action) => {
                 return Some(Hotkeyed::InLauncher(action));
             }
-            Action::OpenView(_)
-            | Action::SaveAsQuicklink { .. }
-            | Action::CreateQuicklink
-            | Action::CreateSnippet
-            | Action::OpenTimerForm { .. } => Hotkeyed::InLauncher(action),
+            action if opens_in_launcher(&action) => Hotkeyed::InLauncher(action),
+            // A favourite is changed on a row, from the panel: a hotkey has
+            // no row, and changes nothing.
+            Action::Favorite(_) => return Some(Hotkeyed::Done),
             Action::OpenLink(open) => Hotkeyed::Perform {
                 action: Action::OpenLink(open.or_browser(self.config.preferred_browser.as_deref())),
                 kind,
@@ -4725,8 +4839,9 @@ pub enum Hotkeyed {
         action: Action,
         kind: lumen_core::Kind,
     },
-    /// Needs the launcher: a view, a form, a question. Shown for now; A7
-    /// opens it straight into the command.
+    /// Needs the launcher: a view, a form, a question. The daemon shows the
+    /// launcher already in it, through [`Launcher::enter_command`], or hides
+    /// it when it is in it already ([`summons`]).
     InLauncher(Action),
     /// Focus refused it (F8), as [`LauncherEvent::Blocked`].
     Blocked {
@@ -6212,12 +6327,52 @@ fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
 mod tests {
 
     use super::{
-        LauncherEvent, calculated, card_extent, card_label, level_change, opening_selection,
-        operator_ranges, panel_matches, query_to_send, refiltered_selection, root_panel_entries,
-        second_action, visible_panel_rows,
+        LauncherEvent, Summons, calculated, card_extent, card_label, inside_command, level_change,
+        opening_selection, opens_in_launcher, operator_ranges, panel_matches, query_to_send,
+        refiltered_selection, root_panel_entries, second_action, summons, visible_panel_rows,
     };
     use lumen_core::config::FileSearchConfig;
     use lumen_core::file_index::IndexDetail;
+
+    /// A view, a form or a question is entered in the launcher, which a
+    /// command hotkey then shows (F17); anything else is carried out with the
+    /// launcher out of the way.
+    #[test]
+    fn views_forms_and_questions_open_in_the_launcher() {
+        use lumen_core::providers::quicklinks::ArgumentRequest;
+        let request = ArgumentRequest {
+            id: "quicklink:google".into(),
+            name: "Google".into(),
+        };
+        assert!(opens_in_launcher(&Action::OpenView(
+            lumen_core::ViewSource::Clipboard
+        )));
+        assert!(opens_in_launcher(&Action::AskArgument(request)));
+        assert!(opens_in_launcher(&Action::CreateSnippet));
+        assert!(opens_in_launcher(&Action::CreateQuicklink));
+        assert!(!opens_in_launcher(&Action::Builtin(Builtin::OpenSettings)));
+        assert!(!opens_in_launcher(&Action::CopyToClipboard("x".into())));
+    }
+
+    /// The command's hotkey is a toggle, like the launcher's: pressed inside
+    /// the command it hides; pressed anywhere else it brings the command.
+    #[test]
+    fn a_command_hotkey_toggles_its_own_command() {
+        assert_eq!(summons(false, false), Summons::Show);
+        assert_eq!(summons(true, true), Summons::Hide);
+        assert_eq!(summons(true, false), Summons::Switch);
+    }
+
+    /// Inside a command means still in what it opened: back at the root list
+    /// the command is left, whichever command entered last.
+    #[test]
+    fn the_launcher_is_inside_only_the_command_it_entered() {
+        let clipboard = "builtin:clipboard-history";
+        assert!(inside_command(Some(clipboard), clipboard, false));
+        assert!(!inside_command(Some(clipboard), clipboard, true));
+        assert!(!inside_command(Some(clipboard), "builtin:timers", false));
+        assert!(!inside_command(None, clipboard, false));
+    }
 
     /// A change of `files.index-detail` alone is a switch of level, made
     /// from the store; anything else changed with it goes through a reopen.

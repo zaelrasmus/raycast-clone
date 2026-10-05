@@ -617,7 +617,11 @@ application holds, is logged and the rest still work.
 
 A hotkey runs the command's first action without opening the launcher: a
 window command arranges the window in front, an application opens. A
-command that needs the launcher -- a view, a form -- opens it for now. An id
+command that needs the launcher opens it already inside the command, as if
+chosen from the list: *Clipboard History* or *Search Snippets* on its view, a
+form ready to fill in, a quicklink that takes a query on its argument field.
+Escape goes back to the search as usual. Pressed again while the launcher is
+in that command, the hotkey hides it, like the launcher's own key. An id
 whose application is uninstalled keeps its hotkey, which works again if it
 is reinstalled.
 

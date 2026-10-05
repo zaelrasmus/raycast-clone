@@ -30,12 +30,12 @@ use lumen_core::clipboard::{History, Payload, Retention};
 use lumen_core::sheets::{Sheet, SheetLibrary};
 use lumen_core::style::Style;
 use lumen_core::theme::Appearance;
-use lumen_core::{Builtin, Config, Paths, Theme};
+use lumen_core::{Action, Builtin, Config, Paths, Theme};
 use lumen_platform::{
     ClipboardSink, FocusOwner, GestureEvent, GestureSink, HoldPhase, MonitorInfo, Platform, Rect,
     WindowRole,
 };
-use lumen_ui::launcher::Hotkeyed;
+use lumen_ui::launcher::{Hotkeyed, Summons, summons};
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
 mod calculator;
@@ -2015,6 +2015,20 @@ fn run_hotkey(
         log::warn!("a command hotkey in slot {slot}, which is bound to nothing");
         return Ok(());
     };
+    // A toggle, like the launcher's own key: pressed while the launcher is
+    // up in this command, it goes away. Asked before resolving, so the press
+    // that hides records no use.
+    let visible = shell.borrow().visible;
+    let inside = visible
+        && surfaces
+            .launcher
+            .read_with(cx, |launcher, _| launcher.is_inside(&id))
+            .unwrap_or(false);
+    if summons(visible, inside) == Summons::Hide {
+        hide(platform, shell)?;
+        timing::report_hotkey_done(pressed);
+        return Ok(());
+    }
     let resolved = surfaces
         .launcher
         .update(cx, |launcher, _window, cx| launcher.hotkeyed(&id, cx))
@@ -2072,15 +2086,30 @@ fn run_hotkey(
             })
             .detach();
         }
-        Hotkeyed::InLauncher(action) => {
-            log::info!(
-                "{id:?} needs the launcher ({}); showing it -- A7 opens it straight into the command",
-                action.verb()
-            );
-            if !shell.borrow().visible {
-                show(platform, config, shell, &surfaces.launcher, cx)?;
+        // In the launcher, as `Enter` on its row would have it (7.54): shown
+        // already in the command, or switched into it where it is up. The
+        // summons budget covers it, through `show`'s first frame.
+        Hotkeyed::InLauncher(action) => match summons(visible, inside) {
+            Summons::Show => {
+                show_into(
+                    platform,
+                    config,
+                    shell,
+                    &surfaces.launcher,
+                    Some((&id, action)),
+                    cx,
+                )?;
             }
-        }
+            Summons::Switch => {
+                surfaces
+                    .launcher
+                    .update(cx, |launcher, window, cx| {
+                        launcher.enter_command(&id, action, window, cx)
+                    })
+                    .context("reaching the launcher to open a command")?;
+            }
+            Summons::Hide => {}
+        },
         Hotkeyed::Blocked { what, action } => {
             if !shell.borrow().visible {
                 show(platform, config, shell, &surfaces.launcher, cx)?;
@@ -2192,13 +2221,32 @@ fn show(
     window: &gpui::WindowHandle<Launcher>,
     cx: &mut gpui::AsyncApp,
 ) -> Result<()> {
+    show_into(platform, config, shell, window, None, cx)
+}
+
+/// Show the launcher, already in `command` when there is one: the root
+/// item's id and the action that opens its view, form or question (F17).
+fn show_into(
+    platform: &Arc<dyn Platform>,
+    config: &Config,
+    shell: &Rc<RefCell<Shell>>,
+    window: &gpui::WindowHandle<Launcher>,
+    command: Option<(&str, Action)>,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
     let summoned = std::time::Instant::now();
 
     // Reset the view before the window is on screen, so the first frame the user
-    // sees is already the cleared state rather than the previous search.
+    // sees is already the cleared state rather than the previous search. A
+    // command is entered here too, so that frame is the command and not a
+    // flash of the root list; a view the daemon opens is queued from here
+    // and handled before the loop yields to the window.
     let (height, anchor, width) = window
         .update(cx, |launcher, window, cx| {
             launcher.on_shown(window, cx);
+            if let Some((id, action)) = command {
+                launcher.enter_command(id, action, window, cx);
+            }
             // Registered here rather than after `show_window`, because the
             // frame this reports on is the one `on_shown` just asked for.
             timing::report_first_frame(window, summoned);
