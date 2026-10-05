@@ -159,6 +159,11 @@ impl Quicklink {
     }
 
     fn icon(&self) -> Option<IconSource> {
+        if is_path_link(&self.source) {
+            return Some(IconSource::ShellItem(
+                link_path(&self.source).to_string_lossy().into_owned(),
+            ));
+        }
         self.icon_file.clone().map(IconSource::File)
     }
 
@@ -322,6 +327,25 @@ impl OpenLink {
         self
     }
 
+    /// Where the link, rendered as `url`, goes. A path link takes only an
+    /// [`APP_PREFIX`] choice: anything else there is the preferred browser
+    /// the launcher filled in, which has no business opening a file.
+    fn destination(&self, url: String) -> Destination<'_> {
+        if is_path_link(&url) {
+            return Destination::Path {
+                path: link_path(&url),
+                app: self
+                    .browser
+                    .as_deref()
+                    .and_then(|choice| choice.strip_prefix(APP_PREFIX)),
+            };
+        }
+        Destination::Url {
+            url,
+            browser: self.browser.as_deref(),
+        }
+    }
+
     /// Open it. Blocking, and so called off the UI thread.
     pub fn run(&self, platform: &dyn Platform) -> anyhow::Result<()> {
         let clipboard = if self.link.reads_clipboard() {
@@ -331,8 +355,20 @@ impl OpenLink {
         };
         let url = self.link.render(&self.query, &clipboard);
 
+        let (url, wanted) = match self.destination(url) {
+            Destination::Path {
+                path,
+                app: Some(app),
+            } => return platform.open_path_with(&path, app),
+            // The shell opens a path with its default, as it does a URL.
+            Destination::Path { path, app: None } => {
+                return platform.open_url(&path.to_string_lossy(), None, false);
+            }
+            Destination::Url { url, browser } => (url, browser),
+        };
+
         let browsers;
-        let browser = match &self.browser {
+        let browser = match wanted {
             Some(wanted) => {
                 browsers = platform.installed_browsers()?;
                 let found = choose_browser(wanted, &browsers);
@@ -349,6 +385,67 @@ impl OpenLink {
 
         platform.open_url(&url, browser, self.private)
     }
+}
+
+/// What `open_with` starts with when it names an application rather than a
+/// browser: the id [`Platform::apps_for`] gave it.
+pub const APP_PREFIX: &str = "app:";
+
+/// Whether `link` is a file or folder rather than a web link: a drive path
+/// (`D:\` or `D:/`), a UNC path (`\\server`) or a `file:` URL.
+///
+/// Such a link is opened by an application ([`APP_PREFIX`]) or the system's
+/// default for it, never by a browser.
+pub fn is_path_link(link: &str) -> bool {
+    let link = link.trim();
+    let bytes = link.as_bytes();
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    drive
+        || link.starts_with(r"\\")
+        || link
+            .get(..5)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:"))
+}
+
+/// The path a path link names: itself, or a `file:` URL decoded.
+fn link_path(link: &str) -> PathBuf {
+    let Some(rest) = link
+        .get(..5)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("file:"))
+        .map(|_| &link[5..])
+    else {
+        return PathBuf::from(link);
+    };
+    // `file:///C:/x` is local; `file://server/share` names a share.
+    let rest = match rest.strip_prefix("//") {
+        Some(after) => match after.strip_prefix('/') {
+            Some(local) => local.to_string(),
+            None => format!("//{after}"),
+        },
+        None => rest.to_string(),
+    };
+    PathBuf::from(
+        percent_encoding::percent_decode_str(&rest)
+            .decode_utf8_lossy()
+            .into_owned(),
+    )
+}
+
+/// Where an [`OpenLink`] goes, decided apart from opening it so it can be
+/// checked without a platform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Destination<'a> {
+    Url {
+        url: String,
+        browser: Option<&'a str>,
+    },
+    Path {
+        path: PathBuf,
+        app: Option<&'a str>,
+    },
 }
 
 /// Whether copied text is a web link worth offering as a new quicklink.
@@ -986,6 +1083,136 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].name, "Good");
+    }
+
+    #[test]
+    fn a_drive_unc_or_file_link_is_a_path() {
+        for link in [
+            r"D:\Dev\notes.md",
+            "d:/dev",
+            r"\\server\share",
+            "file:///C:/x.txt",
+            "FILE:///C:/x.txt",
+            r"  C:\  ",
+        ] {
+            assert!(is_path_link(link), "{link:?}");
+        }
+        for link in [
+            "https://example.com",
+            "http://x",
+            "mailto:a@b.c",
+            "D:",
+            "spotify:search:x",
+            "",
+        ] {
+            assert!(!is_path_link(link), "{link:?}");
+        }
+    }
+
+    fn open(link: &str, browser: Option<&str>) -> OpenLink {
+        OpenLink {
+            link: Template::parse(link).unwrap(),
+            query: String::new(),
+            browser: browser.map(str::to_string),
+            private: false,
+        }
+    }
+
+    fn routed(open: &OpenLink) -> Destination<'_> {
+        open.destination(open.link.render(&open.query, ""))
+    }
+
+    #[test]
+    fn a_path_link_opens_with_its_app_or_the_default() {
+        let notes = r"D:\Dev\{a} notes.md";
+        assert_eq!(
+            routed(&open(notes, Some("app:C:\\Code.exe"))),
+            Destination::Path {
+                path: PathBuf::from(notes),
+                app: Some("C:\\Code.exe"),
+            }
+        );
+        // No app, or the preferred *browser* filled in by the launcher: the
+        // system's default for the file.
+        for browser in [None, Some("Brave")] {
+            assert_eq!(
+                routed(&open(notes, browser)),
+                Destination::Path {
+                    path: PathBuf::from(notes),
+                    app: None,
+                }
+            );
+        }
+        // A `file:` link reaches the app as the path it names.
+        assert_eq!(
+            routed(&open("file:///C:/a%20b/c.txt", Some("app:x"))),
+            Destination::Path {
+                path: PathBuf::from("C:/a b/c.txt"),
+                app: Some("x"),
+            }
+        );
+        assert_eq!(
+            routed(&open("file://server/share/c.txt", None)),
+            Destination::Path {
+                path: PathBuf::from("//server/share/c.txt"),
+                app: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_web_link_still_goes_to_a_browser() {
+        assert_eq!(
+            routed(&open("https://x.com/{query}", Some("Zen"))),
+            Destination::Url {
+                url: "https://x.com/".into(),
+                browser: Some("Zen"),
+            }
+        );
+        assert_eq!(
+            routed(&open("https://x.com", None)),
+            Destination::Url {
+                url: "https://x.com".into(),
+                browser: None,
+            }
+        );
+    }
+
+    /// A path shows the file's own icon, and never asks a web server for one.
+    #[test]
+    fn a_path_link_shows_its_files_icon() {
+        let link = Quicklink::from_entry(entry("Notes", r"D:\Dev\notes.md")).unwrap();
+        assert_eq!(link.favicon_site(), None);
+        assert_eq!(
+            QuicklinkProvider::new(vec![link]).catalogue()[0].icon,
+            Some(IconSource::ShellItem(r"D:\Dev\notes.md".into()))
+        );
+    }
+
+    /// Files written before path links load as they did, browser and all.
+    #[test]
+    fn a_stored_browser_choice_loads_unchanged() {
+        let file: QuicklinkFile = serde_json::from_str(
+            r#"{ "schema_version": 1, "quicklinks": [
+                { "name": "A", "link": "https://a.com", "open_with": "Zen" },
+                { "name": "N", "link": "D:\\n.md", "open_with": "app:C:\\Code.exe" }
+            ] }"#,
+        )
+        .unwrap();
+        let links: Vec<Quicklink> = file
+            .quicklinks
+            .into_iter()
+            .map(|entry| Quicklink::from_entry(entry).unwrap())
+            .collect();
+        assert_eq!(links[0].open_with.as_deref(), Some("Zen"));
+        assert_eq!(links[1].open_with.as_deref(), Some("app:C:\\Code.exe"));
+        assert_eq!(
+            routed(&open("https://a.com", links[0].open_with.as_deref())),
+            Destination::Url {
+                url: "https://a.com".into(),
+                browser: Some("Zen"),
+            }
+        );
     }
 
     #[test]

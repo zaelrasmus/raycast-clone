@@ -23,6 +23,7 @@ mod activate;
 mod app_watch;
 mod apps;
 mod arrange;
+mod assoc;
 mod browsers;
 mod clipboard;
 mod clipboard_watch;
@@ -294,6 +295,14 @@ impl Platform for WindowsPlatform {
 
     fn open_with(&self, path: &std::path::Path) -> Result<()> {
         files::open_with(path)
+    }
+
+    fn apps_for(&self, path: &std::path::Path) -> Result<Vec<lumen_platform::AppChoice>> {
+        assoc::apps_for(path)
+    }
+
+    fn open_path_with(&self, path: &std::path::Path, app_id: &str) -> Result<()> {
+        assoc::open_path_with(path, app_id)
     }
 
     fn pick_folder(

@@ -358,6 +358,18 @@ impl Browser {
     }
 }
 
+/// An application that can open a file or folder, as
+/// [`Platform::apps_for`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppChoice {
+    /// What [`Platform::open_path_with`] takes back: stable across runs, and
+    /// what a quicklink stores. On Windows, the handler's own name -- a
+    /// program's path, or a packaged application's id.
+    pub id: String,
+    /// What the user sees: "Visual Studio Code".
+    pub name: String,
+}
+
 /// A fixed, internal volume (F16, slice 5): what *Search Files* offers
 /// folders from when no scope is on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,6 +672,16 @@ pub trait Platform: Send + Sync {
     /// own chooser, and open it with the one chosen (F16). Returns once the
     /// chooser is up, not when it closes.
     fn open_with(&self, path: &std::path::Path) -> Result<()>;
+
+    /// The applications that can open `path`, the system's default for it
+    /// first, each once. Empty when the system knows none, as for a file
+    /// with no extension. Reads the system's associations; called off the UI
+    /// thread.
+    fn apps_for(&self, path: &std::path::Path) -> Result<Vec<AppChoice>>;
+
+    /// Open `path` with the application [`Platform::apps_for`] gave as
+    /// `app_id`. An error when no such application can open it any more.
+    fn open_path_with(&self, path: &std::path::Path, app_id: &str) -> Result<()>;
 
     /// Ask the user for a folder, with the system's own picker titled
     /// `title`, over whichever of Lumen's windows is in front (F16, slices

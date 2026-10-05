@@ -29,9 +29,10 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppEntry, ApplicationsSink, Browser, ClipboardContent, ClipboardSink, DateStyle, FocusOwner,
-    ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime,
-    MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
+    AppChoice, AppEntry, ApplicationsSink, Browser, ClipboardContent, ClipboardSink, DateStyle,
+    FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchMode,
+    LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout,
+    WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -257,6 +258,20 @@ impl Platform for LinuxPlatform {
     fn open_with(&self, path: &std::path::Path) -> Result<()> {
         anyhow::bail!(
             "choosing an application for {} is not built on Linux yet (F5)",
+            path.display()
+        )
+    }
+
+    /// F5: the desktop entries whose `MimeType=` lists the file's type,
+    /// `xdg-mime query default` first. Until then none.
+    fn apps_for(&self, _path: &std::path::Path) -> Result<Vec<AppChoice>> {
+        Ok(Vec::new())
+    }
+
+    /// F5: the chosen desktop entry's `Exec` with `%f`.
+    fn open_path_with(&self, path: &std::path::Path, app_id: &str) -> Result<()> {
+        anyhow::bail!(
+            "opening {} with {app_id} is not yet on Linux (F5)",
             path.display()
         )
     }

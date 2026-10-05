@@ -248,6 +248,23 @@ Step 3 made the list look like the sites it opens:
   `trait Platform::notify` raises a system notification instead; on Windows
   from the tray icon (`NIF_INFO`), which needs no app registration. The tray
   window is kept in an atomic so any thread can ask.
+- **A file or folder is a link too.** A link that is a path -- `D:\`, `D:/`,
+  `\\server` or `file:` (`quicklinks::is_path_link`) -- is taken literally,
+  braces and all, with no scheme required: it never reaches a browser's
+  command line. Its `open_with` holds `app:<id>` (`APP_PREFIX`) rather than a
+  browser name, so files written before keep their meaning; without one, or
+  with the preferred browser the launcher filled in, the shell opens it with
+  its default. Its icon is the file's own (`IconSource::ShellItem`), never a
+  favicon. `trait Platform` gained `apps_for`, the applications that open a
+  path with the default first, and `open_path_with`, in both implementations
+  at once (I-9; Linux lists none until F5). On Windows they are the shell's
+  recommended `SHAssocEnumHandlers`, the default moved first by the program
+  `AssocQueryStringW(ASSOCSTR_EXECUTABLE)` names, and a file is opened by
+  `IAssocHandler::Invoke` on its data object, the only way to hand a file to a
+  packaged application. A folder is offered Explorer alone. A handler's id is
+  its program's path, which for a packaged one names its version; a stored id
+  that no longer matches finds the one handler whose program has the same
+  file name.
 - **A typed URL is an answer, not a mode.** `providers::web` recognises one
   as it is typed, like the calculator, so nothing is looked up or waited on.
   How sure it must be to lead is the whole design: a scheme, `www.`,

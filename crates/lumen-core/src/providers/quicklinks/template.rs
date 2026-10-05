@@ -71,6 +71,15 @@ impl std::error::Error for TemplateError {}
 
 impl Template {
     pub fn parse(source: &str) -> Result<Self, TemplateError> {
+        // A path has no placeholders: `{draft}.md` is a file's name. It never
+        // reaches a browser's command line either, which is what the scheme
+        // check guards, so a UNC path needs none.
+        if super::is_path_link(source) {
+            return Ok(Self {
+                parts: vec![Part::Text(source.to_string())],
+            });
+        }
+
         let mut parts = Vec::new();
         let mut rest = source;
 
@@ -213,6 +222,23 @@ mod tests {
                 Err(TemplateError::NoScheme),
                 "{source:?}"
             );
+        }
+    }
+
+    /// A path is taken as written: braces are part of a file's name there,
+    /// and a UNC path has no scheme.
+    #[test]
+    fn a_path_is_kept_literally() {
+        for source in [
+            r"D:\Dev\notes.md",
+            r"C:\Users\x\",
+            r"D:\Dev\{draft} notes.md",
+            r"\\server\share\{query}.txt",
+            "file:///C:/a%20b/{c}.txt",
+        ] {
+            let link = Template::parse(source).unwrap_or_else(|e| panic!("{source:?}: {e}"));
+            assert!(!link.takes_query(), "{source:?}");
+            assert_eq!(link.render("q", "c"), source);
         }
     }
 
