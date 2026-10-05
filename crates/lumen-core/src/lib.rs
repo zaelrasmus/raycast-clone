@@ -21,6 +21,7 @@ pub mod config;
 pub mod currency;
 pub mod dates;
 pub mod dictionary;
+pub mod emoji;
 pub mod extension;
 pub mod favorites;
 pub mod file_index;
