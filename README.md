@@ -78,9 +78,11 @@ an aesthetic worth looking at fifty times a day.
 - **Script commands (tier T1).** Drop any executable into the scripts folder
   with a `@lumen.title` comment header and it becomes a searchable command.
   Headers are read at index time, never by running the file (AD-08).
-- **Window management.** Seventeen layouts in the list -- halves, quarters,
-  thirds, two-thirds, maximise, centre, and move to the next or previous
-  monitor -- applied to the window you were using when you opened the launcher.
+- **Window management.** Thirty-six layouts in the list -- halves, quarters,
+  thirds, two-thirds, fourths, sixths, maximise, maximise height or width,
+  almost maximise, reasonable size, centre with or without resizing, move to
+  an edge of the screen, and move to the next or previous monitor -- applied
+  to the window you were using when you opened the launcher.
   The edges land flush: Windows draws a window's resize border outside what you
   see, and Lumen compensates for it, so tiled windows meet with no seam and do
   not hang off the screen.

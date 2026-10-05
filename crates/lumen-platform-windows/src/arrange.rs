@@ -68,10 +68,18 @@ pub fn arrange(window: FocusOwner, layout: WindowLayout) -> Result<()> {
         let target = if layout.changes_monitor() {
             move_to_adjacent_monitor(hwnd, layout)?
         } else {
-            let current = monitor::describe(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))?;
+            let monitor = monitor::describe(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))?;
+            // The visible rectangle, read after the restore above, so that the
+            // layouts which keep the window's size or one of its coordinates
+            // keep what the user sees rather than the invisible border or the
+            // maximised state being left.
+            let current = match frame_bounds(hwnd) {
+                Ok(drawn) => drawn,
+                Err(_) => outer_bounds(hwnd)?,
+            };
             layout
-                .tile(current.work_area)
-                .expect("only the monitor moves have no tile, and they are handled above")
+                .place(monitor.work_area, current, monitor.scale_factor)
+                .expect("only the monitor moves have no place, and they are handled above")
         };
 
         place(hwnd, target)
@@ -160,6 +168,20 @@ unsafe fn frame_bounds(hwnd: HWND) -> Result<Rect> {
         )
         .context("DWMWA_EXTENDED_FRAME_BOUNDS")?;
 
+        Ok(Rect::new(
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        ))
+    }
+}
+
+/// The window's outer rectangle, invisible border included.
+unsafe fn outer_bounds(hwnd: HWND) -> Result<Rect> {
+    unsafe {
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect).context("GetWindowRect")?;
         Ok(Rect::new(
             rect.left,
             rect.top,

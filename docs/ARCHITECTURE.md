@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). The window-management presets are next |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16). The window-management presets are next |
 
 ### F4 build order is not optional
 
@@ -2572,6 +2572,22 @@ width divides by neither two nor three, whether the thirds meet without a seam,
 and whether a window carried between monitors of different sizes arrives inside
 the destination. `core` keeps what is genuinely its own, which is what each
 layout is called.
+
+Some layouts are not a region of the work area alone (F17). *Maximise
+Height* and *Maximise Width* keep the window's other axis, *Centre Without
+Resizing* keeps its size, and the four *Move* layouts keep its size and one
+coordinate. So the boundary function is `WindowLayout::place(work_area,
+current, scale)`, not a function of the work area: `current` is the window's
+visible rectangle (extended frame bounds, read after restoring it from
+minimised or maximised), and every layout that reads it first clamps the size
+to the work area and brings the position inside, so a window that already
+hung off the monitor lands on it. *Reasonable Size* is three fifths of the
+work area capped at 1025 by 900 *logical* pixels, multiplied by the monitor's
+scale factor, so it is the same size to the eye at 100% and at 150%. The
+fourths and sixths take their edges from the work area like the thirds -- the
+sixths are the thirds' columns on the halves' rows -- so they abut with no
+seam on any width. The platform supplies only the two inputs it alone can
+read; all of the arithmetic, and its tests, stay in `tiling`.
 
 ### 7.17 Tiling compensates for the invisible resize border
 

@@ -1,6 +1,6 @@
 //! Window management as commands (F3).
 //!
-//! A genuine catalogue provider, unlike the clipboard: seventeen fixed entries
+//! A genuine catalogue provider, unlike the clipboard: thirty-six fixed entries
 //! that exist whether or not anyone asked, found by typing part of their name.
 //!
 //! # Why the names are spelled twice
@@ -20,7 +20,7 @@ use crate::providers::Provider;
 
 /// Every layout, its slug, its title, and what else finds it.
 ///
-/// A table rather than a `match` with seventeen arms so that adding a layout is
+/// A table rather than a `match` with thirty-six arms so that adding a layout is
 /// one line and cannot half-happen: a variant with no row here fails the
 /// exhaustiveness test below.
 ///
@@ -92,31 +92,145 @@ const LAYOUTS: &[(WindowLayout, &str, &str, &[&str])] = &[
         WindowLayout::LeftThird,
         "left-third",
         "Left Third",
-        &["snap", "column"],
+        &["snap", "column", "first"],
     ),
     (
         WindowLayout::MiddleThird,
         "middle-third",
         "Middle Third",
-        &["snap", "column"],
+        &["snap", "column", "center", "centre"],
     ),
     (
         WindowLayout::RightThird,
         "right-third",
         "Right Third",
-        &["snap", "column"],
+        &["snap", "column", "last"],
     ),
     (
         WindowLayout::LeftTwoThirds,
         "left-two-thirds",
         "Left Two Thirds",
-        &["snap", "column"],
+        &["snap", "column", "first"],
     ),
     (
         WindowLayout::RightTwoThirds,
         "right-two-thirds",
         "Right Two Thirds",
-        &["snap", "column"],
+        &["snap", "column", "last"],
+    ),
+    (
+        WindowLayout::MaximizeHeight,
+        "maximize-height",
+        "Maximise Height",
+        &["maximize", "vertical", "tall", "stretch"],
+    ),
+    (
+        WindowLayout::MaximizeWidth,
+        "maximize-width",
+        "Maximise Width",
+        &["maximize", "horizontal", "wide", "stretch"],
+    ),
+    (
+        WindowLayout::AlmostMaximize,
+        "almost-maximize",
+        "Almost Maximise",
+        &["maximize", "almost", "nearly", "large"],
+    ),
+    (
+        WindowLayout::ReasonableSize,
+        "reasonable-size",
+        "Reasonable Size",
+        &["resize", "medium", "center", "centre"],
+    ),
+    (
+        WindowLayout::CenterKeepSize,
+        "center-keep-size",
+        "Centre Without Resizing",
+        &["center", "middle", "keep", "size"],
+    ),
+    (
+        WindowLayout::FirstFourth,
+        "first-fourth",
+        "First Fourth",
+        &["snap", "column", "quarter", "left"],
+    ),
+    (
+        WindowLayout::SecondFourth,
+        "second-fourth",
+        "Second Fourth",
+        &["snap", "column", "quarter"],
+    ),
+    (
+        WindowLayout::ThirdFourth,
+        "third-fourth",
+        "Third Fourth",
+        &["snap", "column", "quarter"],
+    ),
+    (
+        WindowLayout::LastFourth,
+        "last-fourth",
+        "Last Fourth",
+        &["snap", "column", "quarter", "right"],
+    ),
+    (
+        WindowLayout::TopLeftSixth,
+        "top-left-sixth",
+        "Top Left Sixth",
+        &["snap", "grid"],
+    ),
+    (
+        WindowLayout::TopCenterSixth,
+        "top-center-sixth",
+        "Top Centre Sixth",
+        &["snap", "grid", "center", "middle"],
+    ),
+    (
+        WindowLayout::TopRightSixth,
+        "top-right-sixth",
+        "Top Right Sixth",
+        &["snap", "grid"],
+    ),
+    (
+        WindowLayout::BottomLeftSixth,
+        "bottom-left-sixth",
+        "Bottom Left Sixth",
+        &["snap", "grid"],
+    ),
+    (
+        WindowLayout::BottomCenterSixth,
+        "bottom-center-sixth",
+        "Bottom Centre Sixth",
+        &["snap", "grid", "center", "middle"],
+    ),
+    (
+        WindowLayout::BottomRightSixth,
+        "bottom-right-sixth",
+        "Bottom Right Sixth",
+        &["snap", "grid"],
+    ),
+    (
+        WindowLayout::MoveUp,
+        "move-up",
+        "Move Up",
+        &["edge", "top", "nudge"],
+    ),
+    (
+        WindowLayout::MoveDown,
+        "move-down",
+        "Move Down",
+        &["edge", "bottom", "nudge"],
+    ),
+    (
+        WindowLayout::MoveLeft,
+        "move-left",
+        "Move Left",
+        &["edge", "nudge"],
+    ),
+    (
+        WindowLayout::MoveRight,
+        "move-right",
+        "Move Right",
+        &["edge", "nudge"],
     ),
     (
         WindowLayout::NextMonitor,
@@ -312,6 +426,81 @@ mod tests {
             .unwrap();
 
         assert!(maximise.keywords.iter().any(|k| k == "maximize"));
+
+        // Every British spelling in a title, on every row that has one.
+        for item in &items {
+            let title = item.title.to_lowercase();
+            for (british, american) in [("maximise", "maximize"), ("centre", "center")] {
+                if title.contains(british) {
+                    assert!(
+                        item.keywords.iter().any(|k| k == american),
+                        "{} has no {american} keyword",
+                        item.title
+                    );
+                }
+            }
+        }
+    }
+
+    /// Raycast's names for the thirds find this project's.
+    #[test]
+    fn the_thirds_answer_to_first_centre_and_last() {
+        let items = ArrangeProvider.catalogue();
+        let keywords = |title: &str| {
+            items
+                .iter()
+                .find(|item| item.title == title)
+                .unwrap()
+                .keywords
+                .clone()
+        };
+        assert!(keywords("Left Third").contains(&"first".to_string()));
+        assert!(keywords("Middle Third").contains(&"center".to_string()));
+        assert!(keywords("Right Third").contains(&"last".to_string()));
+        assert!(keywords("Left Two Thirds").contains(&"first".to_string()));
+        assert!(keywords("Right Two Thirds").contains(&"last".to_string()));
+    }
+
+    /// The slug is the layout's own serialised name, so an id, a stored
+    /// layout and a hotkey binding all spell a layout the same way.
+    #[test]
+    fn every_slug_is_the_layouts_serialised_name() {
+        for &(layout, slug, ..) in LAYOUTS {
+            assert_eq!(serde_json::to_value(layout).unwrap(), slug, "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn the_raycast_layouts_are_offered_by_their_slugs() {
+        let ids: Vec<String> = ArrangeProvider
+            .catalogue()
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+        for slug in [
+            "maximize-height",
+            "maximize-width",
+            "almost-maximize",
+            "reasonable-size",
+            "center-keep-size",
+            "first-fourth",
+            "second-fourth",
+            "third-fourth",
+            "last-fourth",
+            "top-left-sixth",
+            "top-center-sixth",
+            "top-right-sixth",
+            "bottom-left-sixth",
+            "bottom-center-sixth",
+            "bottom-right-sixth",
+            "move-up",
+            "move-down",
+            "move-left",
+            "move-right",
+        ] {
+            assert!(ids.contains(&id(slug)), "window:{slug} is not offered");
+        }
+        assert_eq!(ids.len(), 36);
     }
 
     #[test]
