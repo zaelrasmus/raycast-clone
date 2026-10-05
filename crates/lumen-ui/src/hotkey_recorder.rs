@@ -203,6 +203,26 @@ pub struct Recording {
     pub verdict: Verdict,
 }
 
+impl Recording {
+    /// What its owner says while it records -- the Shortcuts page on the
+    /// row, the launcher in its footer -- and whether that is a refusal.
+    /// `title_of` names another command by its id.
+    pub fn note(&self, title_of: impl Fn(&str) -> String) -> (String, bool) {
+        match &self.verdict {
+            Verdict::Waiting => match &self.capture {
+                Capture::Invalid { why, .. } => (why.to_string(), true),
+                _ => ("Esc cancels, Backspace removes the hotkey".into(), false),
+            },
+            // No countdown: a figure that changes each tenth of a second
+            // would redraw the window for nothing but itself.
+            Verdict::Pending { .. } => ("Saving\u{2026} Enter saves now".into(), false),
+            // Overwrite follows it; Enter does the same.
+            Verdict::Taken { owner, .. } => (format!("Used by {}", title_of(owner)), true),
+            Verdict::Reserved { why, .. } => (why.to_string(), true),
+        }
+    }
+}
+
 /// A hotkey to write: `id` bound to `chord`, or unbound.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Save {

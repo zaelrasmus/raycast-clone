@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile. The window-management presets are next |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). The window-management presets are next |
 
 ### F4 build order is not optional
 
@@ -3649,6 +3649,18 @@ nothing is suspended. The launcher's hotkey is not touched: it is a
 separate registration (7.53), and a recording must never leave Lumen
 unsummonable -- if the settings window were lost behind another, the
 launcher is the way back.
+
+The launcher records too: *Configure Command* in the action panel, or
+Ctrl+Shift+, (bound as `ctrl-<` as well, which is how Windows reports it),
+puts the same recorder and `Flow` in the search row for the selected root
+row -- only a row of the index, the rows `shortcuts.json` can name. The
+launcher sends `RecordingHotkey(true/false)` on the same queue as the page,
+and cancels on every way out the page has plus its own: the window hidden or
+deactivated, or shown again. Its recorder context unbinds every launcher
+chord, generated from the launcher's bindings so a new one cannot escape it.
+An alias is typed in a field of its own in the query's place, so the query
+is kept. The launcher writes `shortcuts.json` and takes the table it wrote
+at once, so the daemon's apply that follows changes nothing on screen.
 
 ## 8. Risk register
 

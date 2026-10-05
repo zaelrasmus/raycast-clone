@@ -187,6 +187,26 @@ impl Shortcuts {
         taken
     }
 
+    /// What the launcher's action panel offers to change about `id`'s
+    /// shortcuts, in its order: each half set or changed, and deleted when
+    /// it is set.
+    pub fn configure(&self, id: &str) -> Vec<Configure> {
+        let (alias, hotkey) = (self.alias_of(id).is_some(), self.hotkey_of(id).is_some());
+        let mut offered = vec![if alias {
+            Configure::ChangeAlias
+        } else {
+            Configure::SetAlias
+        }];
+        offered.extend(alias.then_some(Configure::DeleteAlias));
+        offered.push(if hotkey {
+            Configure::ChangeHotkey
+        } else {
+            Configure::SetHotkey
+        });
+        offered.extend(hotkey.then_some(Configure::DeleteHotkey));
+        offered
+    }
+
     fn tidy(&mut self, id: &str) {
         if self
             .commands
@@ -195,6 +215,45 @@ impl Shortcuts {
         {
             self.commands.remove(id);
         }
+    }
+}
+
+/// A change to a command's shortcuts from the launcher's action panel:
+/// Raycast's *Configure Command* (F17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Configure {
+    SetAlias,
+    ChangeAlias,
+    DeleteAlias,
+    SetHotkey,
+    ChangeHotkey,
+    DeleteHotkey,
+}
+
+impl Configure {
+    pub fn verb(self) -> &'static str {
+        match self {
+            Configure::SetAlias => "Set Alias",
+            Configure::ChangeAlias => "Change Alias",
+            Configure::DeleteAlias => "Delete Alias",
+            Configure::SetHotkey => "Set Hotkey",
+            Configure::ChangeHotkey => "Change Hotkey",
+            Configure::DeleteHotkey => "Delete Hotkey",
+        }
+    }
+
+    /// Whether it asks for something first -- an alias typed, a chord
+    /// pressed -- rather than saving at once.
+    pub fn asks(self) -> bool {
+        !matches!(self, Configure::DeleteAlias | Configure::DeleteHotkey)
+    }
+
+    /// Whether it is about the alias rather than the hotkey.
+    pub fn is_alias(self) -> bool {
+        matches!(
+            self,
+            Configure::SetAlias | Configure::ChangeAlias | Configure::DeleteAlias
+        )
     }
 }
 
@@ -592,6 +651,33 @@ mod tests {
             reserved_by(&chord("Ctrl+Alt+Space"), &launcher, Some(&timers)),
             None
         );
+    }
+
+    /// What the launcher's action panel offers for a command: set or
+    /// change each half, and delete one only when it is set.
+    #[test]
+    fn configuring_a_command_offers_what_its_shortcuts_allow() {
+        use Configure::*;
+        let shortcuts = bound(&[
+            ("window:center", Some("Ctrl+Alt+C"), Some("ce")),
+            ("app:code", None, Some("c")),
+            ("app:slack", Some("Ctrl+Alt+S"), None),
+        ]);
+        assert_eq!(shortcuts.configure("app:none"), [SetAlias, SetHotkey]);
+        assert_eq!(
+            shortcuts.configure("app:code"),
+            [ChangeAlias, DeleteAlias, SetHotkey]
+        );
+        assert_eq!(
+            shortcuts.configure("app:slack"),
+            [SetAlias, ChangeHotkey, DeleteHotkey]
+        );
+        assert_eq!(
+            shortcuts.configure("window:center"),
+            [ChangeAlias, DeleteAlias, ChangeHotkey, DeleteHotkey]
+        );
+        assert_eq!(ChangeAlias.verb(), "Change Alias");
+        assert!(SetHotkey.asks() && !DeleteHotkey.asks());
     }
 
     #[test]

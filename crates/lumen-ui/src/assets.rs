@@ -264,6 +264,8 @@ mod tests {
             Action::Favorite(Change::Remove),
             Action::Favorite(Change::MoveUp),
             Action::Favorite(Change::MoveDown),
+            Action::Configure(lumen_core::shortcuts::Configure::SetAlias),
+            Action::Configure(lumen_core::shortcuts::Configure::DeleteHotkey),
             Action::Launch(target()),
             Action::LaunchNew(target()),
             Action::CopyToClipboard("x".into()),

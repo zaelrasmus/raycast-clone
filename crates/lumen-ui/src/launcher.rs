@@ -25,6 +25,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
@@ -39,7 +40,8 @@ use lumen_core::file_index::{
 };
 use lumen_core::item::ActionGroup;
 use lumen_core::providers::{QuicklinkProvider, arrange};
-use lumen_core::root::{FILES_CAP, Hit};
+use lumen_core::root::{FILES_CAP, Hit, Source};
+use lumen_core::shortcuts::{Configure, reserved_by};
 use lumen_core::style::{
     CardDivider, CardHeader, CardLabels, CardOperators, Metrics, SectionCase, Variants,
 };
@@ -49,9 +51,12 @@ use lumen_core::{
 };
 use lumen_platform::Platform;
 
+use crate::hotkey_recorder::{Effect, Flow, HotkeyRecorder, RecorderEvent, Save, Verdict};
 use crate::icons::IconCache;
 use crate::keymap::Shortcuts;
-use crate::quicklink_form::{FormEvent, QuicklinkForm};
+use crate::quicklink_form::{
+    CancelForm, FormEvent, NextField, PreviousField, QuicklinkForm, SubmitForm,
+};
 use crate::snippet_form::{SnippetForm, SnippetFormEvent};
 use crate::styling::{Geometry, color, rule_above, rule_below, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
@@ -94,6 +99,9 @@ actions!(
         MoveFavoriteDown,
         /// Complete a typed path to the selected row's name (F16).
         CompletePath,
+        /// Open the action panel on the selected row's alias and hotkey
+        /// (F17).
+        ConfigureCommand,
     ]
 );
 
@@ -280,6 +288,49 @@ fn level_change(old: &FileSearchConfig, new: &FileSearchConfig) -> Option<IndexD
 /// What Ctrl+Enter runs: the second action, when there is one.
 fn second_action(actions: Vec<Action>) -> Option<Action> {
     actions.into_iter().nth(1)
+}
+
+/// Configure Command (F17): what can be changed about a root row's alias
+/// and hotkey. Only for a row of the index -- the rows `shortcuts.json` can
+/// name, and those the Shortcuts page lists.
+fn configure_actions(
+    source: Source,
+    id: &str,
+    table: &lumen_core::shortcuts::Shortcuts,
+) -> Vec<Action> {
+    if !matches!(source, Source::Indexed(_)) {
+        return Vec::new();
+    }
+    table
+        .configure(id)
+        .into_iter()
+        .map(Action::Configure)
+        .collect()
+}
+
+/// A root row's alias being typed, or its hotkey recorded, in the search
+/// row (F17). The row is held by id: the list behind may move.
+struct Configuring {
+    id: String,
+    title: String,
+    input: ConfigureInput,
+}
+
+enum ConfigureInput {
+    /// In a field of its own in the query's place, so the query is kept.
+    Alias {
+        field: Entity<TextField>,
+        error: Option<&'static str>,
+        _changes: Subscription,
+    },
+    /// The Shortcuts page's recorder, steered by the same [`Flow`].
+    Hotkey {
+        field: Entity<HotkeyRecorder>,
+        /// The wait before a free chord is saved.
+        autosave: Option<Task<()>>,
+        /// Its keys and its blur.
+        _subscriptions: [Subscription; 2],
+    },
 }
 
 /// Whether `action` is carried out inside the launcher -- a view, a form, a
@@ -1189,6 +1240,13 @@ pub struct Launcher {
     /// The keys the action panel shows beside its rows, read from the keymap
     /// when the launcher was made (I-14).
     shortcuts: Shortcuts,
+    /// `shortcuts.json` as the daemon last applied it, or as the launcher
+    /// last wrote it (F17).
+    shortcut_table: lumen_core::shortcuts::Shortcuts,
+    /// Configure Command's prompt, while it is open (F17).
+    configuring: Option<Configuring>,
+    /// The recorder's steps while a hotkey is recorded here.
+    recording: Flow,
 }
 
 impl Launcher {
@@ -1306,6 +1364,9 @@ impl Launcher {
             active: false,
             tick: 0,
             shortcuts: Shortcuts::read(&cx.key_bindings().borrow()),
+            shortcut_table: lumen_core::shortcuts::Shortcuts::default(),
+            configuring: None,
+            recording: Flow::default(),
         };
 
         launcher.start_indexing(cx);
@@ -2120,6 +2181,7 @@ impl Launcher {
         shortcuts: &lumen_core::shortcuts::Shortcuts,
         cx: &mut Context<Self>,
     ) {
+        self.shortcut_table = shortcuts.clone();
         if self.root.set_shortcuts(shortcuts) && matches!(self.mode, Mode::Root) {
             self.rerank(cx);
             cx.notify();
@@ -2280,6 +2342,7 @@ impl Launcher {
     /// The launcher always opens empty. Preserving the previous query means the
     /// user has to clear it before typing, every single time.
     pub fn on_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stop_configuring(window, cx);
         self.clear_query_text(cx);
         self.selected = 0;
         self.appearances = self.appearances.wrapping_add(1);
@@ -2317,6 +2380,11 @@ impl Launcher {
             self._activation = Some(cx.observe_window_activation(
                 window,
                 |launcher, window, cx| {
+                    // Hidden or clicked away while recording: the hotkey
+                    // stays as it was, and the command hotkeys come back.
+                    if !window.is_window_active() {
+                        launcher.stop_configuring(window, cx);
+                    }
                     launcher.on_activation_changed(window.is_window_active(), cx);
                 },
             ));
@@ -3573,12 +3641,14 @@ impl Launcher {
     // -- Commands ----------------------------------------------------------
 
     /// The actions available for the selected row: its own, then what can
-    /// be done to it as a favourite (F15).
+    /// be done to it as a favourite (F15), then to its alias and hotkey
+    /// (F17).
     fn available_actions(&self) -> Vec<Action> {
         let Some(hit) = self.hits().get(self.selected) else {
             return Vec::new();
         };
-        let mut actions = self.item(hit).actions.clone();
+        let item = self.item(hit);
+        let mut actions = item.actions.clone();
         if matches!(self.mode, Mode::Root) {
             actions.extend(
                 self.root
@@ -3586,6 +3656,13 @@ impl Launcher {
                     .into_iter()
                     .map(Action::Favorite),
             );
+            if self.argument.is_none() {
+                actions.extend(configure_actions(
+                    hit.source,
+                    &item.id,
+                    &self.shortcut_table,
+                ));
+            }
         }
         actions
     }
@@ -3593,7 +3670,8 @@ impl Launcher {
     /// Add, remove or move the selected row as a favourite, if that is
     /// something it can have done to it from where it is.
     fn change_favorite(&mut self, change: FavoriteChange, cx: &mut Context<Self>) {
-        if !matches!(self.mode, Mode::Root) || self.argument.is_some() {
+        if !matches!(self.mode, Mode::Root) || self.argument.is_some() || self.configuring.is_some()
+        {
             return;
         }
         let Some(hit) = self.hits().get(self.selected).cloned() else {
@@ -3637,6 +3715,290 @@ impl Launcher {
 
     fn move_favorite_down(&mut self, _: &MoveFavoriteDown, _: &mut Window, cx: &mut Context<Self>) {
         self.change_favorite(FavoriteChange::MoveDown, cx);
+    }
+
+    // -- Configure Command (F17) -------------------------------------------
+
+    /// Ctrl+Shift+,: the action panel, on the selected row's first row
+    /// about its alias and hotkey. Nothing for a row that has none.
+    fn configure_command(
+        &mut self,
+        _: &ConfigureCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.configuring.is_some() || self.picker.is_some() {
+            return;
+        }
+        let Some(at) = self
+            .available_actions()
+            .iter()
+            .position(|action| matches!(action, Action::Configure(_)))
+        else {
+            return;
+        };
+        let previous_height = self.content_height();
+        self.browser_menu = None;
+        self.reset_panel_search(cx);
+        self.action_panel = Some(at);
+        self.action_field.read(cx).focus(window);
+        self.reveal_panel_selection();
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// Carry out a row of the panel about the selected row's shortcuts: a
+    /// delete is saved at once, a set or change asks first.
+    fn configure(&mut self, configure: Configure, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.mode, Mode::Root) || self.configuring.is_some() {
+            return;
+        }
+        if !self
+            .available_actions()
+            .contains(&Action::Configure(configure))
+        {
+            return;
+        }
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        let (id, title) = (item.id.clone(), item.title.clone());
+        let mut table = self.shortcut_table.clone();
+        match configure {
+            Configure::DeleteAlias => {
+                table.set_alias(&id, None);
+                self.write_shortcuts(&id, table, cx);
+            }
+            Configure::DeleteHotkey => {
+                table.set_hotkey(&id, None);
+                self.write_shortcuts(&id, table, cx);
+            }
+            Configure::SetAlias | Configure::ChangeAlias => {
+                let text = table.alias_of(&id).unwrap_or_default().to_string();
+                let colors = self.theme.colors.clone();
+                let field = cx.new(|cx| {
+                    let mut field = TextField::search("Add Alias", colors, cx);
+                    field.set_text(text, cx);
+                    field
+                });
+                let changes = cx.subscribe(&field, |launcher, _, event, cx| {
+                    if let (
+                        TextFieldEvent::Changed(_),
+                        Some(Configuring {
+                            input: ConfigureInput::Alias { error, .. },
+                            ..
+                        }),
+                    ) = (event, &mut launcher.configuring)
+                    {
+                        *error = None;
+                        cx.notify();
+                    }
+                });
+                field.read(cx).focus(window);
+                let input = ConfigureInput::Alias {
+                    field,
+                    error: None,
+                    _changes: changes,
+                };
+                self.configuring = Some(Configuring { id, title, input });
+            }
+            Configure::SetHotkey | Configure::ChangeHotkey => {
+                let effect = self.recording.start(&id);
+                let colors = self.theme.colors.clone();
+                let field = cx.new(|cx| HotkeyRecorder::new(colors, cx));
+                let handle = field.read(cx).focus_handle().clone();
+                let subscriptions = [
+                    cx.subscribe_in(&field, window, Self::recorder_event),
+                    cx.on_blur(&handle, window, |launcher, window, cx| {
+                        let effect = launcher.recording.cancel();
+                        launcher.step(effect, window, cx);
+                    }),
+                ];
+                let input = ConfigureInput::Hotkey {
+                    field,
+                    autosave: None,
+                    _subscriptions: subscriptions,
+                };
+                self.configuring = Some(Configuring { id, title, input });
+                window.focus(&handle);
+                self.step(effect, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Write `table` and take it as the daemon will hand it back, so the
+    /// row's alias changes now and the echo changes nothing (F17). The
+    /// daemon's watch registers the hotkeys.
+    fn write_shortcuts(
+        &mut self,
+        id: &str,
+        table: lumen_core::shortcuts::Shortcuts,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = table.save(&self.paths.shortcuts_file()) {
+            log::warn!("could not save shortcuts: {error:#}");
+            return;
+        }
+        let renamed = self.root.set_shortcuts(&table);
+        self.shortcut_table = table;
+        if renamed && matches!(self.mode, Mode::Root) {
+            self.rerank_keeping(id, cx);
+        }
+    }
+
+    /// Enter in the alias field: save what is typed, or say why not.
+    fn submit_alias(&mut self, _: &SubmitForm, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Configuring {
+            id,
+            input: ConfigureInput::Alias { field, error, .. },
+            ..
+        }) = &mut self.configuring
+        else {
+            return;
+        };
+        match lumen_core::shortcuts::alias_input(field.read(cx).text()) {
+            Err(why) => *error = Some(why),
+            Ok(alias) => {
+                let id = id.clone();
+                let mut table = self.shortcut_table.clone();
+                table.set_alias(&id, alias);
+                self.stop_configuring(window, cx);
+                self.write_shortcuts(&id, table, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn cancel_alias(&mut self, _: &CancelForm, window: &mut Window, cx: &mut Context<Self>) {
+        self.stop_configuring(window, cx);
+    }
+
+    /// Tab, Up and Down stay in the alias field rather than reaching the
+    /// list behind it.
+    fn hold_alias(&mut self, _: &NextField, _: &mut Window, _: &mut Context<Self>) {}
+
+    fn hold_alias_back(&mut self, _: &PreviousField, _: &mut Window, _: &mut Context<Self>) {}
+
+    fn recorder_event(
+        &mut self,
+        _: &Entity<HotkeyRecorder>,
+        event: &RecorderEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let effect = match event {
+            RecorderEvent::Changed(capture) => {
+                let launcher = &self.config.hotkey;
+                let timers = self.config.timers.hotkey.as_ref();
+                self.recording.press(
+                    capture.clone(),
+                    Instant::now(),
+                    &self.shortcut_table,
+                    |chord| reserved_by(chord, launcher, timers),
+                );
+                self.schedule_autosave(window, cx);
+                cx.notify();
+                return;
+            }
+            RecorderEvent::Save => self.recording.save(),
+            RecorderEvent::Cancel => self.recording.cancel(),
+            RecorderEvent::Clear => self.recording.clear(),
+        };
+        self.step(effect, window, cx);
+    }
+
+    /// Save a free chord when its wait is over, as the Shortcuts page does.
+    fn schedule_autosave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let at = match self
+            .recording
+            .recording()
+            .map(|recording| &recording.verdict)
+        {
+            Some(Verdict::Pending { at, .. }) => Some(*at),
+            _ => None,
+        };
+        let task = at.map(|at| {
+            let wait = at.saturating_duration_since(Instant::now());
+            cx.spawn_in(window, async move |launcher, cx| {
+                cx.background_executor().timer(wait).await;
+                launcher
+                    .update_in(cx, |launcher, window, cx| {
+                        if let Some(Configuring {
+                            input: ConfigureInput::Hotkey { autosave, .. },
+                            ..
+                        }) = &mut launcher.configuring
+                            && let Some(task) = autosave.take()
+                        {
+                            task.detach();
+                        }
+                        let effect = launcher.recording.tick(at);
+                        launcher.step(effect, window, cx);
+                    })
+                    .ok();
+            })
+        });
+        if let Some(Configuring {
+            input: ConfigureInput::Hotkey { autosave, .. },
+            ..
+        }) = &mut self.configuring
+        {
+            *autosave = task;
+        }
+    }
+
+    /// Carry out what the recorder's flow decided: tell the daemon recording
+    /// began, or write what it ended with and then tell the daemon it is
+    /// over -- written first, so the reload that resumes the hotkeys reads it.
+    fn step(&mut self, effect: Option<Effect>, window: &mut Window, cx: &mut Context<Self>) {
+        match effect {
+            None => {}
+            Some(Effect::Suspend) => cx.emit(LauncherEvent::RecordingHotkey(true)),
+            Some(Effect::Resume(save)) => {
+                self.configuring = None;
+                if let Some(Save { id, chord }) = save {
+                    let mut table = self.shortcut_table.clone();
+                    table.set_hotkey(&id, chord);
+                    self.write_shortcuts(&id, table, cx);
+                }
+                cx.emit(LauncherEvent::RecordingHotkey(false));
+                self.query_field.read(cx).focus(window);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Close the prompt, keeping the alias or hotkey as it was: Escape, the
+    /// window shown again or hidden.
+    fn stop_configuring(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let effect = self.recording.cancel();
+        if effect.is_some() {
+            self.step(effect, window, cx);
+        } else if self.configuring.take().is_some() {
+            self.query_field.read(cx).focus(window);
+            cx.notify();
+        }
+    }
+
+    /// What the footer says while the prompt is open, and whether it is a
+    /// refusal.
+    fn configure_note(&self) -> Option<(String, bool)> {
+        Some(match &self.configuring.as_ref()?.input {
+            ConfigureInput::Alias {
+                error: Some(why), ..
+            } => (why.to_string(), true),
+            ConfigureInput::Alias { .. } => ("Leave it empty to remove the alias".into(), false),
+            ConfigureInput::Hotkey { .. } => self.recording.recording()?.note(|owner| {
+                self.root
+                    .index()
+                    .iter()
+                    .find(|candidate| candidate.item.id == owner)
+                    .map_or_else(
+                        || owner.to_string(),
+                        |candidate| candidate.item.title.clone(),
+                    )
+            }),
+        })
     }
 
     /// Rank again, keeping the selection on `id` wherever it lands, so a
@@ -3841,6 +4203,9 @@ impl Launcher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.configuring.is_some() {
+            return;
+        }
         // The panel and the picker share the list's place; the panel wins.
         self.close_picker(cx);
         let previous_height = self.content_height();
@@ -4064,6 +4429,7 @@ impl Launcher {
             || self.picker.is_some()
             || self.argument.is_some()
             || self.browser_menu.is_some()
+            || self.configuring.is_some()
         {
             return;
         }
@@ -4081,6 +4447,11 @@ impl Launcher {
         if let Action::Favorite(change) = action {
             self.close_action_panel(cx);
             self.change_favorite(change, cx);
+            return;
+        }
+        if let Action::Configure(configure) = action {
+            self.close_action_panel(cx);
+            self.configure(configure, window, cx);
             return;
         }
         let Some(item) = self.selected_item() else {
@@ -4314,8 +4685,8 @@ impl Launcher {
             }
             action if opens_in_launcher(&action) => Hotkeyed::InLauncher(action),
             // A favourite is changed on a row, from the panel: a hotkey has
-            // no row, and changes nothing.
-            Action::Favorite(_) => return Some(Hotkeyed::Done),
+            // no row, and changes nothing. Nor is a row configured.
+            Action::Favorite(_) | Action::Configure(_) => return Some(Hotkeyed::Done),
             Action::OpenLink(open) => Hotkeyed::Perform {
                 action: Action::OpenLink(open.or_browser(self.config.preferred_browser.as_deref())),
                 kind,
@@ -4924,6 +5295,10 @@ pub enum LauncherEvent {
     /// the daemon hands [`Launcher::file_index_status`] to an open settings
     /// window.
     FileIndexChanged,
+    /// A hotkey began recording in the launcher, or stopped (F17): the
+    /// daemon suspends the command hotkeys meanwhile, as for the Shortcuts
+    /// page's recorder.
+    RecordingHotkey(bool),
     /// A layout was chosen for the window that held the foreground.
     ///
     /// Carries no window handle: the daemon is the only thing that has one,
@@ -4996,6 +5371,7 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::toggle_favorite))
             .on_action(cx.listener(Self::move_favorite_up))
             .on_action(cx.listener(Self::move_favorite_down))
+            .on_action(cx.listener(Self::configure_command))
             .size_full()
             .flex()
             .flex_col()
@@ -5207,8 +5583,31 @@ impl Launcher {
                         .child(argument.name.clone()),
                 )
             })
+            // Configure Command's row, as the argument's link is drawn: what
+            // is typed or pressed next is its alias or hotkey (F17).
+            .when_some(self.configuring.as_ref(), |row, configuring| {
+                let what = match configuring.input {
+                    ConfigureInput::Alias { .. } => "Alias",
+                    ConfigureInput::Hotkey { .. } => "Hotkey",
+                };
+                row.child(
+                    div()
+                        .flex_none()
+                        .mr(crate::styling::metrics::argument_pill_gap())
+                        .px(crate::styling::metrics::argument_pill_padding_x())
+                        .py(crate::styling::metrics::argument_pill_padding_y())
+                        .rounded(crate::styling::metrics::argument_pill_radius())
+                        .bg(color(colors.selection_background))
+                        .border_1()
+                        .border_color(color(colors.selection_border))
+                        .text_size(type_scale::title())
+                        .text_color(color(colors.text_primary))
+                        .child(format!("{what} of {}", configuring.title)),
+                )
+            })
             // Always wrapped, so the field's place does not change; the
-            // context is set only while Tab has a path to complete.
+            // context is set only while Tab has a path to complete. The
+            // prompt's field takes the query's place while it is open.
             .child(
                 div()
                     .flex()
@@ -5217,7 +5616,17 @@ impl Launcher {
                     .when(self.path_completion().is_some(), |field| {
                         field.key_context(TYPED_PATH_CONTEXT)
                     })
-                    .child(self.query_field.clone()),
+                    .map(|slot| match self.configuring.as_ref().map(|c| &c.input) {
+                        Some(ConfigureInput::Alias { field, .. }) => slot
+                            .key_context(crate::translate_page::FORM_CONTEXT)
+                            .on_action(cx.listener(Self::submit_alias))
+                            .on_action(cx.listener(Self::cancel_alias))
+                            .on_action(cx.listener(Self::hold_alias))
+                            .on_action(cx.listener(Self::hold_alias_back))
+                            .child(field.clone()),
+                        Some(ConfigureInput::Hotkey { field, .. }) => slot.child(field.clone()),
+                        None => slot.child(self.query_field.clone()),
+                    }),
             )
             // A scope applies to the whole list, so it sits at the end of the
             // field rather than where the text starts: it is a setting of the
@@ -5803,6 +6212,20 @@ impl Launcher {
         } else {
             verb
         };
+        // Configure Command's prompt says what it makes of what was typed
+        // or pressed, and Enter saves it (F17).
+        let note = self.configure_note();
+        let refused = note.as_ref().is_some_and(|(_, refused)| *refused);
+        let (status, verb) = match note {
+            Some((note, _)) => {
+                let taken = self
+                    .recording
+                    .recording()
+                    .is_some_and(|r| matches!(r.verdict, Verdict::Taken { .. }));
+                (note, if taken { "Overwrite" } else { "Save" }.to_string())
+            }
+            None => (status, verb),
+        };
 
         // Fixed: the window grows for the popover a frame after the layout is
         // asked for it, and in that frame a footer that can shrink does (I-10).
@@ -5838,16 +6261,26 @@ impl Launcher {
             )
             // Truncated rather than pushing the keys off the edge: a long
             // timer name must not move them (I-10).
-            .child(div().flex_1().min_w_0().truncate().child(status))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .when(refused, |status| {
+                        status.text_color(color(colors.text_error))
+                    })
+                    .child(status),
+            )
             .child({
                 let mut hints: Vec<(String, &[&str])> = vec![(verb, save_keys)];
                 // Advertised only when there is a second action to reach. A
                 // hint for a panel that would open empty teaches the user
                 // that the hint lies.
-                if entries.len() > 1 && picking.is_none() {
+                if entries.len() > 1 && picking.is_none() && self.configuring.is_none() {
                     hints.push(("Actions".into(), &["Ctrl", "K"]));
                 }
                 let leave = match self.mode {
+                    _ if self.configuring.is_some() => "Cancel",
                     Mode::Root if self.argument.is_none() => "Dismiss",
                     Mode::Root | Mode::View(_) | Mode::Form(_) => "Back",
                 };
@@ -6702,6 +7135,51 @@ mod tests {
         );
 
         assert_eq!(rows[1].shortcut, ["Ctrl", "Shift", "F"]);
+    }
+
+    /// Configure Command (F17): an indexed row gets what its shortcuts
+    /// allow, after its own actions; an answer, a file or a fallback gets
+    /// none, being nothing `shortcuts.json` can name.
+    #[test]
+    fn only_an_indexed_row_can_be_configured() {
+        use lumen_core::root::Source;
+        use lumen_core::shortcuts::{Configure, Shortcuts};
+
+        let mut table = Shortcuts::default();
+        table.set_alias("app:code", Some("c".into()));
+        assert_eq!(
+            super::configure_actions(Source::Indexed(0), "app:code", &table),
+            [
+                Configure::ChangeAlias,
+                Configure::DeleteAlias,
+                Configure::SetHotkey
+            ]
+            .map(Action::Configure)
+        );
+        for source in [Source::Answer(0), Source::File(0), Source::Fallback(0)] {
+            assert!(super::configure_actions(source, "app:code", &table).is_empty());
+        }
+
+        let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
+        let shortcuts = crate::keymap::Shortcuts::read(&keymap);
+        let mut actions = firefox_actions();
+        actions.extend(super::configure_actions(
+            Source::Indexed(0),
+            "app:x",
+            &table,
+        ));
+        let rows = root_panel_entries(None, actions, &shortcuts);
+        let last: Vec<_> = rows[4..]
+            .iter()
+            .map(|row| (row.title.as_str(), row.group))
+            .collect();
+        assert_eq!(
+            last,
+            [
+                ("Set Alias", ActionGroup::Configure),
+                ("Set Hotkey", ActionGroup::Configure)
+            ]
+        );
     }
 
     /// A folder's panel opens it: it is no application. And it can be kept

@@ -30,9 +30,9 @@ use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::hotkey_recorder::{CancelRecording, ClearRecording, SaveRecording};
 use crate::launcher::{
-    Activate, AskArgument, ClearQuery, CompletePath, Dismiss, MoveFavoriteDown, MoveFavoriteUp,
-    NextScope, PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast,
-    SelectNext, SelectPrevious, TYPED_PATH_CONTEXT, ToggleActionPanel, ToggleFavorite,
+    Activate, AskArgument, ClearQuery, CompletePath, ConfigureCommand, Dismiss, MoveFavoriteDown,
+    MoveFavoriteUp, NextScope, PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst,
+    SelectLast, SelectNext, SelectPrevious, TYPED_PATH_CONTEXT, ToggleActionPanel, ToggleFavorite,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
@@ -311,6 +311,16 @@ const BINDINGS: &[Binding] = &[
         description: Some("Move a favorite down"),
     },
     Binding {
+        keys: "ctrl-shift-,",
+        group: "Actions",
+        description: Some("Set the selection's alias or hotkey"),
+    },
+    Binding {
+        keys: "ctrl-<",
+        group: "Actions",
+        description: None,
+    },
+    Binding {
         keys: "tab",
         group: "Forms",
         description: Some("Next field"),
@@ -385,6 +395,10 @@ pub(crate) fn launcher_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-f", ToggleFavorite, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-up", MoveFavoriteUp, Some(CONTEXT)),
         KeyBinding::new("ctrl-alt-down", MoveFavoriteDown, Some(CONTEXT)),
+        // Configure Command (F17), Raycast's Ctrl+Shift+, -- which Windows
+        // reports as Ctrl and the shifted character, so both are bound.
+        KeyBinding::new("ctrl-shift-,", ConfigureCommand, Some(CONTEXT)),
+        KeyBinding::new("ctrl-<", ConfigureCommand, Some(CONTEXT)),
     ]
 }
 
@@ -604,12 +618,23 @@ fn shortcut_list_bindings() -> Vec<KeyBinding> {
 
 /// The hotkey recorder (F17, 7.56): Escape, Enter and Backspace steer it --
 /// Enter also overwrites a chord another command has -- and every other
-/// chord the settings window binds is unbound in it, so the chord is
-/// recorded instead of run. Not on the sheet: the field says them while it
-/// records.
+/// chord the settings window or the launcher binds is unbound in it, so the
+/// chord is recorded instead of run. Not on the sheet: the field says them
+/// while it records.
 fn recorder_bindings() -> Vec<KeyBinding> {
     let recorder = Some(RECORDER_CONTEXT);
-    vec![
+    let steering = ["escape", "enter", "backspace", "up", "down"];
+    // The launcher's, around Configure Command's recorder.
+    let launcher: Vec<KeyBinding> = launcher_bindings()
+        .iter()
+        .filter_map(|binding| match binding.keystrokes() {
+            [keystroke] => Some(keystroke.inner().unparse()),
+            _ => None,
+        })
+        .filter(|keys| !steering.contains(&keys.as_str()))
+        .map(|keys| KeyBinding::new(&keys, gpui::NoAction, recorder))
+        .collect();
+    let mut bindings = vec![
         KeyBinding::new("escape", CancelRecording, recorder),
         KeyBinding::new("enter", SaveRecording, recorder),
         KeyBinding::new("backspace", ClearRecording, recorder),
@@ -620,7 +645,9 @@ fn recorder_bindings() -> Vec<KeyBinding> {
         // The Shortcuts list's, which the recorder sits inside.
         KeyBinding::new("up", gpui::NoAction, recorder),
         KeyBinding::new("down", gpui::NoAction, recorder),
-    ]
+    ];
+    bindings.extend(launcher);
+    bindings
 }
 
 /// The keys the action panel shows beside its rows, as keycap labels.
@@ -994,6 +1021,36 @@ mod tests {
         assert_eq!(
             bindings.first().map(|binding| binding.action().name()),
             Some("lumen_shortcuts::RecordHotkey")
+        );
+    }
+
+    /// In the launcher too (F17): no launcher chord runs while Configure
+    /// Command records, and Ctrl+Shift+, opens it as Windows reports it.
+    #[test]
+    fn the_recorder_hears_every_chord_the_launcher_binds() {
+        let keymap = gpui::Keymap::new(
+            launcher_bindings()
+                .into_iter()
+                .chain(global_bindings())
+                .chain(recorder_bindings())
+                .collect(),
+        );
+        let stack: Vec<gpui::KeyContext> = [CONTEXT, RECORDER_CONTEXT]
+            .iter()
+            .map(|context| gpui::KeyContext::parse(context).unwrap())
+            .collect();
+        for binding in launcher_bindings().into_iter().chain(global_bindings()) {
+            let (bindings, _) = keymap.bindings_for_input(binding.keystrokes(), &stack);
+            let action = bindings.first().map(|binding| binding.action().name());
+            assert!(
+                action.is_none_or(|name| name.starts_with("lumen_recorder::")),
+                "{:?} runs {action:?} while recording",
+                binding.keystrokes()
+            );
+        }
+        assert_eq!(
+            resolves_to("ctrl-<", &[CONTEXT]),
+            Some("lumen::ConfigureCommand")
         );
     }
 

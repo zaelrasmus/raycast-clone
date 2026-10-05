@@ -435,6 +435,8 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         },
     );
 
+    subscribe_to_recording(cx, &window, shortcut_commands.clone());
+
     let surfaces = Surfaces {
         launcher: window,
         overlay,
@@ -1220,6 +1222,30 @@ fn open_hidden_window<V: 'static + Render>(
     Ok(window)
 }
 
+/// Suspend the command hotkeys while the launcher records one (F17), and
+/// resume them after, through the shortcuts watch's own queue as for the
+/// Shortcuts page's recorder (7.56).
+fn subscribe_to_recording(
+    cx: &mut App,
+    window: &gpui::WindowHandle<Launcher>,
+    shortcut_commands: mpsc::UnboundedSender<ShortcutsCommand>,
+) {
+    let Ok(entity) = window.entity(cx) else {
+        return;
+    };
+    cx.subscribe(&entity, move |_, event: &LauncherEvent, _| {
+        if let LauncherEvent::RecordingHotkey(on) = event {
+            let command = if *on {
+                ShortcutsCommand::Suspend
+            } else {
+                ShortcutsCommand::Resume
+            };
+            let _ = shortcut_commands.unbounded_send(command);
+        }
+    })
+    .detach();
+}
+
 /// React to what the view asks for.
 #[allow(clippy::too_many_arguments)]
 fn subscribe_to_launcher(
@@ -1350,6 +1376,8 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::Timer(command.clone()));
                 return;
             }
+            // The shortcuts watch's, heard in `subscribe_to_recording`.
+            LauncherEvent::RecordingHotkey(_) => return,
             _ => {}
         }
 
@@ -1382,6 +1410,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunCalculatorHistory
                 | LauncherEvent::Blocked { .. }
                 | LauncherEvent::FileIndexChanged
+                | LauncherEvent::RecordingHotkey(_)
                 | LauncherEvent::Timer(_) => Ok(()),
                 // Sent back through the same channel the hotkey and the socket use,
                 // rather than acted on here. One queue means one order of events,

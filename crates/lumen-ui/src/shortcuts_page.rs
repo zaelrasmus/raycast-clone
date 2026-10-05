@@ -615,18 +615,7 @@ impl ShortcutsPage {
     /// What the row recording says: what the keys come to.
     fn recording_note(&self, id: &str) -> Option<(String, bool)> {
         let recording = self.flow.recording().filter(|r| r.id == id)?;
-        Some(match &recording.verdict {
-            Verdict::Waiting => match &recording.capture {
-                Capture::Invalid { why, .. } => (why.to_string(), true),
-                _ => ("Esc cancels, Backspace removes the hotkey".into(), false),
-            },
-            // No countdown: a figure that changes each tenth of a second
-            // would redraw the window for nothing but itself.
-            Verdict::Pending { .. } => ("Saving\u{2026} Enter saves now".into(), false),
-            // Overwrite follows it on the row; Enter does the same.
-            Verdict::Taken { owner, .. } => (format!("Used by {}", self.title_of(owner)), true),
-            Verdict::Reserved { why, .. } => (why.to_string(), true),
-        })
+        Some(recording.note(|owner| self.title_of(owner).to_string()))
     }
 
     /// What a row says under its title: what is wrong with it, or its kind.

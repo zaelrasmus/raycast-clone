@@ -106,6 +106,10 @@ pub enum Action {
     /// them, for any row of the index, and carries it out on the list it
     /// owns -- nothing is opened and the launcher stays.
     Favorite(crate::favorites::Change),
+    /// Set, change or delete the row's alias or hotkey (F17). Offered beside
+    /// the row's own actions, like `Favorite`, and carried out in the
+    /// launcher, which writes `shortcuts.json`.
+    Configure(crate::shortcuts::Configure),
     /// Open it, raising a copy that is already running rather than starting a
     /// second one.
     Launch(LaunchTarget),
@@ -217,6 +221,8 @@ pub enum ActionGroup {
     Manage,
     /// Adding the row to the favourites, or moving it among them (F15).
     Favorite,
+    /// The row's alias and hotkey (F17).
+    Configure,
 }
 
 /// Commands Lumen provides for itself.
@@ -280,6 +286,7 @@ impl Action {
     pub fn verb(&self) -> &'static str {
         match self {
             Action::Favorite(change) => change.verb(),
+            Action::Configure(configure) => configure.verb(),
             Action::Launch(_) => "Open Application",
             Action::LaunchNew(_) => "New Application Window",
             Action::CopyToClipboard(_) => "Copy",
@@ -331,6 +338,7 @@ impl Action {
     pub fn group(&self) -> ActionGroup {
         match self {
             Action::Favorite(_) => ActionGroup::Favorite,
+            Action::Configure(_) => ActionGroup::Configure,
             Action::LaunchNew(_) | Action::ChooseBrowser(_) => ActionGroup::Alternate,
             Action::OpenLink(open) if open.private => ActionGroup::Alternate,
             Action::CopyToClipboard(_) | Action::CopyAnswer(_) | Action::CopyExpression(_) => {
@@ -373,6 +381,8 @@ impl Action {
             Action::Favorite(Change::Remove) => "star-off",
             Action::Favorite(Change::MoveUp) => "arrow-up",
             Action::Favorite(Change::MoveDown) => "arrow-down",
+            Action::Configure(configure) if configure.is_alias() => "text",
+            Action::Configure(_) => "keyboard",
             Action::Launch(_) | Action::OpenLink(_) => "open",
             Action::LaunchNew(_) | Action::ArrangeWindow(_) => "window",
             Action::CopyToClipboard(_) | Action::CopyAnswer(_) | Action::CopyExpression(_) => {
@@ -427,6 +437,7 @@ impl Action {
             | Action::CreateSnippet
             | Action::OpenTimerForm { .. }
             | Action::Favorite(_)
+            | Action::Configure(_)
             | Action::Timer(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }

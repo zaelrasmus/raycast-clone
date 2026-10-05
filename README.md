@@ -670,6 +670,21 @@ while they are held, and the row says what they come to:
   -- or **one of Lumen's own** (the launcher's or the timers' hotkey): said
   on the row, never saved.
 
+#### Configure Command, from the launcher
+
+The action panel (Ctrl+K) of any command root search finds offers **Set
+Alias** or **Change Alias**, **Delete Alias** when it has one, and the same
+for its hotkey. **Ctrl+Shift+,** opens the panel on them directly.
+
+- **Alias**: typed in the search row. Enter saves, Esc cancels, and an
+  empty alias removes it; one that is not letters, digits and single spaces
+  is refused in the footer.
+- **Hotkey**: recorded in the search row, the same recorder as in settings,
+  with the command hotkeys suspended meanwhile. A chord another command has
+  is named in the footer and saved only with **Overwrite** (Enter). Hiding
+  the launcher cancels it.
+- **Delete**: saved at once.
+
 Esc, clicking away or closing the window keeps the hotkey as it was;
 Backspace removes it. While a row records, the other command hotkeys are
 turned off, so pressing one records it instead of running it; they come
