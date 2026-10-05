@@ -2120,6 +2120,7 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `search.height` | 56 | 40--96 | The search field's row |
 | `gutter` | 14 | 8--32 | The left edge text lines up on |
 | `list.padding` | 6 | 0--16 | Above and below the list; the space under the last row is at least `row.inset` |
+| `list.padding-bottom` | unset | 0--16 | Optional: the space under the last row, exactly. Unset, it is the larger of `list.padding` and `row.inset` |
 | `row.height` | 44 | 28--72 | Every row (I-10) |
 | `row.radius` | 7 | 0--18 | The selection's corner |
 | `row.inset` | 7 | 0--16 | The selection's distance from the window's edge |

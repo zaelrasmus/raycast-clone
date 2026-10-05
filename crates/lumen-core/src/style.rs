@@ -65,6 +65,9 @@ pub struct Metrics {
     pub search_height: f32,
     pub gutter: f32,
     pub list_padding: f32,
+    /// The space under a list's last row, when a style sets it; unset, it
+    /// is decided by [`Metrics::list_padding_bottom`].
+    pub list_padding_bottom: Option<f32>,
     pub row_height: f32,
     pub row_radius: f32,
     pub row_inset: f32,
@@ -127,6 +130,7 @@ impl Metrics {
         search_height: layout::SEARCH_HEIGHT,
         gutter: layout::GUTTER,
         list_padding: layout::LIST_PADDING,
+        list_padding_bottom: None,
         row_height: layout::ROW_HEIGHT,
         row_radius: layout::ROW_RADIUS,
         row_inset: layout::ROW_INSET,
@@ -215,12 +219,24 @@ impl Metrics {
         })
     }
 
-    /// The space under a list's last row: at least the row's side inset, so
-    /// the selected row sits in the same frame on every side, and never less
+    /// The tokens a style may leave unset, with where they land and their
+    /// range. Unset, each is derived from the others, so no relation names
+    /// one and the base sets none (I-12).
+    fn optional_slot(&mut self, name: &str) -> Option<(&mut Option<f32>, f32, f32)> {
+        Some(match name {
+            "list.padding-bottom" => (&mut self.list_padding_bottom, 0.0, 16.0),
+            _ => return None,
+        })
+    }
+
+    /// The space under a list's last row: `list.padding-bottom` when the
+    /// style sets it. Otherwise at least the row's side inset, so the
+    /// selected row sits in the same frame on every side, and never less
     /// than the list padding, so a style with a roomier list keeps it. The
     /// space above the first row is the list padding alone.
     pub fn list_padding_bottom(&self) -> f32 {
-        self.list_padding.max(self.row_inset)
+        self.list_padding_bottom
+            .unwrap_or(self.list_padding.max(self.row_inset))
     }
 
     /// A list's padding above and below its rows together: what every height
@@ -719,6 +735,24 @@ impl Style {
         }
 
         for (name, &value) in &file.metrics {
+            if let Some((slot, min, max)) = style.metrics.optional_slot(name) {
+                if !value.is_finite() {
+                    log::warn!(
+                        "style {:?} sets {name:?} to {value}, outside what it can be; leaving it unset",
+                        file.name
+                    );
+                    continue;
+                }
+                let resolved = value.clamp(min, max);
+                if resolved != value {
+                    log::warn!(
+                        "style {:?} sets {name:?} to {value}, outside what it can be; using {resolved}",
+                        file.name
+                    );
+                }
+                *slot = Some(resolved);
+                continue;
+            }
             let Some((slot, min, max)) = style.metrics.slot(name) else {
                 log::warn!(
                     "style {:?} sets unknown token {name:?}; ignoring it",
@@ -896,6 +930,11 @@ mod tests {
             // The base sits inside every range it sets.
             assert!((min..=max).contains(value), "{name} base outside its range");
         }
+        // The optional token is known too, and the base leaves it unset.
+        let name = "list.padding-bottom";
+        assert!(metrics.slot(name).is_none(), "{name} is in both tables");
+        let (value, ..) = metrics.optional_slot(name).expect(name);
+        assert_eq!(*value, None, "{name} set in the base");
     }
 
     #[test]
@@ -930,6 +969,50 @@ mod tests {
         let roomy = Style::resolve(&file(&[("list.padding", 10.0), ("row.inset", 7.0)], &[]));
         assert_eq!(roomy.metrics.list_padding_bottom(), 10.0);
         assert_eq!(roomy.metrics.list_padding_vertical(), 20.0);
+    }
+
+    /// `list.padding-bottom` is optional: unset, the end of the list is as
+    /// above; set, it is the space under the last row, whatever the padding
+    /// and the inset are.
+    #[test]
+    fn list_padding_bottom_is_optional_and_wins_when_set() {
+        assert_eq!(Metrics::BASE.list_padding_bottom, None);
+        let unset = Style::resolve(&file(&[("list.padding", 2.0), ("row.inset", 7.0)], &[]));
+        assert_eq!(unset.metrics.list_padding_bottom, None);
+        assert_eq!(unset.metrics.list_padding_bottom(), 7.0);
+
+        let set = |bottom: f32| {
+            Style::resolve(&file(
+                &[
+                    ("list.padding", 2.0),
+                    ("row.inset", 7.0),
+                    ("list.padding-bottom", bottom),
+                ],
+                &[],
+            ))
+            .metrics
+        };
+        assert_eq!(set(12.0).list_padding_bottom(), 12.0);
+        assert_eq!(set(12.0).list_padding_vertical(), 2.0 + 12.0);
+        assert_eq!(set(0.0).list_padding_bottom(), 0.0);
+        // Out of range is clamped like every other token.
+        assert_eq!(set(40.0).list_padding_bottom, Some(16.0));
+        assert_eq!(set(-3.0).list_padding_bottom, Some(0.0));
+        // Not a number leaves it unset.
+        assert_eq!(set(f32::NAN).list_padding_bottom, None);
+    }
+
+    #[test]
+    fn list_padding_bottom_parses_from_json() {
+        let json = r#"{
+            "schema_version": 1,
+            "name": "Bottom",
+            "metrics": { "list.padding-bottom": 12 }
+        }"#;
+        let file: StyleFile = serde_json::from_str(json).unwrap();
+        let style = Style::resolve(&file);
+        assert_eq!(style.metrics.list_padding_bottom, Some(12.0));
+        assert_eq!(style.metrics.list_padding_bottom(), 12.0);
     }
 
     /// Tracking is a token like the others: base zero, set from a style, and
