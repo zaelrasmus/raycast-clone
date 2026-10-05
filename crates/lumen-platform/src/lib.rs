@@ -27,7 +27,9 @@ pub use events::{
     GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier, Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
-pub use tiling::{Cycling, Gaps, LayoutKind, WindowLayout, WindowSettings};
+pub use tiling::{
+    Anchor, Cycling, Gaps, LayoutKind, Length, Offset, Placement, WindowLayout, WindowSettings,
+};
 pub use tray::{TrayCommand, TrayInfo, TraySink};
 
 /// How the launcher window's background is produced.

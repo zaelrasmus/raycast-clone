@@ -487,6 +487,43 @@ Both gaps are kept between `0` and `64` and scaled to each monitor's DPI. A
 half only cycles while the window is still where Lumen put it; move it by
 hand and the next press starts again from a half.
 
+### Custom window commands
+
+`%APPDATA%\Lumen\config\window-commands.json` holds window commands of your
+own. Each one appears in root search under its name and can have an alias or
+hotkey in `shortcuts.json` under `window:custom:<id>`. Saving the file takes
+effect immediately.
+
+```json
+{
+  "commands": [
+    {
+      "id": "reading-k3x9q1",
+      "name": "Reading",
+      "placement": {
+        "width": "60%",
+        "height": "auto",
+        "x": "0pt",
+        "y": "-10%",
+        "anchor": "center",
+        "gaps": true
+      }
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `width`, `height` | A percentage of the screen (`"33.33%"`, more than 0 and at most 100), points (`"640pt"`, scaled to the display's DPI), or `"auto"` to keep the window's current size. |
+| `x`, `y` | Offset from the anchor, in `%` (-100 to 100) or `pt`. Positive goes right and down. Default `"0pt"`. |
+| `anchor` | `top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`, `bottom`, `bottom-right`. Default `center`. |
+| `gaps` | Whether `screen-gap` is left round the screen. Default `false`, as in Raycast. |
+
+The window is never placed partly off the screen. The `id` must be unique and
+must not change: it is what hotkeys and history refer to, so you can rename a
+command freely. An entry that does not read is skipped, and the log says why.
+
 **If the launcher does not respond to `Alt+Space`,** another application already
 holds that combination — global hotkeys on Windows are first come, first served.
 Lumen still runs and still responds to `lumen toggle`; change `"key"` (or the

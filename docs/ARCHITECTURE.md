@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16), and five window commands -- *Minimise Window* from any state in one command, *Minimise on This Display*, *Restore Window* from a bounded per-window history that makes Minimise then Restore a round trip by hotkey, and *Focus Next* / *Previous App Window* (7.57). Gaps between arranged windows and round the screen, DPI-scaled, and repeated halves that cycle sizes or displays, configured in `window-management`, applied live, and set from a *Window Management* settings page (7.58). The window-management presets are next |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16), and five window commands -- *Minimise Window* from any state in one command, *Minimise on This Display*, *Restore Window* from a bounded per-window history that makes Minimise then Restore a round trip by hotkey, and *Focus Next* / *Previous App Window* (7.57). Gaps between arranged windows and round the screen, DPI-scaled, and repeated halves that cycle sizes or displays, configured in `window-management`, applied live, and set from a *Window Management* settings page (7.58). Custom window commands -- a size in % or pt or `auto`, a nine-point anchor and an offset -- are stored in `window-commands.json`, reloaded live and run as `window:custom:<id>` items with hotkeys like any command (7.59); their editor is next |
 
 ### F4 build order is not optional
 
@@ -3795,6 +3795,50 @@ half placed last -- window, pressed layout, size, rectangle -- is kept in
 `WindowsPlatform` beside the *Restore* history (7.57), for the same
 reason; any other layout clears it. On Hyprland (F5) the settings are
 stored and ignored until arranging exists there.
+
+### 7.59 Custom window commands
+
+A user can make a window command of their own, as in Raycast's *Create
+Command* (F17). Its geometry is a `tiling::Placement`: a width and a height,
+an x and a y offset, one of nine anchors, and whether the screen gap applies.
+A size is a percentage of the work area, points, or `auto`, which keeps the
+window's current size on that axis. An offset is a percentage, from -100% to
+100%, or points. Positive offsets go right and down. Points are logical, so
+the monitor's scale factor multiplies them. Percentages are held as
+hundredths of a percent, so the type has no float and stays `Copy + Eq +
+Hash` like every other layout. The file holds them as typed strings (`"60%"`,
+`"33.33%"`, `"640pt"`, `"auto"`). A figure out of range is refused with its
+reason.
+
+`Placement::place` works in a fixed order. It takes the work area, inset by
+the screen gap when `gaps` is set. It sizes the window and clamps the size to
+that area. The anchor puts the window at the start, middle or end of each
+axis. The offset shifts it. A last clamp keeps it inside.
+
+The placement reaches the platform as `WindowLayout::Custom(Placement)`, not
+through a new trait method. With the variant, the hotkey path, the
+launcher's action and the Windows apply path all carry the placement
+unchanged. That includes the *Restore* history, the restore from minimised
+or maximised before arranging, and the DWM frame compensation. A second
+method would have needed both implementations (I-9) and a second copy of
+each path. `Custom` is outside `WindowLayout::ALL`, which lists the
+built-ins, and it is never a half, so it never cycles.
+
+The commands live in `<config>/window-commands.json` as `{ "commands": [ {
+"id", "name", "placement" } ] }`. That is configuration, beside the
+quicklinks, because people edit it by hand. A missing file means no
+commands. An entry that does not read, or repeats an id, is skipped alone.
+Saves are atomic. Each command is the root item `window:custom:<id>`. The id
+is a slug of the first name plus a clock suffix, made once and never
+recomputed from the name, so frecency, favourites and `shortcuts.json`
+survive a rename. The daemon watches the file and reindexes, and a hotkey
+resolves through the index. `WindowLayout::placement` gives *Duplicate
+Command* its starting point for every built-in a placement can express. For
+a tile the result is close but not exact: inner edges take the screen gap,
+not half the window gap. *Reasonable Size* loses its cap. The layouts that
+keep part of the window's position, the monitor moves and the commands have
+no placement. On Hyprland (F5) a custom command does nothing, like every
+layout.
 
 ## 8. Risk register
 

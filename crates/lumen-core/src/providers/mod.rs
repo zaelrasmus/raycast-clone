@@ -34,6 +34,7 @@ pub mod timers;
 pub mod translate;
 pub mod weather;
 pub mod web;
+pub mod window_commands;
 
 pub use arrange::ArrangeProvider;
 pub use calculator::CalculatorProvider;
@@ -49,6 +50,7 @@ pub use snippets::SnippetsProvider;
 pub use timers::{TimerPresetsProvider, TimersProvider};
 pub use translate::TranslateProvider;
 pub use weather::WeatherProvider;
+pub use window_commands::{CustomWindowCommand, WindowCommandsProvider};
 
 /// A source of results.
 ///

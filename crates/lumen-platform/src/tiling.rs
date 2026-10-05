@@ -99,6 +99,266 @@ pub enum WindowLayout {
     /// switchable windows in z-order. See [`crate::window_commands::cycle`].
     FocusNextAppWindow,
     FocusPreviousAppWindow,
+
+    /// A command the user made (F17, 7.59): a size, an anchor and an offset.
+    /// Never in [`WindowLayout::ALL`], which lists the built-ins, and never
+    /// cycled.
+    Custom(Placement),
+}
+
+/// A custom window command's geometry (F17, 7.59).
+///
+/// Integers throughout, so that it is `Eq` and `Hash` like every other
+/// layout: percentages in hundredths of a percent, points as whole logical
+/// pixels. Written in the file as strings people can read and type:
+/// `"60%"`, `"33.33%"`, `"640pt"`, `"auto"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Placement {
+    pub width: Length,
+    pub height: Length,
+    #[serde(default)]
+    pub x: Offset,
+    #[serde(default)]
+    pub y: Offset,
+    #[serde(default)]
+    pub anchor: Anchor,
+    /// Whether the screen gap is left round the area it is placed in. Off
+    /// unless asked for, as in Raycast's editor: a custom command is exact.
+    #[serde(default)]
+    pub gaps: bool,
+}
+
+/// One dimension of a [`Placement`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum Length {
+    /// The window's current size on that axis.
+    Auto,
+    /// Of the work area, in hundredths of a percent: 5000 is half.
+    Percent(i32),
+    /// Logical pixels, scaled by the monitor's scale factor.
+    Points(i32),
+}
+
+/// How far a [`Placement`] is shifted from its anchor: positive is right on
+/// the x axis and down on the y axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum Offset {
+    /// Of the work area, in hundredths of a percent, between -100% and 100%.
+    Percent(i32),
+    /// Logical pixels.
+    Points(i32),
+}
+
+impl Default for Offset {
+    fn default() -> Self {
+        Self::Points(0)
+    }
+}
+
+/// Where in the work area a [`Placement`] starts from, before its offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Anchor {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    #[default]
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+impl Anchor {
+    pub const ALL: [Anchor; 9] = [
+        Self::TopLeft,
+        Self::Top,
+        Self::TopRight,
+        Self::Left,
+        Self::Center,
+        Self::Right,
+        Self::BottomLeft,
+        Self::Bottom,
+        Self::BottomRight,
+    ];
+
+    /// Where on each axis, as a share of the room left over: 0 at the start,
+    /// 1 in the middle, 2 at the end -- halves of the slack.
+    fn halves(self) -> (i32, i32) {
+        let index = Self::ALL.iter().position(|&a| a == self).unwrap_or(4) as i32;
+        (index % 3, index / 3)
+    }
+}
+
+/// `text` as hundredths: `"33.3"` is 3330. At most two decimals.
+fn hundredths(text: &str) -> Option<i32> {
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    if whole.is_empty() && fraction.is_empty() || fraction.len() > 2 {
+        return None;
+    }
+    let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if !all_digits(whole) || !all_digits(fraction) || whole.len() > 6 {
+        return None;
+    }
+    let whole: i32 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().ok()?
+    };
+    let fraction: i32 = format!("{fraction:0<2}").parse().ok()?;
+    let value = whole * 100 + fraction;
+    Some(if negative { -value } else { value })
+}
+
+fn write_hundredths(value: i32) -> String {
+    let sign = if value < 0 { "-" } else { "" };
+    let (whole, fraction) = (value.abs() / 100, value.abs() % 100);
+    match fraction {
+        0 => format!("{sign}{whole}"),
+        f if f % 10 == 0 => format!("{sign}{whole}.{}", f / 10),
+        f => format!("{sign}{whole}.{f:02}"),
+    }
+}
+
+/// A percentage or a point figure, before its range is checked.
+fn measure(text: &str) -> Result<Offset, String> {
+    let text = text.trim();
+    if let Some(n) = text.strip_suffix('%') {
+        return hundredths(n.trim())
+            .map(Offset::Percent)
+            .ok_or_else(|| format!("{text:?} is not a percentage like \"50%\" or \"33.33%\""));
+    }
+    if let Some(n) = text.strip_suffix("pt") {
+        return n
+            .trim()
+            .parse::<i32>()
+            .map(Offset::Points)
+            .map_err(|_| format!("{text:?} is not a whole number of points like \"640pt\""));
+    }
+    Err(format!(
+        "{text:?} needs a unit: a percentage like \"50%\" or points like \"640pt\""
+    ))
+}
+
+impl std::str::FromStr for Length {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        if text.trim().eq_ignore_ascii_case("auto") {
+            return Ok(Self::Auto);
+        }
+        match measure(text)? {
+            Offset::Percent(p) if p > 0 && p <= 10_000 => Ok(Self::Percent(p)),
+            Offset::Percent(_) => Err(format!("{text:?}: a size is more than 0% and at most 100%")),
+            Offset::Points(p) if p > 0 => Ok(Self::Points(p)),
+            Offset::Points(_) => Err(format!("{text:?}: a size is more than 0pt")),
+        }
+    }
+}
+
+impl std::str::FromStr for Offset {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        match measure(text)? {
+            Offset::Percent(p) if !(-10_000..=10_000).contains(&p) => {
+                Err(format!("{text:?}: an offset is between -100% and 100%"))
+            }
+            offset => Ok(offset),
+        }
+    }
+}
+
+impl std::fmt::Display for Length {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Percent(p) => write!(f, "{}%", write_hundredths(*p)),
+            Self::Points(p) => write!(f, "{p}pt"),
+        }
+    }
+}
+
+impl std::fmt::Display for Offset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Percent(p) => write!(f, "{}%", write_hundredths(*p)),
+            Self::Points(p) => write!(f, "{p}pt"),
+        }
+    }
+}
+
+macro_rules! string_serde {
+    ($($ty:ty),*) => {$(
+        impl TryFrom<String> for $ty {
+            type Error = String;
+            fn try_from(text: String) -> Result<Self, String> {
+                text.parse()
+            }
+        }
+        impl From<$ty> for String {
+            fn from(value: $ty) -> String {
+                value.to_string()
+            }
+        }
+    )*};
+}
+string_serde!(Length, Offset);
+
+impl Placement {
+    /// Where this puts a window now at `current`, on a monitor whose work
+    /// area is `work_area` and whose scale factor is `scale` (7.59).
+    ///
+    /// In order: the area, inset by the screen gap when [`Placement::gaps`];
+    /// the size, a share of that area, points times `scale`, or the current
+    /// size for `Auto`, clamped to the area; the anchor, which puts it at the
+    /// start, middle or end of each axis; the offset, which shifts it; and a
+    /// last clamp that keeps it inside.
+    pub fn place(self, work_area: Rect, current: Rect, scale: f32, gaps: Gaps) -> Rect {
+        let area = match self.gaps {
+            true => inset(work_area, gaps.screen),
+            false => work_area,
+        };
+        let points = |p: i32| (p as f32 * scale).round() as i32;
+        // Rounded half away from zero, so -50% is the mirror of 50%.
+        let share = |extent: i32, h: i32| {
+            let h = h as i64;
+            ((extent as i64 * h + 5_000 * h.signum()) / 10_000) as i32
+        };
+        let size = |length: Length, extent: i32, current: i32| {
+            let size = match length {
+                Length::Auto => current,
+                Length::Percent(h) => share(extent, h),
+                Length::Points(p) => points(p),
+            };
+            size.clamp(1, extent.max(1))
+        };
+        let shift = |offset: Offset, extent: i32| match offset {
+            Offset::Percent(h) => share(extent, h),
+            Offset::Points(p) => points(p),
+        };
+
+        let w = size(self.width, area.width, current.width);
+        let h = size(self.height, area.height, current.height);
+        let (column, row) = self.anchor.halves();
+        let (slack_x, slack_y) = (area.width - w, area.height - h);
+        let x = area.x + slack_x * column / 2 + shift(self.x, area.width);
+        let y = area.y + slack_y * row / 2 + shift(self.y, area.height);
+        Rect::new(
+            x.clamp(area.x, area.x + slack_x.max(0)),
+            y.clamp(area.y, area.y + slack_y.max(0)),
+            w,
+            h,
+        )
+    }
 }
 
 /// What a [`WindowLayout`] does to the window.
@@ -402,6 +662,66 @@ impl WindowLayout {
         self.place_at(Share::Half, work_area, current, scale, gaps)
     }
 
+    /// This layout as a [`Placement`], for *Duplicate Command* (7.59), where
+    /// one says the same thing: the tiles, the centred sizes. A tile's inner
+    /// edges take the screen gap rather than half the window gap, and
+    /// *Reasonable Size* loses its cap, so a duplicate is close, not exact.
+    ///
+    /// `None` for the layouts that keep part of the window's position (the
+    /// maximised axes, the moves), the monitor moves and the commands.
+    pub fn placement(self) -> Option<Placement> {
+        use Anchor::*;
+        let (third, two_thirds) = (3333, 6667);
+        let p = |width: i32, height: i32, anchor: Anchor| Placement {
+            width: Length::Percent(width),
+            height: Length::Percent(height),
+            x: Offset::default(),
+            y: Offset::default(),
+            anchor,
+            gaps: true,
+        };
+        let shifted = |width: i32, x: i32| Placement {
+            x: Offset::Percent(x),
+            ..p(width, 10_000, Left)
+        };
+        Some(match self {
+            Self::Maximize => p(10_000, 10_000, Center),
+            Self::Center => p(6000, 8500, Center),
+            Self::AlmostMaximize => p(9000, 9000, Center),
+            Self::ReasonableSize => p(6000, 6000, Center),
+            Self::CenterKeepSize => Placement {
+                width: Length::Auto,
+                height: Length::Auto,
+                ..p(10_000, 10_000, Center)
+            },
+            Self::LeftHalf => p(5000, 10_000, Left),
+            Self::RightHalf => p(5000, 10_000, Right),
+            Self::TopHalf => p(10_000, 5000, Top),
+            Self::BottomHalf => p(10_000, 5000, Bottom),
+            Self::TopLeftQuarter => p(5000, 5000, TopLeft),
+            Self::TopRightQuarter => p(5000, 5000, TopRight),
+            Self::BottomLeftQuarter => p(5000, 5000, BottomLeft),
+            Self::BottomRightQuarter => p(5000, 5000, BottomRight),
+            Self::LeftThird => p(third, 10_000, Left),
+            Self::MiddleThird => p(third, 10_000, Center),
+            Self::RightThird => p(third, 10_000, Right),
+            Self::LeftTwoThirds => p(two_thirds, 10_000, Left),
+            Self::RightTwoThirds => p(two_thirds, 10_000, Right),
+            Self::FirstFourth => p(2500, 10_000, Left),
+            Self::SecondFourth => shifted(2500, 2500),
+            Self::ThirdFourth => shifted(2500, 5000),
+            Self::LastFourth => p(2500, 10_000, Right),
+            Self::TopLeftSixth => p(third, 5000, TopLeft),
+            Self::TopCenterSixth => p(third, 5000, Top),
+            Self::TopRightSixth => p(third, 5000, TopRight),
+            Self::BottomLeftSixth => p(third, 5000, BottomLeft),
+            Self::BottomCenterSixth => p(third, 5000, Bottom),
+            Self::BottomRightSixth => p(third, 5000, BottomRight),
+            Self::Custom(placement) => placement,
+            _ => return None,
+        })
+    }
+
     /// [`WindowLayout::place`], with a half resized to `share` along its axis
     /// when it is cycled (7.58). Any other layout ignores `share`.
     pub fn place_at(
@@ -414,6 +734,9 @@ impl WindowLayout {
     ) -> Option<Rect> {
         if let Some(tile) = self.tile_at(share) {
             return Some(tile.rect(work_area, gaps));
+        }
+        if let Self::Custom(placement) = self {
+            return Some(placement.place(work_area, current, scale, gaps));
         }
 
         let work_area = inset(work_area, gaps.screen);
@@ -1211,6 +1534,183 @@ mod tests {
             at(WindowLayout::MoveDown, area, w),
             Rect::new(w.x, bottom_edge(area) - w.height, w.width, w.height)
         );
+    }
+
+    fn custom(width: &str, height: &str, x: &str, y: &str, anchor: Anchor) -> Placement {
+        Placement {
+            width: width.parse().unwrap(),
+            height: height.parse().unwrap(),
+            x: x.parse().unwrap(),
+            y: y.parse().unwrap(),
+            anchor,
+            gaps: false,
+        }
+    }
+
+    #[test]
+    fn lengths_and_offsets_read_and_write_as_typed() {
+        for text in ["auto", "60%", "33.33%", "33.3%", "100%", "0.5%", "640pt"] {
+            assert_eq!(text.parse::<Length>().unwrap().to_string(), text);
+        }
+        for text in ["0pt", "-10%", "-12.5%", "100%", "-100%", "-40pt"] {
+            assert_eq!(text.parse::<Offset>().unwrap().to_string(), text);
+        }
+        assert_eq!("33.3%".parse::<Length>(), Ok(Length::Percent(3330)));
+        assert_eq!(" AUTO ".parse::<Length>(), Ok(Length::Auto));
+        assert_eq!("50 %".parse::<Length>(), Ok(Length::Percent(5000)));
+    }
+
+    #[test]
+    fn out_of_range_or_unitless_figures_are_refused_with_a_reason() {
+        for text in [
+            "0%", "100.01%", "-5%", "0pt", "-3pt", "50", "abc%", "1.234%", "1.5pt",
+        ] {
+            let error = text.parse::<Length>().unwrap_err();
+            assert!(error.contains(text), "{text}: {error}");
+        }
+        for text in ["100.5%", "-101%", "auto", "7"] {
+            assert!(text.parse::<Offset>().is_err(), "{text}");
+        }
+        assert!("50".parse::<Length>().unwrap_err().contains("needs a unit"));
+    }
+
+    #[test]
+    fn every_anchor_puts_the_rect_at_its_point() {
+        let area = Rect::new(0, 0, 2000, 1000);
+        let expected = [
+            (0, 0),
+            (500, 0),
+            (1000, 0),
+            (0, 250),
+            (500, 250),
+            (1000, 250),
+            (0, 500),
+            (500, 500),
+            (1000, 500),
+        ];
+        for (anchor, (x, y)) in Anchor::ALL.into_iter().zip(expected) {
+            let rect = custom("50%", "50%", "0pt", "0pt", anchor).place(area, window(), 1.0, NONE);
+            assert_eq!(rect, Rect::new(x, y, 1000, 500), "{anchor:?}");
+        }
+    }
+
+    #[test]
+    fn auto_keeps_the_current_size_on_its_axis() {
+        let area = Rect::new(0, 0, 2000, 1000);
+        let rect =
+            custom("60%", "auto", "0pt", "0pt", Anchor::Center).place(area, window(), 1.0, NONE);
+        assert_eq!(rect, Rect::new(400, 200, 1200, 600));
+        // Larger than the area: clamped like any other size.
+        let tall = Rect::new(0, 0, 100, 5000);
+        let rect = custom("auto", "auto", "0pt", "0pt", Anchor::Top).place(area, tall, 1.0, NONE);
+        assert_eq!(rect, Rect::new(950, 0, 100, 1000));
+    }
+
+    #[test]
+    fn points_are_logical_and_scaled_to_the_monitor() {
+        let area = Rect::new(100, 50, 3000, 1600);
+        let rect = custom("400pt", "200pt", "10pt", "20pt", Anchor::TopLeft).place(
+            area,
+            window(),
+            1.5,
+            NONE,
+        );
+        assert_eq!(rect, Rect::new(115, 80, 600, 300));
+    }
+
+    #[test]
+    fn negative_offsets_shift_left_and_up() {
+        let area = Rect::new(0, 0, 2000, 1000);
+        let rect = custom("50%", "50%", "-10%", "-20pt", Anchor::BottomRight).place(
+            area,
+            window(),
+            1.0,
+            NONE,
+        );
+        assert_eq!(rect, Rect::new(800, 480, 1000, 500));
+    }
+
+    #[test]
+    fn a_custom_placement_never_leaves_the_area() {
+        let area = Rect::new(-1920, 40, 1920, 1040);
+        let rect = custom("5000pt", "40%", "100%", "-100%", Anchor::Center).place(
+            area,
+            window(),
+            1.0,
+            NONE,
+        );
+        assert_eq!(rect, Rect::new(-1920, 40, 1920, 416));
+        let rect =
+            custom("10%", "10%", "90%", "100%", Anchor::Right).place(area, window(), 1.0, NONE);
+        assert_eq!(rect, Rect::new(-192, 976, 192, 104));
+    }
+
+    #[test]
+    fn the_screen_gap_applies_only_when_asked_for() {
+        let area = Rect::new(0, 0, 2000, 1000);
+        let gaps = Gaps {
+            window: 8,
+            screen: 10,
+        };
+        let mut full = custom("100%", "100%", "0pt", "0pt", Anchor::Center);
+        assert_eq!(full.place(area, window(), 1.0, gaps), area);
+        full.gaps = true;
+        assert_eq!(
+            full.place(area, window(), 1.0, gaps),
+            Rect::new(10, 10, 1980, 980)
+        );
+    }
+
+    /// A custom layout is a placement like any other, kept out of the
+    /// built-ins' list, and never a half.
+    #[test]
+    fn a_custom_layout_places_and_is_not_built_in() {
+        let placement = custom("50%", "100%", "0pt", "0pt", Anchor::Left);
+        let layout = WindowLayout::Custom(placement);
+        assert_eq!(layout.kind(), LayoutKind::Place);
+        assert!(!layout.is_half() && layout.needs_window() && !layout.changes_monitor());
+        assert!(!WindowLayout::ALL.contains(&layout));
+        assert_eq!(
+            layout.place(awkward(), window(), 1.0, NONE),
+            Some(placement.place(awkward(), window(), 1.0, NONE))
+        );
+    }
+
+    /// Where a duplicate can say the same thing, it lands where the built-in
+    /// does, give or take the pixel a rounded third costs.
+    #[test]
+    fn a_duplicated_layout_lands_where_the_built_in_does() {
+        let area = awkward();
+        let mut expressible = 0;
+        for &layout in WindowLayout::ALL {
+            let Some(placement) = layout.placement() else {
+                continue;
+            };
+            expressible += 1;
+            // Its logical-pixel cap is what a duplicate loses.
+            if layout == WindowLayout::ReasonableSize {
+                continue;
+            }
+            let built_in = layout.place(area, window(), 1.0, NONE).unwrap();
+            let duplicate = placement.place(area, window(), 1.0, NONE);
+            for (a, b) in [
+                (built_in.x, duplicate.x),
+                (built_in.y, duplicate.y),
+                (built_in.width, duplicate.width),
+                (built_in.height, duplicate.height),
+            ] {
+                assert!((a - b).abs() <= 2, "{layout:?}: {built_in:?} {duplicate:?}");
+            }
+        }
+        assert_eq!(expressible, 28);
+        for layout in [
+            WindowLayout::MaximizeHeight,
+            WindowLayout::MoveLeft,
+            WindowLayout::NextMonitor,
+            WindowLayout::Restore,
+        ] {
+            assert_eq!(layout.placement(), None, "{layout:?}");
+        }
     }
 
     /// On a second monitor the work area does not start at zero, and a window

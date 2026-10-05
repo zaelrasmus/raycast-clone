@@ -459,6 +459,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
 
     watch_sheets(cx, &surfaces);
     watch_quicklinks(cx, &surfaces);
+    watch_window_commands(cx, &surfaces);
     watch_files(cx, &surfaces);
 
     cx.spawn({
@@ -710,6 +711,38 @@ fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
                 window
                     .update(cx, |settings, _window, cx| settings.reload_quicklinks(cx))
                     .ok();
+            }
+        }
+    })
+    .detach();
+}
+
+/// Re-index when `window-commands.json` is saved (F17, 7.59).
+///
+/// The commands are catalogue entries, so a saved one is a reindex: off the
+/// UI thread, the old index up until the new one lands (I-3). A hotkey bound
+/// to one resolves through the index, so it follows without a step of its own.
+fn watch_window_commands(cx: &mut App, surfaces: &Surfaces) {
+    use lumen_core::watcher::FileWatcher;
+
+    let (sink, mut changes) = change_channel();
+    let watcher = match FileWatcher::start(&surfaces.paths.window_commands_file(), sink) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            log::warn!("custom window commands will need `lumen reload` to change: {error:#}");
+            return;
+        }
+    };
+
+    let launcher = surfaces.launcher;
+    cx.spawn(async move |cx| {
+        let _watcher = watcher;
+        while next_change(&mut changes, cx).await {
+            let reindexed = launcher.update(cx, |launcher, _window, cx| {
+                launcher.reindex_applications(cx);
+            });
+            if reindexed.is_err() {
+                break;
             }
         }
     })

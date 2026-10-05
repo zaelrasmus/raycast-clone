@@ -93,6 +93,12 @@ impl Paths {
         self.config_dir.join("quicklinks.json")
     }
 
+    /// Window commands the user made (F17, 7.59). Configuration, like the
+    /// quicklinks: written by the editor and by hand.
+    pub fn window_commands_file(&self) -> PathBuf {
+        self.config_dir.join("window-commands.json")
+    }
+
     /// Global hotkeys and aliases for any command, by item id (F17).
     /// Configuration, beside `config.json`: people edit it by hand.
     pub fn shortcuts_file(&self) -> PathBuf {

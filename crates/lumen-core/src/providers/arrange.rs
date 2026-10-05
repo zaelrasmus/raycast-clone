@@ -288,7 +288,7 @@ const LAYOUTS: &[(WindowLayout, &str, &str, &[&str])] = &[
 /// the title does that, and "Left Half" needs no gloss -- it is answering the
 /// question the user actually has the first time one of these appears, which
 /// is *which* window this is about.
-const SUBTITLE: &str = "The window you were just using";
+pub(crate) const SUBTITLE: &str = "The window you were just using";
 
 pub struct ArrangeProvider;
 
