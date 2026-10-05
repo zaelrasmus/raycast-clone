@@ -226,7 +226,7 @@ Listed because a README that implies more than exists is worse than no README.
   `chrome.exe` covers every tab, because the window does not say what is open
   inside it. Key those on the window title instead. Packaged apps *are* resolved
   correctly, by descending past `ApplicationFrameHost`.
-- **Two of the six budgets are enforced in CI, not six.** Ranking and installed
+- **Two of the seven budgets are enforced in CI, not seven.** Ranking and installed
   size break the build on a regression. The other four are measured by the
   daemon on a real desktop and recorded below, because a hosted runner has no
   GPU, no display and no idle session to measure them on.

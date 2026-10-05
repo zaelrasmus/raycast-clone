@@ -33,6 +33,7 @@ Numbers, not adjectives. Measured, not asserted.
 | Budget | Threshold | How it is measured |
 | ------ | --------- | ------------------ |
 | Global gesture → first frame | p50 < 20 ms, p95 < 40 ms | Synthetic summons until the first frame. 15 on an idle machine: `scripts/measure-gesture.ps1`. |
+| Global command hotkey → action done | p50 < 20 ms, p95 < 40 ms | WM_HOTKEY until the command has run, 15 presses: `scripts/measure-hotkey.ps1`. |
 | Per-frame cost while typing | p95 < 8 ms | Internal instrumentation of the render loop with the full list loaded. |
 | Idle resident memory | < 100 MB | Working set, window hidden, no extensions active: `scripts/measure-idle.ps1`. |
 | Idle CPU | < 0.02 % | Share of the machine over 60 s with the window hidden: `scripts/measure-idle.ps1`. |

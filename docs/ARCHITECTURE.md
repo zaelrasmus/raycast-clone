@@ -2738,15 +2738,15 @@ A test reads the files back and asserts the viewBox, the stroke width and
 like it belongs with the others, and they are exactly the three things an
 edit six months from now will get wrong.
 
-### 7.24 I-8 is enforced for two budgets of six, and says so
+### 7.24 I-8 is enforced for two budgets of seven, and says so
 
 I-8 reads "The performance budgets below are measured in CI. A regression
-breaks the build." Two of the six are, and four cannot be.
+breaks the build." Two of the seven are, and five cannot be.
 
 **Enforced.** Ranking, by `crates/lumen-core/tests/budgets.rs`, and installed
 size, by comparing bytes in the workflow. Both fail the build.
 
-**Not enforced, and why.** Gesture to first frame needs a compositor presenting
+**Not enforced, and why.** Gesture to first frame and a command hotkey need a compositor presenting
 to a real display. Idle CPU and idle memory need a session that is genuinely
 idle. Cold start needs a GPU. A hosted runner has none of those. A figure taken
 there would be a measurement of the runner, not of Lumen, and it would sit in a
@@ -3045,6 +3045,21 @@ could meet.
 
 Installed size stays at < 40 MB. It is enforced in CI, where a byte count
 cannot be noisy, and there is no pressure on it yet.
+
+| Budget | Was | Now | Measured |
+| --- | --- | --- | --- |
+| Global command hotkey → action done | -- | p50 < 20, p95 < 40 ms | not yet: written before F17's hotkeys |
+
+F17 adds a seventh budget, set before the feature exists so that it constrains
+rather than justifies. It is timed from WM_HOTKEY's arrival until the bound
+command has run, and `scripts/measure-hotkey.ps1` presses a chord bound to
+*Centre Window* fifteen times and reads the figure back from the log. The key
+before WM_HOTKEY is not in it: the daemon cannot see the key until Windows
+posts the message, so there is nothing it could time, and the summons budget
+excludes the same milliseconds. It takes the summons budget's numbers because
+it is the same promise -- a key, then the result -- with less work behind it:
+no window is shown. Like the summons, it needs a real session and is measured
+by hand (7.24).
 
 ### 7.37 Step 3 runs over stdio, not WebAssembly, and F4 stops there
 
@@ -3449,7 +3464,7 @@ and the window's client rect are the check.
 | R-6 | The extension protocol becomes coupled to its first runtime | F4 | AD-06, AD-09. |
 | R-7 | Uncontrolled growth of the UI primitive vocabulary | F4 | Every new primitive requires explicit justification. |
 | R-8 | Licence contamination from inadvertent reuse of GPL code | F0 | Decided (section 2). Study architecture, do not copy implementations. |
-| R-9 | Silent performance degradation over months | F1+ | Partially mitigated: ranking cost and installed size fail the build in CI (7.24). The other four budgets are measured by hand with `scripts/measure-*.ps1` against thresholds tight enough to catch a regression (7.36). |
+| R-9 | Silent performance degradation over months | F1+ | Partially mitigated: ranking cost and installed size fail the build in CI (7.24). The other five budgets are measured by hand with `scripts/measure-*.ps1` against thresholds tight enough to catch a regression (7.36). |
 | R-10 | Loss of motivation from deferring the aesthetic work | F2 | Live token reload landed early, in F1 rather than F2. |
 | R-11 | Community themes break as the interface evolves | F2+ | Semantic tokens, default resolution from the base theme, versioned schema. Validated with two in-house themes. |
 | R-12 | WebAssembly compilation friction | F4 | Consciously accepted. |
