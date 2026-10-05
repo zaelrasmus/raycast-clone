@@ -142,6 +142,88 @@ impl Shortcuts {
         by_alias.retain(|_, ids| ids.len() > 1);
         by_alias
     }
+
+    pub fn alias_of(&self, id: &str) -> Option<&str> {
+        self.commands.get(id)?.alias.as_deref()
+    }
+
+    pub fn hotkey_of(&self, id: &str) -> Option<&Chord> {
+        self.commands.get(id)?.hotkey.as_ref()
+    }
+
+    /// Give `id` this alias, or none. An entry left with neither half goes,
+    /// so the file holds only what binds something.
+    pub fn set_alias(&mut self, id: &str, alias: Option<String>) {
+        self.commands.entry(id.to_string()).or_default().alias = alias;
+        self.tidy(id);
+    }
+
+    /// The command other than `except` that `chord` is bound to: what the
+    /// recorder names before offering to take it.
+    pub fn hotkey_owner(&self, chord: &Chord, except: &str) -> Option<&str> {
+        self.commands
+            .iter()
+            .find(|(id, shortcut)| *id != except && shortcut.hotkey.as_ref() == Some(chord))
+            .map(|(id, _)| id.as_str())
+    }
+
+    /// Bind `chord` to `id`, or unbind it. A chord another command had is
+    /// taken from it -- settings asks first -- and that command is returned.
+    /// One chord, one command: the registrations are slots, and two slots
+    /// for one chord would leave the second `Taken` by the first.
+    pub fn set_hotkey(&mut self, id: &str, chord: Option<Chord>) -> Option<String> {
+        let taken = chord
+            .as_ref()
+            .and_then(|chord| self.hotkey_owner(chord, id))
+            .map(str::to_string);
+        if let Some(other) = &taken {
+            if let Some(shortcut) = self.commands.get_mut(other) {
+                shortcut.hotkey = None;
+            }
+            self.tidy(other);
+        }
+        self.commands.entry(id.to_string()).or_default().hotkey = chord;
+        self.tidy(id);
+        taken
+    }
+
+    fn tidy(&mut self, id: &str) {
+        if self
+            .commands
+            .get(id)
+            .is_some_and(|shortcut| shortcut.hotkey.is_none() && shortcut.alias.is_none())
+        {
+            self.commands.remove(id);
+        }
+    }
+}
+
+/// What settings says of an alias it will not save.
+pub const ALIAS_RULE: &str = "Use letters, digits and single spaces";
+
+/// An alias as typed into settings: nothing typed clears it, anything else
+/// is stored as [`normalise_alias`] stores it, or refused with the rule.
+pub fn alias_input(text: &str) -> Result<Option<String>, &'static str> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    normalise_alias(text).map(Some).ok_or(ALIAS_RULE)
+}
+
+/// Which of Lumen's own hotkeys `chord` is, if one: those stay registered
+/// while a command hotkey is recorded, and a command bound to one would be
+/// `Taken` (7.53).
+pub fn reserved_by(
+    chord: &Chord,
+    launcher: &lumen_platform::Hotkey,
+    timers: Option<&lumen_platform::Hotkey>,
+) -> Option<&'static str> {
+    if chord.is_hotkey(launcher) {
+        return Some("Used by the Lumen launcher");
+    }
+    timers
+        .filter(|timers| chord.is_hotkey(timers))
+        .map(|_| "Used by Lumen's Timers hotkey")
 }
 
 /// An alias as it is stored: trimmed and in lowercase, letters `a` to `z`,
@@ -383,6 +465,132 @@ mod tests {
                 .alias
                 .as_deref(),
             Some("left half")
+        );
+    }
+
+    fn bound(entries: &[(&str, Option<&str>, Option<&str>)]) -> Shortcuts {
+        let mut shortcuts = Shortcuts::default();
+        for (id, hotkey, alias) in entries {
+            shortcuts.commands.insert(
+                id.to_string(),
+                CommandShortcut {
+                    hotkey: hotkey.map(chord),
+                    alias: alias.map(Into::into),
+                },
+            );
+        }
+        shortcuts
+    }
+
+    /// What the settings field does with what was typed: empty clears,
+    /// anything else is stored as it will be matched, or refused.
+    #[test]
+    fn an_alias_typed_in_settings_is_cleared_stored_or_refused() {
+        assert_eq!(alias_input("  "), Ok(None));
+        assert_eq!(alias_input(" LH "), Ok(Some("lh".into())));
+        assert_eq!(alias_input("l-h"), Err(ALIAS_RULE));
+        assert_eq!(alias_input("left  half"), Err(ALIAS_RULE));
+    }
+
+    #[test]
+    fn setting_an_alias_keeps_the_hotkey_and_clearing_both_drops_the_entry() {
+        let mut shortcuts = bound(&[("window:center", Some("Ctrl+Alt+C"), None)]);
+        shortcuts.set_alias("window:center", Some("ce".into()));
+        assert_eq!(shortcuts.alias_of("window:center"), Some("ce"));
+        assert_eq!(
+            shortcuts.hotkey_of("window:center"),
+            Some(&chord("Ctrl+Alt+C"))
+        );
+
+        shortcuts.set_hotkey("window:center", None);
+        shortcuts.set_alias("window:center", None);
+        assert!(shortcuts.commands.is_empty(), "{shortcuts:?}");
+
+        shortcuts.set_alias("app:code", Some("c".into()));
+        assert_eq!(shortcuts.alias_of("app:code"), Some("c"));
+    }
+
+    #[test]
+    fn a_chord_is_owned_by_the_command_bound_to_it_other_than_the_one_asking() {
+        let shortcuts = bound(&[
+            ("window:center", Some("Ctrl+Alt+C"), None),
+            ("app:code", Some("Ctrl+Alt+V"), Some("c")),
+        ]);
+        let center = chord("ctrl+alt+c");
+        assert_eq!(
+            shortcuts.hotkey_owner(&center, "app:code"),
+            Some("window:center")
+        );
+        assert_eq!(shortcuts.hotkey_owner(&center, "window:center"), None);
+        assert_eq!(
+            shortcuts.hotkey_owner(&chord("Ctrl+Alt+X"), "app:code"),
+            None
+        );
+    }
+
+    /// Overwrite: the chord moves, and the command it moved from keeps its
+    /// alias -- or goes, if the hotkey was all it had.
+    #[test]
+    fn binding_a_taken_chord_takes_it_from_the_other_command() {
+        let mut shortcuts = bound(&[
+            ("window:center", Some("Ctrl+Alt+C"), Some("ce")),
+            ("window:left-half", Some("Ctrl+Alt+L"), None),
+        ]);
+        let taken = shortcuts.set_hotkey("app:code", Some(chord("Ctrl+Alt+C")));
+        assert_eq!(taken.as_deref(), Some("window:center"));
+        assert_eq!(shortcuts.hotkey_of("app:code"), Some(&chord("Ctrl+Alt+C")));
+        assert_eq!(shortcuts.hotkey_of("window:center"), None);
+        assert_eq!(shortcuts.alias_of("window:center"), Some("ce"));
+
+        let taken = shortcuts.set_hotkey("app:code", Some(chord("Ctrl+Alt+L")));
+        assert_eq!(taken.as_deref(), Some("window:left-half"));
+        assert!(!shortcuts.commands.contains_key("window:left-half"));
+        assert_eq!(
+            shortcuts
+                .hotkeys()
+                .iter()
+                .filter(|(_, bound)| **bound == chord("Ctrl+Alt+C"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn an_edit_made_in_settings_survives_a_save() {
+        let path = temporary("settings-edit");
+        let mut shortcuts = bound(&[("window:center", Some("Ctrl+Alt+C"), None)]);
+        shortcuts.set_alias("app:code", Some("c".into()));
+        shortcuts.set_hotkey("app:code", Some(chord("Ctrl+Alt+C")));
+        shortcuts.save(&path).unwrap();
+        assert_eq!(Shortcuts::load(&path), shortcuts);
+        assert_eq!(
+            Shortcuts::load(&path).hotkey_of("app:code"),
+            Some(&chord("Ctrl+Alt+C"))
+        );
+    }
+
+    /// The launcher's and the timers' keys stay registered while a hotkey
+    /// is recorded, so pressing one never reaches the recorder; typed or
+    /// recorded any other way, it is refused by name before it is saved.
+    #[test]
+    fn a_chord_equal_to_lumens_own_hotkeys_is_reserved() {
+        let launcher = crate::config::Config::default().hotkey;
+        let timers = crate::timers::presets::default_hotkey();
+        assert_eq!(
+            reserved_by(&chord("Alt+Space"), &launcher, Some(&timers)),
+            Some("Used by the Lumen launcher")
+        );
+        assert_eq!(
+            reserved_by(&chord("Alt+Shift+Space"), &launcher, Some(&timers)),
+            Some("Used by Lumen's Timers hotkey")
+        );
+        assert_eq!(
+            reserved_by(&chord("Alt+Shift+Space"), &launcher, None),
+            None
+        );
+        assert_eq!(
+            reserved_by(&chord("Ctrl+Alt+Space"), &launcher, Some(&timers)),
+            None
         );
     }
 

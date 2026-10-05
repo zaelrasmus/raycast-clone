@@ -605,6 +605,23 @@ pub mod settings {
     /// The line under the content saying what was saved, or why not.
     pub const STATUS_HEIGHT: f32 = 30.0;
 
+    /// The Shortcuts page (F17): a row per command, its title over its kind
+    /// or what is wrong with it, then the alias and the hotkey fields. One
+    /// height for every row, so the list is virtualised (I-10).
+    pub const SHORTCUT_ROW_HEIGHT: f32 = 46.0;
+    pub const SHORTCUT_ALIAS_WIDTH: f32 = 120.0;
+    pub const SHORTCUT_HOTKEY_WIDTH: f32 = 176.0;
+    /// The square that clears a hotkey, inside its field.
+    pub const SHORTCUT_CLEAR_SIZE: f32 = 18.0;
+    /// The icons on the page are drawn at most this many pixels square.
+    pub const SHORTCUT_ICON_RESOLUTION: u32 = 32;
+
+    /// A key cap, in the recorder and in a saved hotkey.
+    pub const KEYCAP_HEIGHT: f32 = 20.0;
+    pub const KEYCAP_PADDING_X: f32 = 5.0;
+    pub const KEYCAP_RADIUS: f32 = 4.0;
+    pub const KEYCAP_GAP: f32 = 3.0;
+
     pub mod text {
         pub const TITLE: f32 = 15.0;
         pub const SECTION: f32 = 11.0;
@@ -625,6 +642,10 @@ pub mod settings {
 const _: () =
     assert!(settings::TOGGLE_KNOB + 2.0 * settings::TOGGLE_INSET <= settings::TOGGLE_HEIGHT);
 const _: () = assert!(settings::TOGGLE_HEIGHT < settings::CARD_ROW_HEIGHT);
+/// A shortcut row holds a field, and a field a key cap.
+const _: () = assert!(settings::FIELD_HEIGHT < settings::SHORTCUT_ROW_HEIGHT);
+const _: () = assert!(settings::KEYCAP_HEIGHT < settings::FIELD_HEIGHT);
+const _: () = assert!(settings::SHORTCUT_CLEAR_SIZE < settings::FIELD_HEIGHT);
 /// A dialog still fits the content column beside the nav.
 const _: () = assert!(
     settings::DIALOG_WIDTH

@@ -28,6 +28,7 @@
 use gpui::{App, KeyBinding};
 use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
+use crate::hotkey_recorder::{CancelRecording, ClearRecording, SaveRecording};
 use crate::launcher::{
     Activate, AskArgument, ClearQuery, CompletePath, Dismiss, MoveFavoriteDown, MoveFavoriteUp,
     NextScope, PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast,
@@ -94,6 +95,9 @@ const SELECT_CONTEXT: &str = crate::select::CONTEXT;
 
 /// A checkbox inside a form.
 const TOGGLE_CONTEXT: &str = crate::quicklink_form::TOGGLE_CONTEXT;
+
+/// The hotkey recorder on the Shortcuts page (F17).
+const RECORDER_CONTEXT: &str = crate::hotkey_recorder::CONTEXT;
 
 /// One row of the table: what to bind, what it does, and where it belongs on
 /// the sheet.
@@ -474,20 +478,8 @@ fn bind_other_contexts(cx: &mut App) {
         KeyBinding::new("escape", CancelDialog, Some(DIALOG_CONTEXT)),
     ]);
 
-    // Bound without a context so it works even if focus has somehow left the
-    // launcher's subtree. A launcher that cannot be dismissed is a launcher that
-    // has to be killed from Task Manager.
-    cx.bind_keys([KeyBinding::new("ctrl-escape", Dismiss, None)]);
-
-    // The settings window. Its own context, so Escape closes the window rather
-    // than clearing whichever field happens to hold focus.
-    cx.bind_keys([
-        KeyBinding::new("ctrl-s", SaveSheet, Some(SETTINGS_CONTEXT)),
-        KeyBinding::new("escape", CloseSettings, Some(SETTINGS_CONTEXT)),
-        // Between pages, as a browser goes between tabs (F15).
-        KeyBinding::new("ctrl-tab", NextPage, Some(SETTINGS_CONTEXT)),
-        KeyBinding::new("ctrl-shift-tab", PreviousPage, Some(SETTINGS_CONTEXT)),
-    ]);
+    cx.bind_keys(global_bindings());
+    cx.bind_keys(settings_bindings());
 
     // Text editing, identical in the launcher's query and in every settings
     // field. Each field has its own context, so backspace edits the field that
@@ -569,6 +561,46 @@ fn bind_other_contexts(cx: &mut App) {
         KeyBinding::new("tab", text_area::InsertPlaceholder, picker),
         KeyBinding::new("escape", text_area::ClosePlaceholders, picker),
     ]);
+
+    // Last: a binding with no context counts as the deepest, and of two at
+    // one depth the later wins, so the recorder's must follow Ctrl+Escape's.
+    cx.bind_keys(recorder_bindings());
+}
+
+/// Bound without a context so it works even if focus has somehow left the
+/// launcher's subtree. A launcher that cannot be dismissed is a launcher that
+/// has to be killed from Task Manager.
+fn global_bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("ctrl-escape", Dismiss, None)]
+}
+
+/// The settings window. Its own context, so Escape closes the window rather
+/// than clearing whichever field happens to hold focus.
+fn settings_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("ctrl-s", SaveSheet, Some(SETTINGS_CONTEXT)),
+        KeyBinding::new("escape", CloseSettings, Some(SETTINGS_CONTEXT)),
+        // Between pages, as a browser goes between tabs (F15).
+        KeyBinding::new("ctrl-tab", NextPage, Some(SETTINGS_CONTEXT)),
+        KeyBinding::new("ctrl-shift-tab", PreviousPage, Some(SETTINGS_CONTEXT)),
+    ]
+}
+
+/// The hotkey recorder (F17, 7.56): Escape, Enter and Backspace steer it,
+/// and every other chord the settings window binds is unbound in it, so
+/// the chord is recorded instead of run. Not on the sheet: the field says
+/// them while it records.
+fn recorder_bindings() -> Vec<KeyBinding> {
+    let recorder = Some(RECORDER_CONTEXT);
+    vec![
+        KeyBinding::new("escape", CancelRecording, recorder),
+        KeyBinding::new("enter", SaveRecording, recorder),
+        KeyBinding::new("backspace", ClearRecording, recorder),
+        KeyBinding::new("ctrl-s", gpui::NoAction, recorder),
+        KeyBinding::new("ctrl-tab", gpui::NoAction, recorder),
+        KeyBinding::new("ctrl-shift-tab", gpui::NoAction, recorder),
+        KeyBinding::new("ctrl-escape", gpui::NoAction, recorder),
+    ]
 }
 
 /// The keys the action panel shows beside its rows, as keycap labels.
@@ -895,6 +927,43 @@ mod tests {
             Some("lumen::NextScope")
         );
         assert_eq!(resolves_to("tab", &[CONTEXT]), Some("lumen::AskArgument"));
+    }
+
+    /// While the recorder has focus, no chord the settings window binds
+    /// runs: each is the recorder's own, or reaches it as a key.
+    #[test]
+    fn the_recorder_hears_every_chord_the_settings_window_binds() {
+        let keymap = gpui::Keymap::new(
+            global_bindings()
+                .into_iter()
+                .chain(settings_bindings())
+                .chain(recorder_bindings())
+                .collect(),
+        );
+        let stack: Vec<gpui::KeyContext> = [SETTINGS_CONTEXT, RECORDER_CONTEXT]
+            .iter()
+            .map(|context| gpui::KeyContext::parse(context).unwrap())
+            .collect();
+        for binding in global_bindings().into_iter().chain(settings_bindings()) {
+            let (bindings, _) = keymap.bindings_for_input(binding.keystrokes(), &stack);
+            let action = bindings.first().map(|binding| binding.action().name());
+            assert!(
+                action.is_none_or(|name| name.starts_with("lumen_recorder::")),
+                "{:?} runs {action:?} while recording",
+                binding.keystrokes()
+            );
+        }
+
+        let resolve = |keys: &str| {
+            let (bindings, _) =
+                keymap.bindings_for_input(&[gpui::Keystroke::parse(keys).unwrap()], &stack);
+            bindings.first().map(|binding| binding.action().name())
+        };
+        assert_eq!(resolve("escape"), Some("lumen_recorder::CancelRecording"));
+        assert_eq!(resolve("enter"), Some("lumen_recorder::SaveRecording"));
+        assert_eq!(resolve("backspace"), Some("lumen_recorder::ClearRecording"));
+        assert_eq!(resolve("ctrl-s"), None);
+        assert_eq!(resolve("ctrl-escape"), None);
     }
 
     /// The two lists in this file must describe the same keys. If someone adds

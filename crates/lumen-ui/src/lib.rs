@@ -23,6 +23,7 @@ pub mod edit;
 pub mod file_search_page;
 pub mod fonts;
 pub mod home_choice;
+pub mod hotkey_recorder;
 pub mod icons;
 pub mod images;
 pub mod keymap;
