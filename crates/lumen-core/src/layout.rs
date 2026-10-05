@@ -622,6 +622,17 @@ pub mod settings {
     pub const KEYCAP_RADIUS: f32 = 4.0;
     pub const KEYCAP_GAP: f32 = 3.0;
 
+    /// The custom window command editor (F17, 7.59): the display preview,
+    /// a field's label column, a unit toggle, and the anchor grid's cells
+    /// and the mark in each.
+    pub const PREVIEW_WIDTH: f32 = 240.0;
+    pub const PREVIEW_HEIGHT: f32 = 150.0;
+    pub const FORM_LABEL_WIDTH: f32 = 72.0;
+    pub const UNIT_WIDTH: f32 = 36.0;
+    pub const ANCHOR_CELL: f32 = 24.0;
+    pub const ANCHOR_MARK: f32 = 8.0;
+    pub const ANCHOR_GAP: f32 = 4.0;
+
     pub mod text {
         pub const TITLE: f32 = 15.0;
         pub const SECTION: f32 = 11.0;

@@ -44,6 +44,7 @@ pub mod timers_page;
 pub mod translate_page;
 pub mod view;
 pub mod weather_page;
+pub mod window_command_editor;
 pub mod window_management_page;
 
 pub use assets::Assets;
@@ -78,6 +79,14 @@ mod invariants {
         ("styling.rs", include_str!("styling.rs")),
         ("text_field.rs", include_str!("text_field.rs")),
         ("view.rs", include_str!("view.rs")),
+        (
+            "window_command_editor.rs",
+            include_str!("window_command_editor.rs"),
+        ),
+        (
+            "window_management_page.rs",
+            include_str!("window_management_page.rs"),
+        ),
     ];
 
     /// Lines of code, with comments dropped, up to the file's test module.

@@ -46,6 +46,7 @@ use crate::text_field::{
     SelectRight, SelectToEnd, SelectToStart, SelectWordLeft, SelectWordRight,
 };
 use crate::translate_page::{EditPreset, NextPreset, PreviousPreset};
+use crate::window_command_editor::{MoveAnchorDown, MoveAnchorLeft, MoveAnchorRight, MoveAnchorUp};
 
 /// The key context these bindings apply in, matching `Launcher`'s.
 const CONTEXT: &str = "Launcher";
@@ -102,6 +103,10 @@ const SHORTCUT_LIST_CONTEXT: &str = crate::shortcuts_page::LIST_CONTEXT;
 
 /// The hotkey recorder on the Shortcuts page (F17).
 const RECORDER_CONTEXT: &str = crate::hotkey_recorder::CONTEXT;
+
+/// The custom window command editor and its anchor grid (F17, 7.59).
+const WINDOW_COMMAND_CONTEXT: &str = crate::window_command_editor::CONTEXT;
+const ANCHOR_CONTEXT: &str = crate::window_command_editor::ANCHOR_CONTEXT;
 
 /// One row of the table: what to bind, what it does, and where it belongs on
 /// the sheet.
@@ -478,6 +483,7 @@ fn bind_other_contexts(cx: &mut App) {
         KeyBinding::new("tab", EditPreset, Some(PRESET_LIST_CONTEXT)),
     ]);
     cx.bind_keys(shortcut_list_bindings());
+    cx.bind_keys(window_command_bindings());
 
     // A dropdown. Closed, only Space is its own; the rest fall through to the
     // form (see `select`), so Up, Down, Enter and Escape keep their meaning.
@@ -613,6 +619,26 @@ fn shortcut_list_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("up", PreviousShortcut, list),
         KeyBinding::new("down", NextShortcut, list),
         KeyBinding::new("enter", RecordHotkey, list),
+    ]
+}
+
+/// The custom window command editor (F17, 7.59): Tab between its parts,
+/// Enter or Ctrl+Enter saves, as Raycast's does, and Escape goes back to the
+/// page rather than closing the window. On the anchor grid the arrows move
+/// the anchor.
+fn window_command_bindings() -> Vec<KeyBinding> {
+    let form = Some(WINDOW_COMMAND_CONTEXT);
+    let grid = Some(ANCHOR_CONTEXT);
+    vec![
+        KeyBinding::new("tab", NextField, form),
+        KeyBinding::new("shift-tab", PreviousField, form),
+        KeyBinding::new("enter", SubmitForm, form),
+        KeyBinding::new("ctrl-enter", SubmitForm, form),
+        KeyBinding::new("escape", CancelForm, form),
+        KeyBinding::new("up", MoveAnchorUp, grid),
+        KeyBinding::new("down", MoveAnchorDown, grid),
+        KeyBinding::new("left", MoveAnchorLeft, grid),
+        KeyBinding::new("right", MoveAnchorRight, grid),
     ]
 }
 
@@ -1052,6 +1078,42 @@ mod tests {
             resolves_to("ctrl-<", &[CONTEXT]),
             Some("lumen::ConfigureCommand")
         );
+    }
+
+    /// In the window command editor, Escape goes back and Ctrl+Enter saves
+    /// over the settings window's own keys; the arrows move the anchor only
+    /// on the grid.
+    #[test]
+    fn the_window_command_editor_keys_resolve_in_their_contexts() {
+        let keymap = gpui::Keymap::new(
+            settings_bindings()
+                .into_iter()
+                .chain(window_command_bindings())
+                .collect(),
+        );
+        let resolve = |keys: &str, contexts: &[&str]| {
+            let stack: Vec<gpui::KeyContext> = contexts
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect();
+            let (bindings, _) =
+                keymap.bindings_for_input(&[gpui::Keystroke::parse(keys).unwrap()], &stack);
+            bindings.first().map(|binding| binding.action().name())
+        };
+        let form = [SETTINGS_CONTEXT, WINDOW_COMMAND_CONTEXT];
+        let grid = [SETTINGS_CONTEXT, WINDOW_COMMAND_CONTEXT, ANCHOR_CONTEXT];
+        assert_eq!(resolve("escape", &form), Some("lumen_form::CancelForm"));
+        assert_eq!(resolve("ctrl-enter", &form), Some("lumen_form::SubmitForm"));
+        assert_eq!(resolve("up", &form), None);
+        assert_eq!(
+            resolve("up", &grid),
+            Some("lumen_window_commands::MoveAnchorUp")
+        );
+        assert_eq!(
+            resolve("right", &grid),
+            Some("lumen_window_commands::MoveAnchorRight")
+        );
+        assert_eq!(resolve("ctrl-enter", &grid), Some("lumen_form::SubmitForm"));
     }
 
     /// The two lists in this file must describe the same keys. If someone adds

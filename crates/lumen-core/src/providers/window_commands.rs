@@ -55,7 +55,7 @@ struct File<'a> {
 }
 
 /// The file before each entry is read, so a bad one fails alone.
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct RawFile {
     #[serde(default)]
     commands: Vec<serde_json::Value>,
@@ -97,11 +97,66 @@ pub fn save(path: &Path, commands: &[CustomWindowCommand]) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let source = serde_json::to_string_pretty(&File { commands })?;
+    replace(path, serde_json::to_string_pretty(&File { commands })?)
+}
+
+fn replace(path: &Path, source: String) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, source)
         .with_context(|| format!("writing {}", temporary.display()))?;
     std::fs::rename(&temporary, path).with_context(|| format!("replacing {}", path.display()))
+}
+
+/// Change the commands in the file and write it back: the editor's save,
+/// duplicate and delete. Read afresh, so a hand edit made meanwhile is kept;
+/// an entry that does not read is kept as it was, after the rest, for the
+/// user to fix rather than the editor to drop. A file that is not JSON at
+/// all is an error, not overwritten. Whether `change` did anything.
+pub fn edit(
+    path: &Path,
+    change: impl FnOnce(&mut Vec<CustomWindowCommand>) -> bool,
+) -> Result<bool> {
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let raw: RawFile = match source.trim() {
+        "" => RawFile::default(),
+        source => serde_json::from_str(source)
+            .with_context(|| format!("{} is not valid", path.display()))?,
+    };
+    let mut commands: Vec<CustomWindowCommand> = Vec::new();
+    let mut kept = Vec::new();
+    for entry in raw.commands {
+        match serde_json::from_value::<CustomWindowCommand>(entry.clone()) {
+            Ok(command)
+                if !command.id.trim().is_empty()
+                    && !command.name.trim().is_empty()
+                    && !commands.iter().any(|c| c.id == command.id) =>
+            {
+                commands.push(command)
+            }
+            _ => kept.push(entry),
+        }
+    }
+    if !change(&mut commands) {
+        return Ok(false);
+    }
+    let mut entries = commands
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.extend(kept);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    replace(
+        path,
+        serde_json::to_string_pretty(&serde_json::json!({ "commands": entries }))?,
+    )?;
+    Ok(true)
 }
 
 /// A new id for a command called `name`: its slug and a suffix from the
@@ -304,6 +359,42 @@ mod tests {
         );
         save(&path, &commands).unwrap();
         assert_eq!(load(&path), commands);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn an_edit_keeps_what_does_not_read() {
+        let path = temporary("edit");
+        std::fs::remove_file(&path).ok();
+        let mut id = String::new();
+        assert!(
+            edit(&path, |commands| {
+                id = add(commands, "Reading", reading());
+                true
+            })
+            .unwrap()
+        );
+        assert_eq!(load(&path)[0].id, id);
+
+        let bad =
+            r#"{ "id": "b-1", "name": "B", "placement": { "width": "0%", "height": "auto" } }"#;
+        let mut source: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        source["commands"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::from_str(bad).unwrap());
+        std::fs::write(&path, source.to_string()).unwrap();
+
+        assert!(edit(&path, |commands| update(commands, &id, "Focus", reading())).unwrap());
+        assert!(!edit(&path, |commands| remove(commands, "nope")).unwrap());
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"b-1\""), "{written}");
+        assert_eq!(load(&path)[0].name, "Focus");
+
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(edit(&path, |_| true).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
         std::fs::remove_file(path).ok();
     }
 
