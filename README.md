@@ -415,7 +415,10 @@ startup and need `lumen quit` then `lumen`: `hotkey`, `backdrop` and
     "visible-rows": null,
     "horizontal-bias": 0.5,
     "vertical-bias": 0.22,
-    "dismiss-on-focus-loss": true
+    "dismiss-on-focus-loss": true,
+    "gap": 0,
+    "screen-gap": 0,
+    "cycling": "sizes"
   },
   "clipboard": {
     "enabled": true,
@@ -463,6 +466,21 @@ was meant cannot put the launcher somewhere you can neither see nor dismiss.
 The shortcut overlay and the settings window ignore both and stay centred. The
 overlay documents whatever is underneath it, so it belongs where the eye
 already is rather than wherever the launcher has been moved to.
+
+### Gaps and cycling for arranged windows
+
+Three keys in `window` shape the window-management layouts (halves,
+thirds, quarters and the rest). All three apply as soon as the file is saved.
+
+| Key | Default | Meaning |
+| --- | ------- | ------- |
+| `gap` | `0` | Logical pixels between two arranged windows side by side. |
+| `screen-gap` | `0` | Logical pixels between an arranged window and the edge of the screen. Above `0`, *Maximise* leaves it too, so the window fills the inset area instead of being maximised. |
+| `cycling` | `"sizes"` | What pressing the same half again does: `"sizes"` steps ½ → ⅔ → ⅓ → ½, `"displays"` moves the window to the facing half of the next monitor in that direction, `"off"` keeps it a half. |
+
+Both gaps are kept between `0` and `64` and scaled to each monitor's DPI. A
+half only cycles while the window is still where Lumen put it; move it by
+hand and the next press starts again from a half.
 
 **If the launcher does not respond to `Alt+Space`,** another application already
 holds that combination — global hotkeys on Windows are first come, first served.

@@ -21,12 +21,24 @@
 //! returns success and nothing moves -- so there is nothing to detect and
 //! nothing to report. Running Lumen elevated to arrange elevated windows is a
 //! decision for whoever installs it, not a workaround to build in.
+//!
+//! # Gaps and cycling (7.58)
+//!
+//! The configured gaps are logical pixels; each arrangement scales them by
+//! the scale factor of the monitor the window lands on. With a screen gap,
+//! *Maximise* places the window on the inset work area instead of
+//! maximising it, because a maximised window cannot have a margin; with
+//! none it is a real `SW_MAXIMIZE`, as before. Which size or monitor a
+//! repeated half goes to is `window_commands::half_step`'s choice; what is
+//! here is the half Lumen last placed, which it needs.
 
 use std::ffi::c_void;
 
 use anyhow::{Context as _, Result};
-use lumen_platform::tiling::{self, WindowLayout};
-use lumen_platform::{FocusOwner, Rect};
+use lumen_platform::tiling::{self, Share, WindowLayout};
+use lumen_platform::window_commands::{self, HalfStep, Placed};
+use lumen_platform::{FocusOwner, Rect, WindowSettings};
+use parking_lot::Mutex;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
@@ -39,9 +51,24 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::monitor;
 
+/// What arranging reads and remembers between calls.
+///
+/// Both locks are taken only from [`arrange`], which the daemon calls from
+/// its own task, and the settings once more on a configuration reload; never
+/// from an input callback (I-15).
+#[derive(Default)]
+pub struct Arranging {
+    pub settings: Mutex<WindowSettings>,
+    /// The half Lumen placed last, under the layout that was *pressed*: a
+    /// half carried to another monitor is recorded as the half asked for, so
+    /// pressing it again carries it on.
+    last_half: Mutex<Option<Placed>>,
+}
+
 /// Apply `layout` to `window`.
-pub fn arrange(window: FocusOwner, layout: WindowLayout) -> Result<()> {
+pub fn arrange(arranging: &Arranging, window: FocusOwner, layout: WindowLayout) -> Result<()> {
     let hwnd = HWND(window.0 as *mut c_void);
+    let settings = *arranging.settings.lock();
 
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {
@@ -56,7 +83,17 @@ pub fn arrange(window: FocusOwner, layout: WindowLayout) -> Result<()> {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
 
-        if layout == WindowLayout::Maximize {
+        // Anything but a half ends a cycle; a half records its own below.
+        let last = arranging.last_half.lock().take();
+
+        if layout.changes_monitor() {
+            return place(hwnd, move_to_adjacent_monitor(hwnd, layout)?);
+        }
+
+        let monitor = monitor::describe(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))?;
+        let gaps = settings.gaps(monitor.scale_factor);
+
+        if layout == WindowLayout::Maximize && gaps.screen == 0 {
             // Genuinely maximised rather than a window the size of the screen.
             // The two differ when the taskbar auto-hides, when the title bar
             // is double-clicked, and in what the window itself is told about
@@ -65,25 +102,81 @@ pub fn arrange(window: FocusOwner, layout: WindowLayout) -> Result<()> {
             return Ok(());
         }
 
-        let target = if layout.changes_monitor() {
-            move_to_adjacent_monitor(hwnd, layout)?
-        } else {
-            let monitor = monitor::describe(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))?;
-            // The visible rectangle, read after the restore above, so that the
-            // layouts which keep the window's size or one of its coordinates
-            // keep what the user sees rather than the invisible border or the
-            // maximised state being left.
-            let current = match frame_bounds(hwnd) {
-                Ok(drawn) => drawn,
-                Err(_) => outer_bounds(hwnd)?,
-            };
-            layout
-                .place(monitor.work_area, current, monitor.scale_factor)
-                .expect("only the monitor moves have no place, and they are handled above")
+        // The visible rectangle, read after the restore above, so that the
+        // layouts which keep the window's size or one of its coordinates
+        // keep what the user sees rather than the invisible border or the
+        // maximised state being left.
+        let current = match frame_bounds(hwnd) {
+            Ok(drawn) => drawn,
+            Err(_) => outer_bounds(hwnd)?,
         };
 
-        place(hwnd, target)
+        if !layout.is_half() {
+            let target = layout
+                .place(monitor.work_area, current, monitor.scale_factor, gaps)
+                .expect("only the monitor moves have no place, and they are handled above");
+            return place(hwnd, target);
+        }
+
+        let step =
+            window_commands::half_step(settings.cycling, last.as_ref(), window.0, layout, current);
+        let (share, target) = match step {
+            HalfStep::Here(share) => {
+                let target = layout
+                    .place_at(
+                        share,
+                        monitor.work_area,
+                        current,
+                        monitor.scale_factor,
+                        gaps,
+                    )
+                    .expect("a half always has a place");
+                (share, target)
+            }
+            HalfStep::Across(facing) => {
+                match half_across(&settings, &monitor, facing, layout, current)? {
+                    Some(target) => (Share::Half, target),
+                    // No monitor that way: the window stays, and so does the
+                    // record, so the next press asks again.
+                    None => {
+                        *arranging.last_half.lock() = last;
+                        return Ok(());
+                    }
+                }
+            }
+        };
+
+        place(hwnd, target)?;
+        *arranging.last_half.lock() = Some(Placed {
+            window: window.0,
+            layout,
+            share,
+            rect: target,
+        });
+        Ok(())
     }
+}
+
+/// The `facing` half of the monitor next to `from` toward `toward`, with that
+/// monitor's gaps; `None` when there is no monitor that way.
+unsafe fn half_across(
+    settings: &WindowSettings,
+    from: &lumen_platform::MonitorInfo,
+    facing: WindowLayout,
+    toward: WindowLayout,
+    current: Rect,
+) -> Result<Option<Rect>> {
+    let monitors = enumerate()?
+        .into_iter()
+        .map(monitor::describe)
+        .collect::<Result<Vec<_>>>()?;
+    let bounds: Vec<Rect> = monitors.iter().map(|m| m.bounds).collect();
+    let Some(index) = tiling::monitor_toward(&bounds, from.bounds, toward) else {
+        return Ok(None);
+    };
+    let to = &monitors[index];
+    let gaps = settings.gaps(to.scale_factor);
+    Ok(facing.place(to.work_area, current, to.scale_factor, gaps))
 }
 
 /// Move `hwnd` to the monitor next to the one it is on, keeping its share of

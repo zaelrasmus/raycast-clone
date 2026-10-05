@@ -27,7 +27,7 @@ pub use events::{
     GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier, Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
-pub use tiling::{LayoutKind, WindowLayout};
+pub use tiling::{Cycling, Gaps, LayoutKind, WindowLayout, WindowSettings};
 pub use tray::{TrayCommand, TrayInfo, TraySink};
 
 /// How the launcher window's background is produced.
@@ -574,6 +574,15 @@ pub trait Platform: Send + Sync {
     /// The implementation keeps what *Restore* needs: before it arranges or
     /// minimises a window, what that window was like (7.57).
     fn arrange_window(&self, window: Option<FocusOwner>, layout: WindowLayout) -> Result<()>;
+
+    /// The gaps round arranged windows and what repeating a half does
+    /// (F17, 7.58).
+    ///
+    /// Called once at startup and again on every configuration reload; the
+    /// implementation keeps the latest and reads it on the next
+    /// [`Platform::arrange_window`]. Logical pixels: each arrangement scales
+    /// them by its monitor's scale factor.
+    fn set_window_settings(&self, settings: WindowSettings);
 
     /// Paste text into a window that is not ours (F11).
     ///

@@ -8,6 +8,9 @@
 //! subtly wrong. The platform reads the facts and does the calls; the choices
 //! are made here, where they are tested without a window in sight.
 
+use crate::Rect;
+use crate::tiling::{Cycling, Share, WindowLayout};
+
 /// How many windows [`History`] remembers before forgetting the oldest.
 ///
 /// Generous for one person's desktop -- nobody arranges sixty-four windows
@@ -217,9 +220,152 @@ pub fn minimisable(facts: WindowFacts) -> bool {
     switchable(facts) && !facts.minimised
 }
 
+/// How far a window may have drifted, in physical pixels, and still count as
+/// where Lumen put it: a window that rounds its own size to a character cell
+/// or a step lands a pixel or two off.
+pub const SAME_PLACE: i32 = 2;
+
+/// The half Lumen last placed, for cycling it (7.58).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    pub window: u64,
+    pub layout: WindowLayout,
+    pub share: Share,
+    /// The visible rectangle it was given.
+    pub rect: Rect,
+}
+
+/// What pressing a half does (7.58).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HalfStep {
+    /// That half of the window's own monitor, at this size along its axis.
+    Here(Share),
+    /// This half -- the one facing the one pressed -- of the next monitor
+    /// toward the one pressed; where there is none, nothing moves.
+    Across(WindowLayout),
+}
+
+/// What pressing `layout` does to `window`, now at `current`, given what
+/// Lumen placed `last`.
+///
+/// A press repeats when it is the same half on the same window and the
+/// window is still where Lumen put it, give or take [`SAME_PLACE`]: moved
+/// by hand since, it starts again from a half.
+pub fn half_step(
+    cycling: Cycling,
+    last: Option<&Placed>,
+    window: u64,
+    layout: WindowLayout,
+    current: Rect,
+) -> HalfStep {
+    let near = |a: i32, b: i32| (a - b).abs() <= SAME_PLACE;
+    let repeat = last.filter(|last| {
+        let r = last.rect;
+        last.window == window
+            && last.layout == layout
+            && near(r.x, current.x)
+            && near(r.y, current.y)
+            && near(r.width, current.width)
+            && near(r.height, current.height)
+    });
+
+    match (cycling, repeat, layout.opposite_half()) {
+        (Cycling::Sizes, Some(last), Some(_)) => HalfStep::Here(last.share.next()),
+        (Cycling::Displays, Some(_), Some(opposite)) => HalfStep::Across(opposite),
+        _ => HalfStep::Here(Share::Half),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn placed(layout: WindowLayout, share: Share) -> Placed {
+        Placed {
+            window: 7,
+            layout,
+            share,
+            rect: Rect::new(0, 0, 960, 1040),
+        }
+    }
+
+    #[test]
+    fn sizes_steps_half_two_thirds_third_and_round() {
+        let here = |share| {
+            let last = placed(WindowLayout::LeftHalf, share);
+            half_step(
+                Cycling::Sizes,
+                Some(&last),
+                7,
+                WindowLayout::LeftHalf,
+                last.rect,
+            )
+        };
+        assert_eq!(here(Share::Half), HalfStep::Here(Share::TwoThirds));
+        assert_eq!(here(Share::TwoThirds), HalfStep::Here(Share::OneThird));
+        assert_eq!(here(Share::OneThird), HalfStep::Here(Share::Half));
+    }
+
+    #[test]
+    fn a_first_press_is_a_half_in_every_mode() {
+        for cycling in [Cycling::Off, Cycling::Sizes, Cycling::Displays] {
+            let step = half_step(cycling, None, 7, WindowLayout::TopHalf, Rect::default());
+            assert_eq!(step, HalfStep::Here(Share::Half), "{cycling:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_same_half_on_the_same_window_where_lumen_put_it_repeats() {
+        let last = placed(WindowLayout::LeftHalf, Share::Half);
+        let step = |window, layout, current| {
+            half_step(Cycling::Sizes, Some(&last), window, layout, current)
+        };
+        let moved = |dx| Rect::new(dx, 0, 960, 1040);
+
+        assert_eq!(
+            step(7, WindowLayout::LeftHalf, moved(2)),
+            HalfStep::Here(Share::TwoThirds)
+        );
+        assert_eq!(
+            step(7, WindowLayout::LeftHalf, moved(3)),
+            HalfStep::Here(Share::Half)
+        );
+        assert_eq!(
+            step(8, WindowLayout::LeftHalf, moved(0)),
+            HalfStep::Here(Share::Half)
+        );
+        assert_eq!(
+            step(7, WindowLayout::RightHalf, moved(0)),
+            HalfStep::Here(Share::Half)
+        );
+    }
+
+    #[test]
+    fn off_is_always_a_half() {
+        let last = placed(WindowLayout::LeftHalf, Share::Half);
+        let step = half_step(
+            Cycling::Off,
+            Some(&last),
+            7,
+            WindowLayout::LeftHalf,
+            last.rect,
+        );
+        assert_eq!(step, HalfStep::Here(Share::Half));
+    }
+
+    #[test]
+    fn displays_carries_a_repeated_half_to_the_facing_half_beyond() {
+        for (layout, opposite) in [
+            (WindowLayout::LeftHalf, WindowLayout::RightHalf),
+            (WindowLayout::RightHalf, WindowLayout::LeftHalf),
+            (WindowLayout::TopHalf, WindowLayout::BottomHalf),
+            (WindowLayout::BottomHalf, WindowLayout::TopHalf),
+        ] {
+            let last = placed(layout, Share::Half);
+            let step = half_step(Cycling::Displays, Some(&last), 7, layout, last.rect);
+            assert_eq!(step, HalfStep::Across(opposite), "{layout:?}");
+        }
+    }
 
     fn everything_alive(_: u64) -> bool {
         true

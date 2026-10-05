@@ -16,7 +16,7 @@ use lumen_platform::{
     AppEntry, ApplicationsSink, Browser, Chord, ClipboardContent, ClipboardSink, DateStyle,
     FocusOwner, ForegroundApp, GestureSink, Hotkey, HotkeyError, IconImage, IconSource, LaunchMode,
     LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout,
-    WindowRole,
+    WindowRole, WindowSettings,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -77,6 +77,10 @@ pub struct WindowsPlatform {
     /// *Restore* (7.57). Here rather than on the boundary: it is the system's
     /// own placement record, keyed by window handle.
     placements: commands::Placements,
+    /// The configured gaps and cycling, and the half Lumen last placed, for
+    /// cycling it (7.58). Beside `placements` for the same reason: a window
+    /// handle means nothing outside this process.
+    arranging: arrange::Arranging,
 }
 
 impl WindowsPlatform {
@@ -88,6 +92,7 @@ impl WindowsPlatform {
             settings: AtomicU64::new(0),
             gestures: OnceLock::new(),
             placements: Default::default(),
+            arranging: Default::default(),
         }
     }
 
@@ -240,7 +245,11 @@ impl Platform for WindowsPlatform {
     }
 
     fn arrange_window(&self, window: Option<FocusOwner>, layout: WindowLayout) -> Result<()> {
-        commands::run(&self.placements, window, layout)
+        commands::run(&self.placements, &self.arranging, window, layout)
+    }
+
+    fn set_window_settings(&self, settings: WindowSettings) {
+        *self.arranging.settings.lock() = settings;
     }
 
     fn format_date(

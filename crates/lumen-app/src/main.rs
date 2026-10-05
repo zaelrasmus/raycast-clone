@@ -281,6 +281,10 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         overlay_shown: false,
     }));
 
+    // Gaps and cycling for arranged windows (7.58), before anything can be
+    // arranged; every reload hands them over again.
+    platform.set_window_settings(config.window.window_settings());
+
     // One channel for both sources. The gesture listener and the IPC listener
     // are different threads, and both must do nothing but push (I-15).
     let (tx, mut rx) = mpsc::unbounded::<Message>();
@@ -1759,6 +1763,7 @@ fn reload_config(
         return Ok(());
     }
     surfaces.timers.configure(&applied.timers, cx);
+    platform.set_window_settings(applied.window.window_settings());
     *surfaces.config.borrow_mut() = applied.clone();
     log::info!("reloaded the configuration");
 

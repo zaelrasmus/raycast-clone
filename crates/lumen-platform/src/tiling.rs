@@ -112,6 +112,173 @@ pub enum LayoutKind {
     Command,
 }
 
+/// Space left round the tiles, in physical pixels (F17, 7.58).
+///
+/// Physical because the work area is: [`WindowSettings::gaps`] scales the
+/// configured logical figures by the monitor's scale factor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Gaps {
+    /// Between two adjacent tiles.
+    pub window: i32,
+    /// Between a tile and the edge of the work area.
+    pub screen: i32,
+}
+
+/// What repeating a half does to the window already there (F17, 7.58).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Cycling {
+    /// A half is always a half.
+    Off,
+    /// ½, then ⅔, then ⅓, then ½ again.
+    #[default]
+    Sizes,
+    /// On to the facing half of the next monitor that way.
+    Displays,
+}
+
+/// The window management settings, as the platform holds them (F17).
+///
+/// Logical pixels, as the user wrote them; [`WindowSettings::gaps`] gives
+/// them for one monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WindowSettings {
+    pub gap: u32,
+    pub screen_gap: u32,
+    pub cycling: Cycling,
+}
+
+impl WindowSettings {
+    /// The gaps in physical pixels on a monitor whose scale factor is `scale`.
+    pub fn gaps(&self, scale: f32) -> Gaps {
+        let physical = |logical: u32| (logical as f32 * scale).round() as i32;
+        Gaps {
+            window: physical(self.gap),
+            screen: physical(self.screen_gap),
+        }
+    }
+}
+
+/// How much of the work area a repeated half takes along its axis (7.58).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Share {
+    #[default]
+    Half,
+    TwoThirds,
+    OneThird,
+}
+
+impl Share {
+    /// The next size in the cycle: ½, ⅔, ⅓, and round again.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Half => Self::TwoThirds,
+            Self::TwoThirds => Self::OneThird,
+            Self::OneThird => Self::Half,
+        }
+    }
+
+    fn of(self) -> Frac {
+        match self {
+            Self::Half => Frac(1, 2),
+            Self::TwoThirds => Frac(2, 3),
+            Self::OneThird => Frac(1, 3),
+        }
+    }
+}
+
+/// A fraction of the work area along one axis: numerator, denominator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frac(pub i32, pub i32);
+
+impl Frac {
+    const ZERO: Frac = Frac(0, 1);
+    const ONE: Frac = Frac(1, 1);
+
+    fn complement(self) -> Self {
+        Frac(self.1 - self.0, self.1)
+    }
+
+    /// Where this falls on an axis that starts at `origin` and is `size`
+    /// long. Integer division once per edge, so neighbours share the pixel.
+    fn at(self, origin: i32, size: i32) -> i32 {
+        origin + size * self.0 / self.1
+    }
+
+    /// Whether this is an edge of the work area rather than between tiles.
+    fn outer(self) -> bool {
+        self.0 == 0 || self.0 == self.1
+    }
+}
+
+/// A tiling layout as a region of the work area, each edge a fraction of it.
+///
+/// The one description gaps are applied to: an edge at 0 or 1 is on the
+/// work area's edge and is inset by the screen gap; an edge anywhere else is
+/// shared with a neighbour and is inset by half the window gap, so two
+/// neighbours end up exactly one window gap apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tile {
+    pub left: Frac,
+    pub top: Frac,
+    pub right: Frac,
+    pub bottom: Frac,
+}
+
+impl Tile {
+    const fn new(left: Frac, top: Frac, right: Frac, bottom: Frac) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// This tile on `work_area`, with `gaps` round it.
+    pub fn rect(self, work_area: Rect, gaps: Gaps) -> Rect {
+        let Rect {
+            x,
+            y,
+            width,
+            height,
+        } = work_area;
+        // The leading side of an interior gap gets the odd pixel, so the two
+        // halves always add up to the whole gap.
+        let start = |edge: Frac, origin: i32, size: i32| {
+            let at = edge.at(origin, size);
+            match edge.outer() {
+                true => at + gaps.screen,
+                false => at + gaps.window - gaps.window / 2,
+            }
+        };
+        let end = |edge: Frac, origin: i32, size: i32| {
+            let at = edge.at(origin, size);
+            match edge.outer() {
+                true => at - gaps.screen,
+                false => at - gaps.window / 2,
+            }
+        };
+
+        let left = start(self.left, x, width);
+        let top = start(self.top, y, height);
+        let right = end(self.right, x, width);
+        let bottom = end(self.bottom, y, height);
+        Rect::new(left, top, (right - left).max(1), (bottom - top).max(1))
+    }
+}
+
+/// `area` with `inset` taken off every side, never smaller than a pixel.
+fn inset(area: Rect, inset: i32) -> Rect {
+    let inset = inset.clamp(0, (area.width.min(area.height) - 1).max(0) / 2);
+    Rect::new(
+        area.x + inset,
+        area.y + inset,
+        area.width - 2 * inset,
+        area.height - 2 * inset,
+    )
+}
+
 /// How much of the work area the centred layout takes.
 ///
 /// Wide enough to be a working window, narrow enough that the point of the
@@ -225,24 +392,39 @@ impl WindowLayout {
     /// [`WindowLayout::Maximize`] does return the whole work area even though
     /// the platform is expected to genuinely maximise instead: the rectangle is
     /// the right answer for a compositor that has no such concept, and a
-    /// fallback for one that does when maximising is refused.
-    pub fn place(self, work_area: Rect, current: Rect, scale: f32) -> Option<Rect> {
+    /// fallback for one that does when maximising is refused. With a screen
+    /// gap it is the work area inset by it, and the platform places that
+    /// rather than maximising: a maximised window cannot have a margin (7.58).
+    ///
+    /// The tiles ([`WindowLayout::tile`]) get `gaps` round them. Every other
+    /// placement is worked out in the work area inset by the screen gap.
+    pub fn place(self, work_area: Rect, current: Rect, scale: f32, gaps: Gaps) -> Option<Rect> {
+        self.place_at(Share::Half, work_area, current, scale, gaps)
+    }
+
+    /// [`WindowLayout::place`], with a half resized to `share` along its axis
+    /// when it is cycled (7.58). Any other layout ignores `share`.
+    pub fn place_at(
+        self,
+        share: Share,
+        work_area: Rect,
+        current: Rect,
+        scale: f32,
+        gaps: Gaps,
+    ) -> Option<Rect> {
+        if let Some(tile) = self.tile_at(share) {
+            return Some(tile.rect(work_area, gaps));
+        }
+
+        let work_area = inset(work_area, gaps.screen);
         let Rect {
             x,
             y,
             width,
             height,
         } = work_area;
-
-        // Edges rather than widths, and integer division done once per edge.
-        // Computing each column as `width / 3` instead leaves a one- or
-        // two-pixel seam between the thirds on most screen widths, which is
-        // exactly the kind of detail that makes a tiling feature look
-        // home-made.
-        let (x0, x1, x2, x3) = (x, x + width / 3, x + 2 * width / 3, x + width);
-        let (q1, q3) = (x + width / 4, x + 3 * width / 4);
-        let (left, middle, right) = (x, x + width / 2, x + width);
-        let (top, centre, bottom) = (y, y + height / 2, y + height);
+        let (left, right) = (x, x + width);
+        let (top, bottom) = (y, y + height);
 
         // The window's own size, no larger than the work area, and where it
         // can sit on each axis without hanging off.
@@ -255,25 +437,7 @@ impl WindowLayout {
         let share = |size: i32, fraction: f32| (size as f32 * fraction).round() as i32;
 
         let rect = match self {
-            Self::Maximize => work_area,
             Self::Center => centred(share(width, CENTER_WIDTH), share(height, CENTER_HEIGHT)),
-
-            Self::LeftHalf => Rect::new(left, top, middle - left, height),
-            Self::RightHalf => Rect::new(middle, top, right - middle, height),
-            Self::TopHalf => Rect::new(left, top, width, centre - top),
-            Self::BottomHalf => Rect::new(left, centre, width, bottom - centre),
-
-            Self::TopLeftQuarter => Rect::new(left, top, middle - left, centre - top),
-            Self::TopRightQuarter => Rect::new(middle, top, right - middle, centre - top),
-            Self::BottomLeftQuarter => Rect::new(left, centre, middle - left, bottom - centre),
-            Self::BottomRightQuarter => Rect::new(middle, centre, right - middle, bottom - centre),
-
-            Self::LeftThird => Rect::new(x0, top, x1 - x0, height),
-            Self::MiddleThird => Rect::new(x1, top, x2 - x1, height),
-            Self::RightThird => Rect::new(x2, top, x3 - x2, height),
-            Self::LeftTwoThirds => Rect::new(x0, top, x2 - x0, height),
-            Self::RightTwoThirds => Rect::new(x1, top, x3 - x1, height),
-
             Self::MaximizeHeight => Rect::new(keep_x, top, w, height),
             Self::MaximizeWidth => Rect::new(left, keep_y, width, h),
             Self::AlmostMaximize => centred(
@@ -290,35 +454,127 @@ impl WindowLayout {
             }
             Self::CenterKeepSize => centred(w, h),
 
-            Self::FirstFourth => Rect::new(left, top, q1 - left, height),
-            Self::SecondFourth => Rect::new(q1, top, middle - q1, height),
-            Self::ThirdFourth => Rect::new(middle, top, q3 - middle, height),
-            Self::LastFourth => Rect::new(q3, top, right - q3, height),
-
-            // Three columns on the thirds' edges, two rows on the halves'.
-            Self::TopLeftSixth => Rect::new(x0, top, x1 - x0, centre - top),
-            Self::TopCenterSixth => Rect::new(x1, top, x2 - x1, centre - top),
-            Self::TopRightSixth => Rect::new(x2, top, x3 - x2, centre - top),
-            Self::BottomLeftSixth => Rect::new(x0, centre, x1 - x0, bottom - centre),
-            Self::BottomCenterSixth => Rect::new(x1, centre, x2 - x1, bottom - centre),
-            Self::BottomRightSixth => Rect::new(x2, centre, x3 - x2, bottom - centre),
-
             Self::MoveUp => Rect::new(keep_x, top, w, h),
             Self::MoveDown => Rect::new(keep_x, bottom - h, w, h),
             Self::MoveLeft => Rect::new(left, keep_y, w, h),
             Self::MoveRight => Rect::new(right - w, keep_y, w, h),
 
-            Self::NextMonitor
-            | Self::PreviousMonitor
-            | Self::Minimize
-            | Self::MinimizeDisplay
-            | Self::Restore
-            | Self::FocusNextAppWindow
-            | Self::FocusPreviousAppWindow => return None,
+            _ => return None,
         };
 
         Some(rect)
     }
+
+    /// This layout as a tile, when it is one: the maximise, the halves,
+    /// quarters, thirds, two-thirds, fourths and sixths.
+    ///
+    /// Edges rather than widths, each worked out once from the work area.
+    /// Computing each column as `width / 3` instead leaves a one- or
+    /// two-pixel seam between the thirds on most screen widths, which is
+    /// exactly the kind of detail that makes a tiling feature look home-made.
+    pub fn tile(self) -> Option<Tile> {
+        self.tile_at(Share::Half)
+    }
+
+    fn tile_at(self, share: Share) -> Option<Tile> {
+        let (zero, one, half) = (Frac::ZERO, Frac::ONE, Frac(1, 2));
+        let (third, two_thirds) = (Frac(1, 3), Frac(2, 3));
+        let (fourth, three_fourths) = (Frac(1, 4), Frac(3, 4));
+        let (near, far) = (share.of(), share.of().complement());
+        let tile = Tile::new;
+
+        Some(match self {
+            Self::Maximize => tile(zero, zero, one, one),
+
+            Self::LeftHalf => tile(zero, zero, near, one),
+            Self::RightHalf => tile(far, zero, one, one),
+            Self::TopHalf => tile(zero, zero, one, near),
+            Self::BottomHalf => tile(zero, far, one, one),
+
+            Self::TopLeftQuarter => tile(zero, zero, half, half),
+            Self::TopRightQuarter => tile(half, zero, one, half),
+            Self::BottomLeftQuarter => tile(zero, half, half, one),
+            Self::BottomRightQuarter => tile(half, half, one, one),
+
+            Self::LeftThird => tile(zero, zero, third, one),
+            Self::MiddleThird => tile(third, zero, two_thirds, one),
+            Self::RightThird => tile(two_thirds, zero, one, one),
+            Self::LeftTwoThirds => tile(zero, zero, two_thirds, one),
+            Self::RightTwoThirds => tile(third, zero, one, one),
+
+            Self::FirstFourth => tile(zero, zero, fourth, one),
+            Self::SecondFourth => tile(fourth, zero, half, one),
+            Self::ThirdFourth => tile(half, zero, three_fourths, one),
+            Self::LastFourth => tile(three_fourths, zero, one, one),
+
+            // Three columns on the thirds' edges, two rows on the halves'.
+            Self::TopLeftSixth => tile(zero, zero, third, half),
+            Self::TopCenterSixth => tile(third, zero, two_thirds, half),
+            Self::TopRightSixth => tile(two_thirds, zero, one, half),
+            Self::BottomLeftSixth => tile(zero, half, third, one),
+            Self::BottomCenterSixth => tile(third, half, two_thirds, one),
+            Self::BottomRightSixth => tile(two_thirds, half, one, one),
+
+            _ => return None,
+        })
+    }
+
+    /// Whether this is one of the four halves, which cycle (7.58).
+    pub fn is_half(self) -> bool {
+        matches!(
+            self,
+            Self::LeftHalf | Self::RightHalf | Self::TopHalf | Self::BottomHalf
+        )
+    }
+
+    /// The half facing this one: left for right, top for bottom.
+    pub fn opposite_half(self) -> Option<Self> {
+        Some(match self {
+            Self::LeftHalf => Self::RightHalf,
+            Self::RightHalf => Self::LeftHalf,
+            Self::TopHalf => Self::BottomHalf,
+            Self::BottomHalf => Self::TopHalf,
+            _ => return None,
+        })
+    }
+}
+
+/// The monitor next to `current` on the side a half points to: left of it
+/// for [`WindowLayout::LeftHalf`], above it for [`WindowLayout::TopHalf`].
+///
+/// Among `monitors` (full bounds), one entirely on that side, the nearest,
+/// and of those the one most in line with `current`. `None` when there is
+/// none, or `toward` is not a half.
+pub fn monitor_toward(monitors: &[Rect], current: Rect, toward: WindowLayout) -> Option<usize> {
+    let right = |r: &Rect| r.x + r.width;
+    let bottom = |r: &Rect| r.y + r.height;
+    // How far beyond `current` a monitor is, when it is on that side, and how
+    // far out of line with it.
+    let distance = |m: &Rect| -> Option<(i32, i32)> {
+        let across = (m.center_y() - current.center_y()).abs();
+        let down = (m.center_x() - current.center_x()).abs();
+        match toward {
+            WindowLayout::LeftHalf => {
+                (right(m) <= current.x).then(|| (current.x - right(m), across))
+            }
+            WindowLayout::RightHalf => {
+                (m.x >= right(&current)).then(|| (m.x - right(&current), across))
+            }
+            WindowLayout::TopHalf => {
+                (bottom(m) <= current.y).then(|| (current.y - bottom(m), down))
+            }
+            WindowLayout::BottomHalf => {
+                (m.y >= bottom(&current)).then(|| (m.y - bottom(&current), down))
+            }
+            _ => None,
+        }
+    };
+    monitors
+        .iter()
+        .enumerate()
+        .filter_map(|(index, m)| distance(m).map(|d| (d, index)))
+        .min()
+        .map(|(_, index)| index)
 }
 
 /// Carry a window's rectangle from one work area to another.
@@ -368,7 +624,7 @@ mod tests {
     }
 
     fn at(layout: WindowLayout, area: Rect, current: Rect) -> Rect {
-        layout.place(area, current, 1.0).unwrap()
+        layout.place(area, current, 1.0, NONE).unwrap()
     }
 
     fn right_edge(rect: Rect) -> i32 {
@@ -379,11 +635,225 @@ mod tests {
         rect.y + rect.height
     }
 
+    const NONE: Gaps = Gaps {
+        window: 0,
+        screen: 0,
+    };
+
+    fn tiles() -> Vec<(WindowLayout, Tile)> {
+        WindowLayout::ALL
+            .iter()
+            .filter_map(|&layout| layout.tile().map(|tile| (layout, tile)))
+            .collect()
+    }
+
+    /// Every pair of tiles that share an edge, with the gap between them in
+    /// pixels: horizontal neighbours, then vertical ones.
+    fn neighbour_gaps(area: Rect, gaps: Gaps) -> Vec<i32> {
+        let all = tiles();
+        let mut found = Vec::new();
+        for &(_, a) in &all {
+            for &(_, b) in &all {
+                let (ra, rb) = (a.rect(area, gaps), b.rect(area, gaps));
+                let rows_meet = a.top == b.top && a.bottom == b.bottom;
+                let columns_meet = a.left == b.left && a.right == b.right;
+                let same = |p: Frac, q: Frac| p.0 * q.1 == q.0 * p.1;
+                if rows_meet && same(a.right, b.left) {
+                    found.push(rb.x - right_edge(ra));
+                }
+                if columns_meet && same(a.bottom, b.top) {
+                    found.push(rb.y - bottom_edge(ra));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn every_tile_is_a_region_of_the_unit_square() {
+        let untiled = [
+            WindowLayout::Center,
+            WindowLayout::MaximizeHeight,
+            WindowLayout::MaximizeWidth,
+            WindowLayout::AlmostMaximize,
+            WindowLayout::ReasonableSize,
+            WindowLayout::CenterKeepSize,
+            WindowLayout::MoveUp,
+            WindowLayout::MoveDown,
+            WindowLayout::MoveLeft,
+            WindowLayout::MoveRight,
+        ];
+        for &layout in WindowLayout::ALL {
+            let tiled = layout.kind() == LayoutKind::Place && !untiled.contains(&layout);
+            assert_eq!(layout.tile().is_some(), tiled, "{layout:?}");
+            let Some(tile) = layout.tile() else { continue };
+            let value = |f: Frac| f.0 as f32 / f.1 as f32;
+            for edge in [tile.left, tile.top, tile.right, tile.bottom] {
+                assert!((0.0..=1.0).contains(&value(edge)), "{layout:?}");
+            }
+            assert!(value(tile.left) < value(tile.right), "{layout:?}");
+            assert!(value(tile.top) < value(tile.bottom), "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn without_gaps_every_pair_of_neighbouring_tiles_abuts() {
+        let gaps = neighbour_gaps(awkward(), NONE);
+        assert!(gaps.len() > 20);
+        assert!(gaps.iter().all(|&gap| gap == 0), "{gaps:?}");
+    }
+
+    /// Odd on purpose: the odd pixel must go to one side, not be lost.
+    #[test]
+    fn with_a_window_gap_every_pair_of_neighbours_is_exactly_that_far_apart() {
+        let gaps = neighbour_gaps(
+            awkward(),
+            Gaps {
+                window: 7,
+                screen: 5,
+            },
+        );
+        assert!(gaps.iter().all(|&gap| gap == 7), "{gaps:?}");
+    }
+
+    #[test]
+    fn the_screen_gap_is_left_at_every_outer_edge() {
+        let area = awkward();
+        let gaps = Gaps {
+            window: 8,
+            screen: 12,
+        };
+        for (layout, tile) in tiles() {
+            let rect = tile.rect(area, gaps);
+            if tile.left.outer() {
+                assert_eq!(rect.x, area.x + 12, "{layout:?}");
+            }
+            if tile.top.outer() {
+                assert_eq!(rect.y, area.y + 12, "{layout:?}");
+            }
+            if tile.right.outer() {
+                assert_eq!(right_edge(rect), right_edge(area) - 12, "{layout:?}");
+            }
+            if tile.bottom.outer() {
+                assert_eq!(bottom_edge(rect), bottom_edge(area) - 12, "{layout:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_gaps_are_logical_pixels_scaled_to_the_monitor() {
+        let settings = WindowSettings {
+            gap: 8,
+            screen_gap: 4,
+            cycling: Cycling::Sizes,
+        };
+        assert_eq!(
+            settings.gaps(1.5),
+            Gaps {
+                window: 12,
+                screen: 6
+            }
+        );
+        assert_eq!(
+            settings.gaps(1.0),
+            Gaps {
+                window: 8,
+                screen: 4
+            }
+        );
+    }
+
+    /// A maximised window cannot have a margin: with a screen gap, Maximise
+    /// is the work area inset by it, which the platform places (7.58).
+    #[test]
+    fn maximise_with_a_screen_gap_is_the_inset_work_area() {
+        let area = Rect::new(0, 0, 1920, 1040);
+        let gaps = Gaps {
+            window: 16,
+            screen: 10,
+        };
+        assert_eq!(
+            WindowLayout::Maximize.place(area, window(), 1.0, gaps),
+            Some(Rect::new(10, 10, 1900, 1020))
+        );
+    }
+
+    #[test]
+    fn the_untiled_layouts_stay_inside_the_screen_gap() {
+        let area = awkward();
+        let inner = inset(area, 24);
+        let gaps = Gaps {
+            window: 0,
+            screen: 24,
+        };
+        let huge = Rect::new(-500, 900, 4000, 3000);
+        for &layout in WindowLayout::ALL {
+            for current in [window(), huge] {
+                let Some(rect) = layout.place(area, current, 1.0, gaps) else {
+                    continue;
+                };
+                assert!(rect.x >= inner.x && rect.y >= inner.y, "{layout:?}");
+                assert!(right_edge(rect) <= right_edge(inner), "{layout:?}");
+                assert!(bottom_edge(rect) <= bottom_edge(inner), "{layout:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cycled_half_takes_its_share_from_its_own_edge() {
+        let area = Rect::new(0, 0, 1800, 900);
+        let at = |layout: WindowLayout, share| {
+            layout.place_at(share, area, window(), 1.0, NONE).unwrap()
+        };
+        assert_eq!(
+            at(WindowLayout::LeftHalf, Share::TwoThirds),
+            Rect::new(0, 0, 1200, 900)
+        );
+        assert_eq!(
+            at(WindowLayout::LeftHalf, Share::OneThird),
+            Rect::new(0, 0, 600, 900)
+        );
+        assert_eq!(
+            at(WindowLayout::RightHalf, Share::TwoThirds),
+            Rect::new(600, 0, 1200, 900)
+        );
+        assert_eq!(
+            at(WindowLayout::TopHalf, Share::OneThird),
+            Rect::new(0, 0, 1800, 300)
+        );
+        assert_eq!(
+            at(WindowLayout::BottomHalf, Share::TwoThirds),
+            Rect::new(0, 300, 1800, 600)
+        );
+        // Anything else ignores the share.
+        assert_eq!(
+            at(WindowLayout::LeftThird, Share::TwoThirds),
+            at(WindowLayout::LeftThird, Share::Half)
+        );
+    }
+
+    #[test]
+    fn the_monitor_toward_a_half_is_the_nearest_on_that_side() {
+        let middle = Rect::new(0, 0, 1920, 1080);
+        let monitors = [
+            Rect::new(-3840, 0, 1920, 1080),
+            Rect::new(-1920, 200, 1920, 1080),
+            middle,
+            Rect::new(0, -1440, 2560, 1440),
+        ];
+        let toward = |layout| monitor_toward(&monitors, middle, layout);
+        assert_eq!(toward(WindowLayout::LeftHalf), Some(1));
+        assert_eq!(toward(WindowLayout::TopHalf), Some(3));
+        assert_eq!(toward(WindowLayout::RightHalf), None);
+        assert_eq!(toward(WindowLayout::BottomHalf), None);
+        assert_eq!(toward(WindowLayout::LeftThird), None);
+    }
+
     #[test]
     fn every_layout_that_tiles_stays_inside_the_work_area() {
         let area = awkward();
         for layout in WindowLayout::ALL {
-            let Some(rect) = layout.place(area, window(), 1.0) else {
+            let Some(rect) = layout.place(area, window(), 1.0, NONE) else {
                 assert_ne!(layout.kind(), LayoutKind::Place);
                 continue;
             };
@@ -451,7 +921,7 @@ mod tests {
             WindowLayout::BottomLeftQuarter,
             WindowLayout::BottomRightQuarter,
         ]
-        .map(|layout| layout.place(area, window(), 1.0).unwrap());
+        .map(|layout| layout.place(area, window(), 1.0, NONE).unwrap());
 
         let covered: i64 = quarters
             .iter()
@@ -464,7 +934,7 @@ mod tests {
     fn maximize_is_the_whole_work_area() {
         let area = awkward();
         assert_eq!(
-            WindowLayout::Maximize.place(area, window(), 1.0),
+            WindowLayout::Maximize.place(area, window(), 1.0, NONE),
             Some(area)
         );
     }
@@ -491,7 +961,11 @@ mod tests {
             WindowLayout::FocusPreviousAppWindow,
         ];
         for layout in commands {
-            assert_eq!(layout.place(awkward(), window(), 1.0), None, "{layout:?}");
+            assert_eq!(
+                layout.place(awkward(), window(), 1.0, NONE),
+                None,
+                "{layout:?}"
+            );
             assert_eq!(layout.kind(), LayoutKind::Command, "{layout:?}");
             assert!(!layout.changes_monitor(), "{layout:?}");
             assert!(WindowLayout::ALL.contains(&layout), "{layout:?}");
@@ -505,7 +979,7 @@ mod tests {
     fn place_answers_exactly_for_placements() {
         for layout in WindowLayout::ALL {
             assert_eq!(
-                layout.place(awkward(), window(), 1.0).is_some(),
+                layout.place(awkward(), window(), 1.0, NONE).is_some(),
                 layout.kind() == LayoutKind::Place,
                 "{layout:?}"
             );
@@ -529,11 +1003,11 @@ mod tests {
     #[test]
     fn the_monitor_moves_have_no_tile() {
         assert_eq!(
-            WindowLayout::NextMonitor.place(awkward(), window(), 1.0),
+            WindowLayout::NextMonitor.place(awkward(), window(), 1.0, NONE),
             None
         );
         assert_eq!(
-            WindowLayout::PreviousMonitor.place(awkward(), window(), 1.0),
+            WindowLayout::PreviousMonitor.place(awkward(), window(), 1.0, NONE),
             None
         );
         assert!(WindowLayout::NextMonitor.changes_monitor());
@@ -585,7 +1059,7 @@ mod tests {
         let area = awkward();
         let huge = Rect::new(-500, 900, 4000, 3000);
         for layout in WindowLayout::ALL {
-            let Some(rect) = layout.place(area, huge, 2.0) else {
+            let Some(rect) = layout.place(area, huge, 2.0, NONE) else {
                 assert_ne!(layout.kind(), LayoutKind::Place);
                 continue;
             };
@@ -685,13 +1159,13 @@ mod tests {
         let area = Rect::new(2560, 0, 3840, 2100);
 
         let rect = WindowLayout::ReasonableSize
-            .place(area, window(), 1.0)
+            .place(area, window(), 1.0, NONE)
             .unwrap();
         assert_eq!(rect, Rect::new(2560 + 1407, 600, 1025, 900));
 
         // The same cap at 150% is half as many physical pixels again.
         let rect = WindowLayout::ReasonableSize
-            .place(area, window(), 1.5)
+            .place(area, window(), 1.5, NONE)
             .unwrap();
         assert_eq!(rect, Rect::new(2560 + 1151, 420, 1538, 1260));
     }

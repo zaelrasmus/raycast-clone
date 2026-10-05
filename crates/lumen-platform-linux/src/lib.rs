@@ -32,7 +32,7 @@ use lumen_platform::{
     AppChoice, AppEntry, ApplicationsSink, Browser, Chord, ClipboardContent, ClipboardSink,
     DateStyle, FocusOwner, ForegroundApp, GestureSink, Hotkey, HotkeyError, IconImage, IconSource,
     LaunchMode, LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink,
-    WindowLayout, WindowRole,
+    WindowLayout, WindowRole, WindowSettings,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -172,6 +172,13 @@ impl Platform for LinuxPlatform {
         // minimise, `focuswindow` for the cycling); *Restore*'s history and
         // the choices are `lumen_platform::window_commands`'.
         todo!("F5: arrange through Hyprland's IPC socket")
+    }
+
+    fn set_window_settings(&self, _settings: WindowSettings) {
+        // Ignored until F5 arranges anything. Not a `todo!()`: the daemon
+        // calls this at startup, before any window is arranged. Hyprland has
+        // gaps of its own (`general:gaps_in`, `gaps_out`); whether these
+        // defer to them is an F5 decision.
     }
 
     fn spawn_extension(

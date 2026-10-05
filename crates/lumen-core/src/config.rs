@@ -7,7 +7,7 @@
 use std::path::{Component, Path, PathBuf, Prefix};
 
 use anyhow::{Context as _, Result};
-use lumen_platform::{BackdropMode, Hotkey};
+use lumen_platform::{BackdropMode, Cycling, Hotkey, WindowSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::calc::history::CalculatorConfig;
@@ -32,6 +32,10 @@ pub const ROWS: std::ops::RangeInclusive<usize> = 3..=20;
 /// always has names in memory, and at most 32, a third of the idle memory
 /// budget (I-8).
 pub const HOT_MEMORY: std::ops::RangeInclusive<u32> = 1..=32;
+
+/// What `window.gap` and `window.screen-gap` may be, in logical pixels
+/// (F17, 7.58): past 64 a half is mostly margin on a small screen.
+pub const GAP: std::ops::RangeInclusive<i32> = 0..=64;
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
 use crate::weather::WeatherConfig;
@@ -525,6 +529,17 @@ pub struct WindowConfig {
     /// people who drive it entirely from the keyboard sometimes want it to sit
     /// there while they read something behind it.
     pub dismiss_on_focus_loss: bool,
+    /// Logical pixels between two windows Lumen arranges side by side
+    /// (F17, 7.58). Kept within [`GAP`].
+    pub gap: i32,
+    /// Logical pixels between an arranged window and the edge of the work
+    /// area. Kept within [`GAP`]. Above zero, *Maximise* leaves it too, so
+    /// the window is placed rather than maximised.
+    pub screen_gap: i32,
+    /// What pressing a half again does: `"sizes"` steps it through two
+    /// thirds and one third, `"displays"` carries it to the next monitor that
+    /// way, `"off"` leaves it a half.
+    pub cycling: Cycling,
 }
 
 impl Default for WindowConfig {
@@ -535,6 +550,22 @@ impl Default for WindowConfig {
             vertical_bias: 0.22,
             horizontal_bias: 0.5,
             dismiss_on_focus_loss: true,
+            gap: 0,
+            screen_gap: 0,
+            cycling: Cycling::default(),
+        }
+    }
+}
+
+impl WindowConfig {
+    /// The window management settings handed to the platform, the gaps
+    /// within [`GAP`]. Applied live on every reload.
+    pub fn window_settings(&self) -> WindowSettings {
+        let gap = |value: i32| value.clamp(*GAP.start(), *GAP.end()) as u32;
+        WindowSettings {
+            gap: gap(self.gap),
+            screen_gap: gap(self.screen_gap),
+            cycling: self.cycling,
         }
     }
 }
@@ -1316,6 +1347,63 @@ mod tests {
         assert_eq!(applied.hotkey, before.hotkey);
         assert_eq!(applied.window.vertical_bias, 0.0);
         assert_eq!(applied.restart_required(&after), vec!["hotkey"]);
+    }
+
+    /// A config written before F17 tiles without gaps and cycles sizes.
+    #[test]
+    fn window_management_defaults_to_no_gaps_and_cycling_sizes() {
+        let config: Config = serde_json::from_str(r#"{ "window": { "width": 700 } }"#).unwrap();
+        assert_eq!(
+            config.window.window_settings(),
+            WindowSettings {
+                gap: 0,
+                screen_gap: 0,
+                cycling: Cycling::Sizes,
+            }
+        );
+        assert_eq!(
+            Config::default().window.window_settings(),
+            config.window.window_settings()
+        );
+    }
+
+    #[test]
+    fn window_management_keys_are_read_in_kebab_case() {
+        let config: Config = serde_json::from_str(
+            r#"{ "window": { "gap": 8, "screen-gap": 12, "cycling": "displays" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.window.window_settings(),
+            WindowSettings {
+                gap: 8,
+                screen_gap: 12,
+                cycling: Cycling::Displays,
+            }
+        );
+        let off: Config = serde_json::from_str(r#"{ "window": { "cycling": "off" } }"#).unwrap();
+        assert_eq!(off.window.cycling, Cycling::Off);
+    }
+
+    #[test]
+    fn the_gaps_are_kept_within_range() {
+        let config: Config =
+            serde_json::from_str(r#"{ "window": { "gap": -4, "screen-gap": 500 } }"#).unwrap();
+        let settings = config.window.window_settings();
+        assert_eq!((settings.gap, settings.screen_gap), (0, 64));
+    }
+
+    /// The gaps and cycling are read on every arrangement, so a reload
+    /// applies them at once.
+    #[test]
+    fn window_management_applies_without_a_restart() {
+        let before = Config::default();
+        let mut after = before.clone();
+        after.window.gap = 10;
+        after.window.screen_gap = 6;
+        after.window.cycling = Cycling::Off;
+        assert!(before.restart_required(&after).is_empty());
+        assert_eq!(before.merge_live(&after).window, after.window);
     }
 
     /// A config written before translation existed gets the keyless service

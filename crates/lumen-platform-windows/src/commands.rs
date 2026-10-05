@@ -47,7 +47,12 @@ pub type Placements = Mutex<History<WINDOWPLACEMENT>>;
 
 /// Apply `layout` to `target`, the window in front or the one captured before
 /// the launcher appeared; `None` for the desktop.
-pub fn run(history: &Placements, target: Option<FocusOwner>, layout: WindowLayout) -> Result<()> {
+pub fn run(
+    history: &Placements,
+    arranging: &arrange::Arranging,
+    target: Option<FocusOwner>,
+    layout: WindowLayout,
+) -> Result<()> {
     let target = target.map(|FocusOwner(raw)| HWND(raw as *mut c_void));
 
     match (layout, target) {
@@ -65,7 +70,7 @@ pub fn run(history: &Placements, target: Option<FocusOwner>, layout: WindowLayou
             if alive(key(hwnd)) {
                 record(history, hwnd, false);
             }
-            arrange::arrange(FocusOwner(key(hwnd)), layout)
+            arrange::arrange(arranging, FocusOwner(key(hwnd)), layout)
         }
     }
 }
