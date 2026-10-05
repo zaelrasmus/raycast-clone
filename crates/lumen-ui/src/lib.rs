@@ -34,6 +34,7 @@ pub mod quicklinks_page;
 pub mod select;
 pub mod settings;
 pub mod settings_ui;
+pub mod shortcuts_page;
 pub mod snippet_form;
 pub mod styling;
 pub mod text_area;

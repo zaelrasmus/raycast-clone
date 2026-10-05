@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms (7.54); one alias table leads a command typed by its alias (7.55). A *Shortcuts* settings page and the window-management presets are next |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) is built and bound. Recording from the page, and the window-management presets, are next |
 
 ### F4 build order is not optional
 
@@ -3573,6 +3573,47 @@ it is not an alias lookup.
 The daemon gives the launcher the loaded file wherever it registers the
 hotkeys (7.54): at startup, after every save, and on `lumen reload`, which
 re-applies the file whether or not the watch saw it change.
+
+The settings window's *Shortcuts* page gets the same table after every
+apply, with each hotkey the system refused, by id, and draws the refusal on
+that command's row. Its rows are the launcher's index, shared rather than
+copied when the window opens, so it lists what root search finds. It writes
+every change to the file at once and lets the watch apply it; the table the
+watch hands back is taken only if the page did not write it, so the echo of
+its own save never replaces what is being typed.
+
+### 7.56 The hotkey recorder is the one place that reads keys
+
+I-14 says in-app shortcuts are GPUI actions bound from the keymap, and
+nothing in UI code compares keys by hand. Recording a hotkey (F17) cannot
+work that way: the keys pressed are the data, any combination at all, and
+no keymap can bind every chord in advance. So one component,
+`hotkey_recorder.rs`, listens to the raw key-down and modifier changes and
+turns them into a `Chord` in a pure function, `capture`. No other UI code
+reads a key.
+
+This keeps the intent of I-14, which is that what a key *does* is declared
+in one table, not decided by scattered comparisons:
+
+- **Keys as data, not commands.** `capture` decides what a key is, never
+  what it does. Validity is `Chord`'s own parser -- a key with a modifier,
+  or F13 to F24 alone -- so there is one rule, not a second copy of it.
+- **Steering is still actions.** Escape cancels, Enter saves and Backspace
+  clears, bound in `keymap.rs` in the recorder's context like any other key.
+- **The window's chords are unbound there.** GPUI runs a binding before any
+  key listener sees the key, so Ctrl+S or Ctrl+Tab would switch pages
+  instead of being recorded. The recorder's context binds each of the
+  settings window's chords, and the context-free Ctrl+Escape, to `NoAction`,
+  and a test fails if a binding is added to the window without its shadow.
+- **One platform quirk lives here too.** On Windows gpui reports Shift with
+  a punctuation key as the shifted character with Shift dropped (`~`, not
+  Shift+Backtick); the recorder maps it back, as a chord names keys.
+
+The launcher's and the timers' hotkeys stay registered while a hotkey is
+recorded, so the launcher can always be summoned. Pressing exactly one of
+them therefore toggles the launcher and never reaches the recorder. A chord
+equal to either is refused by name before it is saved
+(`shortcuts::reserved_by`), however it was entered.
 
 ## 8. Risk register
 

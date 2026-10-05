@@ -44,6 +44,7 @@ use crate::clock_page::ClockPage;
 use crate::currency_page::CurrencyPage;
 use crate::file_search_page::{FileSearchPage, FileSearchPageEvent};
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
+use crate::shortcuts_page::ShortcutsPage;
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::timers_page::{TimersPage, TimersPageEvent};
@@ -54,6 +55,7 @@ use crate::weather_page::WeatherPage;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Appearance,
+    Shortcuts,
     Sheets,
     Quicklinks,
     Translation,
@@ -69,8 +71,9 @@ enum Page {
 impl Page {
     /// The nav's order: Lumen's own pages, then the features', by name, as
     /// Raycast lists its extensions (F15).
-    const ALL: [Page; 11] = [
+    const ALL: [Page; 12] = [
         Page::Appearance,
+        Page::Shortcuts,
         Page::Sheets,
         Page::Calculator,
         Page::Clipboard,
@@ -84,12 +87,13 @@ impl Page {
     ];
 
     /// How many of [`Page::ALL`] are Lumen's own, before the gap in the nav.
-    const OWN: usize = 2;
+    const OWN: usize = 3;
 
     /// The glyph beside its name in the nav.
     fn icon(self) -> &'static str {
         match self {
             Page::Appearance => "icons/palette.svg",
+            Page::Shortcuts => "icons/command.svg",
             Page::Sheets => "icons/keyboard.svg",
             Page::Quicklinks => "icons/link.svg",
             Page::Translation => "icons/text.svg",
@@ -106,6 +110,7 @@ impl Page {
     fn label(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
+            Page::Shortcuts => "Shortcuts",
             Page::Sheets => "Shortcut Sheets",
             Page::Quicklinks => "Quicklinks",
             Page::Translation => "Translation",
@@ -122,6 +127,7 @@ impl Page {
     fn hint(self) -> &'static str {
         match self {
             Page::Appearance => "The look, and the root list's sections, in config.json",
+            Page::Shortcuts => "Aliases and hotkeys for any command, in shortcuts.json",
             Page::Sheets => "Hold the gesture key to see these while you work",
             Page::Quicklinks => "Saved links and web searches, in quicklinks.json",
             Page::Translation => "The service and your presets, in config.json",
@@ -294,6 +300,7 @@ pub struct Settings {
     calculator: Entity<CalculatorPage>,
     files: Entity<FileSearchPage>,
     appearance: Entity<AppearancePage>,
+    shortcuts: Entity<ShortcutsPage>,
 }
 
 impl Settings {
@@ -371,6 +378,7 @@ impl Settings {
         let files = {
             let colors = theme.colors.clone();
             let config_file = config_file.clone();
+            let platform = platform.clone();
             cx.new(|cx| FileSearchPage::new(config_file, platform, colors, cx))
         };
         cx.observe(&files, |_, _, cx| cx.notify()).detach();
@@ -390,6 +398,13 @@ impl Settings {
             cx.new(|cx| AppearancePage::new(config_file, themes_dir, styles_dir, colors, cx))
         };
         cx.observe(&appearance, |_, _, cx| cx.notify()).detach();
+
+        let shortcuts = {
+            let colors = theme.colors.clone();
+            let file = paths.shortcuts_file();
+            cx.new(|cx| ShortcutsPage::new(file, platform, colors, cx))
+        };
+        cx.observe(&shortcuts, |_, _, cx| cx.notify()).detach();
 
         let timers = {
             let colors = theme.colors.clone();
@@ -436,7 +451,35 @@ impl Settings {
             calculator,
             files,
             appearance,
+            shortcuts,
         }
+    }
+
+    /// Re-read `shortcuts.json` (F17): when the window opens.
+    pub fn reload_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.shortcuts.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// The launcher's index, for the Shortcuts page's rows: on open.
+    pub fn set_catalogue(
+        &mut self,
+        catalogue: std::sync::Arc<Vec<lumen_core::Candidate>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.shortcuts
+            .update(cx, |page, cx| page.set_catalogue(catalogue, cx));
+    }
+
+    /// What the daemon loaded from `shortcuts.json` and how each hotkey was
+    /// registered, after every apply (F17).
+    pub fn shortcuts_applied(
+        &mut self,
+        loaded: lumen_core::shortcuts::Shortcuts,
+        failures: std::collections::BTreeMap<String, lumen_platform::HotkeyError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.shortcuts
+            .update(cx, |page, cx| page.applied(loaded, failures, cx));
     }
 
     /// Re-read the translate section of `config.json`: on open, and whenever
@@ -626,6 +669,8 @@ impl Settings {
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.files
             .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
+        self.shortcuts
+            .update(cx, |page, cx| page.set_colors(colors.clone(), cx));
         self.appearance
             .update(cx, |page, cx| page.set_colors(colors, cx));
 
@@ -635,6 +680,7 @@ impl Settings {
     pub fn focus(&self, window: &mut Window, cx: &App) {
         match self.page {
             Page::Appearance => self.appearance.read(cx).focus(window, cx),
+            Page::Shortcuts => self.shortcuts.read(cx).focus(window, cx),
             Page::Sheets => window.focus(&self.focus_handle),
             Page::Quicklinks => self.quicklinks.read(cx).focus(window, cx),
             Page::Translation => self.translation.read(cx).focus(window, cx),
@@ -722,8 +768,9 @@ impl Settings {
             self.weather.update(cx, |page, cx| page.save(cx));
             return;
         }
-        // Appearance writes each choice as it is made; nothing waits.
-        if self.page == Page::Appearance {
+        // Appearance and Shortcuts write each change as it is made; nothing
+        // waits.
+        if matches!(self.page, Page::Appearance | Page::Shortcuts) {
             return;
         }
         if self.page == Page::Clipboard {
@@ -1093,6 +1140,12 @@ impl Render for Settings {
                 .flex_1()
                 .overflow_hidden()
                 .child(self.appearance.clone())
+                .into_any_element(),
+            Page::Shortcuts => div()
+                .flex()
+                .flex_1()
+                .overflow_hidden()
+                .child(self.shortcuts.clone())
                 .into_any_element(),
         };
         let dialog = match self.page {
@@ -1589,6 +1642,7 @@ impl Settings {
             Page::Calculator => (self.calculator.read(cx).status(), false),
             Page::Files => (self.files.read(cx).status(), false),
             Page::Appearance => (self.appearance.read(cx).status(), false),
+            Page::Shortcuts => (self.shortcuts.read(cx).status(), false),
         };
 
         // The content column's status: what was saved, or why not, and the

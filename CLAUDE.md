@@ -23,7 +23,7 @@ Not negotiated case by case.
 | I-11 | A palette may define only colour and type family. A style may set only the geometry tokens and variants in its schema, each within its range; no structure or layout is themeable (F15). |
 | I-12 | Every missing theme token resolves from the base theme. A theme written today must still load a year from now. |
 | I-13 | The UI tree and event types exist in exactly one place. No parallel definitions in WIT, in JSON Schema or in the SDK. |
-| I-14 | In-app shortcuts are declared as GPUI actions and bound from a keymap file. No hand-written key comparisons in UI code. |
+| I-14 | In-app shortcuts are declared as GPUI actions and bound from a keymap file. No hand-written key comparisons in UI code. One exception: the hotkey recorder (ARCHITECTURE 7.56). |
 | I-15 | No system input callback allocates, logs, takes a lock or touches UI state. It pushes the event to a channel and returns. |
 
 ## Performance budgets

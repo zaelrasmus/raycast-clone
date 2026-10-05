@@ -422,7 +422,18 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     // After the gesture listener: command hotkeys are registered on its
     // thread (7.53).
     let hotkeys = Rc::new(RefCell::new(Vec::new()));
-    let reload_shortcuts = watch_shortcuts(cx, &platform, &paths, &hotkeys, window);
+    let applied = Rc::new(RefCell::new(Applied::default()));
+    let reload_shortcuts = watch_shortcuts(
+        cx,
+        &platform,
+        &paths,
+        &hotkeys,
+        window,
+        ShortcutsView {
+            settings: settings.clone(),
+            applied: applied.clone(),
+        },
+    );
 
     let surfaces = Surfaces {
         launcher: window,
@@ -437,6 +448,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         timers,
         hotkeys,
         reload_shortcuts,
+        applied,
     };
 
     watch_sheets(cx, &surfaces);
@@ -554,6 +566,24 @@ struct Surfaces {
     /// Asks the shortcuts watch to apply `shortcuts.json` again, for the
     /// reload that re-reads everything the user edits by hand.
     reload_shortcuts: mpsc::UnboundedSender<()>,
+    /// What the last apply loaded and could not register, for a settings
+    /// window opened after it.
+    applied: Rc<RefCell<Applied>>,
+}
+
+/// What one apply of `shortcuts.json` loaded, and why each hotkey that
+/// could not be registered was not, by id (F17).
+#[derive(Default, Clone)]
+struct Applied {
+    shortcuts: lumen_core::shortcuts::Shortcuts,
+    failures: std::collections::BTreeMap<String, lumen_platform::HotkeyError>,
+}
+
+/// Where an apply is reported: the settings window, once it exists, and the
+/// copy kept for when it is opened.
+struct ShortcutsView {
+    settings: Rc<RefCell<Option<gpui::WindowHandle<Settings>>>>,
+    applied: Rc<RefCell<Applied>>,
 }
 
 impl Surfaces {
@@ -695,6 +725,7 @@ fn watch_shortcuts(
     paths: &Paths,
     table: &Rc<RefCell<Vec<String>>>,
     launcher: gpui::WindowHandle<Launcher>,
+    view: ShortcutsView,
 ) -> mpsc::UnboundedSender<()> {
     use lumen_core::watcher::FileWatcher;
 
@@ -716,7 +747,7 @@ fn watch_shortcuts(
     cx.spawn(async move |cx| {
         let _watcher = watcher;
         loop {
-            apply_shortcuts(&platform, &path, &table, launcher, cx).await;
+            apply_shortcuts(&platform, &path, &table, launcher, &view, cx).await;
             if !next_change(&mut changes, cx).await {
                 break;
             }
@@ -735,6 +766,7 @@ async fn apply_shortcuts(
     path: &std::path::Path,
     table: &Rc<RefCell<Vec<String>>>,
     launcher: gpui::WindowHandle<Launcher>,
+    view: &ShortcutsView,
     cx: &mut gpui::AsyncApp,
 ) {
     let platform = platform.clone();
@@ -752,13 +784,17 @@ async fn apply_shortcuts(
         })
         .await;
 
+    let mut failures = std::collections::BTreeMap::new();
     match registered {
         Ok(results) => {
             let mut bound = 0;
             for ((id, chord), result) in ids.iter().zip(&chords).zip(results) {
                 match result {
                     Ok(()) => bound += 1,
-                    Err(error) => log::warn!("the hotkey {chord} for {id:?}: {error}"),
+                    Err(error) => {
+                        log::warn!("the hotkey {chord} for {id:?}: {error}");
+                        failures.insert(id.clone(), error);
+                    }
                 }
             }
             log::info!("registered {bound} of {} command hotkeys", chords.len());
@@ -773,6 +809,20 @@ async fn apply_shortcuts(
             launcher.set_shortcuts(&shortcuts, cx)
         })
         .ok();
+    // The Shortcuts page shows each failure on its row (F17).
+    let window = *view.settings.borrow();
+    if let Some(window) = window {
+        let (shortcuts, failures) = (shortcuts.clone(), failures.clone());
+        window
+            .update(cx, |settings, _window, cx| {
+                settings.shortcuts_applied(shortcuts, failures, cx)
+            })
+            .ok();
+    }
+    *view.applied.borrow_mut() = Applied {
+        shortcuts,
+        failures,
+    };
 }
 
 /// Show the settings window, creating it the first time.
@@ -816,6 +866,13 @@ fn open_settings(
         .launcher
         .update(cx, |launcher, _window, _cx| launcher.file_index_status())
         .ok();
+    // The launcher's index, shared: the Shortcuts page lists what root
+    // search finds (F17).
+    let catalogue = surfaces
+        .launcher
+        .update(cx, |launcher, _window, _cx| launcher.catalogue())
+        .ok();
+    let applied = surfaces.applied.borrow().clone();
     window
         .update(cx, |settings, window, cx| {
             settings.load(entries, cx);
@@ -835,6 +892,11 @@ fn open_settings(
                 settings.set_file_index_status(files, cx);
             }
             settings.reload_appearance(cx);
+            if let Some(catalogue) = catalogue {
+                settings.set_catalogue(catalogue, cx);
+            }
+            settings.shortcuts_applied(applied.shortcuts, applied.failures, cx);
+            settings.reload_shortcuts(cx);
             settings.focus(window, cx);
         })
         .ok();

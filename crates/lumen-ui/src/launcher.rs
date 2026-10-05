@@ -1862,6 +1862,12 @@ impl Launcher {
         }
     }
 
+    /// Every command root search indexes, for the settings window's
+    /// Shortcuts page (F17): shared, not copied.
+    pub fn catalogue(&self) -> Arc<Vec<lumen_core::Candidate>> {
+        self.root.index()
+    }
+
     /// *Open* in *Search Files*: counted as used, as a file opened from root
     /// is, then opened by the shell once the launcher has gone.
     fn open_found(&mut self, found: &lumen_core::file_search::Found, cx: &mut Context<Self>) {

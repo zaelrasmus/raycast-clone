@@ -639,6 +639,26 @@ their own files, and those work the same way. Give one an alias here as
 well and both work; the row shows the one from this file. A quicklink's
 alias followed by a space still searches it: `g lofi beats`.
 
+#### Settings -> Shortcuts
+
+The same file, edited in a list: every command root search finds --
+applications, Lumen's commands, window layouts, quicklinks, presets,
+scripts, extensions -- with its icon, its kind, its alias and its hotkey.
+
+- **Search** by title or alias; show **All**, only those **With Hotkey**,
+  or only those **With Alias**.
+- **Alias**: click it and type. Enter, Tab or clicking away saves it, Esc
+  puts it back, and an empty field removes it. One that is not letters,
+  digits and single spaces is refused on the row, not saved. An alias two
+  commands share is flagged on both rows.
+- **Hotkey**: shown as key caps; the cross removes it. A hotkey the system
+  would not register -- another application holds it -- says so on its
+  row, in red.
+
+Every change is written to `shortcuts.json` at once and applies without a
+restart. The list is the launcher's index as it was when settings opened:
+reopen settings to see an application installed since.
+
 ### Quicklinks
 
 `%APPDATA%\Lumen\config\quicklinks.json`, written with Google and YouTube on
