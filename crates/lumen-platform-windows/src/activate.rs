@@ -351,7 +351,7 @@ fn window_stem(hwnd: HWND) -> Option<String> {
 ///
 /// Restores it first: a minimised window given the foreground stays minimised,
 /// and the user sees the taskbar flash and nothing else.
-unsafe fn raise(hwnd: HWND) {
+pub(crate) unsafe fn raise(hwnd: HWND) {
     unsafe {
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);

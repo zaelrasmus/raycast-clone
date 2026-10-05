@@ -1,6 +1,6 @@
 //! Window management as commands (F3).
 //!
-//! A genuine catalogue provider, unlike the clipboard: thirty-six fixed entries
+//! A genuine catalogue provider, unlike the clipboard: forty-one fixed entries
 //! that exist whether or not anyone asked, found by typing part of their name.
 //!
 //! # Why the names are spelled twice
@@ -20,7 +20,7 @@ use crate::providers::Provider;
 
 /// Every layout, its slug, its title, and what else finds it.
 ///
-/// A table rather than a `match` with thirty-six arms so that adding a layout is
+/// A table rather than a `match` with forty-one arms so that adding a layout is
 /// one line and cannot half-happen: a variant with no row here fails the
 /// exhaustiveness test below.
 ///
@@ -244,6 +244,42 @@ const LAYOUTS: &[(WindowLayout, &str, &str, &[&str])] = &[
         "Move to Previous Monitor",
         &["screen", "display", "throw"],
     ),
+    (
+        WindowLayout::Minimize,
+        "minimize",
+        "Minimise Window",
+        &["minimize", "hide"],
+    ),
+    (
+        WindowLayout::MinimizeDisplay,
+        "minimize-display",
+        "Minimise on This Display",
+        &[
+            "minimize",
+            "show desktop",
+            "minimize all",
+            "monitor",
+            "screen",
+        ],
+    ),
+    (
+        WindowLayout::Restore,
+        "restore",
+        "Restore Window",
+        &["undo", "previous", "unsnap", "back"],
+    ),
+    (
+        WindowLayout::FocusNextAppWindow,
+        "focus-next-app-window",
+        "Focus Next App Window",
+        &["switch", "cycle", "next"],
+    ),
+    (
+        WindowLayout::FocusPreviousAppWindow,
+        "focus-previous-app-window",
+        "Focus Previous App Window",
+        &["switch", "cycle", "previous"],
+    ),
 ];
 
 /// What the subtitle says on every one of these rows.
@@ -430,7 +466,11 @@ mod tests {
         // Every British spelling in a title, on every row that has one.
         for item in &items {
             let title = item.title.to_lowercase();
-            for (british, american) in [("maximise", "maximize"), ("centre", "center")] {
+            for (british, american) in [
+                ("maximise", "maximize"),
+                ("minimise", "minimize"),
+                ("centre", "center"),
+            ] {
                 if title.contains(british) {
                     assert!(
                         item.keywords.iter().any(|k| k == american),
@@ -500,7 +540,51 @@ mod tests {
         ] {
             assert!(ids.contains(&id(slug)), "window:{slug} is not offered");
         }
-        assert_eq!(ids.len(), 36);
+        assert_eq!(ids.len(), 41);
+    }
+
+    /// Minimise, restore and focus, by their slugs and British titles.
+    #[test]
+    fn the_window_commands_are_offered() {
+        let items = ArrangeProvider.catalogue();
+        for (slug, title) in [
+            ("minimize", "Minimise Window"),
+            ("minimize-display", "Minimise on This Display"),
+            ("restore", "Restore Window"),
+            ("focus-next-app-window", "Focus Next App Window"),
+            ("focus-previous-app-window", "Focus Previous App Window"),
+        ] {
+            let item = items
+                .iter()
+                .find(|item| item.id == id(slug))
+                .unwrap_or_else(|| panic!("window:{slug} is not offered"));
+            assert_eq!(item.title, title);
+        }
+    }
+
+    /// What people type for these, Raycast's words and the system's.
+    #[test]
+    fn the_window_commands_answer_to_what_people_type() {
+        let items = ArrangeProvider.catalogue();
+        let keywords = |slug: &str| {
+            items
+                .iter()
+                .find(|item| item.id == id(slug))
+                .unwrap()
+                .keywords
+                .clone()
+        };
+        let has = |slug: &str, word: &str| keywords(slug).iter().any(|k| k == word);
+
+        assert!(has("minimize", "minimize"));
+        assert!(has("minimize", "hide"));
+        assert!(has("minimize-display", "show desktop"));
+        assert!(has("minimize-display", "minimize all"));
+        assert!(has("minimize-display", "monitor"));
+        assert!(has("restore", "undo"));
+        assert!(has("restore", "unsnap"));
+        assert!(has("focus-next-app-window", "switch"));
+        assert!(has("focus-previous-app-window", "switch"));
     }
 
     #[test]

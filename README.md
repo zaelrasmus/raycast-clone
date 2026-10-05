@@ -83,6 +83,12 @@ an aesthetic worth looking at fifty times a day.
   almost maximise, reasonable size, centre with or without resizing, move to
   an edge of the screen, and move to the next or previous monitor -- applied
   to the window you were using when you opened the launcher.
+  And five window commands: *Minimise Window* in one keystroke even from
+  maximised, *Minimise on This Display* (every window on that monitor, the
+  others untouched), *Restore Window* (back to where it was before Lumen
+  last moved or minimised it, or the window Lumen minimised last -- so
+  Minimise then Restore is a round trip by hotkey), and *Focus Next* /
+  *Previous App Window* to cycle through one application's windows.
   The edges land flush: Windows draws a window's resize border outside what you
   see, and Lumen compensates for it, so tiled windows meet with no seam and do
   not hang off the screen.

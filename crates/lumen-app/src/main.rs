@@ -2077,11 +2077,13 @@ fn run_hotkey(
                 return Ok(());
             }
             // The window in front now, not `restore_to`: with the launcher
-            // hidden there is no captured handle to prefer (7.54).
-            let Some(target) = platform.foreground_window()? else {
+            // hidden there is no captured handle to prefer (7.54). None is
+            // the desktop, which two commands still act from (7.57).
+            let target = platform.foreground_window()?;
+            if target.is_none() && layout.needs_window() {
                 log::debug!("no window to arrange");
                 return Ok(());
-            };
+            }
             platform.arrange_window(target, layout)?;
             timing::report_hotkey_done(pressed);
         }
@@ -2364,6 +2366,11 @@ fn run_extension(
 /// because hiding consumes it; the arrangement happens after, because the
 /// window should be the one the user is looking at by the time it moves rather
 /// than jumping about behind a launcher that is still on screen.
+///
+/// The window commands (7.57) rely on the same order. Hiding hands the
+/// foreground back before they run, so a minimise, a restore or a focus is
+/// the last word: the window just minimised is not then re-focused by the
+/// hand-back.
 fn arrange(
     platform: &Arc<dyn Platform>,
     shell: &Rc<RefCell<Shell>>,
@@ -2372,13 +2379,13 @@ fn arrange(
     let target = shell.borrow().restore_to;
     hide(platform, shell)?;
 
-    let Some(target) = target else {
+    if target.is_none() && layout.needs_window() {
         // Nothing had the foreground when the launcher appeared: the user came
         // from the desktop. There is no window to arrange and nothing has gone
         // wrong.
         log::debug!("no window to arrange");
         return Ok(());
-    };
+    }
 
     platform.arrange_window(target, layout)
 }

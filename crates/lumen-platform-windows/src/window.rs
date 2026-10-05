@@ -205,27 +205,33 @@ unsafe fn take_foreground(target: HWND) {
 pub fn foreground() -> Option<FocusOwner> {
     let hwnd = non_null(unsafe { GetForegroundWindow() })?;
 
-    let mut process = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
-    if process == unsafe { GetCurrentProcessId() } {
+    if is_ours(hwnd) || is_shell(hwnd) {
         return None;
     }
 
+    Some(FocusOwner(hwnd.0 as u64))
+}
+
+/// Whether `hwnd` belongs to this process: the launcher, the settings, the
+/// overlay or a dialog of theirs.
+pub(crate) fn is_ours(hwnd: HWND) -> bool {
+    let mut process = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
+    process == unsafe { GetCurrentProcessId() }
+}
+
+/// Whether `hwnd` is the shell's desktop or one of its taskbars.
+pub(crate) fn is_shell(hwnd: HWND) -> bool {
     // The desktop is `Progman`, or the `WorkerW` that hosts the wallpaper
     // once the desktop has been shown; moving either moves the icons.
     let mut name = [0u16; 32];
     let length = unsafe { GetClassNameW(hwnd, &mut name) };
     let class = String::from_utf16_lossy(&name[..length.max(0) as usize]);
-    if hwnd == unsafe { GetShellWindow() }
+    hwnd == unsafe { GetShellWindow() }
         || matches!(
             class.as_str(),
             "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
         )
-    {
-        return None;
-    }
-
-    Some(FocusOwner(hwnd.0 as u64))
 }
 
 fn non_null(hwnd: HWND) -> Option<HWND> {

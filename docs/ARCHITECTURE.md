@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16). The window-management presets are next |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16), and five window commands -- *Minimise Window* from any state in one command, *Minimise on This Display*, *Restore Window* from a bounded per-window history that makes Minimise then Restore a round trip by hotkey, and *Focus Next* / *Previous App Window* (7.57). The window-management presets are next |
 
 ### F4 build order is not optional
 
@@ -3677,6 +3677,91 @@ chord, generated from the launcher's bindings so a new one cannot escape it.
 An alias is typed in a field of its own in the query's place, so the query
 is kept. The launcher writes `shortcuts.json` and takes the table it wrote
 at once, so the daemon's apply that follows changes nothing on screen.
+
+### 7.57 Minimise, restore and focus are window commands too
+
+Raycast's window list has commands that are not a region of the screen:
+minimise, restore, and cycling an application's windows (F17). They are
+`WindowLayout` variants all the same -- `Minimize`, `MinimizeDisplay`,
+`Restore`, `FocusNextAppWindow`, `FocusPreviousAppWindow` -- because
+everything a layout already has is what they need: a fixed id
+(`window:minimize`), a row, a hotkey, and the same route to the platform
+(7.15, 7.54). `WindowLayout::kind()` says which is which (`Place`,
+`Monitor`, `Command`); `place` answers only for `Place`.
+
+**One signature change.** Two of them act with nothing in front:
+*Minimise on This Display* falls back to the monitor under the cursor, and
+*Restore* to the window Lumen minimised last. So `Platform::arrange_window`
+takes `Option<FocusOwner>`, both implementations changed with it (I-9), and
+`WindowLayout::needs_window()` is what lets the daemon still skip every
+other layout when the launcher was opened over the desktop.
+
+**The choices are on the boundary, the calls in the platform.**
+`lumen_platform::window_commands` holds what needs no system and is tested:
+the history, which window *Restore* brings back, the focus cycle, and the
+filter for which windows a command may touch. The Windows implementation
+reads the facts and makes the calls (`commands.rs`).
+
+- **Minimise** is `SW_MINIMIZE` from whatever state the window is in.
+  The system's Win+Down takes two presses from maximised because the first
+  un-maximises; this takes one.
+- **Minimise on This Display** minimises every window the task switcher
+  would list -- visible, not cloaked (another virtual desktop), not a tool
+  window, not owned, titled, not Lumen's, not the desktop or taskbar, not
+  minimised already -- on the target window's monitor. The other monitors
+  are untouched.
+- **Never waiting on another program.** Minimising is `ShowWindowAsync` and
+  a restored placement sets `WPF_ASYNCWINDOWPLACEMENT`: both post to the
+  window's thread instead of waiting for it, so one hung application among
+  those on a display cannot hang the daemon.
+- **Restore** reads a history: before Lumen arranges or minimises a window
+  it records the system's own placement record (`GetWindowPlacement`: the
+  normal rectangle and the minimised or maximised state), keyed by window
+  handle, one entry per window, most recent last, at most 64. Recording
+  again replaces, so *Restore* goes back to before the *last* arrangement.
+  A window that has closed is dropped before every use (`IsWindow`); a
+  handle reused between two uses is the one case it cannot see. Restoring
+  pops the entry. A window Lumen *minimised* is brought back with
+  `SW_RESTORE` and activated rather than by re-applying its placement:
+  a snapped window's placement holds its rectangle from before it was
+  snapped, so re-applying it would unsnap it.
+- **The round trip by hotkey.** After a minimise the window in front is some
+  other one, so *Restore* cannot only mean "the window in front". It is, in
+  order: the target's own history; else the window Lumen minimised most
+  recently that still exists and is still minimised; else a target that is
+  minimised or maximised is restored as the system would; else nothing.
+  Minimise then Restore, by hotkey or from the launcher opened over the
+  desktop, is a round trip. The cost is that a window maximised by hand,
+  in front and with no history, is not un-maximised while a window Lumen
+  minimised is still down; that one comes back first.
+- **Focus Next / Previous App Window** cycle the application's switchable
+  windows, minimised included, in z-order. Z-order alone does not cycle --
+  bringing the second window forward makes the first second, and "next"
+  again only swaps the two -- so *Next* also sinks the current window
+  behind the application's backmost one, as Alt+Esc does but within the
+  application; *Previous* activates the backmost and goes round the other
+  way. The application is the executable, with a packaged application's
+  frame looked through to the program inside as R-14 does; when the
+  executable cannot be read (an elevated window) the process stands in. A
+  suspended packaged window whose content has gone reports the frame host,
+  and is not matched. Activation is the launcher's own attach-and-set
+  (`activate::raise`), which holds against the foreground lock because the
+  daemon has just received the hotkey or hidden its own window.
+
+**Where the history lives.** In `WindowsPlatform`, behind a mutex: it is
+the system's placement record keyed by window handle, meaningless to any
+other platform, so the boundary carries none of it. The mutex is taken only
+from `arrange_window`, which the daemon calls from its own tasks -- the
+launcher's events off the GPUI callback (7.18) and the command hotkeys'
+handler on the gesture channel -- never from an input callback (I-15).
+
+**From the launcher**, the order of 7.15 does the rest: the launcher hides
+and hands the foreground back first, then the command runs, so a minimise
+or a focus is the last word and the hand-back never re-focuses the window
+just minimised.
+
+On Hyprland (F5) these are dispatches too; the history and the choices are
+already on the boundary.
 
 ## 8. Risk register
 

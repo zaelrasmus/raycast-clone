@@ -30,6 +30,7 @@ mod browsers;
 mod clipboard;
 mod clipboard_watch;
 mod com;
+mod commands;
 mod content;
 mod date;
 mod dib;
@@ -72,6 +73,10 @@ pub struct WindowsPlatform {
     /// The gesture listener, once started: where command hotkeys are sent to
     /// be registered on the thread that owns its window (7.53).
     gestures: OnceLock<input::Listener>,
+    /// Where each window was before Lumen last arranged or minimised it, for
+    /// *Restore* (7.57). Here rather than on the boundary: it is the system's
+    /// own placement record, keyed by window handle.
+    placements: commands::Placements,
 }
 
 impl WindowsPlatform {
@@ -82,6 +87,7 @@ impl WindowsPlatform {
             overlay: AtomicU64::new(0),
             settings: AtomicU64::new(0),
             gestures: OnceLock::new(),
+            placements: Default::default(),
         }
     }
 
@@ -233,8 +239,8 @@ impl Platform for WindowsPlatform {
         scripts::run(path)
     }
 
-    fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()> {
-        arrange::arrange(window, layout)
+    fn arrange_window(&self, window: Option<FocusOwner>, layout: WindowLayout) -> Result<()> {
+        commands::run(&self.placements, window, layout)
     }
 
     fn format_date(

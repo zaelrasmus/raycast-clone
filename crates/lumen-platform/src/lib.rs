@@ -19,6 +19,7 @@ pub mod events;
 pub mod geometry;
 pub mod tiling;
 pub mod tray;
+pub mod window_commands;
 
 pub use chord::{Chord, HotkeyError, KEY_NAMES, ParseChordError, canonical_key};
 pub use events::{
@@ -26,7 +27,7 @@ pub use events::{
     GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier, Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
-pub use tiling::WindowLayout;
+pub use tiling::{LayoutKind, WindowLayout};
 pub use tray::{TrayCommand, TrayInfo, TraySink};
 
 /// How the launcher window's background is produced.
@@ -564,7 +565,15 @@ pub trait Platform: Send + Sync {
     /// Failure is ordinary: the window may have closed, or belong to a process
     /// at a higher integrity level than ours, in which case Windows refuses
     /// silently and there is nothing to be done about it from here.
-    fn arrange_window(&self, window: FocusOwner, layout: WindowLayout) -> Result<()>;
+    ///
+    /// `window` is `None` when nothing was in front -- the desktop. Only the
+    /// layouts that do not [need a window](WindowLayout::needs_window) do
+    /// anything then; the rest succeed doing nothing.
+    ///
+    /// The window commands ([`tiling::LayoutKind::Command`]) come here too.
+    /// The implementation keeps what *Restore* needs: before it arranges or
+    /// minimises a window, what that window was like (7.57).
+    fn arrange_window(&self, window: Option<FocusOwner>, layout: WindowLayout) -> Result<()>;
 
     /// Paste text into a window that is not ours (F11).
     ///

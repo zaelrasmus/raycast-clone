@@ -83,6 +83,33 @@ pub enum WindowLayout {
     /// Move to the adjacent monitor, keeping the window's proportions.
     NextMonitor,
     PreviousMonitor,
+
+    /// Minimise, from any state: maximised and snapped included, in one
+    /// command where the system's own key takes two from maximised.
+    Minimize,
+    /// Minimise every ordinary window on the target window's monitor, or on
+    /// the cursor's when nothing is in front. The other monitors are left
+    /// alone.
+    MinimizeDisplay,
+    /// Put the window back where it was before Lumen last arranged or
+    /// minimised it; with nothing to go back to, the window Lumen minimised
+    /// most recently. See [`crate::window_commands::History`].
+    Restore,
+    /// Focus the application's next window, or its previous one, among its
+    /// switchable windows in z-order. See [`crate::window_commands::cycle`].
+    FocusNextAppWindow,
+    FocusPreviousAppWindow,
+}
+
+/// What a [`WindowLayout`] does to the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutKind {
+    /// Puts it somewhere on its monitor: [`WindowLayout::place`] answers.
+    Place,
+    /// Carries it to another monitor.
+    Monitor,
+    /// Minimises, restores or focuses: a window command, not a region.
+    Command,
 }
 
 /// How much of the work area the centred layout takes.
@@ -144,12 +171,39 @@ impl WindowLayout {
         WindowLayout::MoveRight,
         WindowLayout::NextMonitor,
         WindowLayout::PreviousMonitor,
+        WindowLayout::Minimize,
+        WindowLayout::MinimizeDisplay,
+        WindowLayout::Restore,
+        WindowLayout::FocusNextAppWindow,
+        WindowLayout::FocusPreviousAppWindow,
     ];
+
+    /// What this layout does to the window.
+    pub fn kind(self) -> LayoutKind {
+        match self {
+            Self::NextMonitor | Self::PreviousMonitor => LayoutKind::Monitor,
+            Self::Minimize
+            | Self::MinimizeDisplay
+            | Self::Restore
+            | Self::FocusNextAppWindow
+            | Self::FocusPreviousAppWindow => LayoutKind::Command,
+            _ => LayoutKind::Place,
+        }
+    }
 
     /// Whether this layout moves the window to another monitor rather than
     /// placing it within the one it is already on.
     pub fn changes_monitor(self) -> bool {
-        matches!(self, Self::NextMonitor | Self::PreviousMonitor)
+        self.kind() == LayoutKind::Monitor
+    }
+
+    /// Whether there is nothing to do without a target window.
+    ///
+    /// Two commands choose their own windows: *Minimise on This Display*
+    /// falls back to the monitor under the cursor, and *Restore* to the
+    /// window Lumen minimised last -- which is never the one in front.
+    pub fn needs_window(self) -> bool {
+        !matches!(self, Self::MinimizeDisplay | Self::Restore)
     }
 
     /// Where this layout puts a window that is now at `current`, on a monitor
@@ -164,7 +218,9 @@ impl WindowLayout {
     /// result never hangs off the monitor even when the window already did.
     ///
     /// `None` for the monitor moves, which are not a region of the monitor the
-    /// window is currently on and so have nothing to compute here.
+    /// window is currently on and so have nothing to compute here, and for the
+    /// window commands ([`LayoutKind::Command`]), which are not a region at
+    /// all.
     ///
     /// [`WindowLayout::Maximize`] does return the whole work area even though
     /// the platform is expected to genuinely maximise instead: the rectangle is
@@ -252,7 +308,13 @@ impl WindowLayout {
             Self::MoveLeft => Rect::new(left, keep_y, w, h),
             Self::MoveRight => Rect::new(right - w, keep_y, w, h),
 
-            Self::NextMonitor | Self::PreviousMonitor => return None,
+            Self::NextMonitor
+            | Self::PreviousMonitor
+            | Self::Minimize
+            | Self::MinimizeDisplay
+            | Self::Restore
+            | Self::FocusNextAppWindow
+            | Self::FocusPreviousAppWindow => return None,
         };
 
         Some(rect)
@@ -322,7 +384,7 @@ mod tests {
         let area = awkward();
         for layout in WindowLayout::ALL {
             let Some(rect) = layout.place(area, window(), 1.0) else {
-                assert!(layout.changes_monitor());
+                assert_ne!(layout.kind(), LayoutKind::Place);
                 continue;
             };
 
@@ -417,6 +479,53 @@ mod tests {
         assert_eq!(rect.y + rect.height / 2, area.center_y());
     }
 
+    /// Minimise, restore and focus are window commands, not regions: none has
+    /// a place, and each says what it is instead.
+    #[test]
+    fn the_window_commands_have_no_place() {
+        let commands = [
+            WindowLayout::Minimize,
+            WindowLayout::MinimizeDisplay,
+            WindowLayout::Restore,
+            WindowLayout::FocusNextAppWindow,
+            WindowLayout::FocusPreviousAppWindow,
+        ];
+        for layout in commands {
+            assert_eq!(layout.place(awkward(), window(), 1.0), None, "{layout:?}");
+            assert_eq!(layout.kind(), LayoutKind::Command, "{layout:?}");
+            assert!(!layout.changes_monitor(), "{layout:?}");
+            assert!(WindowLayout::ALL.contains(&layout), "{layout:?}");
+        }
+        assert_eq!(WindowLayout::LeftHalf.kind(), LayoutKind::Place);
+        assert_eq!(WindowLayout::NextMonitor.kind(), LayoutKind::Monitor);
+    }
+
+    /// A layout has a place exactly when it is a placement.
+    #[test]
+    fn place_answers_exactly_for_placements() {
+        for layout in WindowLayout::ALL {
+            assert_eq!(
+                layout.place(awkward(), window(), 1.0).is_some(),
+                layout.kind() == LayoutKind::Place,
+                "{layout:?}"
+            );
+        }
+    }
+
+    /// Only a command that can choose its own windows runs with nothing in
+    /// front: the desktop's display is minimised, the last minimised window
+    /// restored.
+    #[test]
+    fn only_minimise_display_and_restore_run_without_a_window() {
+        for layout in WindowLayout::ALL {
+            let without = matches!(
+                layout,
+                WindowLayout::MinimizeDisplay | WindowLayout::Restore
+            );
+            assert_eq!(layout.needs_window(), !without, "{layout:?}");
+        }
+    }
+
     #[test]
     fn the_monitor_moves_have_no_tile() {
         assert_eq!(
@@ -477,7 +586,7 @@ mod tests {
         let huge = Rect::new(-500, 900, 4000, 3000);
         for layout in WindowLayout::ALL {
             let Some(rect) = layout.place(area, huge, 2.0) else {
-                assert!(layout.changes_monitor());
+                assert_ne!(layout.kind(), LayoutKind::Place);
                 continue;
             };
             assert!(rect.x >= area.x && rect.y >= area.y, "{layout:?}");
