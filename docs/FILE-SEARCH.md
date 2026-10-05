@@ -512,7 +512,8 @@ real index (362 at 2M). Folding `name` while scanning takes 267 ms
 Root searches a hot layer in memory, then the disk. The ceiling is gone.
 
 **The hot layer** (`Store::hot`, `FileIndex::load`). It is a `Names` of part
-of the index, within `HOT_BUDGET` = 8 MB as `Names::cost` counts it: each
+of the index, within the hot budget as `Names::cost` counts it -- 8 MB
+(`DEFAULT_HOT_BUDGET`) unless `files.hot-memory` sets 1 to 32 MB: each
 name's folded bytes and newline, plus its start and its row (`len + 9`).
 Entries are taken in one order until the next does not fit:
 
@@ -527,6 +528,14 @@ whole index (`hot_is_complete`), and root never asks the disk. A home folder
 (55 000 entries, about 1.7 MB) fits whole. Why 8 MB: idle was 71--75 MB
 against 100. The old ceiling's 500 000 names took 14.4 MB; 8 MB keeps
 the launcher near 83 MB with any index.
+
+**Configurable, capped at 32 MB.** `files.hot-memory` sets the budget in
+megabytes, default 8, kept within 1 to 32 (outside it, the nearest end,
+with a log line). The cap protects the idle memory budget (I-8): 8 MB
+measured 80.8 MB idle with a 405 000-entry index, and about 14 MB holds
+that whole index. A change opens the index again from its store
+(`FileIndex::open`): the budget is not a rule of the walk and not in the
+digest, so nothing is walked or reconciled.
 
 **Root** (`FileIndex::root_query`):
 
@@ -1171,7 +1180,8 @@ waits for it, and an answer to an older query is dropped (I-3).
   The card is as tall as its lines up to the picture's height
   (`DETAIL_CARD_MAX_HEIGHT`), so the metadata is where it is for an image.
   Every line ending is a line feed (`
-` and a lone `` alike), each
+` and a lone `
+` alike), each
   line is cut at 4000 characters and tabs are four spaces: a minified file
   is one line of 64 KB, and the text system has no tab stops.
 - **The parent folder before a shared name** is `Item::prefix`, drawn
@@ -1306,7 +1316,8 @@ applications, ranked as applications, and it works with file search off.
   "include-hidden": false,
   "default-skips-off": ["node_modules"],
   "declined-drives": ["E:/"],
-  "preview-font": "monospace"
+  "preview-font": "monospace",
+  "hot-memory": 8
 },
 "apps": {
   "extra-folders": ["D:/Tools"]
@@ -1322,6 +1333,10 @@ applications, ranked as applications, and it works with file search off.
 - `preview-font`: `"monospace"` (the default) or `"interface"`, what a text
   file's preview card is drawn in. Any other value is the default, with a
   log line, never an error.
+- `hot-memory`: megabytes of names kept in memory for root (the hot layer,
+  step c3a), default 8, kept within 1 to 32. The settings page offers 4, 8,
+  16 and 32 under *Index*. A change loads the index again from its store,
+  never a walk.
 - **Old configurations still load.** `roots`, if present, is read as `scopes`
   -- it replaced the defaults, and a scope list does the same. `limits` is no
   longer used; it is read, ignored and logged once, never an error.
@@ -1341,7 +1356,8 @@ groups:
    `AppData` with a note that it changes constantly and adding it costs CPU
    and memory. Stored as `default-skips-off`, so a new default reaches
    everyone and only what the user turned off is written.
-4. **Index** -- status (items, last pass, or progress), *Rebuild Index*.
+4. **Index** -- status (items, last pass, or progress), *Rebuild Index*;
+   *Instant results memory* (`files.hot-memory`: 4, 8, 16 or 32 MB).
 
 Per scope, Windows Search coverage, with *Indexing Options…* when one is not
 covered, sits in **Where** (built in 6c; "Content search through Windows

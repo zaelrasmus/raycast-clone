@@ -115,8 +115,10 @@ pub struct IndexStatus {
     pub indexing: bool,
 }
 
-/// The most the hot layer's names may cost in memory, as [`Names::cost`]
-/// counts them (`docs/FILE-SEARCH.md`, "Step c3a").
+/// What the hot layer's names may cost in memory unless `files.hot-memory`
+/// says otherwise, as [`Names::cost`] counts them (`docs/FILE-SEARCH.md`,
+/// "Step c3a"); the configuration keeps it within 1 to 32 MB
+/// ([`crate::config::HOT_MEMORY`]).
 ///
 /// Idle memory has been measured at 71--75 MB from F8 to F15, against a
 /// budget of 100. Eight megabytes of names keeps the launcher near 83 with
@@ -127,14 +129,14 @@ pub struct IndexStatus {
 /// Past it, about a quarter of a million entries are in memory -- the used,
 /// the folders and the shallowest files -- and the rest are asked of the
 /// disk by their words.
-pub const HOT_BUDGET: usize = 8 * 1024 * 1024;
+pub const DEFAULT_HOT_BUDGET: usize = 8 * 1024 * 1024;
 
 /// The index, loaded and ready to query.
 ///
 /// # A hot layer, then the disk
 ///
 /// Only part of the index is in memory: the hot layer, selected at load
-/// within [`HOT_BUDGET`] ([`Store::hot`]). Root asks it first, and a match
+/// within its budget ([`Store::hot`], `files.hot-memory`). Root asks it first, and a match
 /// anywhere in a name counts there. From three characters it asks the
 /// disk's word index too ([`Store::ranked`]) -- unless the hot layer is the
 /// whole index -- and the two are merged into the order the names rank in.
@@ -149,7 +151,8 @@ pub struct FileIndex {
     /// Whether the hot layer is every entry, so the disk has nothing more
     /// to answer.
     hot_is_complete: bool,
-    /// What the hot layer was selected within: [`HOT_BUDGET`], but in tests.
+    /// What the hot layer was selected within: `files.hot-memory` in bytes,
+    /// or [`DEFAULT_HOT_BUDGET`].
     budget: usize,
     /// How many entries the index holds, in memory or not.
     entries: usize,
@@ -252,7 +255,7 @@ impl FileIndex {
     /// The index as the store last recorded it, without touching the disk
     /// beyond the database: what a start does.
     pub fn load(store: Store) -> Result<FileIndex> {
-        Self::load_within(store, &[], HOT_BUDGET)
+        Self::load_within(store, &[], DEFAULT_HOT_BUDGET)
     }
 
     /// [`Self::load`], with a hot layer of the rows `boosted` and what else
@@ -285,12 +288,13 @@ impl FileIndex {
     /// Walk `rules` and make the result the whole index at `path`. Seconds to
     /// minutes, depending on the scopes.
     pub fn build(path: &Path, rules: &WalkRules) -> Result<FileIndex> {
-        Self::rebuild(path, rules, None, &|| false)
+        Self::rebuild(path, rules, None, &|| false, DEFAULT_HOT_BUDGET)
             .map(|built| built.expect("a build nothing supersedes finishes"))
     }
 
     /// Walk `rules` and make the result the whole index at `path`, written
-    /// through `current` when one is installed (see [`Self::rebuilt`]).
+    /// through `current` when one is installed (see [`Self::rebuilt`]), its
+    /// hot layer selected within `budget`.
     ///
     /// Holds the file's build lock throughout (see "One build at a time"
     /// above). `None` when `superseded` says so -- asked before the walk,
@@ -302,6 +306,7 @@ impl FileIndex {
         rules: &WalkRules,
         current: Option<&FileIndex>,
         superseded: &dyn Fn() -> bool,
+        budget: usize,
     ) -> Result<Option<FileIndex>> {
         let lock = build_lock(path);
         let _building = lock.lock();
@@ -319,7 +324,7 @@ impl FileIndex {
         }
         let digest = digest(rules);
         let index = match current {
-            Some(current) => current.rebuilt(walked, &digest, path)?,
+            Some(current) => current.rebuilt(walked, &digest, path, budget)?,
             None => {
                 let mut store = Store::open(path)?;
                 store.replace(&walked, &digest)?;
@@ -327,7 +332,7 @@ impl FileIndex {
                 // names are loaded, not after, so the two are never held at
                 // once.
                 drop(walked);
-                Self::load(store)?
+                Self::load_within(store, &[], budget)?
             }
         };
         Ok((!superseded()).then_some(index))
@@ -447,14 +452,16 @@ impl FileIndex {
     }
 
     /// The index the store at `path` holds, its word tables at `detail`
-    /// (`files.index-detail`): what a start loads. A store built at another
+    /// (`files.index-detail`) and its hot layer within `budget`
+    /// (`files.hot-memory`): what a start loads, and what a change of the
+    /// budget loads again -- the store is read, never walked. A store built at another
     /// level is switched first, from its entries and never a walk, so a
     /// build that follows keeps the level.
     ///
     /// All of it under the build lock: opening can write too -- a store
     /// whose words an older build laid out is laid out again
     /// ([`Store::open`]) -- and a write never meets another.
-    pub fn open(path: &Path, detail: IndexDetail) -> Result<FileIndex> {
+    pub fn open(path: &Path, detail: IndexDetail, budget: usize) -> Result<FileIndex> {
         let lock = build_lock(path);
         let _building = lock.lock();
         let mut store = Store::open(path)?;
@@ -462,7 +469,7 @@ impl FileIndex {
             store.set_detail(detail)?;
             store.release_memory();
         }
-        Self::load(store)
+        Self::load_within(store, &[], budget)
     }
 
     /// Make `walked` the whole index in this index's own store, then load it
@@ -479,12 +486,18 @@ impl FileIndex {
     /// that is not that entry is left out ([`Self::query`]). Until the swap
     /// an old index can answer less than it should, never a wrong file.
     /// Called only under the build lock, by [`Self::rebuild`].
-    fn rebuilt(&self, walked: Walked, digest: &str, path: &Path) -> Result<FileIndex> {
+    fn rebuilt(
+        &self,
+        walked: Walked,
+        digest: &str,
+        path: &Path,
+        budget: usize,
+    ) -> Result<FileIndex> {
         self.store.lock().replace(&walked, digest)?;
         drop(walked);
         // The rows are numbered again, so the used ones are not known by
         // row until frecency is asked again.
-        Self::load_within(Store::open(path)?, &[], self.budget)
+        Self::load_within(Store::open(path)?, &[], budget)
     }
 
     #[cfg(test)]
@@ -940,6 +953,12 @@ impl FileIndex {
         self.hot_is_complete
     }
 
+    /// What the hot layer was selected within, in bytes: a configured
+    /// budget other than this is the index to open again.
+    pub fn budget(&self) -> usize {
+        self.budget
+    }
+
     /// What the index holds in memory: the hot layer, the used entries
     /// outside it, the boosts and the short names.
     pub fn memory_bytes(&self) -> usize {
@@ -1259,7 +1278,7 @@ mod tests {
         let before = Store::open(&path).unwrap().meta().unwrap();
         std::fs::remove_file(tree.path("notes.md")).unwrap();
 
-        let opened = FileIndex::open(&path, IndexDetail::Compact).unwrap();
+        let opened = FileIndex::open(&path, IndexDetail::Compact, DEFAULT_HOT_BUDGET).unwrap();
         assert_eq!(opened.len(), 3);
         assert_eq!(opened.store.lock().detail(), IndexDetail::Compact);
         assert_eq!(opened.store.lock().meta().unwrap(), before);
@@ -1269,6 +1288,41 @@ mod tests {
         let rebuilt = FileIndex::build(&path, &tree.rules()).unwrap();
         assert_eq!(rebuilt.len(), 2);
         assert_eq!(rebuilt.store.lock().detail(), IndexDetail::Compact);
+    }
+
+    /// The budget `files.hot-memory` sets is what opening and rebuilding
+    /// select the hot layer within: a smaller one holds fewer entries, a
+    /// larger one the whole index, and the store is the same either way.
+    #[test]
+    fn the_hot_layer_is_opened_and_rebuilt_within_the_budget_given() {
+        let tree = Tree::new("index-open-budget");
+        tree.file("notes.md")
+            .file("plan.md")
+            .file("deep/er/report.txt");
+        drop(index(&tree));
+        let path = tree.path(".files.db");
+        let before = Store::open(&path).unwrap().meta().unwrap();
+        let small = Names::cost("notes.md".len()) + Names::cost("plan.md".len());
+
+        let opened = FileIndex::open(&path, IndexDetail::Balanced, small).unwrap();
+        let whole = FileIndex::open(&path, IndexDetail::Balanced, DEFAULT_HOT_BUDGET).unwrap();
+        assert!(!opened.hot_is_complete());
+        assert!(whole.hot_is_complete());
+        assert!(opened.hot_len() < whole.hot_len());
+        assert_eq!(opened.budget(), small);
+        assert_eq!(opened.len(), whole.len());
+        assert_eq!(whole.store.lock().meta().unwrap(), before);
+
+        let rebuilt = FileIndex::rebuild(&path, &tree.rules(), Some(&whole), &|| false, small)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rebuilt.budget(), small);
+        assert_eq!(rebuilt.hot_len(), opened.hot_len());
+        drop((opened, whole, rebuilt));
+        let fresh = FileIndex::rebuild(&path, &tree.rules(), None, &|| false, small)
+            .unwrap()
+            .unwrap();
+        assert!(!fresh.hot_is_complete());
     }
 
     /// A rebuild writes through the index in place and gives back the new
@@ -1282,7 +1336,12 @@ mod tests {
 
         let rules = tree.rules();
         let new = old
-            .rebuilt(walk(&rules), &digest(&rules), &tree.path(".files.db"))
+            .rebuilt(
+                walk(&rules),
+                &digest(&rules),
+                &tree.path(".files.db"),
+                DEFAULT_HOT_BUDGET,
+            )
             .unwrap()
             .with_home(&tree.0);
 
@@ -1338,6 +1397,7 @@ mod tests {
                 ]),
                 "new",
                 &path,
+                DEFAULT_HOT_BUDGET,
             )
             .unwrap();
 
@@ -1380,7 +1440,7 @@ mod tests {
         let builder = std::thread::spawn({
             let path = path.clone();
             move || {
-                FileIndex::rebuild(&path, &rules, None, &|| false)
+                FileIndex::rebuild(&path, &rules, None, &|| false, DEFAULT_HOT_BUDGET)
                     .unwrap()
                     .map(|index| index.len())
             }
@@ -1410,7 +1470,11 @@ mod tests {
         let held = lock.lock();
         let opener = std::thread::spawn({
             let path = path.clone();
-            move || FileIndex::open(&path, IndexDetail::Balanced).unwrap().len()
+            move || {
+                FileIndex::open(&path, IndexDetail::Balanced, DEFAULT_HOT_BUDGET)
+                    .unwrap()
+                    .len()
+            }
         });
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(!opener.is_finished());
@@ -1431,7 +1495,7 @@ mod tests {
         let rules = tree.rules();
 
         assert!(
-            FileIndex::rebuild(&path, &rules, Some(&old), &|| true)
+            FileIndex::rebuild(&path, &rules, Some(&old), &|| true, DEFAULT_HOT_BUDGET)
                 .unwrap()
                 .is_none()
         );
@@ -1441,9 +1505,15 @@ mod tests {
             asked.get() > 1
         };
         assert!(
-            FileIndex::rebuild(&path, &rules, Some(&old), &after_the_walk)
-                .unwrap()
-                .is_none()
+            FileIndex::rebuild(
+                &path,
+                &rules,
+                Some(&old),
+                &after_the_walk,
+                DEFAULT_HOT_BUDGET
+            )
+            .unwrap()
+            .is_none()
         );
         assert_eq!(asked.get(), 2);
 

@@ -27,6 +27,11 @@ pub const WIDTH: std::ops::RangeInclusive<f32> = 560.0..=1000.0;
 
 /// What `window.visible-rows` may be (F15).
 pub const ROWS: std::ops::RangeInclusive<usize> = 3..=20;
+
+/// What `files.hot-memory` may be, in megabytes: at least one, so root
+/// always has names in memory, and at most 32, a third of the idle memory
+/// budget (I-8).
+pub const HOT_MEMORY: std::ops::RangeInclusive<u32> = 1..=32;
 use crate::timers::TimersConfig;
 use crate::translate::TranslateConfig;
 use crate::weather::WeatherConfig;
@@ -118,6 +123,10 @@ pub struct FileSearchConfig {
     /// *Search Files* also asks Windows Search for files whose contents
     /// hold the query, from three letters (slice 6b). Never root search.
     pub search_contents: bool,
+    /// The megabytes of names the index keeps in memory -- its hot layer --
+    /// within [`HOT_MEMORY`]. Not a rule of the walk: changing it loads the
+    /// index again from its store, and walks nothing.
+    pub hot_memory: u32,
 }
 
 /// What a text file's preview is drawn in (F16).
@@ -180,6 +189,7 @@ impl Default for FileSearchConfig {
             preview_font: PreviewFont::default(),
             index_detail: IndexDetail::default(),
             search_contents: true,
+            hot_memory: (crate::file_index::DEFAULT_HOT_BUDGET / MEGABYTE) as u32,
         }
     }
 }
@@ -210,6 +220,8 @@ struct FileSearchFile {
     /// Read as any value, as `preview-font` is.
     index_detail: Option<serde_json::Value>,
     search_contents: bool,
+    /// Read as any value, as `preview-font` is.
+    hot_memory: Option<serde_json::Value>,
 }
 
 impl Default for FileSearchFile {
@@ -230,6 +242,7 @@ impl Default for FileSearchFile {
             preview_font: None,
             index_detail: None,
             search_contents: defaults.search_contents,
+            hot_memory: None,
         }
     }
 }
@@ -272,8 +285,31 @@ impl From<FileSearchFile> for FileSearchConfig {
             preview_font: PreviewFont::read(file.preview_font.as_ref()),
             index_detail: read_index_detail(file.index_detail.as_ref()),
             search_contents: file.search_contents,
+            hot_memory: read_hot_memory(file.hot_memory.as_ref()),
         }
     }
+}
+
+const MEGABYTE: usize = 1024 * 1024;
+
+/// `files.hot-memory` as written, within [`HOT_MEMORY`]: a whole number
+/// outside it is the nearest end, and anything else the default, each with
+/// one log line a read, as [`PreviewFont::read`] does.
+fn read_hot_memory(value: Option<&serde_json::Value>) -> u32 {
+    let default = FileSearchConfig::default().hot_memory;
+    let Some(value) = value else {
+        return default;
+    };
+    let Some(megabytes) = value.as_i64() else {
+        log::warn!("files.hot-memory: ignoring {value}, expected a whole number of megabytes");
+        return default;
+    };
+    let (low, high) = (*HOT_MEMORY.start(), *HOT_MEMORY.end());
+    let kept = megabytes.clamp(i64::from(low), i64::from(high)) as u32;
+    if i64::from(kept) != megabytes {
+        log::warn!("files.hot-memory: {megabytes} is outside {low} to {high}, using {kept}");
+    }
+    kept
 }
 
 /// `files.index-detail` as written; anything else is the default, with one
@@ -300,6 +336,14 @@ fn is_default_skip(name: &str) -> bool {
 }
 
 impl FileSearchConfig {
+    /// [`Self::hot_memory`] in bytes: what the index's hot layer is selected
+    /// within.
+    pub fn hot_budget(&self) -> usize {
+        self.hot_memory
+            .clamp(*HOT_MEMORY.start(), *HOT_MEMORY.end()) as usize
+            * MEGABYTE
+    }
+
     /// What root search asks the index for; `None` when it asks nothing.
     pub fn root_kinds(&self) -> Option<Kinds> {
         match (self.enabled, self.in_root) {
@@ -944,6 +988,58 @@ mod tests {
                 crate::file_index::digest(&base.walk_rules())
             );
         }
+    }
+
+    /// Eight megabytes unless set, within [`HOT_MEMORY`] either way; a value
+    /// that is no whole number is that default, never an error.
+    #[test]
+    fn the_hot_memory_is_eight_megabytes_unless_set_and_kept_in_range() {
+        assert_eq!(FileSearchConfig::default().hot_memory, 8);
+        assert_eq!(files(r#"{ "files": {} }"#).hot_memory, 8);
+        assert_eq!(files(r#"{ "files": { "hot-memory": 16 } }"#).hot_memory, 16);
+        assert_eq!(files(r#"{ "files": { "hot-memory": 1 } }"#).hot_memory, 1);
+        assert_eq!(files(r#"{ "files": { "hot-memory": 32 } }"#).hot_memory, 32);
+        assert_eq!(files(r#"{ "files": { "hot-memory": 0 } }"#).hot_memory, 1);
+        assert_eq!(files(r#"{ "files": { "hot-memory": -4 } }"#).hot_memory, 1);
+        assert_eq!(
+            files(r#"{ "files": { "hot-memory": 500 } }"#).hot_memory,
+            32
+        );
+        for unknown in [r#""lots""#, "8.5", "null", "true"] {
+            let source = format!(r#"{{ "files": {{ "hot-memory": {unknown} }} }}"#);
+            assert_eq!(files(&source).hot_memory, 8, "{unknown}");
+        }
+
+        let larger = FileSearchConfig {
+            hot_memory: 16,
+            ..FileSearchConfig::default()
+        };
+        assert_eq!(larger.hot_budget(), 16 * 1024 * 1024);
+        assert_eq!(
+            FileSearchConfig::default().hot_budget(),
+            crate::file_index::DEFAULT_HOT_BUDGET
+        );
+        let json = serde_json::to_string(&larger).unwrap();
+        assert!(json.contains(r#""hot-memory":16"#), "{json}");
+        assert_eq!(
+            serde_json::from_str::<FileSearchConfig>(&json).unwrap(),
+            larger
+        );
+    }
+
+    /// How much of the index is in memory is not a rule of the walk:
+    /// changing it loads the index again and walks nothing.
+    #[test]
+    fn the_hot_memory_is_not_part_of_the_walk_digest() {
+        let base = FileSearchConfig::default();
+        let changed = FileSearchConfig {
+            hot_memory: 32,
+            ..base.clone()
+        };
+        assert_eq!(
+            crate::file_index::digest(&changed.walk_rules()),
+            crate::file_index::digest(&base.walk_rules())
+        );
     }
 
     /// F3's `roots` replaced the default folders; a scope list does the same.

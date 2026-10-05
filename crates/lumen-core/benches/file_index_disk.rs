@@ -2454,11 +2454,11 @@ const ROOT_QUERIES: [&str; 14] = [
 const USED: usize = 200;
 
 /// Step c3a: the production store of the real index, loaded as a start
-/// loads it -- the hot layer within `HOT_BUDGET` -- with a synthetic
+/// loads it -- the hot layer within `DEFAULT_HOT_BUDGET` -- with a synthetic
 /// frecency of [`USED`] entries, and root's query timed on it: the hot layer,
 /// then the disk, merged.
 fn root_section(dir: &Path, real_db: &Path, started: Instant) {
-    use lumen_core::file_index::{FileIndex, HOT_BUDGET};
+    use lumen_core::file_index::{DEFAULT_HOT_BUDGET, FileIndex};
     use lumen_core::frecency::Frecency;
 
     println!("# Root's query: the hot layer, then the disk (step c3a)");
@@ -2525,7 +2525,10 @@ fn root_section(dir: &Path, real_db: &Path, started: Instant) {
         100.0 * index.hot_len() as f64 / index.len() as f64
     );
     println!("| complete | {} |", index.hot_is_complete());
-    println!("| `HOT_BUDGET` | {:.1} MB |", mb(HOT_BUDGET as u64));
+    println!(
+        "| `DEFAULT_HOT_BUDGET` | {:.1} MB |",
+        mb(DEFAULT_HOT_BUDGET as u64)
+    );
     println!(
         "| in memory (hot layer, used outside it, boosts, short) | {:.1} MB |",
         mb(index.memory_bytes() as u64)

@@ -285,15 +285,17 @@ fn second_action(actions: Vec<Action>) -> Option<Action> {
 /// The file index the store at `path` holds, when it was walked with
 /// `rules`: what a start installs at once, in milliseconds, instead of
 /// waiting for a walk. Its word tables at `detail`, switched first when the
-/// store was built at another level (`FileIndex::open`).
+/// store was built at another level, and its hot layer within `budget`
+/// (`FileIndex::open`).
 fn load_files(
     path: &std::path::Path,
     rules: &WalkRules,
     detail: IndexDetail,
+    budget: usize,
     frecency: &Frecency,
 ) -> Option<Arc<FileIndex>> {
     let started = std::time::Instant::now();
-    let index = match FileIndex::open(path, detail) {
+    let index = match FileIndex::open(path, detail, budget) {
         Ok(index) => index,
         Err(error) => {
             log::warn!("could not open the file index: {error:#}");
@@ -314,7 +316,8 @@ fn load_files(
 }
 
 /// Walk `rules` and make what was found the file index, written through
-/// `current`'s store when one is installed (see `FileIndex::rebuild`).
+/// `current`'s store when one is installed, its hot layer within `budget`
+/// (see `FileIndex::rebuild`).
 ///
 /// `None` when the build `build` was superseded -- the newer one waits for
 /// this one, writes its own walk, and this one must not write over it -- or
@@ -323,13 +326,14 @@ fn build_files(
     path: &std::path::Path,
     rules: &WalkRules,
     current: Option<Arc<FileIndex>>,
+    budget: usize,
     frecency: &Frecency,
     builds: &AtomicU64,
     build: u64,
 ) -> Option<Arc<FileIndex>> {
     let started = std::time::Instant::now();
     let superseded = || builds.load(Ordering::SeqCst) != build;
-    match FileIndex::rebuild(path, rules, current.as_deref(), &superseded) {
+    match FileIndex::rebuild(path, rules, current.as_deref(), &superseded, budget) {
         Ok(None) => None,
         Ok(Some(index)) => {
             index.set_boosts(frecency);
@@ -1303,7 +1307,9 @@ impl Launcher {
     /// as the path it stands for, so what decides is the rules' digest, not
     /// the configuration. Turning file search off drops the index, its watch
     /// and root's questions to it; turning it on again loads it back from
-    /// the store and reconciles, without a walk.
+    /// the store and reconciles, without a walk. A `files.hot-memory` other
+    /// than the installed index's budget opens it again from the store, at
+    /// today's level: neither a walk nor a reconcile.
     fn open_files(&mut self, rewalk: bool, cx: &mut Context<Self>) {
         let build = self.files_build.fetch_add(1, Ordering::SeqCst) + 1;
         // What root showed came from the old rules, or the old level.
@@ -1325,9 +1331,11 @@ impl Launcher {
         let path = self.paths.file_index_file();
         let frecency = self.root.frecency().clone();
         let installed = self.files.as_ref().map(|index| index.digest().to_string());
+        let installed_budget = self.files.as_ref().map(|index| index.budget());
+        let budget = config.hot_budget();
         let builds = self.files_build.clone();
         let opening = cx.spawn(async move |this, cx| {
-            let (rules, loaded, current) = {
+            let (rules, loaded, current, reopened) = {
                 let path = path.clone();
                 let frecency = frecency.clone();
                 cx.background_executor()
@@ -1335,11 +1343,16 @@ impl Launcher {
                         // Resolving reads the disk too, so it is done here.
                         let rules = config.walk_rules();
                         let current = installed.as_deref() == Some(digest(&rules).as_str());
-                        let loaded = installed
-                            .is_none()
-                            .then(|| load_files(&path, &rules, config.index_detail, &frecency))
+                        // Walked with these rules but held within another
+                        // `files.hot-memory`: opened again from the store,
+                        // which is read and never walked.
+                        let reopened = current && installed_budget != Some(budget);
+                        let loaded = (installed.is_none() || reopened)
+                            .then(|| {
+                                load_files(&path, &rules, config.index_detail, budget, &frecency)
+                            })
                             .flatten();
-                        (rules, loaded, current)
+                        (rules, loaded, current, reopened)
                     })
                     .await
             };
@@ -1353,7 +1366,9 @@ impl Launcher {
                 })
                 .ok();
             }
-            if let (Some(loaded), false) = (loaded, rewalk) {
+            // An index opened again only for its budget is as current as the
+            // one it replaces: nothing to reconcile.
+            if let (Some(loaded), false, false) = (loaded, rewalk, reopened) {
                 let (path, rules, builds) = (path.clone(), rules.clone(), builds.clone());
                 let reconciled = cx
                     .background_executor()
@@ -1380,9 +1395,9 @@ impl Launcher {
             };
             let built = cx
                 .background_executor()
-                .spawn(
-                    async move { build_files(&path, &rules, current, &frecency, &builds, build) },
-                )
+                .spawn(async move {
+                    build_files(&path, &rules, current, budget, &frecency, &builds, build)
+                })
                 .await;
             if let Some(index) = built {
                 this.update(cx, |this, cx| {
@@ -1548,9 +1563,10 @@ impl Launcher {
                 Some(index)
             } else {
                 cx.background_executor()
-                    .spawn(
-                        async move { load_files(&path, &config.walk_rules(), detail, &frecency) },
-                    )
+                    .spawn(async move {
+                        let budget = config.hot_budget();
+                        load_files(&path, &config.walk_rules(), detail, budget, &frecency)
+                    })
                     .await
             };
             if let Some(index) = index {

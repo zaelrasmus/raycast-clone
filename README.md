@@ -829,6 +829,7 @@ copy the path. The full design is in
 
 | Key | |
 | --- | --- |
+| `files.hot-memory` | `8` by default, 1 to 32. Megabytes of file names root keeps in memory (the hot layer): more finds more files instantly, inside words too, and costs idle memory. 8 MB measured 80.8 MB idle with 405 000 entries, against a 100 MB budget; about 14 MB holds that whole index. A home folder fits in about 2 MB. Changing it reloads the index from disk, never a walk. The settings window's *File Search* page offers 4, 8, 16 and 32 MB. |
 | `files.search-contents` | `true` by default. *Search Files* also asks Windows Search for files whose **contents** hold the query, from three letters, and adds them below the name matches. A text preview highlights the query's words and starts near the first one. Only folders Windows Search indexes answer; never in root search, never for a typed path. The settings window's *File Search* page has the switch, and says beside each folder whether Windows Search indexes it, with *Indexing Options…* when one is not. |
 | `apps.extra-folders` | Folders whose programs are listed as **applications**, not files: `["D:/Tools"]`, `~` for home. `.exe`, `.lnk` and `.url` files in the folder and one subfolder down (`Tools\Obsidian\Obsidian.exe`, not deeper). One Start already lists is not repeated. Watched, so a program dropped in appears in seconds; a folder added while Lumen runs is indexed at once and watched from the next start. |
 

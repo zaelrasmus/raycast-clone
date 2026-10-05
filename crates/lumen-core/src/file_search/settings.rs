@@ -98,6 +98,16 @@ pub fn set_index_detail(path: &Path, detail: IndexDetail) -> Result<()> {
     })
 }
 
+/// Write `files.hot-memory`, kept within [`crate::config::HOT_MEMORY`].
+pub fn set_hot_memory(path: &Path, megabytes: u32) -> Result<()> {
+    let range = crate::config::HOT_MEMORY;
+    let value = Value::from(megabytes.clamp(*range.start(), *range.end()));
+    section::edit(path, SECTION, |files| {
+        files.insert("hot-memory".into(), value);
+        Ok(())
+    })
+}
+
 pub fn set_flag(path: &Path, flag: Flag, on: bool) -> Result<()> {
     section::edit(path, SECTION, |files| {
         files.insert(flag.key().into(), Value::Bool(on));
@@ -367,6 +377,20 @@ mod tests {
             ],
         );
         assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+    }
+
+    /// Written as the megabytes the file holds, within the range the
+    /// configuration reads.
+    #[test]
+    fn the_hot_memory_is_written_in_megabytes_within_its_range() {
+        let path = file("hot-memory", WRITTEN);
+        set_hot_memory(&path, 16).unwrap();
+        assert_eq!(read(&path).unwrap().hot_memory, 16);
+        assert!(contents(&path).contains("\"hot-memory\": 16"));
+        set_hot_memory(&path, 64).unwrap();
+        assert_eq!(read(&path).unwrap().hot_memory, 32);
+        assert!(contents(&path).contains("\"hot-memory\": 32"));
+        assert!(contents(&path).contains("\"future-key\": 7"));
     }
 
     #[test]

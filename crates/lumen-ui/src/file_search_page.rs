@@ -367,6 +367,18 @@ impl FileSearchPage {
         );
     }
 
+    fn set_hot_memory(&mut self, megabytes: u32, cx: &mut Context<Self>) {
+        if self.config.hot_memory == megabytes {
+            return;
+        }
+        let done = format!("Instant results use {megabytes} MB");
+        self.write(
+            done,
+            move |path| settings::set_hot_memory(path, megabytes),
+            cx,
+        );
+    }
+
     fn flip_flag(&mut self, flag: Flag, cx: &mut Context<Self>) {
         let on = !flag_on(&self.config, flag);
         let done = format!("{} {}", flag_title(flag), if on { "on" } else { "off" });
@@ -680,6 +692,19 @@ fn detail_description(detail: IndexDetail) -> &'static str {
         IndexDetail::Compact => {
             "Finds the same as Balanced, a little slower on common words; about 90 MB for 500,000 items"
         }
+    }
+}
+
+/// What `files.hot-memory` offers, in megabytes: the default and the steps
+/// either side of it, within [`lumen_core::config::HOT_MEMORY`].
+const HOT_MEMORY_CHOICES: [u32; 4] = [4, 8, 16, 32];
+
+fn hot_memory_label(megabytes: u32) -> &'static str {
+    match megabytes {
+        4 => "4 MB",
+        8 => "8 MB",
+        16 => "16 MB",
+        _ => "32 MB",
     }
 }
 
@@ -1009,6 +1034,26 @@ impl FileSearchPage {
             details,
             colors,
         ));
+        let memory = div()
+            .flex()
+            .gap(px(metrics::TAB_GAP))
+            .children(HOT_MEMORY_CHOICES.map(|megabytes| {
+                choice_button(
+                    hot_memory_label(megabytes),
+                    self.config.hot_memory == megabytes,
+                    colors,
+                    cx.listener(move |page, _, _, cx| page.set_hot_memory(megabytes, cx)),
+                )
+            }));
+        rows.push(ui::row(
+            "Instant results memory",
+            Some(
+                "Memory for the fastest part of root's file search. More finds more files                  instantly; costs idle memory"
+                    .into(),
+            ),
+            memory,
+            colors,
+        ));
         rows.push(ui::row(
             "Status",
             Some(self.index_description().into()),
@@ -1093,6 +1138,16 @@ impl Render for FileSearchPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every choice is a value the configuration keeps as written, and the
+    /// default is among them, so the page always shows one selected.
+    #[test]
+    fn the_hot_memory_choices_are_in_range_and_include_the_default() {
+        let range = lumen_core::config::HOT_MEMORY;
+        assert!(HOT_MEMORY_CHOICES.iter().all(|mb| range.contains(mb)));
+        assert!(HOT_MEMORY_CHOICES.contains(&FileSearchConfig::default().hot_memory));
+        assert!(HOT_MEMORY_CHOICES.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 
     #[test]
     fn coverage_is_told_only_when_contents_are_searched_and_known() {

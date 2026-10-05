@@ -205,7 +205,7 @@ impl Names {
 
     /// What an entry whose folded name is `len` bytes costs these names: the
     /// name and its newline in the blob, its start and its row. What the hot
-    /// layer's budget counts ([`super::HOT_BUDGET`]); the folder bit, an
+    /// layer's budget counts ([`super::DEFAULT_HOT_BUDGET`]); the folder bit, an
     /// eighth of a byte, is left out.
     pub const fn cost(len: usize) -> usize {
         len + 1 + 4 + 4
