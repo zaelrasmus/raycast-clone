@@ -119,6 +119,17 @@ pub enum Message {
     },
     /// Start or stop a timer (F8), from a root row or `lumen timer`.
     Timer(lumen_core::timers::Command),
+    /// A command hotkey fired (F17): the slot it was given in the last
+    /// `set_command_hotkeys`, and when the listener saw it, for the hotkey
+    /// budget.
+    ///
+    /// Daemon-internal: skipped by serde, so no client can send it and no
+    /// client ever sees it.
+    #[serde(skip)]
+    CommandHotkey {
+        slot: u32,
+        pressed: std::time::Instant,
+    },
 }
 
 /// Send `message` to a running daemon.

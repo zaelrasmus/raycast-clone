@@ -24,17 +24,22 @@
 //! the hazards described around it therefore still do not apply.
 
 use std::ffi::c_void;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use lumen_platform::{GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier};
+use lumen_platform::{
+    Chord, GestureEvent, GestureSink, HoldPhase, Hotkey, HotkeyError, Modifier, Modifiers,
+    canonical_key,
+};
 use windows::Win32::Devices::HumanInterfaceDevice::{
     HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_PAGE_GENERIC,
 };
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
+    UnregisterHotKey,
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT,
@@ -42,8 +47,8 @@ use windows::Win32::UI::Input::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, HWND_MESSAGE, KillTimer, MSG,
-    RegisterClassW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_HOTKEY, WM_INPUT,
-    WM_TIMER, WNDCLASSW,
+    PostMessageW, RegisterClassW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_APP, WM_HOTKEY, WM_INPUT, WM_TIMER, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -59,6 +64,25 @@ const HOTKEY_ID: i32 = 1;
 /// The timers hotkey (F8), in the same listener: one thread, one window.
 const TIMERS_HOTKEY_ID: i32 = 2;
 const HOLD_TIMER_ID: usize = 1;
+/// Command hotkeys (F17) take ids from here up, slot `i` at `BASE + i`, clear
+/// of the launcher's and the timers' fixed ids.
+const COMMAND_HOTKEY_BASE: usize = 0x100;
+/// The last id `RegisterHotKey` accepts from an application.
+const LAST_HOTKEY_ID: usize = 0xBFFF;
+/// Posted to the listener window: a new set of command hotkeys is waiting in
+/// its request channel (7.53).
+const APPLY_COMMAND_HOTKEYS: u32 = WM_APP + 1;
+/// How long a caller waits for the listener to answer before giving up. It
+/// answers in well under a millisecond unless its thread is wedged.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+type SlotResults = Vec<Result<(), HotkeyError>>;
+
+/// A new set of command hotkeys, and where to send what became of each.
+struct Request {
+    chords: Vec<Chord>,
+    reply: mpsc::SyncSender<SlotResults>,
+}
 
 /// Per-thread state for the listener window, reached from the window procedure.
 ///
@@ -76,6 +100,12 @@ struct ListenerState {
     /// treated as fresh presses that restart the timer.
     hold_down: bool,
     hwnd: HWND,
+    /// The launcher and timers hotkeys, which no command may take.
+    reserved: Vec<Hotkey>,
+    /// New command hotkey sets, from [`Listener::set_command_hotkeys`].
+    requests: mpsc::Receiver<Request>,
+    /// How many command slots the current set registered ids for.
+    commands: usize,
 }
 
 thread_local! {
@@ -86,18 +116,26 @@ thread_local! {
 ///
 /// The thread owns a message-only window for its whole life. It is never joined:
 /// it lives exactly as long as the daemon does.
-pub fn start(hotkey: Hotkey, timers: Option<Hotkey>, sink: GestureSink) -> Result<()> {
-    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
+///
+/// Returns the listener and, separately, whether the launcher hotkey could be
+/// bound: a taken launcher key leaves the listener running all the same.
+pub fn start(
+    hotkey: Hotkey,
+    timers: Option<Hotkey>,
+    sink: GestureSink,
+) -> Result<(Listener, Result<()>)> {
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(isize, Result<()>)>>(1);
+    let (requests_tx, requests_rx) = mpsc::channel();
 
     std::thread::Builder::new()
         .name("lumen-gestures".into())
         .spawn(move || {
-            match run(hotkey, timers, sink) {
+            match run(hotkey, timers, sink, requests_rx) {
                 // The listener is up either way. `accelerator` reports only
                 // whether the launcher hotkey could be bound, and the pump runs
                 // regardless so the hold gesture keeps working.
-                Ok((pump, accelerator)) => {
-                    let _ = ready_tx.send(accelerator);
+                Ok((pump, hwnd, accelerator)) => {
+                    let _ = ready_tx.send(Ok((hwnd, accelerator)));
                     pump();
                 }
                 Err(error) => {
@@ -107,9 +145,62 @@ pub fn start(hotkey: Hotkey, timers: Option<Hotkey>, sink: GestureSink) -> Resul
         })
         .context("spawning the gesture listener thread")?;
 
-    ready_rx
+    let (hwnd, bound) = ready_rx
         .recv()
-        .context("the gesture listener thread stopped before reporting readiness")?
+        .context("the gesture listener thread stopped before reporting readiness")??;
+    let listener = Listener {
+        hwnd,
+        requests: requests_tx,
+    };
+    Ok((listener, bound))
+}
+
+/// A running listener, as the rest of the process reaches it.
+///
+/// The window handle is kept as an integer because `HWND` is a raw pointer
+/// and would make the platform `!Send`. It is only ever posted to, which any
+/// thread may do.
+pub struct Listener {
+    hwnd: isize,
+    requests: mpsc::Sender<Request>,
+}
+
+impl Listener {
+    /// Replace the command hotkeys and wait for what became of each (7.53).
+    ///
+    /// `RegisterHotKey` binds a key to a window, from the thread that owns
+    /// it, so the set is handed to the listener's thread and this waits for
+    /// the answer.
+    pub fn set_command_hotkeys(&self, chords: &[Chord]) -> Result<SlotResults> {
+        let stopped = "the gesture listener has stopped";
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.requests
+            .send(Request {
+                chords: chords.to_vec(),
+                reply: reply_tx,
+            })
+            .context(stopped)?;
+        unsafe {
+            PostMessageW(
+                Some(HWND(self.hwnd as *mut c_void)),
+                APPLY_COMMAND_HOTKEYS,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        }
+        .context(stopped)?;
+
+        Ok(reply_rx.recv_timeout(REPLY_TIMEOUT).unwrap_or_else(|_| {
+            chords
+                .iter()
+                .map(|_| {
+                    Err(HotkeyError::Failed(
+                        "the gesture listener did not answer".into(),
+                    ))
+                })
+                .collect()
+        }))
+    }
 }
 
 /// Register everything, then hand back the message pump plus the hotkey outcome.
@@ -122,7 +213,8 @@ fn run(
     hotkey: Hotkey,
     timers: Option<Hotkey>,
     sink: GestureSink,
-) -> Result<(impl FnOnce(), Result<()>)> {
+    requests: mpsc::Receiver<Request>,
+) -> Result<(impl FnOnce(), isize, Result<()>)> {
     unsafe {
         let instance = GetModuleHandleW(None).context("GetModuleHandleW")?;
         let class_name = w!("LumenGestureListener");
@@ -162,6 +254,11 @@ fn run(
                 hold_active: false,
                 hold_down: false,
                 hwnd,
+                reserved: std::iter::once(hotkey.clone())
+                    .chain(timers.clone())
+                    .collect(),
+                requests,
+                commands: 0,
             });
         });
 
@@ -206,7 +303,7 @@ fn run(
             }
         }
 
-        Ok((pump_messages, accelerator))
+        Ok((pump_messages, hwnd.0 as isize, accelerator))
     }
 }
 
@@ -234,6 +331,19 @@ extern "system" fn window_proc(
         }
         WM_HOTKEY if wparam.0 as i32 == TIMERS_HOTKEY_ID => {
             emit(GestureEvent::Timers);
+            LRESULT(0)
+        }
+        // I-15: arithmetic on the id and a push, nothing else.
+        WM_HOTKEY if wparam.0 >= COMMAND_HOTKEY_BASE => {
+            emit(GestureEvent::Command(
+                (wparam.0 - COMMAND_HOTKEY_BASE) as u32,
+            ));
+            LRESULT(0)
+        }
+        // Not an input callback: a request from `set_command_hotkeys`, which
+        // may allocate and call the system as it likes.
+        APPLY_COMMAND_HOTKEYS => {
+            apply_command_hotkeys();
             LRESULT(0)
         }
         WM_INPUT => {
@@ -347,6 +457,65 @@ fn cancel_hold() {
     });
 }
 
+/// Answer every waiting request, in order, each replacing the whole set.
+fn apply_command_hotkeys() {
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        // One post per request, but a post can find several waiting, or none
+        // because an earlier post already answered its request.
+        while let Ok(request) = state.requests.try_recv() {
+            for slot in 0..state.commands {
+                unsafe {
+                    let _ = UnregisterHotKey(Some(state.hwnd), (COMMAND_HOTKEY_BASE + slot) as i32);
+                }
+            }
+            let results: SlotResults = request
+                .chords
+                .iter()
+                .enumerate()
+                .map(|(slot, chord)| register_command(state, slot, chord))
+                .collect();
+            state.commands = request.chords.len();
+            let _ = request.reply.send(results);
+        }
+    });
+}
+
+fn register_command(state: &ListenerState, slot: usize, chord: &Chord) -> Result<(), HotkeyError> {
+    // Checked here rather than left to the system, which would only say so
+    // when the launcher key actually bound. A launcher key another
+    // application holds today must still be kept off the commands, or the
+    // launcher could not take it back once it is free.
+    if state.reserved.iter().any(|hotkey| chord.is_hotkey(hotkey)) {
+        return Err(HotkeyError::Taken);
+    }
+    let id = COMMAND_HOTKEY_BASE + slot;
+    if id > LAST_HOTKEY_ID {
+        return Err(HotkeyError::Failed(format!(
+            "at most {} command hotkeys",
+            LAST_HOTKEY_ID - COMMAND_HOTKEY_BASE + 1
+        )));
+    }
+    let Some(vk) = virtual_key(&chord.key) else {
+        return Err(HotkeyError::Unsupported(format!(
+            "{:?} has no Windows virtual key",
+            chord.key
+        )));
+    };
+    // MOD_NOREPEAT, as for the launcher: held down, a command runs once.
+    let modifiers = hot_key_modifiers(&chord.modifiers) | MOD_NOREPEAT;
+    unsafe { RegisterHotKey(Some(state.hwnd), id as i32, modifiers, vk) }.map_err(|error| {
+        if error.code() == ERROR_HOTKEY_ALREADY_REGISTERED.to_hresult() {
+            HotkeyError::Taken
+        } else {
+            HotkeyError::Failed(error.message())
+        }
+    })
+}
+
 fn emit(event: GestureEvent) {
     STATE.with(|state| {
         if let Some(state) = state.borrow().as_ref() {
@@ -423,61 +592,74 @@ fn modifier_from_raw(vkey: u16, make_code: u16, extended: bool) -> Option<Modifi
 
 /// Translate a [`Hotkey`] into `RegisterHotKey` arguments.
 fn accelerator_for(hotkey: &Hotkey) -> Result<(HOT_KEY_MODIFIERS, u32)> {
-    let mut modifiers = HOT_KEY_MODIFIERS(0);
-    if hotkey.modifiers.alt {
-        modifiers |= MOD_ALT;
-    }
-    if hotkey.modifiers.control {
-        modifiers |= MOD_CONTROL;
-    }
-    if hotkey.modifiers.shift {
-        modifiers |= MOD_SHIFT;
-    }
-    if hotkey.modifiers.super_key {
-        modifiers |= MOD_WIN;
-    }
-
     let vk = virtual_key(&hotkey.key)
         .with_context(|| format!("{:?} is not a key this build can bind", hotkey.key))?;
-
-    Ok((modifiers, vk))
+    Ok((hot_key_modifiers(&hotkey.modifiers), vk))
 }
 
-/// Names accepted in the `key` field of the configured hotkey.
+fn hot_key_modifiers(modifiers: &Modifiers) -> HOT_KEY_MODIFIERS {
+    let mut flags = HOT_KEY_MODIFIERS(0);
+    if modifiers.alt {
+        flags |= MOD_ALT;
+    }
+    if modifiers.control {
+        flags |= MOD_CONTROL;
+    }
+    if modifiers.shift {
+        flags |= MOD_SHIFT;
+    }
+    if modifiers.super_key {
+        flags |= MOD_WIN;
+    }
+    flags
+}
+
+/// The virtual key for a key name, or `None` if it is not one.
 ///
-/// Kept small on purpose. Section 7 notes that translating between scancodes and
-/// virtual keys is the tedious, easy-to-get-wrong part; the right long-term move
-/// is the `keyboard-types` vocabulary, which is a dependency worth taking when
-/// the Linux port needs the same table rather than now, for one key.
+/// Every name in [`lumen_platform::KEY_NAMES`] has one, in any spelling
+/// [`canonical_key`] accepts; the launcher and timers hotkeys use the same
+/// names. The punctuation keys are the `VK_OEM_*` codes, which name key
+/// *positions* on the US layout -- the same thing the names describe.
 fn virtual_key(name: &str) -> Option<u32> {
-    let key = name.trim();
-    if let Some(character) = key.chars().next()
-        && key.chars().count() == 1
+    let key = canonical_key(name)?;
+    if let [character] = key.as_bytes()
+        && character.is_ascii_alphanumeric()
     {
-        let upper = character.to_ascii_uppercase();
-        if upper.is_ascii_alphanumeric() {
-            return Some(upper as u32);
-        }
+        // Letters and digits are their own uppercase ASCII code.
+        return Some(u32::from(*character));
+    }
+    if let Some(number) = key.strip_prefix('F').and_then(|n| n.parse::<u32>().ok()) {
+        // VK_F1 (0x70) to VK_F24 (0x87), contiguous.
+        return Some(0x70 + number - 1);
     }
 
-    Some(match key.to_ascii_lowercase().as_str() {
-        "space" => 0x20,
-        "enter" | "return" => 0x0D,
-        "escape" | "esc" => 0x1B,
-        "tab" => 0x09,
-        "backtick" | "grave" => 0xC0,
-        "f1" => 0x70,
-        "f2" => 0x71,
-        "f3" => 0x72,
-        "f4" => 0x73,
-        "f5" => 0x74,
-        "f6" => 0x75,
-        "f7" => 0x76,
-        "f8" => 0x77,
-        "f9" => 0x78,
-        "f10" => 0x79,
-        "f11" => 0x7A,
-        "f12" => 0x7B,
+    Some(match key {
+        "Backspace" => 0x08,
+        "Tab" => 0x09,
+        "Enter" => 0x0D,
+        "Escape" => 0x1B,
+        "Space" => 0x20,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "End" => 0x23,
+        "Home" => 0x24,
+        "Left" => 0x25,
+        "Up" => 0x26,
+        "Right" => 0x27,
+        "Down" => 0x28,
+        "Insert" => 0x2D,
+        "Delete" => 0x2E,
+        "Semicolon" => 0xBA,    // VK_OEM_1
+        "Equals" => 0xBB,       // VK_OEM_PLUS
+        "Comma" => 0xBC,        // VK_OEM_COMMA
+        "Minus" => 0xBD,        // VK_OEM_MINUS
+        "Period" => 0xBE,       // VK_OEM_PERIOD
+        "Slash" => 0xBF,        // VK_OEM_2
+        "Backtick" => 0xC0,     // VK_OEM_3
+        "LeftBracket" => 0xDB,  // VK_OEM_4
+        "Backslash" => 0xDC,    // VK_OEM_5
+        "RightBracket" => 0xDD, // VK_OEM_6
+        "Quote" => 0xDE,        // VK_OEM_7
         _ => return None,
     })
 }
@@ -485,7 +667,6 @@ fn virtual_key(name: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumen_platform::Modifiers;
 
     #[test]
     fn resolves_letter_and_named_keys() {
@@ -533,6 +714,176 @@ mod tests {
             Some(Modifier::RightShift)
         );
         assert_eq!(modifier_from_raw(0x41, 0x1E, false), None);
+    }
+
+    #[test]
+    fn every_chord_key_name_has_its_own_virtual_key() {
+        let mut seen = std::collections::HashMap::new();
+        for &name in lumen_platform::KEY_NAMES {
+            let vk = virtual_key(name).unwrap_or_else(|| panic!("{name} has no virtual key"));
+            if let Some(other) = seen.insert(vk, name) {
+                panic!("{name} and {other} both map to {vk:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn maps_navigation_function_and_punctuation_keys() {
+        for (name, vk) in [
+            ("Backspace", 0x08),
+            ("PageUp", 0x21),
+            ("PageDown", 0x22),
+            ("End", 0x23),
+            ("Home", 0x24),
+            ("Left", 0x25),
+            ("Up", 0x26),
+            ("Right", 0x27),
+            ("Down", 0x28),
+            ("Insert", 0x2D),
+            ("Delete", 0x2E),
+            ("F13", 0x7C),
+            ("F24", 0x87),
+            ("Semicolon", 0xBA),
+            ("Equals", 0xBB),
+            ("Comma", 0xBC),
+            ("Minus", 0xBD),
+            ("Period", 0xBE),
+            ("Slash", 0xBF),
+            ("Backtick", 0xC0),
+            ("LeftBracket", 0xDB),
+            ("Backslash", 0xDC),
+            ("RightBracket", 0xDD),
+            ("Quote", 0xDE),
+            // The spellings the launcher hotkey accepted before F17 still work.
+            ("return", 0x0D),
+            ("grave", 0xC0),
+        ] {
+            assert_eq!(virtual_key(name), Some(vk), "{name}");
+        }
+    }
+
+    // The tests below register real global hotkeys. Each uses all four
+    // modifiers and a key in F13-F24, which no keyboard has, so they cannot
+    // collide with anything the machine already binds -- and a different key
+    // each, since tests run in parallel in one process.
+
+    fn chord(text: &str) -> Chord {
+        text.parse().unwrap()
+    }
+
+    fn start_listener(
+        launcher: &str,
+        timers: Option<&str>,
+    ) -> (Listener, mpsc::Receiver<GestureEvent>) {
+        let hotkey = |text: &str| {
+            let chord = chord(text);
+            Hotkey {
+                modifiers: chord.modifiers,
+                key: chord.key,
+                hold: None,
+            }
+        };
+        let (tx, rx) = mpsc::channel();
+        let sink = GestureSink::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let (listener, bound) = start(hotkey(launcher), timers.map(hotkey), sink).unwrap();
+        bound.unwrap();
+        (listener, rx)
+    }
+
+    #[test]
+    fn a_chord_another_listener_holds_is_taken_until_it_lets_go() {
+        let (first, _) = start_listener("Ctrl+Alt+Shift+Win+F13", None);
+        let (second, _) = start_listener("Ctrl+Alt+Shift+Win+F14", None);
+        let contested = [chord("Ctrl+Alt+Shift+Win+F15")];
+
+        assert_eq!(first.set_command_hotkeys(&contested).unwrap(), [Ok(())]);
+        assert_eq!(
+            second.set_command_hotkeys(&contested).unwrap(),
+            [Err(HotkeyError::Taken)]
+        );
+
+        // Replacing the set with nothing releases what it held.
+        assert_eq!(first.set_command_hotkeys(&[]).unwrap(), []);
+        assert_eq!(second.set_command_hotkeys(&contested).unwrap(), [Ok(())]);
+        second.set_command_hotkeys(&[]).unwrap();
+    }
+
+    #[test]
+    fn replacing_the_set_releases_the_chords_left_out() {
+        let (listener, _) = start_listener("Ctrl+Alt+Shift+Win+F16", None);
+        let kept = chord("Ctrl+Alt+Shift+Win+F17");
+        let dropped = chord("Ctrl+Alt+Shift+Win+F18");
+
+        let both = [kept.clone(), dropped.clone()];
+        assert_eq!(
+            listener.set_command_hotkeys(&both).unwrap(),
+            [Ok(()), Ok(())]
+        );
+        // Re-applying the same set is not a conflict with itself.
+        assert_eq!(
+            listener.set_command_hotkeys(&both).unwrap(),
+            [Ok(()), Ok(())]
+        );
+        // A duplicate inside one set is: the second copy is taken by the first.
+        assert_eq!(
+            listener
+                .set_command_hotkeys(&[kept.clone(), kept.clone()])
+                .unwrap(),
+            [Ok(()), Err(HotkeyError::Taken)]
+        );
+        assert_eq!(listener.set_command_hotkeys(&[kept]).unwrap(), [Ok(())]);
+
+        // The chord left out is free for anyone else to take.
+        let (other, _) = start_listener("Ctrl+Alt+Shift+Win+F19", None);
+        assert_eq!(other.set_command_hotkeys(&[dropped]).unwrap(), [Ok(())]);
+        other.set_command_hotkeys(&[]).unwrap();
+        listener.set_command_hotkeys(&[]).unwrap();
+    }
+
+    #[test]
+    fn the_launcher_and_timers_hotkeys_are_taken_without_asking_the_system() {
+        let (listener, _) =
+            start_listener("Ctrl+Alt+Shift+Win+F20", Some("Ctrl+Alt+Shift+Win+F21"));
+        assert_eq!(
+            listener
+                .set_command_hotkeys(&[
+                    chord("ctrl+alt+shift+win+f20"),
+                    chord("Ctrl+Alt+Shift+Win+F21"),
+                    Chord {
+                        modifiers: chord("Ctrl+K").modifiers,
+                        key: "Nonsense".into(),
+                    },
+                ])
+                .unwrap(),
+            [
+                Err(HotkeyError::Taken),
+                Err(HotkeyError::Taken),
+                Err(HotkeyError::Unsupported(
+                    "\"Nonsense\" has no Windows virtual key".into()
+                )),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_command_hotkey_is_reported_with_its_slot() {
+        let (listener, events) = start_listener("Ctrl+Alt+Shift+Win+F22", None);
+        // What the system posts when the chord in slot 3 is pressed.
+        unsafe {
+            PostMessageW(
+                Some(HWND(listener.hwnd as *mut c_void)),
+                WM_HOTKEY,
+                WPARAM(COMMAND_HOTKEY_BASE + 3),
+                LPARAM(0),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(2)).unwrap(),
+            GestureEvent::Command(3)
+        );
     }
 
     /// Injected events, and some drivers, report the side-specific virtual key

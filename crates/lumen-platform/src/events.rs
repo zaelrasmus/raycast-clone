@@ -72,7 +72,7 @@ impl Default for Hotkey {
 }
 
 /// Which modifiers must be held, side-insensitive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Modifiers {
     #[serde(default)]
     pub alt: bool,
@@ -114,6 +114,10 @@ pub enum GestureEvent {
     Hold(HoldPhase),
     /// The timers hotkey fired: show the *Timers* view (F8).
     Timers,
+    /// A command hotkey fired (F17): the slot it was given in the last
+    /// [`crate::Platform::set_command_hotkeys`], not a command id, so the event
+    /// stays `Copy` and the input path never allocates (I-15).
+    Command(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

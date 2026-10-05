@@ -14,11 +14,13 @@ use std::path::PathBuf;
 use anyhow::Result;
 use raw_window_handle::RawWindowHandle;
 
+pub mod chord;
 pub mod events;
 pub mod geometry;
 pub mod tiling;
 pub mod tray;
 
+pub use chord::{Chord, HotkeyError, KEY_NAMES, ParseChordError, canonical_key};
 pub use events::{
     ApplicationsSink, ClipboardContent, ClipboardEvent, ClipboardImage, ClipboardSink,
     GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier, Modifiers,
@@ -465,6 +467,20 @@ pub trait Platform: Send + Sync {
         timers: Option<Hotkey>,
         sink: GestureSink,
     ) -> Result<()>;
+
+    /// Replace the global command hotkeys (F17) with `chords`, delivered to
+    /// the gesture listener's sink as [`GestureEvent::Command`] with the
+    /// chord's index in `chords` as its slot.
+    ///
+    /// The whole set is replaced, never added to: the previous chords are
+    /// released first, and an empty slice releases them all. One result per
+    /// chord, in order, so a conflict can be shown beside the command it
+    /// costs; one chord that cannot be bound never costs the others. A chord
+    /// equal to the launcher or timers hotkey is [`HotkeyError::Taken`].
+    ///
+    /// The outer error means only that there is no listener to bind them to:
+    /// [`Platform::start_gesture_listener`] has not run, or its thread is gone.
+    fn set_command_hotkeys(&self, chords: &[Chord]) -> Result<Vec<Result<(), HotkeyError>>>;
 
     /// Enumerate installed applications. Called off the UI thread.
     ///

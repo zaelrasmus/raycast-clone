@@ -8,13 +8,15 @@
 #![cfg(target_os = "windows")]
 
 use std::ffi::c_void;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use lumen_platform::{
-    AppEntry, ApplicationsSink, Browser, ClipboardContent, ClipboardSink, DateStyle, FocusOwner,
-    ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchMode, LaunchTarget, LocalTime,
-    MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout, WindowRole,
+    AppEntry, ApplicationsSink, Browser, Chord, ClipboardContent, ClipboardSink, DateStyle,
+    FocusOwner, ForegroundApp, GestureSink, Hotkey, HotkeyError, IconImage, IconSource, LaunchMode,
+    LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout,
+    WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -67,6 +69,9 @@ pub struct WindowsPlatform {
     overlay: AtomicU64,
     /// The settings window's handle, published only once it has been opened.
     settings: AtomicU64,
+    /// The gesture listener, once started: where command hotkeys are sent to
+    /// be registered on the thread that owns its window (7.53).
+    gestures: OnceLock<input::Listener>,
 }
 
 impl WindowsPlatform {
@@ -76,6 +81,7 @@ impl WindowsPlatform {
             launcher: AtomicU64::new(0),
             overlay: AtomicU64::new(0),
             settings: AtomicU64::new(0),
+            gestures: OnceLock::new(),
         }
     }
 
@@ -155,7 +161,21 @@ impl Platform for WindowsPlatform {
         timers: Option<Hotkey>,
         sink: GestureSink,
     ) -> Result<()> {
-        input::start(hotkey, timers, sink)
+        let (listener, bound) = input::start(hotkey, timers, sink)?;
+        // Kept even when the launcher hotkey is taken: the listener is up, and
+        // command hotkeys do not depend on the launcher's.
+        anyhow::ensure!(
+            self.gestures.set(listener).is_ok(),
+            "the gesture listener was already started"
+        );
+        bound
+    }
+
+    fn set_command_hotkeys(&self, chords: &[Chord]) -> Result<Vec<Result<(), HotkeyError>>> {
+        self.gestures
+            .get()
+            .context("the gesture listener has not been started")?
+            .set_command_hotkeys(chords)
     }
 
     fn enumerate_applications(
@@ -374,4 +394,16 @@ fn shell_execute(parsing_name: &str) -> Result<()> {
         "the shell refused to launch {parsing_name:?} (code {code})"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_hotkeys_need_a_running_listener() {
+        let platform = WindowsPlatform::new(WindowsPlatformOptions::default());
+        let chord: Chord = "Ctrl+Alt+Shift+Win+F23".parse().unwrap();
+        assert!(platform.set_command_hotkeys(&[chord]).is_err());
+    }
 }

@@ -3452,6 +3452,46 @@ A window with a resize frame is unchanged. The changed lines in
 decision for a pop-up and for a framed window. Across a gpui upgrade the test
 and the window's client rect are the check.
 
+### 7.53 Command hotkeys are replaced as a set on the listener's thread
+
+Any command can have a global hotkey (F17). A hotkey is a `Chord`: modifiers
+plus one key, written and stored as a string (`Ctrl+Alt+Left`). Only key
+names cross `lumen-platform`; each platform maps them to its own codes.
+
+`RegisterHotKey` binds a key to a window, and only the thread that owns that
+window may register or release it. The gesture listener's message-only
+window already receives the launcher and timers hotkeys, so command hotkeys
+are registered there too. `set_command_hotkeys` puts the set in a channel,
+posts a private message to the listener window and waits for the answer,
+with a timeout so a wedged listener cannot hang the caller.
+
+The set is replaced as a whole, never edited. The shortcuts file is the
+source of truth and is re-applied on every reload; a diff against what is
+registered would be a second copy of that state, and the copies would drift.
+The old chords are released before the new ones are registered, so
+re-applying the same file is never a conflict with itself.
+
+Slot `i` is registered as id `0x100 + i`, clear of the launcher's and the
+timers' fixed ids. `WM_HOTKEY` turns the id back into
+`GestureEvent::Command(slot)` by subtraction; the daemon maps the slot to
+the command. That path does arithmetic and a push and nothing else (I-15).
+
+A chord equal to the launcher or timers hotkey is `Taken` without asking the
+system. The system would say so only while the launcher key is bound, and a
+launcher key another application holds today must stay free for the
+launcher to take back.
+
+The result is one entry per chord, in order: `Taken`, `Unsupported` or
+`Failed`. One chord that cannot be bound never costs the others, and
+settings can show each conflict beside the command it affects. Command
+hotkeys use `MOD_NOREPEAT`, like the launcher's: held down, a command runs
+once.
+
+On Linux a command hotkey becomes a compositor bind running
+`lumen run <command>`, written by F5. Until then the method answers
+`Unsupported` for every chord rather than `todo!()`, because the daemon calls
+it on every load.
+
 ## 8. Risk register
 
 | # | Risk | Phase | Status |

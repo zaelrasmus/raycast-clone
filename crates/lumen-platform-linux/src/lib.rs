@@ -29,10 +29,10 @@
 
 use anyhow::Result;
 use lumen_platform::{
-    AppChoice, AppEntry, ApplicationsSink, Browser, ClipboardContent, ClipboardSink, DateStyle,
-    FocusOwner, ForegroundApp, GestureSink, Hotkey, IconImage, IconSource, LaunchMode,
-    LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout,
-    WindowRole,
+    AppChoice, AppEntry, ApplicationsSink, Browser, Chord, ClipboardContent, ClipboardSink,
+    DateStyle, FocusOwner, ForegroundApp, GestureSink, Hotkey, HotkeyError, IconImage, IconSource,
+    LaunchMode, LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink,
+    WindowLayout, WindowRole,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -97,6 +97,21 @@ impl Platform for LinuxPlatform {
         // thin client, which toggles this instance over the socket, so this
         // method stays a no-op rather than growing an input-capture path.
         todo!("F5: compositor-delegated activation")
+    }
+
+    fn set_command_hotkeys(&self, chords: &[Chord]) -> Result<Vec<Result<(), HotkeyError>>> {
+        // Not a `todo!()`: the daemon calls this whenever the shortcuts file
+        // loads, and a launcher whose commands have no hotkeys is still a
+        // launcher. On Hyprland a command hotkey becomes a compositor bind
+        // running `lumen run <command>`, written by F5 rather than registered.
+        Ok(chords
+            .iter()
+            .map(|_| {
+                Err(HotkeyError::Unsupported(
+                    "command hotkeys on Linux are compositor binds (F5)".into(),
+                ))
+            })
+            .collect())
     }
 
     fn enumerate_applications(

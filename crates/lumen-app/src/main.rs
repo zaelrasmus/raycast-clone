@@ -294,6 +294,12 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
                 GestureEvent::Hold(HoldPhase::Began) => Message::OverlayPress,
                 GestureEvent::Hold(HoldPhase::Ended) => Message::OverlayRelease,
                 GestureEvent::Timers => Message::ShowTimers,
+                // Reading the clock neither allocates, locks nor logs, so
+                // I-15 holds.
+                GestureEvent::Command(slot) => Message::CommandHotkey {
+                    slot,
+                    pressed: std::time::Instant::now(),
+                },
             };
             // Unbounded and non-blocking: this runs on the input thread.
             let _ = gesture_tx.unbounded_send(message);
@@ -1709,6 +1715,11 @@ fn handle(
             Ok(())
         }
         Message::Ping => Ok(()),
+        Message::CommandHotkey { slot, .. } => {
+            // Running the bound command is A4's.
+            log::debug!("command hotkey in slot {slot}");
+            Ok(())
+        }
     }
 }
 
