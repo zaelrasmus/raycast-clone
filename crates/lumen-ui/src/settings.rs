@@ -416,6 +416,7 @@ impl Settings {
         let shortcuts = {
             let colors = theme.colors.clone();
             let file = paths.shortcuts_file();
+            let platform = platform.clone();
             cx.new(|cx| ShortcutsPage::new(file, platform, colors, cx))
         };
         cx.observe(&shortcuts, |_, _, cx| cx.notify()).detach();
@@ -430,7 +431,8 @@ impl Settings {
         let window_management = {
             let colors = theme.colors.clone();
             let config_file = config_file.clone();
-            cx.new(|cx| WindowManagementPage::new(config_file, colors, cx))
+            let commands_file = paths.window_commands_file();
+            cx.new(|cx| WindowManagementPage::new(config_file, commands_file, platform, colors, cx))
         };
         cx.observe(&window_management, |_, _, cx| cx.notify())
             .detach();
@@ -1243,6 +1245,9 @@ impl Render for Settings {
             Page::Clipboard => self.clipboard.update(cx, |page, cx| page.render_dialog(cx)),
             Page::Calculator => self
                 .calculator
+                .update(cx, |page, cx| page.render_dialog(cx)),
+            Page::WindowManagement => self
+                .window_management
                 .update(cx, |page, cx| page.render_dialog(cx)),
             _ => self
                 .quicklinks

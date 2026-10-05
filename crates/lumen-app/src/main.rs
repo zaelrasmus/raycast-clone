@@ -735,6 +735,7 @@ fn watch_window_commands(cx: &mut App, surfaces: &Surfaces) {
     };
 
     let launcher = surfaces.launcher;
+    let settings = surfaces.settings.clone();
     cx.spawn(async move |cx| {
         let _watcher = watcher;
         while next_change(&mut changes, cx).await {
@@ -743,6 +744,15 @@ fn watch_window_commands(cx: &mut App, surfaces: &Surfaces) {
             });
             if reindexed.is_err() {
                 break;
+            }
+            // The settings page's list too, for a hand edit.
+            let window = *settings.borrow();
+            if let Some(window) = window {
+                window
+                    .update(cx, |settings, _window, cx| {
+                        settings.reload_window_management(cx)
+                    })
+                    .ok();
             }
         }
     })

@@ -5,21 +5,36 @@
 //! choice is written as it is made, as Appearance writes its own; the
 //! daemon's live reload hands it to the platform. The hotkeys for the window
 //! commands are the Shortcuts page's, and a row here goes there.
+//!
+//! Below them, the user's own window commands (7.59): `window-commands.json`,
+//! listed, and created or edited in [`WindowCommandEditor`], which takes the
+//! page's place while it is open. Every change goes through
+//! [`window_commands::edit`], which reads the file afresh; the daemon
+//! watches it and indexes the commands again.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Context, Entity, EventEmitter, SharedString, Window, div};
+use gpui::{
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription,
+    Window, div, px,
+};
 use lumen_core::config::{GAP, WindowManagementConfig};
+use lumen_core::layout::settings as metrics;
+use lumen_core::providers::window_commands::{self, CustomWindowCommand};
 use lumen_core::theme::Colors;
-use lumen_platform::Cycling;
+use lumen_platform::{Cycling, MonitorInfo, Platform, WindowSettings};
 use serde_json::Value;
 
 use crate::quicklink_form::{NextField, PreviousField};
+use crate::quicklinks_page::{CancelDialog, ConfirmDialog, DIALOG_CONTEXT};
 use crate::select::{Choice, Select, SelectEvent};
 use crate::settings::text_button;
 use crate::settings_ui as ui;
+use crate::styling::color;
 use crate::translate_page::FORM_CONTEXT;
+use crate::window_command_editor::{EditorEvent, Preview, WindowCommandEditor, summary};
 
 /// The gaps offered, in logical pixels. A file may say any other within
 /// [`GAP`]; it is shown as its number.
@@ -61,12 +76,29 @@ pub struct WindowManagementPage {
     cycling: Entity<Select>,
     error: Option<String>,
     status: Option<SharedString>,
+    /// `window-commands.json`, and the commands as it last read.
+    commands_path: PathBuf,
+    commands: Vec<CustomWindowCommand>,
+    /// For the display the editor previews.
+    platform: Arc<dyn Platform>,
+    monitor: Option<MonitorInfo>,
+    editor: Option<(Entity<WindowCommandEditor>, Subscription)>,
+    /// The command waiting on the delete dialog.
+    confirming: Option<CustomWindowCommand>,
+    dialog_focus: FocusHandle,
+    refocus: bool,
 }
 
 impl EventEmitter<WindowManagementEvent> for WindowManagementPage {}
 
 impl WindowManagementPage {
-    pub fn new(path: PathBuf, colors: Colors, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        path: PathBuf,
+        commands_path: PathBuf,
+        platform: Arc<dyn Platform>,
+        colors: Colors,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let config = WindowManagementConfig::default();
         let gap = gap_select(config.gap, &colors, cx);
         let screen_gap = gap_select(config.screen_gap, &colors, cx);
@@ -80,6 +112,14 @@ impl WindowManagementPage {
             cycling,
             error: None,
             status: None,
+            commands_path,
+            commands: Vec::new(),
+            platform,
+            monitor: None,
+            editor: None,
+            confirming: None,
+            dialog_focus: cx.focus_handle(),
+            refocus: false,
         };
         page.watch_gap(Gap::Window, cx);
         page.watch_gap(Gap::Screen, cx);
@@ -87,15 +127,26 @@ impl WindowManagementPage {
         page
     }
 
-    /// Re-read the file, off the UI thread.
+    /// Re-read the files, and which display the window is on, off the UI
+    /// thread.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
+        let commands_path = self.commands_path.clone();
+        let platform = self.platform.clone();
         cx.spawn(async move |this, cx| {
-            let read = cx
+            let (read, commands, monitor) = cx
                 .background_executor()
-                .spawn(async move { WindowManagementConfig::read(&path) })
+                .spawn(async move {
+                    (
+                        WindowManagementConfig::read(&path),
+                        window_commands::load(&commands_path),
+                        platform.cursor_monitor().ok(),
+                    )
+                })
                 .await;
             this.update(cx, |page, cx| {
+                page.commands = commands;
+                page.monitor = monitor.or(page.monitor);
                 match read {
                     Ok(config) => {
                         page.problem = None;
@@ -185,10 +236,127 @@ impl WindowManagementPage {
         .detach();
     }
 
+    // -- Custom commands ------------------------------------------------------
+
+    /// Open the editor on `command`, or on a new one.
+    fn open_editor(
+        &mut self,
+        command: Option<CustomWindowCommand>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let gap = shown_gap(&self.screen_gap, cx).unwrap_or_default();
+        let preview = Preview {
+            monitor: self.monitor,
+            gaps: self.monitor.map_or_else(Default::default, |monitor| {
+                WindowSettings {
+                    screen_gap: gap.max(0) as u32,
+                    ..WindowSettings::default()
+                }
+                .gaps(monitor.scale_factor)
+            }),
+        };
+        let colors = self.colors.clone();
+        let editor = cx.new(|cx| WindowCommandEditor::new(command, preview, colors, cx));
+        let events = cx.subscribe(&editor, |page, _, event: &EditorEvent, cx| {
+            match event.clone() {
+                EditorEvent::Save {
+                    id,
+                    name,
+                    placement,
+                } => {
+                    let done = format!("Saved {name}");
+                    page.change(done, cx, move |commands| match &id {
+                        Some(id) => window_commands::update(commands, id, &name, placement),
+                        None => {
+                            window_commands::add(commands, &name, placement);
+                            true
+                        }
+                    });
+                }
+                EditorEvent::Cancelled => page.status = None,
+            }
+            page.editor = None;
+            page.refocus = true;
+            cx.notify();
+        });
+        editor.read(cx).focus(window, cx);
+        self.editor = Some((editor, events));
+        self.error = None;
+        cx.notify();
+    }
+
+    /// Change `window-commands.json`, off the UI thread, then read it again.
+    fn change(
+        &mut self,
+        done: String,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut Vec<CustomWindowCommand>) -> bool + Send + 'static,
+    ) {
+        let path = self.commands_path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { window_commands::edit(&path, change) })
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(true) => page.status = Some(done.into()),
+                    Ok(false) => page.error = Some("That command is no longer in the file".into()),
+                    Err(error) => {
+                        log::warn!("could not save window commands: {error:#}");
+                        page.error = Some(format!("{error:#}"));
+                    }
+                }
+                page.reload(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn duplicate(&mut self, id: String, cx: &mut Context<Self>) {
+        self.change("Duplicated".into(), cx, move |commands| {
+            window_commands::duplicate(commands, &id).is_some()
+        });
+    }
+
+    fn ask_delete(
+        &mut self,
+        command: CustomWindowCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirming = Some(command);
+        window.focus(&self.dialog_focus);
+        cx.notify();
+    }
+
+    fn cancel_dialog(&mut self, _: &CancelDialog, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirming = None;
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    fn confirm_dialog(&mut self, _: &ConfirmDialog, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(command) = self.confirming.take() else {
+            return;
+        };
+        self.focus(window, cx);
+        let done = format!("Deleted {}", command.name);
+        self.change(done, cx, move |commands| {
+            window_commands::remove(commands, &command.id)
+        });
+    }
+
     // -- Focus ----------------------------------------------------------------
 
     pub fn focus(&self, window: &mut Window, cx: &App) {
-        window.focus(self.gap.read(cx).focus_handle());
+        match &self.editor {
+            Some((editor, _)) => editor.read(cx).focus(window, cx),
+            None => window.focus(self.gap.read(cx).focus_handle()),
+        }
     }
 
     /// The three dropdowns, in order.
@@ -217,12 +385,83 @@ impl WindowManagementPage {
         for select in [&self.gap, &self.screen_gap, &self.cycling] {
             select.update(cx, |select, cx| select.set_colors(colors.clone(), cx));
         }
+        if let Some((editor, _)) = &self.editor {
+            editor.update(cx, |editor, cx| editor.set_colors(colors.clone(), cx));
+        }
         self.colors = colors;
         cx.notify();
     }
 
     pub fn status(&self) -> Option<SharedString> {
+        if self.editor.is_some() {
+            return Some("Ctrl+Enter to save, Esc to go back".into());
+        }
         self.status.clone()
+    }
+
+    /// The delete confirmation, over the whole window, drawn by the host.
+    pub fn render_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let command = self.confirming.as_ref()?;
+        let colors = &self.colors;
+        let buttons = div()
+            .pt(px(metrics::GAP))
+            .flex()
+            .justify_end()
+            .gap(px(metrics::GAP))
+            .child(text_button(
+                "window-command-dialog-cancel",
+                "Cancel  Esc",
+                colors,
+                cx.listener(|page, _, window, cx| page.cancel_dialog(&CancelDialog, window, cx)),
+            ))
+            .child(text_button(
+                "window-command-dialog-confirm",
+                "Delete  Enter",
+                colors,
+                cx.listener(|page, _, window, cx| page.confirm_dialog(&ConfirmDialog, window, cx)),
+            ));
+        let dialog = div()
+            .key_context(DIALOG_CONTEXT)
+            .track_focus(&self.dialog_focus)
+            .on_action(cx.listener(Self::confirm_dialog))
+            .on_action(cx.listener(Self::cancel_dialog))
+            .w(px(metrics::DIALOG_WIDTH))
+            .p(px(metrics::PADDING))
+            .flex()
+            .flex_col()
+            .gap(px(metrics::GAP))
+            .rounded(px(metrics::RADIUS))
+            .border_1()
+            .border_color(color(colors.border_strong))
+            .bg(color(colors.surface_elevated))
+            .child(
+                div()
+                    .text_size(px(metrics::text::TITLE))
+                    .text_color(color(colors.text_primary))
+                    .child(format!("Delete {}?", command.name)),
+            )
+            .child(
+                div()
+                    .text_size(px(metrics::text::HINT))
+                    .text_color(color(colors.text_muted))
+                    .child("The command goes from the launcher, with its hotkey and alias."),
+            )
+            .child(buttons);
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .rounded(px(metrics::RADIUS))
+                .bg(color(colors.shadow))
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(dialog)
+                .into_any_element(),
+        )
     }
 }
 
@@ -299,15 +538,17 @@ fn cycling_select(current: Cycling, colors: &Colors, cx: &mut App) -> Entity<Sel
 
 impl Render for WindowManagementPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if window.focused(cx).is_none() {
+        if self.confirming.is_none()
+            && (std::mem::take(&mut self.refocus) || window.focused(cx).is_none())
+        {
             self.focus(window, cx);
         }
         let colors = self.colors.clone();
-        div()
-            .size_full()
-            .flex()
-            .overflow_hidden()
-            .child(self.render_form(&colors, cx))
+        let content = match &self.editor {
+            Some((editor, _)) => editor.clone().into_any_element(),
+            None => self.render_form(&colors, cx),
+        };
+        div().size_full().flex().overflow_hidden().child(content)
     }
 }
 
@@ -373,8 +614,64 @@ impl WindowManagementPage {
                 ],
                 colors,
             ))
+            .child(ui::section_title("Custom Commands", colors))
+            .child(ui::card(self.command_rows(colors, cx), colors))
             .child(ui::note(message, is_error, colors))
             .into_any_element()
+    }
+
+    /// A row per command, with its buttons, then Create.
+    fn command_rows(&self, colors: &Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(self.commands.len() + 1);
+        for (index, command) in self.commands.iter().enumerate() {
+            let edit = command.clone();
+            let id = command.id.clone();
+            let delete = command.clone();
+            let buttons = div()
+                .flex()
+                .gap(px(metrics::GAP))
+                .child(text_button(
+                    ("window-command-edit", index),
+                    "Edit",
+                    colors,
+                    cx.listener(move |page, _, window, cx| {
+                        page.open_editor(Some(edit.clone()), window, cx)
+                    }),
+                ))
+                .child(text_button(
+                    ("window-command-duplicate", index),
+                    "Duplicate",
+                    colors,
+                    cx.listener(move |page, _, _, cx| page.duplicate(id.clone(), cx)),
+                ))
+                .child(text_button(
+                    ("window-command-delete", index),
+                    "Delete\u{2026}",
+                    colors,
+                    cx.listener(move |page, _, window, cx| {
+                        page.ask_delete(delete.clone(), window, cx)
+                    }),
+                ));
+            rows.push(ui::row(
+                command.name.clone(),
+                Some(summary(&command.placement).into()),
+                buttons,
+                colors,
+            ));
+        }
+        let create = text_button(
+            "window-command-create",
+            "Create Command",
+            colors,
+            cx.listener(|page, _, window, cx| page.open_editor(None, window, cx)),
+        );
+        rows.push(ui::row(
+            "New window command",
+            Some("A size, an anchor and an offset of your own".into()),
+            create,
+            colors,
+        ));
+        rows
     }
 }
 

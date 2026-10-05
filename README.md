@@ -494,6 +494,16 @@ own. Each one appears in root search under its name and can have an alias or
 hotkey in `shortcuts.json` under `window:custom:<id>`. Saving the file takes
 effect immediately.
 
+The easiest way to make one is **Settings → Window Management → Custom
+Commands**: *Create Command* opens an editor with a preview of your display
+and the window where the command would put it. Type the size and offset
+(each with a `%`/`pt` toggle; leave W or H empty for *auto*), choose the
+anchor on the 3×3 grid (the arrow keys move it while the grid has focus), and
+press `Ctrl+Enter` to save or `Esc` to go back. A figure out of range says why
+under it, and *Create* waits until it is fixed. Each command in the list can
+be edited, duplicated or deleted (after a confirmation). The editor writes the
+same file, and keeps any entry it cannot read for you to fix.
+
 ```json
 {
   "commands": [
