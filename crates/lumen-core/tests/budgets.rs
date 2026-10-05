@@ -168,3 +168,53 @@ fn ranking_cost_grows_no_faster_than_the_index() {
          {small:?} -> {large:?}). Linear is 4x; anything near 16x is quadratic."
     );
 }
+
+/// How much a table four times larger may cost an alias lookup (F17).
+///
+/// A lookup is a binary search and then the keys it matches, so it should
+/// barely notice the table's size: the logarithm of four times the entries
+/// is a step, not a multiple. A pass over every alias would be 4x, and so
+/// would fail here, where the ranking's limit of eight would let it through.
+const ALIAS_GROWTH_LIMIT: f64 = 2.5;
+
+/// How long `LOOKUPS` lookups of queries naming one alias each take against
+/// a table of `count`, the best of five.
+fn alias_cost(count: usize) -> Duration {
+    const LOOKUPS: usize = 5_000;
+    let aliases = lumen_core::aliases::Aliases::build(
+        (0..count).map(|i| (format!("app:{i}"), format!("a{i}x"))),
+        (0..count).map(|i| (format!("app:{i}"), format!("Application {i}"))),
+    );
+    let queries: Vec<String> = (0..LOOKUPS).map(|i| format!("a{}x", i % SMALL)).collect();
+    (0..5)
+        .map(|_| {
+            let started = Instant::now();
+            let mut found = 0;
+            for query in &queries {
+                found += aliases.matches(query).exact.len();
+            }
+            let elapsed = started.elapsed();
+            assert_eq!(found, LOOKUPS);
+            elapsed
+        })
+        .min()
+        .expect("five runs")
+}
+
+/// I-8 for the alias table: every keystroke looks the query up, so its cost
+/// must follow what matches, not how many aliases there are.
+#[test]
+fn an_alias_lookup_does_not_grow_with_the_table() {
+    let small = alias_cost(SMALL);
+    let large = alias_cost(LARGE);
+    let growth = large.as_secs_f64() / small.as_secs_f64();
+    println!("alias lookups: {SMALL} aliases {small:?}, {LARGE} aliases {large:?} ({growth:.2}x)");
+    assert!(
+        large < CEILING,
+        "5 000 alias lookups took {large:?}, past the {CEILING:?} ceiling"
+    );
+    assert!(
+        growth < ALIAS_GROWTH_LIMIT,
+        "alias lookups got {growth:.1}x slower for 4x the aliases ({small:?} -> {large:?})"
+    );
+}

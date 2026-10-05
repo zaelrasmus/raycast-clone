@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms (7.54). Aliases in search, a *Shortcuts* settings page and the window-management presets are next |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms (7.54); one alias table leads a command typed by its alias (7.55). A *Shortcuts* settings page and the window-management presets are next |
 
 ### F4 build order is not optional
 
@@ -3521,6 +3521,58 @@ An id whose item is gone keeps its binding, for the favourites' reason: an
 update that briefly removes a shortcut must not cost the user their hotkey.
 The chord stays registered and logs that it ran nothing, and the command
 works again the moment it is back.
+
+### 7.55 One alias table for every command
+
+Any command can have an alias in `shortcuts.json` (F17). Before this, three
+providers had aliases and each was handled differently: a timer preset's
+and a quicklink's led the list through a branch of their own in the
+ranking, and a translate preset's was only a keyword. A keyword is scored
+by the fuzzy matcher with a discount (`ALIAS_PENALTY`), so a two-letter
+alias lost to any name holding its letters -- found, but seventh (F8).
+
+Now there is one table, `lumen_core::aliases::Aliases`, held by
+`RootSearch`. It is built from the user's aliases and the ones the timer
+presets, translate presets and quicklinks declare, again whenever any of
+them changes and never per keystroke. The keys are sorted, so a query finds
+the keys it begins by a binary search: the work is the matching keys,
+whatever the table's size, and the budget test asserts it does not grow
+with the table.
+
+- **Typed whole, an alias leads.** It was chosen to name one command, so
+  typing it is not a guess for the matcher to weigh against usage.
+- **Typed from its start, it is lifted** right below the whole ones. That
+  is how Raycast treats aliases, and it shows the alias being typed before
+  it is finished.
+- **Never fuzzy.** A short alias matched loosely would turn up for most of
+  what people type, and the rows it pushed aside would be the matches they
+  wanted. The title is still matched fuzzily; the alias only exactly.
+- **A provider's whole name** goes in the same table as exact-only: a timer
+  preset's or quicklink's name typed whole has led since F6 and F8, and
+  part of a name still competes on score.
+- **A shared alias leads every command it names**, the one used more
+  first, then by id, so the order is stable. Refusing the file over a
+  clash would cost every other entry; settings flags it instead
+  (`Shortcuts::conflicts`).
+
+Provider aliases stay in their own files: nothing is migrated. The table is
+keyed by item id, so a user alias for `timer:preset:Deep Work` lands on the
+same row as the preset's own, and both work. The row shows one alias, in a
+pill beside the kind label: the user's, else the provider's.
+
+The provider aliases keep how they were compared: trimmed, ASCII case
+ignored. The user's are stricter -- lowercase letters, digits and single
+spaces -- because they are new and anything wider can be allowed later,
+never taken back.
+
+One quicklink behaviour stays its own: an alias followed by a space fills
+the link's query (`g lofi`), and Tab on an alias asks for one. That is an
+answer computed from the rest of the query, not a ranking of a command, so
+it is not an alias lookup.
+
+The daemon gives the launcher the loaded file wherever it registers the
+hotkeys (7.54): at startup, after every save, and on `lumen reload`, which
+re-applies the file whether or not the watch saw it change.
 
 ## 8. Risk register
 

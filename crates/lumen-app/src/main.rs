@@ -419,6 +419,10 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
     let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone(), theme.clone());
+    // After the gesture listener: command hotkeys are registered on its
+    // thread (7.53).
+    let hotkeys = Rc::new(RefCell::new(Vec::new()));
+    let reload_shortcuts = watch_shortcuts(cx, &platform, &paths, &hotkeys, window);
 
     let surfaces = Surfaces {
         launcher: window,
@@ -431,12 +435,10 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         config: live,
         reload_theme,
         timers,
-        hotkeys: Rc::new(RefCell::new(Vec::new())),
+        hotkeys,
+        reload_shortcuts,
     };
 
-    // After the gesture listener: command hotkeys are registered on its
-    // thread (7.53).
-    watch_shortcuts(cx, &platform, &surfaces);
     watch_sheets(cx, &surfaces);
     watch_quicklinks(cx, &surfaces);
     watch_files(cx, &surfaces);
@@ -549,6 +551,9 @@ struct Surfaces {
     /// command registered in slot `i`. Replaced whole with every reload of
     /// `shortcuts.json`, as the registrations are (7.53).
     hotkeys: Rc<RefCell<Vec<String>>>,
+    /// Asks the shortcuts watch to apply `shortcuts.json` again, for the
+    /// reload that re-reads everything the user edits by hand.
+    reload_shortcuts: mpsc::UnboundedSender<()>,
 }
 
 impl Surfaces {
@@ -675,53 +680,66 @@ fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
 }
 
 /// Register the command hotkeys in `shortcuts.json`, and again whenever it is
-/// saved (F17).
+/// saved or the returned sender asks (F17).
 ///
 /// The whole set every time, never a diff (7.53). Loading and registering
 /// run on a background thread: registering waits for the listener thread's
-/// answer, and the UI thread waits on nothing. The slot table is replaced on
-/// the UI thread once the answer is in, so a press is always resolved
-/// against the table `handle` can see. Reloads run one after another in this
-/// one task, so two saves in a row cannot register out of order.
-fn watch_shortcuts(cx: &mut App, platform: &Arc<dyn Platform>, surfaces: &Surfaces) {
+/// answer, and the UI thread waits on nothing. The slot table is replaced,
+/// and the launcher given the aliases, on the UI thread once the answer is
+/// in, so a press is always resolved against the table `handle` can see.
+/// Reloads run one after another in this one task, so two saves in a row
+/// cannot register out of order.
+fn watch_shortcuts(
+    cx: &mut App,
+    platform: &Arc<dyn Platform>,
+    paths: &Paths,
+    table: &Rc<RefCell<Vec<String>>>,
+    launcher: gpui::WindowHandle<Launcher>,
+) -> mpsc::UnboundedSender<()> {
     use lumen_core::watcher::FileWatcher;
 
-    let path = surfaces.paths.shortcuts_file();
-    let (sink, mut changes) = change_channel();
-    // Without a watch, the hotkeys are still registered once; the closed
-    // channel then ends the loop.
-    let watcher = FileWatcher::start(&path, sink)
-        .inspect_err(|error| {
-            log::warn!("command hotkeys will need a restart to change: {error:#}");
-        })
-        .ok();
+    let path = paths.shortcuts_file();
+    let (reload, mut changes) = mpsc::unbounded::<()>();
+    // Without a watch, the hotkeys are still registered once, and again on
+    // every explicit reload.
+    let sink = reload.clone();
+    let watcher = FileWatcher::start(&path, move || {
+        let _ = sink.unbounded_send(());
+    })
+    .inspect_err(|error| {
+        log::warn!("command hotkeys will need a reload to change: {error:#}");
+    })
+    .ok();
 
     let platform = platform.clone();
-    let table = surfaces.hotkeys.clone();
+    let table = table.clone();
     cx.spawn(async move |cx| {
         let _watcher = watcher;
         loop {
-            apply_shortcuts(&platform, &path, &table, cx).await;
+            apply_shortcuts(&platform, &path, &table, launcher, cx).await;
             if !next_change(&mut changes, cx).await {
                 break;
             }
         }
     })
     .detach();
+    reload
 }
 
-/// Load `path` and register its hotkeys as the whole set. A chord that
-/// cannot be bound is reported beside its command and costs nothing else;
-/// neither does a set that could not be registered at all.
+/// Load `path`, register its hotkeys as the whole set, and give the launcher
+/// its aliases. A chord that cannot be bound is reported beside its command
+/// and costs nothing else; neither does a set that could not be registered
+/// at all.
 async fn apply_shortcuts(
     platform: &Arc<dyn Platform>,
     path: &std::path::Path,
     table: &Rc<RefCell<Vec<String>>>,
-    cx: &gpui::AsyncApp,
+    launcher: gpui::WindowHandle<Launcher>,
+    cx: &mut gpui::AsyncApp,
 ) {
     let platform = platform.clone();
     let file = path.to_path_buf();
-    let (ids, chords, registered) = cx
+    let (shortcuts, ids, chords, registered) = cx
         .background_spawn(async move {
             let shortcuts = lumen_core::shortcuts::Shortcuts::load(&file);
             let (ids, chords): (Vec<String>, Vec<lumen_platform::Chord>) = shortcuts
@@ -730,7 +748,7 @@ async fn apply_shortcuts(
                 .map(|(id, chord)| (id.to_string(), chord.clone()))
                 .unzip();
             let registered = platform.set_command_hotkeys(&chords);
-            (ids, chords, registered)
+            (shortcuts, ids, chords, registered)
         })
         .await;
 
@@ -750,6 +768,11 @@ async fn apply_shortcuts(
         Err(error) => log::warn!("could not register the command hotkeys: {error:#}"),
     }
     *table.borrow_mut() = ids;
+    launcher
+        .update(cx, |launcher, _window, cx| {
+            launcher.set_shortcuts(&shortcuts, cx)
+        })
+        .ok();
 }
 
 /// Show the settings window, creating it the first time.
@@ -1662,6 +1685,9 @@ fn handle(
             // the answer should not depend on whether it noticed.
             reload_config(platform, shell, surfaces, cx)?;
             surfaces.reload_sheets();
+            // The hotkeys and aliases too, whether or not the watch saw
+            // the file change.
+            let _ = surfaces.reload_shortcuts.unbounded_send(());
             // Scripts, snippets and quicklinks live in the launcher's index,
             // so reloading is two halves: the sheet library here, and a
             // reindex there. The settings page keeps its own copy of the

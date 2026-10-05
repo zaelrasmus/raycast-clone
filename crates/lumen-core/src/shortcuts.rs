@@ -9,7 +9,8 @@
 //! Configuration rather than state, unlike the favourites: people edit it by
 //! hand, so a hotkey is written as it is shown, and one that does not parse
 //! costs only itself -- the rest of the file, and that command's alias, still
-//! load.
+//! load. An alias is stored in lowercase, letters, digits and single spaces;
+//! one that is not is likewise reported and left out alone.
 //!
 //! An id whose item is gone -- an application uninstalled, a quicklink
 //! deleted -- is kept, not dropped, for the favourites' reason: the binding
@@ -85,10 +86,8 @@ impl Shortcuts {
                         None
                     }
                 });
-                let shortcut = CommandShortcut {
-                    hotkey,
-                    alias: entry.alias,
-                };
+                let alias = checked_alias(entry.alias, &id, path);
+                let shortcut = CommandShortcut { hotkey, alias };
                 (id, shortcut)
             })
             .collect();
@@ -100,7 +99,13 @@ impl Shortcuts {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let source = serde_json::to_string_pretty(self)?;
+        // Aliases as they will be read back, so the file shows what is
+        // matched.
+        let mut stored = self.clone();
+        for (id, shortcut) in &mut stored.commands {
+            shortcut.alias = checked_alias(shortcut.alias.take(), id, path);
+        }
+        let source = serde_json::to_string_pretty(&stored)?;
         // Beside and renamed over, as the favourites are written.
         let temporary = path.with_extension("json.tmp");
         std::fs::write(&temporary, source)
@@ -116,6 +121,54 @@ impl Shortcuts {
             .filter_map(|(id, shortcut)| Some((id.as_str(), shortcut.hotkey.as_ref()?)))
             .collect()
     }
+
+    /// The commands that have an alias, with it, in id order.
+    pub fn aliases(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.commands
+            .iter()
+            .filter_map(|(id, shortcut)| Some((id.as_str(), shortcut.alias.as_deref()?)))
+    }
+
+    /// Each alias two or more commands share, with their ids in order: what
+    /// settings flags. Both still lead when it is typed.
+    pub fn conflicts(&self) -> BTreeMap<String, Vec<String>> {
+        let mut by_alias: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (id, alias) in self.aliases() {
+            by_alias
+                .entry(alias.to_string())
+                .or_default()
+                .push(id.to_string());
+        }
+        by_alias.retain(|_, ids| ids.len() > 1);
+        by_alias
+    }
+}
+
+/// An alias as it is stored: trimmed and in lowercase, letters `a` to `z`,
+/// digits and single spaces. `None` for anything else.
+///
+/// Narrow on purpose: an alias is typed at the start of a query, so it is
+/// something a keyboard types the same way in every layout, and a run of
+/// spaces is a typo nobody could see.
+pub fn normalise_alias(alias: &str) -> Option<String> {
+    let alias = alias.trim().to_lowercase();
+    let allowed = alias
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ' ');
+    (allowed && !alias.is_empty() && !alias.contains("  ")).then_some(alias)
+}
+
+/// `alias` as stored, or nothing with a warning naming `id` and `path`.
+fn checked_alias(alias: Option<String>, id: &str, path: &Path) -> Option<String> {
+    let alias = alias?;
+    let normalised = normalise_alias(&alias);
+    if normalised.is_none() {
+        log::warn!(
+            "ignoring the alias {alias:?} for {id:?} in {}: use letters, digits and single spaces",
+            path.display()
+        );
+    }
+    normalised
 }
 
 #[cfg(test)]
@@ -264,6 +317,108 @@ mod tests {
         assert_eq!(
             shortcuts.hotkeys(),
             [("window:left-half", &left), ("window:right-half", &right)]
+        );
+    }
+
+    #[test]
+    fn an_alias_is_stored_in_lowercase_and_trimmed() {
+        assert_eq!(normalise_alias("  LH "), Some("lh".into()));
+        assert_eq!(normalise_alias("Left Half 2"), Some("left half 2".into()));
+    }
+
+    #[test]
+    fn an_alias_is_letters_digits_and_single_spaces() {
+        for invalid in [
+            "",
+            "   ",
+            "left  half",
+            "l-h",
+            "lh!",
+            "\u{e9}t\u{e9}",
+            "a\tb",
+        ] {
+            assert_eq!(normalise_alias(invalid), None, "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn one_bad_alias_costs_only_itself() {
+        let path = temporary("bad-alias");
+        std::fs::write(
+            &path,
+            r#"{ "commands": {
+                "window:center": { "hotkey": "Ctrl+Alt+C", "alias": "c-e" },
+                "window:left-half": { "alias": "LH" }
+            } }"#,
+        )
+        .unwrap();
+        let shortcuts = Shortcuts::load(&path);
+        assert_eq!(
+            shortcuts.commands["window:center"],
+            CommandShortcut {
+                hotkey: Some(chord("Ctrl+Alt+C")),
+                alias: None,
+            }
+        );
+        assert_eq!(
+            shortcuts.commands["window:left-half"].alias.as_deref(),
+            Some("lh")
+        );
+    }
+
+    #[test]
+    fn an_alias_is_saved_as_it_is_stored() {
+        let path = temporary("saved-alias");
+        let mut shortcuts = Shortcuts::default();
+        shortcuts.commands.insert(
+            "window:left-half".into(),
+            CommandShortcut {
+                hotkey: None,
+                alias: Some(" Left Half ".into()),
+            },
+        );
+        shortcuts.save(&path).unwrap();
+        assert_eq!(
+            Shortcuts::load(&path).commands["window:left-half"]
+                .alias
+                .as_deref(),
+            Some("left half")
+        );
+    }
+
+    #[test]
+    fn a_shared_alias_is_a_conflict_between_its_commands() {
+        let mut shortcuts = Shortcuts::default();
+        for (id, alias) in [
+            ("window:right-half", Some("h")),
+            ("window:left-half", Some("h")),
+            ("app:code", Some("c")),
+            ("app:slack", None),
+        ] {
+            shortcuts.commands.insert(
+                id.into(),
+                CommandShortcut {
+                    hotkey: None,
+                    alias: alias.map(Into::into),
+                },
+            );
+        }
+        let expected: BTreeMap<String, Vec<String>> = [(
+            "h".to_string(),
+            vec![
+                "window:left-half".to_string(),
+                "window:right-half".to_string(),
+            ],
+        )]
+        .into();
+        assert_eq!(shortcuts.conflicts(), expected);
+        assert_eq!(
+            shortcuts.aliases().collect::<Vec<_>>(),
+            [
+                ("app:code", "c"),
+                ("window:left-half", "h"),
+                ("window:right-half", "h"),
+            ]
         );
     }
 }

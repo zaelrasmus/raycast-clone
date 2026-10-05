@@ -875,16 +875,26 @@ fn render_accessory(accessory: &Accessory, colors: &Colors, geometry: &Geometry)
             }))
             .child(text.clone())
             .into_any_element(),
-        Accessory::Tag { text, tone } => div()
-            .px(px(layout::view::TAG_PADDING_X))
-            .py(px(layout::view::TAG_PADDING_Y))
-            .rounded(px(layout::view::TAG_RADIUS))
-            .bg(color(tone_background(*tone, colors)))
-            .text_size(geometry.text_accessory())
-            .text_color(color(tone_foreground(*tone, colors)))
-            .child(text.clone())
-            .into_any_element(),
+        Accessory::Tag { text, tone } => render_tag(text.clone().into(), *tone, colors, geometry),
     }
+}
+
+/// Text in a pill: a view's tag, and a root row's alias (F17).
+pub(crate) fn render_tag(
+    text: SharedString,
+    tone: Tone,
+    colors: &Colors,
+    geometry: &Geometry,
+) -> AnyElement {
+    div()
+        .px(px(layout::view::TAG_PADDING_X))
+        .py(px(layout::view::TAG_PADDING_Y))
+        .rounded(px(layout::view::TAG_RADIUS))
+        .bg(color(tone_background(tone, colors)))
+        .text_size(geometry.text_accessory())
+        .text_color(color(tone_foreground(tone, colors)))
+        .child(text)
+        .into_any_element()
 }
 
 /// What a tone looks like, decided here and never by the extension.

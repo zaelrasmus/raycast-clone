@@ -19,6 +19,7 @@ use anyhow::Result;
 use lumen_platform::Platform;
 use serde::{Deserialize, Serialize};
 
+use crate::aliases::Aliases;
 use crate::favorites::{Change, Favorites};
 use crate::file_index::{self, FileHit, names};
 use crate::file_search::{Found, browse};
@@ -214,6 +215,13 @@ pub struct RootSearch {
     /// The timer presets, for their names and aliases (F8): typed exactly,
     /// one leads the matches, as a quicklink does.
     timer_presets: Vec<crate::timers::Preset>,
+    /// The translate presets, for their aliases (F17).
+    translate_presets: Vec<crate::translate::Preset>,
+    /// The user's aliases from `shortcuts.json`, `(item id, alias)` (F17).
+    shortcut_aliases: Vec<(String, String)>,
+    /// Every alias and leading name above, as one table: rebuilt when any
+    /// of them changes, looked up on every keystroke (F17).
+    aliases: Aliases,
     /// The last table of exchange rates the daemon loaded, for `10 usd in
     /// cad` (F9) and any calculation in money (F14). Read, never fetched: I-3.
     rates: Option<crate::currency::Rates>,
@@ -262,6 +270,9 @@ impl RootSearch {
             user_home: directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()),
             quicklinks: QuicklinkProvider::default(),
             timer_presets: Vec::new(),
+            translate_presets: Vec::new(),
+            shortcut_aliases: Vec::new(),
+            aliases: Aliases::default(),
             rates: None,
             conversion: false,
             rates_failed: false,
@@ -305,7 +316,70 @@ impl RootSearch {
             return false;
         }
         self.quicklinks = quicklinks;
+        self.rebuild_aliases();
         true
+    }
+
+    /// Take the user's aliases from `shortcuts.json` (F17). Returns whether
+    /// any changed.
+    pub fn set_shortcuts(&mut self, shortcuts: &crate::shortcuts::Shortcuts) -> bool {
+        let aliases: Vec<(String, String)> = shortcuts
+            .aliases()
+            .map(|(id, alias)| (id.to_string(), alias.to_string()))
+            .collect();
+        if self.shortcut_aliases == aliases {
+            return false;
+        }
+        self.shortcut_aliases = aliases;
+        self.rebuild_aliases();
+        true
+    }
+
+    /// Take the translate presets as they now are in `config.json`, for
+    /// their aliases (F17). Returns whether anything changed.
+    pub fn replace_translate_presets(&mut self, presets: Vec<crate::translate::Preset>) -> bool {
+        if self.translate_presets == presets {
+            return false;
+        }
+        self.translate_presets = presets;
+        self.rebuild_aliases();
+        true
+    }
+
+    /// The alias shown beside the indexed item `id`, if it has one (F17).
+    pub fn alias_of(&self, id: &str) -> Option<&str> {
+        self.aliases.shown(id)
+    }
+
+    /// The one alias table, from the user's aliases and the ones the
+    /// providers declare (F17). The user's first, so theirs is the badge.
+    ///
+    /// The ids are the providers' own (`timer:preset:<name>`,
+    /// `translate:preset:<name>`, a quicklink's), which is what makes an
+    /// alias of the user's for the same item land on the same row.
+    fn rebuild_aliases(&mut self) {
+        let timers = self.timer_presets.iter().map(|preset| {
+            (
+                format!("timer:preset:{}", preset.name),
+                preset.alias.clone(),
+                preset.name.clone(),
+            )
+        });
+        let mut aliases = self.shortcut_aliases.clone();
+        let mut names = Vec::new();
+        for (id, alias, name) in timers {
+            aliases.extend(alias.map(|alias| (id.clone(), alias)));
+            names.push((id, name));
+        }
+        aliases.extend(self.translate_presets.iter().filter_map(|preset| {
+            Some((
+                format!("translate:preset:{}", preset.name),
+                preset.alias.clone()?,
+            ))
+        }));
+        aliases.extend(self.quicklinks.aliases());
+        names.extend(self.quicklinks.names());
+        self.aliases = Aliases::build(aliases, names);
     }
 
     /// Take the timer presets as they now are in `config.json`. Returns
@@ -315,6 +389,7 @@ impl RootSearch {
             return false;
         }
         self.timer_presets = presets;
+        self.rebuild_aliases();
         true
     }
 
@@ -700,26 +775,26 @@ impl RootSearch {
                 .then_with(|| self.item(a).title.cmp(&self.item(b).title))
         });
 
-        // Likewise a timer preset (F8). Its alias is only a keyword to the
-        // matcher, and a short one like `dw` scores below any file that
-        // happens to contain the letters -- found, but seventh.
-        let query_trimmed = query.trim();
-        if let Some(preset) = self.timer_presets.iter().find(|preset| {
-            crate::timers::presets::same(&preset.name, query_trimmed)
-                || preset
-                    .alias
-                    .as_deref()
-                    .is_some_and(|alias| crate::timers::presets::same(alias, query_trimmed))
-        }) {
-            let id = format!("timer:preset:{}", preset.name);
-            self.lead(&mut hits, &id);
-        }
-
-        // A quicklink typed exactly -- its whole name, or its alias -- is what
-        // the user meant, and leads the matches. Scoring alone lets usage
-        // put a longer name first: `google` opened Google Drive (F6).
-        if let Some(id) = self.quicklinks.exact(query) {
-            self.lead(&mut hits, &id);
+        // An alias is what the user meant (F17): typed whole, its command
+        // leads every match; typed in part, it follows those. A keyword only
+        // scores, and a short one like `dw` scores below any name that
+        // happens to hold the letters -- found, but seventh (F8). The same
+        // table holds the timer presets' and quicklinks' whole names, which
+        // lead the same way: `google` opened Google Drive (F6). Ties go to
+        // the one used more, then the id, so a shared alias is stable.
+        let matches = self.aliases.matches(query);
+        let by_use = |a: &&str, b: &&str| {
+            self.frecency
+                .boost(b)
+                .cmp(&self.frecency.boost(a))
+                .then_with(|| a.cmp(b))
+        };
+        let mut exact = matches.exact;
+        let mut prefix = matches.prefix;
+        exact.sort_by(by_use);
+        prefix.sort_by(by_use);
+        for id in exact.iter().chain(&prefix).rev() {
+            self.lead(&mut hits, id);
         }
 
         // An answer *is* what the user asked for -- it was computed from their
@@ -2168,6 +2243,156 @@ mod tests {
 
         root.rank("goog");
         assert_eq!(titles(&root)[0], "Google Drive");
+    }
+
+    fn shortcuts(aliases: &[(&str, &str)]) -> crate::shortcuts::Shortcuts {
+        let mut shortcuts = crate::shortcuts::Shortcuts::default();
+        for (id, alias) in aliases {
+            shortcuts.commands.insert(
+                id.to_string(),
+                crate::shortcuts::CommandShortcut {
+                    hotkey: None,
+                    alias: Some(alias.to_string()),
+                },
+            );
+        }
+        shortcuts
+    }
+
+    /// Applications that match `lh` well, and two window commands that do
+    /// not match it at all.
+    fn windows() -> RootSearch {
+        let mut index = apps(&["LH Tool", "Lighthouse", "Slack"]);
+        index.extend([
+            Candidate::new(item("window:left-half", "Left Half", Kind::Command)),
+            Candidate::new(item("window:left-third", "Left Third", Kind::Command)),
+        ]);
+        let mut root = root(index);
+        for _ in 0..20 {
+            root.record_use("LH Tool");
+        }
+        root
+    }
+
+    /// F17: an alias typed whole is what the user meant, above a name that
+    /// matches better and is used every day -- the case a keyword lost.
+    #[test]
+    fn a_user_alias_typed_whole_leads_over_a_strong_match() {
+        let mut root = windows();
+        assert!(root.set_shortcuts(&shortcuts(&[("window:left-half", "lh")])));
+
+        root.rank("lh");
+        assert_eq!(titles(&root)[0], "Left Half");
+        root.rank(" LH ");
+        assert_eq!(titles(&root)[0], "Left Half", "in any case");
+        assert!(
+            !root.set_shortcuts(&shortcuts(&[("window:left-half", "lh")])),
+            "the same aliases are no change"
+        );
+    }
+
+    #[test]
+    fn the_start_of_an_alias_lifts_its_command_below_a_whole_one() {
+        let mut root = windows();
+        root.set_shortcuts(&shortcuts(&[
+            ("window:left-half", "lh"),
+            ("window:left-third", "lht"),
+        ]));
+
+        root.rank("lh");
+        assert_eq!(titles(&root)[..2], ["Left Half", "Left Third"]);
+        assert_eq!(titles(&root)[2], "LH Tool", "then the matches");
+    }
+
+    #[test]
+    fn an_alias_is_never_matched_fuzzily() {
+        let mut root = windows();
+        root.set_shortcuts(&shortcuts(&[("window:left-half", "zqx")]));
+
+        root.rank("zx");
+        assert!(!titles(&root).contains(&"Left Half".to_string()));
+        root.rank("qx");
+        assert!(!titles(&root).contains(&"Left Half".to_string()));
+    }
+
+    /// Settings flags a shared alias; until it is fixed, both lead, the one
+    /// used more first, and by id when neither is.
+    #[test]
+    fn commands_sharing_an_alias_both_lead_by_use_then_id() {
+        let mut root = windows();
+        root.set_shortcuts(&shortcuts(&[
+            ("window:left-third", "w"),
+            ("window:left-half", "w"),
+        ]));
+
+        root.rank("w");
+        assert_eq!(titles(&root)[..2], ["Left Half", "Left Third"]);
+
+        root.record_use("window:left-third");
+        root.rank("w");
+        assert_eq!(titles(&root)[..2], ["Left Third", "Left Half"]);
+    }
+
+    #[test]
+    fn a_users_alias_and_a_presets_own_both_work() {
+        use crate::providers::Provider as _;
+
+        let preset = crate::timers::Preset {
+            name: "Zeta".into(),
+            alias: Some("zq".into()),
+            duration: std::time::Duration::from_secs(420),
+            cycle: None,
+            focus: false,
+        };
+        let presets = providers::TimerPresetsProvider::new(vec![preset.clone()]);
+        let mut index = apps(&["Zed Quick", "Zz Top"]);
+        index.extend(presets.catalogue().into_iter().map(Candidate::new));
+        let mut root = root(index);
+        root.replace_timer_presets(vec![preset]);
+        root.set_shortcuts(&shortcuts(&[("timer:preset:Zeta", "zz")]));
+
+        root.rank("zq");
+        assert_eq!(titles(&root)[0], "Zeta");
+        root.rank("zz");
+        assert_eq!(titles(&root)[0], "Zeta");
+        assert_eq!(root.alias_of("timer:preset:Zeta"), Some("zz"), "the user's");
+    }
+
+    /// F17: a translate preset's alias is one more alias, where it was only a
+    /// keyword before.
+    #[test]
+    fn a_translate_presets_alias_leads() {
+        use crate::providers::Provider as _;
+
+        let config: crate::translate::TranslateConfig = serde_json::from_str(
+            r#"{ "presets": [ { "name": "Work", "alias": "esen", "from": "es", "to": "en" } ] }"#,
+        )
+        .unwrap();
+        let provider = providers::TranslateProvider::new(config.presets());
+        let mut index = apps(&["Essential Sentences"]);
+        index.extend(provider.catalogue().into_iter().map(Candidate::new));
+        let mut root = root(index);
+        for _ in 0..20 {
+            root.record_use("Essential Sentences");
+        }
+        assert!(root.replace_translate_presets(config.presets()));
+
+        root.rank("esen");
+        assert_eq!(titles(&root)[0], "Work");
+        assert_eq!(root.alias_of("translate:preset:Work"), Some("esen"));
+    }
+
+    #[test]
+    fn a_quicklinks_alias_is_its_badge_and_its_name_is_not() {
+        let links = google();
+        let mut index = apps(&["Gimp"]);
+        index.extend(links.catalogue().into_iter().map(Candidate::new));
+        let mut root = root(index);
+        root.replace_quicklinks(links);
+
+        let id = &root.index()[1].item.id.clone();
+        assert_eq!(root.alias_of(id), Some("g"));
+        assert_eq!(root.alias_of("Gimp"), None);
     }
 
     /// A URL beyond doubt leads, above every match.

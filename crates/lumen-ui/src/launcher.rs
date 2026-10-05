@@ -2048,6 +2048,20 @@ impl Launcher {
         self.start_indexing(cx);
     }
 
+    /// Take the aliases in `shortcuts.json`, as loaded at startup and after
+    /// every save (F17). Re-ranked only when one changed and the root list
+    /// is showing: a hotkey edited alone moves nothing.
+    pub fn set_shortcuts(
+        &mut self,
+        shortcuts: &lumen_core::shortcuts::Shortcuts,
+        cx: &mut Context<Self>,
+    ) {
+        if self.root.set_shortcuts(shortcuts) && matches!(self.mode, Mode::Root) {
+            self.rerank(cx);
+            cx.notify();
+        }
+    }
+
     /// Re-read `quicklinks.json` after it was saved (F6).
     ///
     /// The whole index rather than the links alone: as catalogue entries they
@@ -2067,6 +2081,7 @@ impl Launcher {
         let paths = self.paths.clone();
         let current = self.root.index();
         let presets = self.config.translate.presets();
+        let translate_presets = presets.clone();
         let timers = self.config.timers.presets();
         let timer_presets = timers.clone();
         let apps = self.config.apps.clone();
@@ -2138,7 +2153,8 @@ impl Launcher {
                 this.browsers = browsers;
                 this.fetch_icons(sites, cx);
                 let links_changed = this.root.replace_quicklinks(quicklinks);
-                let presets_changed = this.root.replace_timer_presets(timer_presets);
+                let presets_changed = this.root.replace_timer_presets(timer_presets)
+                    | this.root.replace_translate_presets(translate_presets);
                 let rates_changed = this.root.replace_rates(rates);
                 let weather_changed = this.root.replace_weather(weather);
                 // Nothing to show means nothing to re-rank: that would put the
@@ -5469,6 +5485,11 @@ impl Launcher {
         let hit = &self.hits()[index];
         let item = self.item(hit);
         let selected = index == self.selected;
+        // Only a row of the index: an answer or a file is not the command
+        // the alias names, whatever its id.
+        let alias = matches!(hit.source, lumen_core::root::Source::Indexed(_))
+            .then(|| self.root.alias_of(&item.id))
+            .flatten();
 
         let icon = item
             .icon
@@ -5554,13 +5575,30 @@ impl Launcher {
                         colors,
                         &geometry,
                     ))
+                    // The alias, when the row has one, in a pill before the
+                    // kind label (F17): in the same column, so the title
+                    // truncates sooner on that row and nothing else moves.
                     .child(
                         div()
                             .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(gpui::px(lumen_core::layout::view::ACCESSORY_GAP))
                             .pl(geometry.icon_gap())
-                            .text_size(geometry.text_accessory())
-                            .text_color(color(colors.text_muted))
-                            .child(item.kind_label()),
+                            .children(alias.map(|alias| {
+                                crate::view::render_tag(
+                                    alias.to_string().into(),
+                                    lumen_core::view::Tone::Neutral,
+                                    colors,
+                                    &geometry,
+                                )
+                            }))
+                            .child(
+                                div()
+                                    .text_size(geometry.text_accessory())
+                                    .text_color(color(colors.text_muted))
+                                    .child(item.kind_label()),
+                            ),
                     ),
             )
             .into_any_element()

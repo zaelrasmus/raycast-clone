@@ -618,23 +618,20 @@ impl QuicklinkProvider {
             })
     }
 
-    /// The id of the link whose alias or whole name `query` is, whatever its
-    /// link. For ranking: typed exactly, a link is what was meant.
-    pub fn exact(&self, query: &str) -> Option<String> {
-        let query = query.trim();
-        if query.is_empty() {
-            return None;
-        }
+    /// Each link's alias, by id, for the root's alias table (F17): typed
+    /// whole a link leads, and typed in part it is lifted.
+    pub fn aliases(&self) -> impl Iterator<Item = (String, String)> + '_ {
         self.links
             .iter()
-            .find(|link| {
-                link.name.eq_ignore_ascii_case(query)
-                    || link
-                        .alias
-                        .as_deref()
-                        .is_some_and(|alias| alias.eq_ignore_ascii_case(query))
-            })
-            .map(Quicklink::id)
+            .filter_map(|link| Some((link.id(), link.alias.clone()?)))
+    }
+
+    /// Each link's whole name, by id, for the same table: typed exactly, a
+    /// link is what was meant, and scoring alone let usage put a longer name
+    /// first -- `google` opened Google Drive (F6). Only whole: a part of a
+    /// name is a fuzzy match like any other.
+    pub fn names(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        self.links.iter().map(|link| (link.id(), link.name.clone()))
     }
 
     /// The one row shown while the launcher asks for `id`'s argument.

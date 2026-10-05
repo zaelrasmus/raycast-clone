@@ -617,9 +617,27 @@ application holds, is logged and the rest still work.
 
 A hotkey runs the command's first action without opening the launcher: a
 window command arranges the window in front, an application opens. A
-command that needs the launcher -- a view, a form -- opens it for now.
-`alias` is stored but not yet searched. An id whose application is
-uninstalled keeps its hotkey, which works again if it is reinstalled.
+command that needs the launcher -- a view, a form -- opens it for now. An id
+whose application is uninstalled keeps its hotkey, which works again if it
+is reinstalled.
+
+An `alias` is a short name typed in the launcher:
+
+- **Typed whole** (`lh`), its command is the first row, above every match.
+- **Typed in part, from its start** (`l`), its command comes right after
+  any whole alias, above the other matches.
+- **Never matched loosely**: `lfh` does not find `lefthalf`. An alias is
+  for typing exactly; use the title for a loose search.
+- Any case: it is stored in lowercase. Letters `a`-`z`, digits and single
+  spaces; anything else is logged and that alias ignored, the rest of the
+  entry kept.
+- Two commands with the same alias both lead, the one used more first.
+  Settings flags the clash.
+
+Timer presets, translate presets and quicklinks keep their own `alias` in
+their own files, and those work the same way. Give one an alias here as
+well and both work; the row shows the one from this file. A quicklink's
+alias followed by a space still searches it: `g lofi beats`.
 
 ### Quicklinks
 
