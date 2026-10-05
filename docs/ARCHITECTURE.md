@@ -2643,7 +2643,7 @@ search what you use").
 
 *Revised again by F16 (steps c3a and c3b).* The ceiling is gone. Every scope
 is indexed to its end on disk, and memory holds a hot layer of names within
-`HOT_BUDGET` (8 MB): what was used, then folders and the shallowest files.
+`files.hot-memory` (8 MB by default, 1 to 32): what was used, then folders and the shallowest files.
 The budget is still idle memory's. `files.index-detail` (`complete`,
 `balanced`, `compact`) decides only the word tables on disk, never the
 ranking. The trade is root's alone: outside the hot layer, root finds an
