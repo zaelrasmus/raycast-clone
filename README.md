@@ -113,6 +113,8 @@ an aesthetic worth looking at fifty times a day.
   changes. Each shows its site's icon, fetched once and kept, and the browser
   it opens in is picked from the ones installed. `Ctrl+K` on a link also
   opens it in a private window, or in any installed browser, just this once.
+  A file or folder can be a quicklink too -- `Ctrl+K` on it, *Save as
+  Quicklink* -- opened with the app you pick from those Windows registers.
 - **Type a URL, open it.** `github.com` or `https://example.com/page` puts
   *Open github.com* first; `Ctrl+K` opens it privately, in another browser,
   or saves it as a quicklink. Typed URLs are never written to Lumen's usage
@@ -646,7 +648,7 @@ Fields Lumen does not know are kept when it saves the file, and so are entries
 it could not read: saving a link from the launcher never loses a hand edit.
 While the file does not parse, Lumen refuses to save over it and says so.
 
-`Ctrl+K` on any quicklink row offers *Open in Private Window* -- incognito in
+`Ctrl+K` on any web quicklink row offers *Open in Private Window* -- incognito in
 Chrome, Brave and Helium, InPrivate in Edge, a private window in Zen, Firefox
 and Opera -- and *Open With...*, which lists the installed browsers. A browser
 Lumen does not know the private flag of is refused rather than opened in an

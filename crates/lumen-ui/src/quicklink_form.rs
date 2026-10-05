@@ -25,14 +25,16 @@
 //! fields read before it was flipped.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{App, Context, Entity, FocusHandle, Focusable, SharedString, Window, actions, div, px};
 use lumen_core::layout;
-use lumen_core::providers::quicklinks::{Entry, store};
+use lumen_core::providers::quicklinks::{APP_PREFIX, Entry, is_path_link, link_path, store};
 use lumen_core::theme::Colors;
+use lumen_platform::{AppChoice, Platform};
 
-use crate::select::{Select, SelectEvent, browser_choices, icon_choices};
+use crate::select::{Select, SelectEvent, app_choices, browser_choices, icon_choices};
 use crate::styling::{color, metrics, type_scale};
 use crate::text_field::{TextField, TextFieldEvent};
 
@@ -128,8 +130,19 @@ pub struct QuicklinkForm {
     /// fallback flag, keywords, and fields this build does not know.
     original: Entry,
     fields: [Entity<TextField>; TEXT_FIELDS],
-    /// "Open with": the installed browsers, or the default.
+    /// "Open with": the installed browsers, or the default -- or, for a
+    /// file or folder, the apps that open it.
     browser: Entity<Select>,
+    /// The installed browsers, once the host has named them.
+    browsers: Vec<String>,
+    /// The apps for the file or folder in the link field, when it holds a
+    /// path: empty until the platform answers. `None` for a URL.
+    apps: Option<Vec<AppChoice>>,
+    /// The path link the apps were last asked for, so an answer for a link
+    /// since replaced is dropped.
+    asked: Option<String>,
+    /// For the apps: [`Platform::apps_for`] reads the system's associations.
+    platform: Arc<dyn Platform>,
     /// The fallback checkbox, when the host offers it.
     fallback: Option<Fallback>,
     /// The icon choice, when the host offers it.
@@ -153,6 +166,7 @@ impl QuicklinkForm {
         path: PathBuf,
         existing: Option<Entry>,
         colors: Colors,
+        platform: Arc<dyn Platform>,
         cx: &mut Context<Self>,
     ) -> Self {
         let original = existing.clone().unwrap_or_default();
@@ -164,10 +178,13 @@ impl QuicklinkForm {
             };
             let entity = cx.new(|cx| TextField::new(text, field.placeholder(), colors.clone(), cx));
             // An edit answers the last refusal, so the refusal goes.
-            cx.subscribe(&entity, |form, _, event, cx| {
+            cx.subscribe(&entity, move |form, _, event, cx| {
                 if matches!(event, TextFieldEvent::Changed(_)) {
                     form.edited = true;
                     form.error = None;
+                    if field == Field::Link {
+                        form.link_changed(cx);
+                    }
                     cx.notify();
                 }
             })
@@ -186,19 +203,25 @@ impl QuicklinkForm {
         })
         .detach();
 
-        Self {
+        let mut form = Self {
             path,
             replacing: existing.map(|entry| entry.name),
             original,
             fields,
             browser,
+            browsers: Vec::new(),
+            apps: None,
+            asked: None,
+            platform,
             fallback: None,
             icon: None,
             edited: false,
             error: None,
             saving: false,
             colors,
-        }
+        };
+        form.link_changed(cx);
+        form
     }
 
     pub fn is_editing(&self) -> bool {
@@ -259,8 +282,89 @@ impl QuicklinkForm {
 
     /// Offer the installed browsers in "Open with", keeping what is chosen.
     pub fn set_browsers(&mut self, browsers: Vec<String>, cx: &mut Context<Self>) {
+        self.browsers = browsers;
+        self.refresh_open_with(cx);
+    }
+
+    /// What the link field holds, trimmed.
+    fn link(&self, cx: &App) -> String {
+        self.fields[1].read(cx).text().trim().to_string()
+    }
+
+    /// Follow the link field: a file or folder is opened by an app, so
+    /// "Open with" lists the apps for it, asked for again whenever the path
+    /// changes; a URL goes back to the browsers.
+    fn link_changed(&mut self, cx: &mut Context<Self>) {
+        let link = self.link(cx);
+        if !is_path_link(&link) {
+            self.asked = None;
+            if self.apps.take().is_some() {
+                self.refresh_open_with(cx);
+            }
+            return;
+        }
+        if self.asked.as_deref() == Some(link.as_str()) {
+            return;
+        }
+        self.asked = Some(link.clone());
+        if self.apps.is_none() {
+            // The default app at once, rather than browsers, until the
+            // list arrives.
+            self.apps = Some(Vec::new());
+            self.refresh_open_with(cx);
+        }
+
+        // The system's associations: a registry walk, off the UI thread.
+        let platform = self.platform.clone();
+        cx.spawn(async move |this, cx| {
+            let target = link_path(&link);
+            let (link, apps) = cx
+                .background_executor()
+                .spawn(async move {
+                    let apps = platform.apps_for(&target).unwrap_or_else(|error| {
+                        log::warn!("could not list the apps for {target:?}: {error:#}");
+                        Vec::new()
+                    });
+                    (link, apps)
+                })
+                .await;
+            this.update(cx, |form, cx| form.set_apps(&link, apps, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Offer `apps` in "Open with", if `link` is still the one in the field.
+    fn set_apps(&mut self, link: &str, apps: Vec<AppChoice>, cx: &mut Context<Self>) {
+        if self.asked.as_deref() != Some(link) {
+            return;
+        }
+        self.apps = Some(apps);
+        self.refresh_open_with(cx);
+    }
+
+    /// Rebuild "Open with" for what the link is, keeping what is chosen when
+    /// it still applies.
+    fn refresh_open_with(&mut self, cx: &mut Context<Self>) {
         let current = self.browser.read(cx).value().map(str::to_string);
-        let (choices, selected) = browser_choices(current.as_deref(), &browsers);
+        let (choices, selected) = match &self.apps {
+            Some(apps) => {
+                // A stored app is kept only for the link it was stored
+                // with: another file may have no use for it.
+                let listed = |value: &str| {
+                    apps.iter()
+                        .any(|app| value.strip_prefix(APP_PREFIX) == Some(app.id.as_str()))
+                };
+                let stored = self.link(cx) == self.original.link.trim()
+                    && current.as_deref() == self.original.open_with.as_deref().map(str::trim);
+                let current = current.filter(|value| listed(value) || stored);
+                app_choices(current.as_deref(), apps)
+            }
+            None => {
+                let current = current.filter(|value| !value.starts_with(APP_PREFIX));
+                browser_choices(current.as_deref(), &self.browsers)
+            }
+        };
         self.browser
             .update(cx, |select, cx| select.set_choices(choices, selected, cx));
         cx.notify();
@@ -272,6 +376,7 @@ impl QuicklinkForm {
     pub fn prefill(&mut self, name: String, link: String, cx: &mut Context<Self>) {
         self.fields[0].update(cx, |field, cx| field.set_text(name, cx));
         self.fields[1].update(cx, |field, cx| field.set_text(link, cx));
+        self.link_changed(cx);
     }
 
     /// Offer `link` in the link field, if the user has not typed one.
@@ -282,6 +387,7 @@ impl QuicklinkForm {
         let field = &self.fields[1];
         if field.read(cx).text().is_empty() {
             field.update(cx, |field, cx| field.set_text(link, cx));
+            self.link_changed(cx);
         }
     }
 
@@ -477,6 +583,10 @@ impl QuicklinkForm {
             Some(index) => Field::ALL[index],
             None => Field::Name,
         };
+        if field == Field::Browser && self.apps.is_some() {
+            let hint = "What the file or folder opens with. Space shows the apps that open it.";
+            return (hint.to_string(), false);
+        }
         (field.hint().to_string(), false)
     }
 }

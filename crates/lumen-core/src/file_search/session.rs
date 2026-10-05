@@ -50,6 +50,7 @@ pub const OPEN: &str = "open";
 pub const SHOW_IN_FOLDER: &str = "show-in-folder";
 pub const COPY_PATH: &str = "copy-path";
 pub const OPEN_WITH: &str = "open-with";
+pub const SAVE_AS_QUICKLINK: &str = "save-as-quicklink";
 pub const EXCLUDE: &str = "exclude";
 pub const REBUILD: &str = "rebuild";
 /// On a drive's offer, and on the hint under an empty result (slice 5).
@@ -112,6 +113,9 @@ pub enum Effect {
     CopyPath(String),
     /// Ask the system which application should open it.
     OpenWith(PathBuf),
+    /// Show the quicklink form filled in with this entry: its name, and
+    /// its path as the link.
+    SaveAsQuicklink { name: String, link: String },
     /// Leave it out of the index ([`super::exclude::exclude`]), then tell
     /// [`Session::excluded`].
     Exclude(Found),
@@ -280,6 +284,10 @@ impl Session {
                     SHOW_IN_FOLDER => vec![Effect::ShowInFolder(path)],
                     COPY_PATH => vec![Effect::CopyPath(path.display().to_string())],
                     OPEN_WITH => vec![Effect::OpenWith(path)],
+                    SAVE_AS_QUICKLINK => vec![Effect::SaveAsQuicklink {
+                        name: found.name(),
+                        link: path.display().to_string(),
+                    }],
                     EXCLUDE => vec![Effect::Exclude(found)],
                     REBUILD => vec![Effect::Rebuild],
                     _ => Vec::new(),
@@ -757,6 +765,7 @@ impl Session {
                 action(SHOW_IN_FOLDER, "Show in Folder"),
                 action(COPY_PATH, "Copy Path"),
                 action(OPEN_WITH, "Open With\u{2026}"),
+                action(SAVE_AS_QUICKLINK, "Save as Quicklink"),
                 action(EXCLUDE, "Exclude from Index"),
                 action(REBUILD, "Rebuild File Index"),
             ],
@@ -1188,6 +1197,7 @@ mod tests {
                 "Show in Folder",
                 "Copy Path",
                 "Open With\u{2026}",
+                "Save as Quicklink",
                 "Exclude from Index",
                 "Rebuild File Index"
             ]
@@ -1211,6 +1221,13 @@ mod tests {
             [Effect::CopyPath("C:\\styles\\carbon.json".into())]
         );
         assert_eq!(invoke(OPEN_WITH), [Effect::OpenWith(path)]);
+        assert_eq!(
+            invoke(SAVE_AS_QUICKLINK),
+            [Effect::SaveAsQuicklink {
+                name: "carbon.json".into(),
+                link: "C:\\styles\\carbon.json".into(),
+            }]
+        );
         assert_eq!(
             invoke(EXCLUDE),
             [Effect::Exclude(file("C:\\styles\\carbon.json"))]

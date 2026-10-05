@@ -1612,7 +1612,7 @@ impl Launcher {
     /// the launcher's. Every read of the disk or the index is on the
     /// background executor, and a search is abandoned as soon as the next
     /// keystroke is typed: the launcher never waits for one (I-3).
-    fn open_file_search(&mut self, cx: &mut Context<Self>) {
+    fn open_file_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use lumen_core::file_search::preview::Describer;
         use lumen_core::file_search::session::{Effect, Session};
         use lumen_core::file_search::{self, recents};
@@ -1642,6 +1642,8 @@ impl Launcher {
         let platform = self.platform.clone();
         let files = self.config.files.clone();
         let config_file = self.paths.config_file();
+        // For the quicklink form, which takes the view's place.
+        let window = window.window_handle();
         cx.spawn(async move |this, cx| {
             let (mut session, describer, home) = {
                 let platform = platform.clone();
@@ -1763,6 +1765,17 @@ impl Launcher {
                         }
                         Effect::OpenWith(path) => {
                             run.close_then(cx, move |platform| platform.open_with(&path));
+                        }
+                        Effect::SaveAsQuicklink { name, link } => {
+                            // As from root: the form takes the view's
+                            // place, which ends this session.
+                            window
+                                .update(cx, |_, window, cx| {
+                                    this.update(cx, |launcher, cx| {
+                                        launcher.open_form(Some((name, link)), window, cx)
+                                    })
+                                })
+                                .ok();
                         }
                         Effect::CopyPath(text) => run.copy(cx, text).await,
                         Effect::Exclude(found) => {
@@ -2623,7 +2636,12 @@ impl Launcher {
     // -- Extension views (F4) ----------------------------------------------
 
     /// Open a view in place of the root list.
-    fn open_view(&mut self, source: &lumen_core::ViewSource, cx: &mut Context<Self>) {
+    fn open_view(
+        &mut self,
+        source: &lumen_core::ViewSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let previous_height = self.content_height();
 
         let view = match source {
@@ -2707,7 +2725,7 @@ impl Launcher {
             // The file index is the launcher's own (F16), so the view of it
             // is run from here.
             lumen_core::ViewSource::Files => {
-                self.open_file_search(cx);
+                self.open_file_search(window, cx);
                 return;
             }
         };
@@ -4040,7 +4058,7 @@ impl Launcher {
         // A view replaces the list rather than doing something and going away,
         // so this neither dismisses nor reaches the platform.
         if let Action::OpenView(source) = action {
-            self.open_view(&source, cx);
+            self.open_view(&source, window, cx);
             return;
         }
 
@@ -4239,8 +4257,9 @@ impl Launcher {
 
         let path = self.paths.quicklinks_file();
         let colors = self.theme.colors.clone();
+        let platform = self.platform.clone();
         let form = cx.new(|cx| {
-            let mut form = QuicklinkForm::new(path, None, colors, cx);
+            let mut form = QuicklinkForm::new(path, None, colors, platform, cx);
             form.open_menus_upward(cx);
             if let Some((name, link)) = prefill {
                 form.prefill(name, link, cx);
@@ -6389,7 +6408,8 @@ mod tests {
         assert_eq!(rows[1].shortcut, ["Ctrl", "Shift", "F"]);
     }
 
-    /// A folder's panel opens it: it is no application.
+    /// A folder's panel opens it: it is no application. And it can be kept
+    /// as a quicklink.
     #[test]
     fn a_folders_panel_opens_it() {
         let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
@@ -6400,7 +6420,7 @@ mod tests {
         let rows = root_panel_entries(Some(&folder), folder.actions.clone(), &shortcuts);
 
         let titles: Vec<_> = rows.iter().map(|row| row.title.as_str()).collect();
-        assert_eq!(titles, ["Open", "Copy"]);
+        assert_eq!(titles, ["Open", "Copy", "Save as Quicklink"]);
     }
 
     /// Ctrl+Enter runs the second action, and does nothing when there is

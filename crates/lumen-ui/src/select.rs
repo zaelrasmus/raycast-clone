@@ -106,6 +106,63 @@ pub fn browser_choices(current: Option<&str>, installed: &[String]) -> (Vec<Choi
     }
 }
 
+/// The apps "Open with" offers for a file or folder link, and which of them
+/// `current` is (F16).
+///
+/// The platform's list, default first, each stored as [`APP_PREFIX`] and its
+/// id; nothing stored selects the default. A stored app that is not listed is
+/// kept, marked, as [`browser_choices`] keeps a browser. Until the list
+/// arrives, or when it cannot be read, the one choice is the default app.
+///
+/// [`APP_PREFIX`]: lumen_core::providers::quicklinks::APP_PREFIX
+pub fn app_choices(
+    current: Option<&str>,
+    apps: &[lumen_platform::AppChoice],
+) -> (Vec<Choice>, usize) {
+    use lumen_core::providers::quicklinks::APP_PREFIX;
+
+    let mut choices: Vec<Choice> = apps
+        .iter()
+        .map(|app| Choice {
+            value: Some(format!("{APP_PREFIX}{}", app.id)),
+            label: app.name.clone(),
+        })
+        .collect();
+    if choices.is_empty() {
+        choices.push(Choice {
+            value: None,
+            label: "Default app".into(),
+        });
+    }
+
+    // Only an app: a browser's name, from when the link was a URL, means
+    // nothing to a file.
+    let current = current
+        .map(str::trim)
+        .filter(|value| value.starts_with(APP_PREFIX));
+    let Some(current) = current else {
+        return (choices, 0);
+    };
+    if let Some(index) = choices
+        .iter()
+        .position(|choice| choice.value.as_deref() == Some(current))
+    {
+        return (choices, index);
+    }
+    let id = &current[APP_PREFIX.len()..];
+    let label = if apps.is_empty() {
+        id.to_string()
+    } else {
+        format!("{id} (not found)")
+    };
+    choices.push(Choice {
+        value: Some(current.to_string()),
+        label,
+    });
+    let index = choices.len() - 1;
+    (choices, index)
+}
+
 /// What a quicklink's "Icon" offers, and which of them `current` is.
 ///
 /// The site's icon is the absence of a value, as in the file. A value this
@@ -429,6 +486,7 @@ impl Select {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumen_platform::AppChoice;
 
     fn installed() -> Vec<String> {
         vec!["Zen".into(), "Brave".into(), "Helium".into()]
@@ -469,6 +527,72 @@ mod tests {
 
         let (choices, selected) = icon_choices(Some("emoji:rocket"));
         assert_eq!(choices[selected].value.as_deref(), Some("emoji:rocket"));
+    }
+
+    fn apps() -> Vec<AppChoice> {
+        [
+            ("C:\\Code.exe", "Visual Studio Code"),
+            ("Notepad", "Notepad"),
+        ]
+        .map(|(id, name)| AppChoice {
+            id: id.into(),
+            name: name.into(),
+        })
+        .to_vec()
+    }
+
+    /// A new link to a file opens with the system's default app, listed
+    /// first, and every app is stored as `app:` and its id.
+    #[test]
+    fn a_new_path_link_selects_the_default_app() {
+        let (choices, selected) = app_choices(None, &apps());
+        assert_eq!(selected, 0);
+        assert_eq!(
+            choices,
+            [
+                Choice {
+                    value: Some("app:C:\\Code.exe".into()),
+                    label: "Visual Studio Code".into(),
+                },
+                Choice {
+                    value: Some("app:Notepad".into()),
+                    label: "Notepad".into(),
+                },
+            ]
+        );
+        // A browser's name, left from when the link was a URL, is not an app.
+        assert_eq!(app_choices(Some("Brave"), &apps()), (choices, 0));
+    }
+
+    #[test]
+    fn a_stored_app_is_selected_when_editing() {
+        let (choices, selected) = app_choices(Some("app:Notepad"), &apps());
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[selected].value.as_deref(), Some("app:Notepad"));
+    }
+
+    /// Uninstalled since: kept, so saving another field does not change the
+    /// app the link opens with.
+    #[test]
+    fn a_stored_app_that_is_not_listed_is_kept() {
+        let (choices, selected) = app_choices(Some("app:C:\\Old.exe"), &apps());
+        assert_eq!(choices.len(), 3);
+        assert_eq!(choices[selected].value.as_deref(), Some("app:C:\\Old.exe"));
+        assert_eq!(choices[selected].label, "C:\\Old.exe (not found)");
+    }
+
+    /// Before the list arrives, or when it cannot be read: the default app,
+    /// and a stored one still selected.
+    #[test]
+    fn with_no_apps_known_yet_the_default_or_the_stored_one_is_offered() {
+        let (choices, selected) = app_choices(None, &[]);
+        assert_eq!(selected, 0);
+        assert_eq!(choices[0].value, None);
+        assert_eq!(choices.len(), 1);
+
+        let (choices, selected) = app_choices(Some("app:Notepad"), &[]);
+        assert_eq!(choices[selected].value.as_deref(), Some("app:Notepad"));
+        assert_eq!(choices[selected].label, "Notepad");
     }
 
     /// Before the browser list arrives, a saved one must still be selected.

@@ -1000,7 +1000,6 @@ fn row_item(path: &Path, name: String, is_dir: bool, home: Option<&Path>) -> Ite
                 .map(|parent| for_display(parent, home))
                 .unwrap_or_default(),
         ),
-        title: name,
         icon: None,
         // Already matched, by the index: nothing is matched against
         // these again.
@@ -1009,8 +1008,13 @@ fn row_item(path: &Path, name: String, is_dir: bool, home: Option<&Path>) -> Ite
             // Through the shell, which knows the default application for
             // an extension and opens a folder in Explorer.
             Action::Launch(LaunchTarget::ShellExecute(shown.clone())),
-            Action::CopyToClipboard(shown),
+            Action::CopyToClipboard(shown.clone()),
+            Action::SaveAsQuicklink {
+                name: name.clone(),
+                link: shown,
+            },
         ],
+        title: name,
         kind,
     }
 }
@@ -1083,7 +1087,11 @@ mod tests {
             item.actions,
             [
                 Action::Launch(LaunchTarget::ShellExecute(real.clone())),
-                Action::CopyToClipboard(real),
+                Action::CopyToClipboard(real.clone()),
+                Action::SaveAsQuicklink {
+                    name: "Invoice-2024.pdf".to_string(),
+                    link: real,
+                },
             ]
         );
         assert_eq!(hits[0].highlights, [0, 1, 2]);

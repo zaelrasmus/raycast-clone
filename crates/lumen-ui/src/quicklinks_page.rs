@@ -27,6 +27,7 @@
 //! back out, then closes the window.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
@@ -36,6 +37,7 @@ use gpui::{
 use lumen_core::layout::settings as metrics;
 use lumen_core::providers::quicklinks::{self as quicklinks, Entry, favicon, store};
 use lumen_core::theme::Colors;
+use lumen_platform::Platform;
 
 use crate::quicklink_form::{FormEvent, QuicklinkForm};
 use crate::settings::text_button;
@@ -110,6 +112,8 @@ pub struct QuicklinksPage {
     /// Where focus goes when the page has nothing to hold it.
     host_focus: FocusHandle,
     browsers: Vec<String>,
+    /// For the form: the apps a file or folder link can open with.
+    platform: Arc<dyn Platform>,
     status: Option<SharedString>,
     /// Why the last move was refused. Above "Unsaved changes", which is the
     /// reason for it, and gone once the form is saved, undone or left.
@@ -132,9 +136,11 @@ impl QuicklinksPage {
         favicons: PathBuf,
         colors: Colors,
         host_focus: FocusHandle,
+        platform: Arc<dyn Platform>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            platform,
             path,
             icons: Vec::new(),
             favicons,
@@ -229,8 +235,9 @@ impl QuicklinksPage {
         let path = self.path.clone();
         let colors = self.colors.clone();
         let browsers = self.browsers.clone();
+        let platform = self.platform.clone();
         let form = cx.new(|cx| {
-            let mut form = QuicklinkForm::new(path, entry, colors, cx);
+            let mut form = QuicklinkForm::new(path, entry, colors, platform, cx);
             form.offer_settings_rows(cx);
             form.set_browsers(browsers, cx);
             form

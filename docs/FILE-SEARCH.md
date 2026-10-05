@@ -1124,10 +1124,19 @@ list on the left and a pane on the right, laid out as *Clipboard History*
 | Show in Explorer | Selects the item in its folder |
 | Copy Path | Today's only secondary action |
 | Open With... | The system's chooser |
+| Save as Quicklink | The quicklink form, with the name and path filled in |
 | Exclude from Index | Writes `.lumenignore` (above) |
 | Rebuild Index | View only |
 
-Later, not in this phase: *Save as Quicklink*, sorting a folder. A typed
+*Save as Quicklink* opens the quicklink form in place of the list. Its
+*Open with* lists the apps Windows registers for the file -- the default
+first, and selected -- read off the UI thread when the form opens and again
+whenever the link field changes to another path; a folder lists File
+Explorer. The choice is stored as `app:` and the app's id; a stored app no
+longer registered is kept, marked *(not found)*. A file or folder quicklink
+offers no private window and no browser choice.
+
+Later, not in this phase: sorting a folder. A typed
 path lists its folder: see "Typed paths" below.
 
 ### Typed paths (step 6d)
@@ -1492,7 +1501,7 @@ design changes before anything is built on it.
   content is the system's index, not Lumen's.
 - **A search sensitivity setting** -- see "How a query is answered".
 - **Content in root search** -- see "Three levels".
-- Sorting a folder, *Save as Quicklink* on a file.
+- Sorting a folder.
 
 ## Open questions, answered by measurement
 

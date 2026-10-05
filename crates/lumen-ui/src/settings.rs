@@ -315,7 +315,8 @@ impl Settings {
         let quicklinks = {
             let colors = theme.colors.clone();
             let host = focus_handle.clone();
-            cx.new(|cx| QuicklinksPage::new(quicklinks_file, favicons, colors, host, cx))
+            let platform = platform.clone();
+            cx.new(|cx| QuicklinksPage::new(quicklinks_file, favicons, colors, host, platform, cx))
         };
         cx.subscribe(&quicklinks, |_, _, event: &PageEvent, cx| match event {
             PageEvent::IconsRefreshed => cx.emit(SettingsEvent::QuicklinkIconsChanged),

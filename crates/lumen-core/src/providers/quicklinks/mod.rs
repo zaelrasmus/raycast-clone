@@ -218,8 +218,12 @@ impl Quicklink {
             actions.push(Action::ChooseBrowser(self.open("")));
         } else {
             actions.push(self.action(""));
-            actions.push(self.private_open(""));
-            actions.push(Action::ChooseBrowser(self.open("")));
+            // A file or folder is opened by an application, never a
+            // browser: no private window and no browser to choose.
+            if !is_path_link(&self.source) {
+                actions.push(self.private_open(""));
+                actions.push(Action::ChooseBrowser(self.open("")));
+            }
             // Copying needs the rendered link, which a clipboard placeholder
             // would only have once opened.
             if !self.link.reads_clipboard() {
@@ -411,7 +415,7 @@ pub fn is_path_link(link: &str) -> bool {
 }
 
 /// The path a path link names: itself, or a `file:` URL decoded.
-fn link_path(link: &str) -> PathBuf {
+pub fn link_path(link: &str) -> PathBuf {
     let Some(rest) = link
         .get(..5)
         .filter(|scheme| scheme.eq_ignore_ascii_case("file:"))
@@ -915,6 +919,33 @@ mod tests {
         // further down.
         assert!(matches!(&item.actions[1], Action::OpenLink(open) if open.private));
         assert!(matches!(&item.actions[2], Action::OpenLink(open) if !open.private));
+    }
+
+    /// A file or folder is opened by an application, not a browser: its row
+    /// offers neither a private window nor a browser choice.
+    #[test]
+    fn a_path_link_offers_no_browser_actions() {
+        let notes = r"D:\Dev\notes.md";
+        let link = Quicklink::from_entry(Entry {
+            open_with: Some("app:C:\\Code.exe".into()),
+            ..entry("Notes", notes)
+        })
+        .unwrap();
+        let provider = QuicklinkProvider::new(vec![link]);
+
+        let row = &provider.catalogue()[0];
+        assert_eq!(
+            row.actions,
+            [
+                Action::OpenLink(OpenLink {
+                    link: Template::parse(notes).unwrap(),
+                    query: String::new(),
+                    browser: Some("app:C:\\Code.exe".into()),
+                    private: false,
+                }),
+                Action::CopyToClipboard(notes.into()),
+            ]
+        );
     }
 
     /// Ctrl+Enter runs the second action: for every link row, the private open.
