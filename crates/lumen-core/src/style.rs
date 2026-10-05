@@ -215,6 +215,20 @@ impl Metrics {
         })
     }
 
+    /// The space under a list's last row: at least the row's side inset, so
+    /// the selected row sits in the same frame on every side, and never less
+    /// than the list padding, so a style with a roomier list keeps it. The
+    /// space above the first row is the list padding alone.
+    pub fn list_padding_bottom(&self) -> f32 {
+        self.list_padding.max(self.row_inset)
+    }
+
+    /// A list's padding above and below its rows together: what every height
+    /// adds to the rows, so the window is exactly what is drawn (I-10).
+    pub fn list_padding_vertical(&self) -> f32 {
+        self.list_padding + self.list_padding_bottom()
+    }
+
     /// The rows the card takes, whole.
     pub fn card_rows(&self) -> usize {
         self.card_rows.round() as usize
@@ -902,6 +916,20 @@ mod tests {
         let style = Style::resolve(&file(&[("row.height", 400.0), ("gutter", -3.0)], &[]));
         assert_eq!(style.metrics.row_height, 72.0);
         assert_eq!(style.metrics.gutter, 8.0);
+    }
+
+    /// Under the last row there is at least the row's side inset, so the
+    /// selected row sits in the same frame on every side; a larger list
+    /// padding is kept. The top stays the list padding.
+    #[test]
+    fn the_list_ends_at_least_a_row_inset_below_its_last_row() {
+        let carbon = Style::resolve(&file(&[("list.padding", 2.0), ("row.inset", 7.0)], &[]));
+        assert_eq!(carbon.metrics.list_padding_bottom(), 7.0);
+        assert_eq!(carbon.metrics.list_padding_vertical(), 2.0 + 7.0);
+
+        let roomy = Style::resolve(&file(&[("list.padding", 10.0), ("row.inset", 7.0)], &[]));
+        assert_eq!(roomy.metrics.list_padding_bottom(), 10.0);
+        assert_eq!(roomy.metrics.list_padding_vertical(), 20.0);
     }
 
     /// Tracking is a token like the others: base zero, set from a style, and

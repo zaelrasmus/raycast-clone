@@ -259,29 +259,33 @@ pub fn render_list(
     let row_icons = icons.clone();
     let geometry = Geometry::of(theme);
 
-    let list = div().h(height).py(geometry.list_padding()).child(
-        list(state.clone(), move |index, _window, cx| {
-            match rows.get(index) {
-                Some(Row::Section(title, subtitle)) => {
-                    render_section(title.clone(), subtitle.clone(), &colors, &geometry)
-                }
-                Some(Row::Item(item)) => match items.get(*item) {
-                    Some(entry) => render_item(
-                        entry,
-                        *item == selected,
-                        &colors,
-                        &geometry,
-                        &row_images,
-                        &row_icons,
-                        cx,
-                    ),
+    let list = div()
+        .h(height)
+        .pt(geometry.list_padding())
+        .pb(geometry.list_padding_bottom())
+        .child(
+            list(state.clone(), move |index, _window, cx| {
+                match rows.get(index) {
+                    Some(Row::Section(title, subtitle)) => {
+                        render_section(title.clone(), subtitle.clone(), &colors, &geometry)
+                    }
+                    Some(Row::Item(item)) => match items.get(*item) {
+                        Some(entry) => render_item(
+                            entry,
+                            *item == selected,
+                            &colors,
+                            &geometry,
+                            &row_images,
+                            &row_icons,
+                            cx,
+                        ),
+                        None => div().into_any_element(),
+                    },
                     None => div().into_any_element(),
-                },
-                None => div().into_any_element(),
-            }
-        })
-        .size_full(),
-    );
+                }
+            })
+            .size_full(),
+        );
 
     let Some(detail) = detail else {
         return list.into_any_element();

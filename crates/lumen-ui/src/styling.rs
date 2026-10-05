@@ -134,6 +134,16 @@ impl Geometry {
         px(self.metrics.list_padding)
     }
 
+    /// Under a list's last row: see [`Metrics::list_padding_bottom`].
+    pub fn list_padding_bottom(&self) -> Pixels {
+        px(self.metrics.list_padding_bottom())
+    }
+
+    /// Above and below a list's rows together, as its height adds them.
+    pub fn list_padding_vertical(&self) -> Pixels {
+        px(self.metrics.list_padding_vertical())
+    }
+
     pub fn row_height(&self) -> Pixels {
         px(self.metrics.row_height)
     }

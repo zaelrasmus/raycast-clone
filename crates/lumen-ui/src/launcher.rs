@@ -2430,7 +2430,7 @@ impl Launcher {
             Mode::Root if self.hits().is_empty() => self.config.window_height(metrics, 0),
             Mode::Root => {
                 metrics.search_height
-                    + metrics.list_padding * 2.0
+                    + metrics.list_padding_vertical()
                     + self.card_height()
                     + self.rows_height()
                     + metrics.footer_height
@@ -2441,7 +2441,7 @@ impl Launcher {
             // nothing (7.48).
             Mode::View(state) => {
                 metrics.search_height
-                    + metrics.list_padding * 2.0
+                    + metrics.list_padding_vertical()
                     + self.view_rows_height(state)
                     + metrics.footer_height
             }
@@ -2733,7 +2733,7 @@ impl Launcher {
     pub fn anchor_height(&self) -> f32 {
         let metrics = self.metrics();
         metrics.search_height
-            + metrics.list_padding * 2.0
+            + metrics.list_padding_vertical()
             + self.config.full_list_height(metrics)
             + metrics.footer_height
     }
@@ -5063,7 +5063,9 @@ impl Launcher {
     /// The height of the region the list occupies.
     fn results_height(&self) -> gpui::Pixels {
         let geometry = self.geometry();
-        gpui::px(self.card_height()) + gpui::px(self.rows_height()) + geometry.list_padding() * 2.0
+        gpui::px(self.card_height())
+            + gpui::px(self.rows_height())
+            + geometry.list_padding_vertical()
     }
 
     /// Draw the open view (F4, step 2).
@@ -5124,7 +5126,8 @@ impl Launcher {
         let entity = cx.entity();
 
         div()
-            .py(self.geometry().list_padding())
+            .pt(self.geometry().list_padding())
+            .pb(self.geometry().list_padding_bottom())
             .h(self.results_height())
             .flex()
             .flex_col()

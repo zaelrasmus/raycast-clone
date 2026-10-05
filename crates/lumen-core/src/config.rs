@@ -669,7 +669,7 @@ impl Config {
         }
 
         metrics.search_height
-            + metrics.list_padding * 2.0
+            + metrics.list_padding_vertical()
             + rows as f32 * metrics.row_height
             + metrics.footer_height
     }
