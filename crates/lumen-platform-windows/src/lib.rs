@@ -155,6 +155,10 @@ impl Platform for WindowsPlatform {
         Ok(foreground::of(HWND(window.0 as *mut std::ffi::c_void)))
     }
 
+    fn foreground_window(&self) -> Result<Option<FocusOwner>> {
+        Ok(window::foreground())
+    }
+
     fn start_gesture_listener(
         &self,
         hotkey: Hotkey,

@@ -281,6 +281,7 @@ the close of F15.
 | Per-frame ranking | p95 < 8 ms | 1.06 ms at 5 000 entries | ✅ |
 | Per-frame drawing while typing | p95 < 8 ms | **2.0 ms** (p50 1.5 ms, ~525 frames) | ✅ |
 | Gesture → first frame | p50 < 20 ms, p95 < 40 ms | **8 ms** (p95 19 ms, 15 summonses) | ✅ |
+| Command hotkey → action done | p50 < 20 ms, p95 < 40 ms | **3 ms** (p95 5 ms, 15 presses of `window:center`, `scripts/measure-hotkey.ps1`, F17) | ✅ |
 | Idle resident memory | < 100 MB | **67–75 MB** working set, window hidden | ✅ |
 | Idle CPU | < 0.02 % | **0.002–0.009 %** over 60 s, one to four 15.6 ms ticks | ✅ |
 | Cold start to usable | < 400 ms | **357–377 ms** from `main` to summonable | ✅ |
@@ -597,6 +598,28 @@ action panel, or `Ctrl+Shift+F` on the selected row; `Ctrl+Alt+Up` and
 `Ctrl+Alt+Down` move it. Favourites are kept in
 `%APPDATA%\Lumen\data\favorites.json`, in your order; one whose application
 is uninstalled keeps its place, and comes back there if it is reinstalled.
+
+### Hotkeys for any command
+
+Any application or command can have a global hotkey, kept in
+`%APPDATA%\Lumen\config\shortcuts.json` by its id. Save it and the hotkeys
+are registered again; a hotkey that does not parse, or that another
+application holds, is logged and the rest still work.
+
+```json
+{
+  "commands": {
+    "window:left-half": { "hotkey": "Ctrl+Alt+Left", "alias": "lh" },
+    "window:center": { "hotkey": "Ctrl+Alt+C" }
+  }
+}
+```
+
+A hotkey runs the command's first action without opening the launcher: a
+window command arranges the window in front, an application opens. A
+command that needs the launcher -- a view, a form -- opens it for now.
+`alias` is stored but not yet searched. An id whose application is
+uninstalled keeps its hotkey, which works again if it is reinstalled.
 
 ### Quicklinks
 

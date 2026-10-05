@@ -4137,6 +4137,66 @@ impl Launcher {
         .detach();
     }
 
+    /// What a command hotkey bound to `id` should do (F17): the item's
+    /// primary action, settled the way `run_action` settles it, with the
+    /// launcher hidden throughout. `None` when no item has that id now.
+    ///
+    /// The launcher answers because it holds the index and the usage history:
+    /// a use is recorded here, by the same path `Enter` takes, and only what
+    /// needs the daemon -- a window, a builtin, a timer, the platform -- is
+    /// handed back.
+    pub fn hotkeyed(&mut self, id: &str, cx: &mut Context<Self>) -> Option<Hotkeyed> {
+        let item = self.root.item_by_id(id)?;
+        let action = item.primary();
+        let kind = item.kind;
+        if let Some(what) = self
+            .focus
+            .as_ref()
+            .and_then(|guard| guard.blocks(item, &action))
+        {
+            let action = match action {
+                Action::OpenLink(open) => {
+                    Action::OpenLink(open.or_browser(self.config.preferred_browser.as_deref()))
+                }
+                action => action,
+            };
+            return Some(Hotkeyed::Blocked { what, action });
+        }
+
+        let hotkeyed = match action {
+            Action::ArrangeWindow(layout) => Hotkeyed::Arrange(layout),
+            Action::Builtin(lumen_core::Builtin::RebuildFileIndex) => {
+                self.rebuild_files(cx);
+                Hotkeyed::Done
+            }
+            Action::Builtin(command) => Hotkeyed::Builtin(command),
+            Action::Timer(command) => Hotkeyed::Timer(command),
+            // Nothing opened yet, so nothing is recorded, as with `Enter`.
+            Action::AskArgument(_) | Action::ChooseBrowser(_) | Action::Favorite(_) => {
+                return Some(Hotkeyed::InLauncher(action));
+            }
+            Action::OpenView(_)
+            | Action::SaveAsQuicklink { .. }
+            | Action::CreateQuicklink
+            | Action::CreateSnippet
+            | Action::OpenTimerForm { .. } => Hotkeyed::InLauncher(action),
+            Action::OpenLink(open) => Hotkeyed::Perform {
+                action: Action::OpenLink(open.or_browser(self.config.preferred_browser.as_deref())),
+                kind,
+            },
+            action => Hotkeyed::Perform { action, kind },
+        };
+
+        let private = matches!(
+            &hotkeyed,
+            Hotkeyed::Perform { action: Action::OpenLink(open), .. } if open.private
+        );
+        if !private {
+            self.record_use(id, cx);
+        }
+        Some(hotkeyed)
+    }
+
     /// Count `id` as used, and keep the history: on disk, and in the file
     /// index's boosts when it is a file or a folder.
     fn record_use(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -4628,6 +4688,33 @@ impl Launcher {
 
 /// What the launcher asks the window to do.
 ///
+/// What the daemon does for a command hotkey (F17), from
+/// [`Launcher::hotkeyed`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Hotkeyed {
+    /// Arrange the window in front now: the launcher is not up, so there is
+    /// no captured handle to prefer (7.15 is about the launcher's own race).
+    Arrange(lumen_platform::WindowLayout),
+    Builtin(lumen_core::Builtin),
+    Timer(lumen_core::timers::Command),
+    /// Carry out with the platform, off the UI thread. `kind` names the row
+    /// in a failure notice.
+    Perform {
+        action: Action,
+        kind: lumen_core::Kind,
+    },
+    /// Needs the launcher: a view, a form, a question. Shown for now; A7
+    /// opens it straight into the command.
+    InLauncher(Action),
+    /// Focus refused it (F8), as [`LauncherEvent::Blocked`].
+    Blocked {
+        what: String,
+        action: Action,
+    },
+    /// Done in the launcher already.
+    Done,
+}
+
 /// An event rather than a direct call because showing and hiding is the
 /// platform's business (I-4), and the view must not reach across that boundary.
 #[derive(Debug, Clone, PartialEq)]

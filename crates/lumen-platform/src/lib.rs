@@ -451,6 +451,19 @@ pub trait Platform: Send + Sync {
     /// `Ctrl+V`, some terminals only on `Ctrl+Shift+V`.
     fn window_application(&self, window: FocusOwner) -> Result<Option<ForegroundApp>>;
 
+    /// The window in front now, for a command hotkey's arrangement (F17).
+    ///
+    /// The launcher's own arrangement uses the handle `show_window` captured
+    /// instead (7.15). A hotkey never shows the launcher, so the window in
+    /// front when the key is pressed is the one the user is looking at, and
+    /// there is no hand-back to race. The same handle `show_window` would
+    /// have captured: the frame, not a packaged application's content.
+    ///
+    /// `None` when nothing is in front, when it is one of Lumen's own
+    /// windows, or when it is the desktop or the taskbar: none of those is a
+    /// window to arrange.
+    fn foreground_window(&self) -> Result<Option<FocusOwner>>;
+
     /// Begin delivering global gesture events to `sink`: `hotkey` as
     /// [`GestureEvent::Invoke`] and its hold, and `timers`, when there is one,
     /// as [`GestureEvent::Timers`] (F8).

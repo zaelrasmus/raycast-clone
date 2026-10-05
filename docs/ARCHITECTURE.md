@@ -124,6 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms (7.54). Aliases in search, a *Shortcuts* settings page and the window-management presets are next |
 
 ### F4 build order is not optional
 
@@ -3048,7 +3049,7 @@ cannot be noisy, and there is no pressure on it yet.
 
 | Budget | Was | Now | Measured |
 | --- | --- | --- | --- |
-| Global command hotkey → action done | -- | p50 < 20, p95 < 40 ms | not yet: written before F17's hotkeys |
+| Global command hotkey → action done | -- | p50 < 20, p95 < 40 ms | p50 3 ms, p95 5 ms (F17 A4, 15 presses of *Centre Window*) |
 
 F17 adds a seventh budget, set before the feature exists so that it constrains
 rather than justifies. It is timed from WM_HOTKEY's arrival until the bound
@@ -3491,6 +3492,35 @@ On Linux a command hotkey becomes a compositor bind running
 `lumen run <command>`, written by F5. Until then the method answers
 `Unsupported` for every chord rather than `todo!()`, because the daemon calls
 it on every load.
+
+### 7.54 A command hotkey runs its command without the launcher
+
+`shortcuts.json` binds an item id to a chord. The daemon registers the file's
+chords as one set (7.53), keeps which id each slot runs, and does both again
+whenever the file is saved. A press resolves the slot to an id and the id to
+the item in the launcher's index, then runs the item's first action with the
+launcher left hidden.
+
+The launcher resolves it because it already holds the index and the usage
+history. A use is recorded there, by the code `Enter` uses, so a command run
+by its hotkey ranks as one run from the list, and frecency is written in one
+place. What comes back is only what needs the daemon: a builtin, a timer, a
+platform call on a background thread, or an arrangement.
+
+An arrangement is the one place this differs from 7.15. From the launcher,
+the target is the handle captured before it appeared, because the hand-back
+after hiding is a race. A hotkey shows nothing and hands nothing back, so the
+window in front when the key is pressed is the one the user is looking at:
+`Platform::foreground_window` reads it then, and answers nothing for Lumen's
+own windows, the desktop and the taskbar.
+
+A command that needs the launcher -- a view, a form, a question -- shows the
+launcher for now. Opening it straight into that command is A7's.
+
+An id whose item is gone keeps its binding, for the favourites' reason: an
+update that briefly removes a shortcut must not cost the user their hotkey.
+The chord stays registered and logs that it ran nothing, and the command
+works again the moment it is back.
 
 ## 8. Risk register
 

@@ -17,14 +17,17 @@ use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOPMOST,
-    IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetShellWindow, GetWindowLongPtrW,
+    GetWindowThreadProcessId, HWND_TOPMOST, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT,
 };
 use windows::core::{BOOL, w};
 
@@ -194,6 +197,35 @@ unsafe fn take_foreground(target: HWND) {
             let _ = AttachThreadInput(this_thread, foreground_thread, false);
         }
     }
+}
+
+/// The window in front now, as [`show`] captures it, unless it is not one to
+/// arrange: Lumen's own -- any window of this process, the launcher, the
+/// settings or a dialog of theirs -- or the shell's desktop or taskbar.
+pub fn foreground() -> Option<FocusOwner> {
+    let hwnd = non_null(unsafe { GetForegroundWindow() })?;
+
+    let mut process = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
+    if process == unsafe { GetCurrentProcessId() } {
+        return None;
+    }
+
+    // The desktop is `Progman`, or the `WorkerW` that hosts the wallpaper
+    // once the desktop has been shown; moving either moves the icons.
+    let mut name = [0u16; 32];
+    let length = unsafe { GetClassNameW(hwnd, &mut name) };
+    let class = String::from_utf16_lossy(&name[..length.max(0) as usize]);
+    if hwnd == unsafe { GetShellWindow() }
+        || matches!(
+            class.as_str(),
+            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+        )
+    {
+        return None;
+    }
+
+    Some(FocusOwner(hwnd.0 as u64))
 }
 
 fn non_null(hwnd: HWND) -> Option<HWND> {

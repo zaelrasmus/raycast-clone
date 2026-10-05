@@ -67,3 +67,17 @@ pub fn report_first_frame(window: &Window, since: Instant) {
         );
     });
 }
+
+/// Report a command hotkey's command as done (F17), with `pressed` taken when
+/// `WM_HOTKEY` arrived.
+///
+/// Called once the command has actually run -- for an arrangement, after the
+/// platform call returned; for a launch, after the platform started it --
+/// not when it was merely handed off. Like the summons, it excludes the time
+/// between the key and the message, which nothing in this process can see.
+pub fn report_hotkey_done(pressed: Instant) {
+    log::info!(
+        "hotkey to action done: {:.0} ms (budget: p50 20 ms, p95 40 ms)",
+        pressed.elapsed().as_secs_f64() * 1000.0
+    );
+}

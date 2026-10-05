@@ -93,6 +93,12 @@ impl Paths {
         self.config_dir.join("quicklinks.json")
     }
 
+    /// Global hotkeys and aliases for any command, by item id (F17).
+    /// Configuration, beside `config.json`: people edit it by hand.
+    pub fn shortcuts_file(&self) -> PathBuf {
+        self.config_dir.join("shortcuts.json")
+    }
+
     pub fn theme_file(&self, name: &str) -> PathBuf {
         self.themes_dir().join(format!("{name}.json"))
     }

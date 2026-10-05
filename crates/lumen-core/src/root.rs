@@ -1016,6 +1016,17 @@ impl RootSearch {
         &self.hits
     }
 
+    /// The item in the index with this id, whatever the last query was: what
+    /// a command hotkey runs (F17). A linear pass, once per press, over a
+    /// few thousand candidates -- cheaper than a second map kept in step with
+    /// every re-index.
+    pub fn item_by_id(&self, id: &str) -> Option<&Item> {
+        self.index
+            .iter()
+            .map(|candidate| &candidate.item)
+            .find(|item| item.id == id)
+    }
+
     pub fn item(&self, hit: &Hit) -> &Item {
         match hit.source {
             Source::Indexed(index) => &self.index[index].item,
@@ -1264,6 +1275,19 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// A command hotkey names its item by id (F17): found in the index,
+    /// whatever the last query was, and nothing for an id that is gone.
+    #[test]
+    fn an_item_is_found_by_its_id() {
+        let mut root = mixed();
+        root.rank("slack");
+        assert_eq!(
+            root.item_by_id("Code").map(|item| item.title.as_str()),
+            Some("Code")
+        );
+        assert!(root.item_by_id("Gone").is_none());
     }
 
     /// Raycast's arrangement, and no favourites yet: their section is not

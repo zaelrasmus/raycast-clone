@@ -213,6 +213,13 @@ impl Platform for LinuxPlatform {
         todo!("F5: Hyprland's `clients` over its IPC socket, by window address")
     }
 
+    fn foreground_window(&self) -> Result<Option<FocusOwner>> {
+        // Not a `todo!()`: a command hotkey may reach it. On Hyprland an
+        // arrangement bind acts on the active window itself (F5), so there
+        // is no handle to hand back; until then, nothing to arrange.
+        Ok(None)
+    }
+
     fn format_date(
         &self,
         _when: &LocalTime,

@@ -38,6 +38,7 @@ pub mod search;
 pub mod section;
 pub mod sheets;
 pub mod shipped;
+pub mod shortcuts;
 pub mod snippets;
 pub mod style;
 pub mod theme;

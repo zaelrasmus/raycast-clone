@@ -35,6 +35,7 @@ use lumen_platform::{
     ClipboardSink, FocusOwner, GestureEvent, GestureSink, HoldPhase, MonitorInfo, Platform, Rect,
     WindowRole,
 };
+use lumen_ui::launcher::Hotkeyed;
 use lumen_ui::{Launcher, LauncherEvent, Overlay, OverlayEvent, Settings, SettingsEvent, keymap};
 
 mod calculator;
@@ -430,8 +431,12 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         config: live,
         reload_theme,
         timers,
+        hotkeys: Rc::new(RefCell::new(Vec::new())),
     };
 
+    // After the gesture listener: command hotkeys are registered on its
+    // thread (7.53).
+    watch_shortcuts(cx, &platform, &surfaces);
     watch_sheets(cx, &surfaces);
     watch_quicklinks(cx, &surfaces);
     watch_files(cx, &surfaces);
@@ -540,6 +545,10 @@ struct Surfaces {
     reload_theme: mpsc::UnboundedSender<()>,
     /// The running timers (F8).
     timers: timers::Timers,
+    /// The item id each command hotkey slot runs (F17): entry `i` is the
+    /// command registered in slot `i`. Replaced whole with every reload of
+    /// `shortcuts.json`, as the registrations are (7.53).
+    hotkeys: Rc<RefCell<Vec<String>>>,
 }
 
 impl Surfaces {
@@ -663,6 +672,84 @@ fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
         }
     })
     .detach();
+}
+
+/// Register the command hotkeys in `shortcuts.json`, and again whenever it is
+/// saved (F17).
+///
+/// The whole set every time, never a diff (7.53). Loading and registering
+/// run on a background thread: registering waits for the listener thread's
+/// answer, and the UI thread waits on nothing. The slot table is replaced on
+/// the UI thread once the answer is in, so a press is always resolved
+/// against the table `handle` can see. Reloads run one after another in this
+/// one task, so two saves in a row cannot register out of order.
+fn watch_shortcuts(cx: &mut App, platform: &Arc<dyn Platform>, surfaces: &Surfaces) {
+    use lumen_core::watcher::FileWatcher;
+
+    let path = surfaces.paths.shortcuts_file();
+    let (sink, mut changes) = change_channel();
+    // Without a watch, the hotkeys are still registered once; the closed
+    // channel then ends the loop.
+    let watcher = FileWatcher::start(&path, sink)
+        .inspect_err(|error| {
+            log::warn!("command hotkeys will need a restart to change: {error:#}");
+        })
+        .ok();
+
+    let platform = platform.clone();
+    let table = surfaces.hotkeys.clone();
+    cx.spawn(async move |cx| {
+        let _watcher = watcher;
+        loop {
+            apply_shortcuts(&platform, &path, &table, cx).await;
+            if !next_change(&mut changes, cx).await {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Load `path` and register its hotkeys as the whole set. A chord that
+/// cannot be bound is reported beside its command and costs nothing else;
+/// neither does a set that could not be registered at all.
+async fn apply_shortcuts(
+    platform: &Arc<dyn Platform>,
+    path: &std::path::Path,
+    table: &Rc<RefCell<Vec<String>>>,
+    cx: &gpui::AsyncApp,
+) {
+    let platform = platform.clone();
+    let file = path.to_path_buf();
+    let (ids, chords, registered) = cx
+        .background_spawn(async move {
+            let shortcuts = lumen_core::shortcuts::Shortcuts::load(&file);
+            let (ids, chords): (Vec<String>, Vec<lumen_platform::Chord>) = shortcuts
+                .hotkeys()
+                .into_iter()
+                .map(|(id, chord)| (id.to_string(), chord.clone()))
+                .unzip();
+            let registered = platform.set_command_hotkeys(&chords);
+            (ids, chords, registered)
+        })
+        .await;
+
+    match registered {
+        Ok(results) => {
+            let mut bound = 0;
+            for ((id, chord), result) in ids.iter().zip(&chords).zip(results) {
+                match result {
+                    Ok(()) => bound += 1,
+                    Err(error) => log::warn!("the hotkey {chord} for {id:?}: {error}"),
+                }
+            }
+            log::info!("registered {bound} of {} command hotkeys", chords.len());
+        }
+        // Kept as the table all the same: a set that timed out may still be
+        // applied by the listener when it catches up.
+        Err(error) => log::warn!("could not register the command hotkeys: {error:#}"),
+    }
+    *table.borrow_mut() = ids;
 }
 
 /// Show the settings window, creating it the first time.
@@ -1715,12 +1802,106 @@ fn handle(
             Ok(())
         }
         Message::Ping => Ok(()),
-        Message::CommandHotkey { slot, .. } => {
-            // Running the bound command is A4's.
-            log::debug!("command hotkey in slot {slot}");
-            Ok(())
+        Message::CommandHotkey { slot, pressed } => {
+            run_hotkey(slot, pressed, platform, config, shell, surfaces, cx)
         }
     }
+}
+
+/// Run the command a hotkey is bound to, without the launcher (F17, 7.54).
+///
+/// The launcher resolves the id: it holds the index and the usage history,
+/// and records the use by the path `Enter` takes. What comes back is what
+/// only the daemon can do. Nothing here waits on an extension (I-3): an
+/// extension's command needs its view, and goes to the launcher.
+fn run_hotkey(
+    slot: u32,
+    pressed: std::time::Instant,
+    platform: &Arc<dyn Platform>,
+    config: &Config,
+    shell: &Rc<RefCell<Shell>>,
+    surfaces: &Surfaces,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
+    let Some(id) = surfaces.hotkeys.borrow().get(slot as usize).cloned() else {
+        log::warn!("a command hotkey in slot {slot}, which is bound to nothing");
+        return Ok(());
+    };
+    let resolved = surfaces
+        .launcher
+        .update(cx, |launcher, _window, cx| launcher.hotkeyed(&id, cx))
+        .context("reaching the launcher to resolve a command hotkey")?;
+    let Some(hotkeyed) = resolved else {
+        // Kept in the file, like a favourite whose item is gone (7.54).
+        log::warn!("the hotkey for {id:?} runs nothing: no command has that id now");
+        return Ok(());
+    };
+
+    match hotkeyed {
+        Hotkeyed::Arrange(layout) => {
+            // The launcher up means Lumen is in front, and arranging Lumen
+            // is not what the key is for.
+            if shell.borrow().visible {
+                log::debug!("not arranging: the launcher is in front");
+                return Ok(());
+            }
+            // The window in front now, not `restore_to`: with the launcher
+            // hidden there is no captured handle to prefer (7.54).
+            let Some(target) = platform.foreground_window()? else {
+                log::debug!("no window to arrange");
+                return Ok(());
+            };
+            platform.arrange_window(target, layout)?;
+            timing::report_hotkey_done(pressed);
+        }
+        Hotkeyed::Builtin(command) => {
+            let message = match command {
+                Builtin::OpenSettings => Message::Settings,
+                Builtin::ReloadSheets => Message::ReloadSheets,
+                Builtin::Quit => Message::Quit,
+                // Answered as `Done` by the launcher, which holds the index.
+                Builtin::RebuildFileIndex => return Ok(()),
+            };
+            handle(message, platform, shell, surfaces, cx)?;
+            timing::report_hotkey_done(pressed);
+        }
+        Hotkeyed::Timer(command) => {
+            surfaces.timers.command(command, cx);
+            timing::report_hotkey_done(pressed);
+        }
+        Hotkeyed::Perform { action, kind } => {
+            let platform = platform.clone();
+            cx.background_spawn(async move {
+                if let Err(error) = action.perform(platform.as_ref()) {
+                    log::error!("could not run {action:?}: {error:#}");
+                    let (title, body) = lumen_core::item::failure_notice_for(kind, &action, &error);
+                    if let Err(error) = platform.notify(&title, &body) {
+                        log::warn!("could not show the failure either: {error:#}");
+                    }
+                    return;
+                }
+                timing::report_hotkey_done(pressed);
+            })
+            .detach();
+        }
+        Hotkeyed::InLauncher(action) => {
+            log::info!(
+                "{id:?} needs the launcher ({}); showing it -- A7 opens it straight into the command",
+                action.verb()
+            );
+            if !shell.borrow().visible {
+                show(platform, config, shell, &surfaces.launcher, cx)?;
+            }
+        }
+        Hotkeyed::Blocked { what, action } => {
+            if !shell.borrow().visible {
+                show(platform, config, shell, &surfaces.launcher, cx)?;
+            }
+            surfaces.timers.open_blocked(what, action, cx);
+        }
+        Hotkeyed::Done => timing::report_hotkey_done(pressed),
+    }
+    Ok(())
 }
 
 /// Raise the shortcut sheet for whatever is in front.
