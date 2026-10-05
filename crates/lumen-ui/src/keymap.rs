@@ -38,6 +38,7 @@ use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, To
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
 use crate::select::{CloseSelect, ConfirmSelect, SelectDown, SelectUp, ToggleSelect};
 use crate::settings::{CloseSettings, NextPage, PreviousPage, SaveSheet};
+use crate::shortcuts_page::{NextShortcut, PreviousShortcut, RecordHotkey};
 use crate::text_area;
 use crate::text_field::{
     Copy, Cut, DeleteBackward, DeleteForward, DeleteWordBackward, DeleteWordForward, MoveLeft,
@@ -95,6 +96,9 @@ const SELECT_CONTEXT: &str = crate::select::CONTEXT;
 
 /// A checkbox inside a form.
 const TOGGLE_CONTEXT: &str = crate::quicklink_form::TOGGLE_CONTEXT;
+
+/// The Shortcuts page's list of commands (F17).
+const SHORTCUT_LIST_CONTEXT: &str = crate::shortcuts_page::LIST_CONTEXT;
 
 /// The hotkey recorder on the Shortcuts page (F17).
 const RECORDER_CONTEXT: &str = crate::hotkey_recorder::CONTEXT;
@@ -459,6 +463,7 @@ fn bind_other_contexts(cx: &mut App) {
         KeyBinding::new("enter", EditPreset, Some(PRESET_LIST_CONTEXT)),
         KeyBinding::new("tab", EditPreset, Some(PRESET_LIST_CONTEXT)),
     ]);
+    cx.bind_keys(shortcut_list_bindings());
 
     // A dropdown. Closed, only Space is its own; the rest fall through to the
     // form (see `select`), so Up, Down, Enter and Escape keep their meaning.
@@ -586,10 +591,22 @@ fn settings_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// The hotkey recorder (F17, 7.56): Escape, Enter and Backspace steer it,
-/// and every other chord the settings window binds is unbound in it, so
-/// the chord is recorded instead of run. Not on the sheet: the field says
-/// them while it records.
+/// The Shortcuts page (F17): Up and Down choose a row, from the search
+/// field, and Enter records its hotkey.
+fn shortcut_list_bindings() -> Vec<KeyBinding> {
+    let list = Some(SHORTCUT_LIST_CONTEXT);
+    vec![
+        KeyBinding::new("up", PreviousShortcut, list),
+        KeyBinding::new("down", NextShortcut, list),
+        KeyBinding::new("enter", RecordHotkey, list),
+    ]
+}
+
+/// The hotkey recorder (F17, 7.56): Escape, Enter and Backspace steer it --
+/// Enter also overwrites a chord another command has -- and every other
+/// chord the settings window binds is unbound in it, so the chord is
+/// recorded instead of run. Not on the sheet: the field says them while it
+/// records.
 fn recorder_bindings() -> Vec<KeyBinding> {
     let recorder = Some(RECORDER_CONTEXT);
     vec![
@@ -600,6 +617,9 @@ fn recorder_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-tab", gpui::NoAction, recorder),
         KeyBinding::new("ctrl-shift-tab", gpui::NoAction, recorder),
         KeyBinding::new("ctrl-escape", gpui::NoAction, recorder),
+        // The Shortcuts list's, which the recorder sits inside.
+        KeyBinding::new("up", gpui::NoAction, recorder),
+        KeyBinding::new("down", gpui::NoAction, recorder),
     ]
 }
 
@@ -929,22 +949,24 @@ mod tests {
         assert_eq!(resolves_to("tab", &[CONTEXT]), Some("lumen::AskArgument"));
     }
 
-    /// While the recorder has focus, no chord the settings window binds
-    /// runs: each is the recorder's own, or reaches it as a key.
+    /// While the recorder has focus, no chord the settings window or the
+    /// Shortcuts list binds runs: each is the recorder's own, or reaches it
+    /// as a key.
     #[test]
     fn the_recorder_hears_every_chord_the_settings_window_binds() {
-        let keymap = gpui::Keymap::new(
+        let outer = || {
             global_bindings()
                 .into_iter()
                 .chain(settings_bindings())
-                .chain(recorder_bindings())
-                .collect(),
-        );
-        let stack: Vec<gpui::KeyContext> = [SETTINGS_CONTEXT, RECORDER_CONTEXT]
-            .iter()
-            .map(|context| gpui::KeyContext::parse(context).unwrap())
-            .collect();
-        for binding in global_bindings().into_iter().chain(settings_bindings()) {
+                .chain(shortcut_list_bindings())
+        };
+        let keymap = gpui::Keymap::new(outer().chain(recorder_bindings()).collect());
+        let stack: Vec<gpui::KeyContext> =
+            [SETTINGS_CONTEXT, SHORTCUT_LIST_CONTEXT, RECORDER_CONTEXT]
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect();
+        for binding in outer() {
             let (bindings, _) = keymap.bindings_for_input(binding.keystrokes(), &stack);
             let action = bindings.first().map(|binding| binding.action().name());
             assert!(
@@ -964,6 +986,15 @@ mod tests {
         assert_eq!(resolve("backspace"), Some("lumen_recorder::ClearRecording"));
         assert_eq!(resolve("ctrl-s"), None);
         assert_eq!(resolve("ctrl-escape"), None);
+        assert_eq!(resolve("down"), None);
+
+        // Before it records, Enter on the list starts it.
+        let (bindings, _) =
+            keymap.bindings_for_input(&[gpui::Keystroke::parse("enter").unwrap()], &stack[..2]);
+        assert_eq!(
+            bindings.first().map(|binding| binding.action().name()),
+            Some("lumen_shortcuts::RecordHotkey")
+        );
     }
 
     /// The two lists in this file must describe the same keys. If someone adds

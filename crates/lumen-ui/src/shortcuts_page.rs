@@ -21,29 +21,65 @@
 //! Thousands of applications on some machines, so the list is virtualised and
 //! every row is one height (I-10). The alias field is text until it is
 //! clicked; one field is made for the row being edited, not one per row.
+//!
+//! # Recording a hotkey
+//!
+//! Clicking a row's hotkey, or Enter on the row Up and Down choose, records
+//! in the field itself; what the keys come to is said on the row's second
+//! line. The steps are [`Flow`]'s. While a row records, the page asks the
+//! daemon to suspend the command hotkeys ([`ShortcutsPageEvent::Recording`]),
+//! so pressing one records it instead of running it (7.56).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Entity, Focusable, SharedString, Subscription, UniformListScrollHandle, Window,
-    div, img, px, svg, uniform_list,
+    App, Context, Entity, Focusable, ScrollStrategy, SharedString, Subscription, Task,
+    UniformListScrollHandle, Window, actions, div, img, px, svg, uniform_list,
 };
 use lumen_core::layout::settings as metrics;
-use lumen_core::shortcuts::{Shortcuts, alias_input};
+use lumen_core::shortcuts::{Shortcuts, alias_input, reserved_by};
 use lumen_core::theme::Colors;
 use lumen_core::{Candidate, Item};
-use lumen_platform::{HotkeyError, Platform};
+use lumen_platform::{Hotkey, HotkeyError, Platform};
 
-use crate::hotkey_recorder::keycaps;
+use crate::hotkey_recorder::{
+    Capture, Effect, Flow, HotkeyRecorder, RecorderEvent, Save, Verdict, keycaps,
+};
 use crate::icons::IconCache;
 use crate::quicklink_form::{CancelForm, NextField, SubmitForm};
 use crate::settings::choice_button;
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::translate_page::FORM_CONTEXT;
+
+actions!(
+    lumen_shortcuts,
+    [
+        /// Choose the next row.
+        NextShortcut,
+        /// Choose the previous row.
+        PreviousShortcut,
+        /// Record the chosen row's hotkey.
+        RecordHotkey,
+    ]
+);
+
+/// The list's key context: Up, Down and Enter, from the search field.
+pub const LIST_CONTEXT: &str = "ShortcutsList";
+
+/// What the page tells the settings window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShortcutsPageEvent {
+    /// A row began recording a hotkey, or stopped: the daemon suspends the
+    /// command hotkeys meanwhile.
+    Recording(bool),
+}
+
+impl gpui::EventEmitter<ShortcutsPageEvent> for ShortcutsPage {}
 
 /// Which rows the page shows, besides what is typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +134,15 @@ struct AliasEdit {
     _blur: Subscription,
 }
 
+/// The field recording a row's hotkey, while it does.
+struct RecorderView {
+    field: Entity<HotkeyRecorder>,
+    /// The wait before a free chord is saved.
+    autosave: Option<Task<()>>,
+    /// Its keys, its blur and the window's deactivation.
+    _subscriptions: [Subscription; 3],
+}
+
 pub struct ShortcutsPage {
     path: PathBuf,
     colors: Colors,
@@ -121,6 +166,13 @@ pub struct ShortcutsPage {
     query: String,
     filter: Filter,
     alias: Option<AliasEdit>,
+    flow: Flow,
+    recorder: Option<RecorderView>,
+    /// Lumen's own hotkeys, the launcher's and the timers', which no
+    /// command may take.
+    reserved: Option<(Hotkey, Option<Hotkey>)>,
+    /// The row Up and Down choose, in `shown`.
+    selected: usize,
     scroll: UniformListScrollHandle,
     status: Option<SharedString>,
 }
@@ -158,6 +210,10 @@ impl ShortcutsPage {
             query: String::new(),
             filter: Filter::All,
             alias: None,
+            flow: Flow::default(),
+            recorder: None,
+            reserved: None,
+            selected: 0,
             scroll: UniformListScrollHandle::new(),
             status: None,
         }
@@ -215,9 +271,19 @@ impl ShortcutsPage {
         cx.notify();
     }
 
+    /// The launcher's and the timers' hotkeys in effect: when the window
+    /// opens.
+    pub fn set_reserved(&mut self, launcher: Hotkey, timers: Option<Hotkey>) {
+        self.reserved = Some((launcher, timers));
+    }
+
     pub fn set_colors(&mut self, colors: Colors, cx: &mut Context<Self>) {
         self.search
             .update(cx, |field, cx| field.set_colors(colors.clone(), cx));
+        if let Some(view) = &self.recorder {
+            view.field
+                .update(cx, |field, cx| field.set_colors(colors.clone(), cx));
+        }
         if let Some(edit) = &self.alias {
             edit.field
                 .update(cx, |field, cx| field.set_colors(colors.clone(), cx));
@@ -249,7 +315,33 @@ impl ShortcutsPage {
                 )
             })
             .collect();
+        self.selected = 0;
         cx.notify();
+    }
+
+    fn choose(&mut self, by: isize, cx: &mut Context<Self>) {
+        let Some(last) = self.shown.len().checked_sub(1) else {
+            return;
+        };
+        self.selected = self.selected.saturating_add_signed(by).min(last);
+        self.scroll
+            .scroll_to_item(self.selected, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    fn next_shortcut(&mut self, _: &NextShortcut, _: &mut Window, cx: &mut Context<Self>) {
+        self.choose(1, cx);
+    }
+
+    fn previous_shortcut(&mut self, _: &PreviousShortcut, _: &mut Window, cx: &mut Context<Self>) {
+        self.choose(-1, cx);
+    }
+
+    fn record_chosen(&mut self, _: &RecordHotkey, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(&index) = self.shown.get(self.selected) {
+            let id = self.catalogue[index].item.id.clone();
+            self.record(id, window, cx);
+        }
     }
 
     fn set_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
@@ -363,16 +455,185 @@ impl ShortcutsPage {
 
     // -- Hotkeys ---------------------------------------------------------------
 
-    fn clear_hotkey(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.shortcuts.set_hotkey(id, None);
-        self.failures.remove(id);
-        self.status = Some(format!("Removed the hotkey of {}", self.title_of(id)).into());
+    /// Start recording `id`'s hotkey in its field.
+    fn record(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.alias.is_some() && !self.commit_alias(cx) {
+            self.alias = None;
+        }
+        let effect = self.flow.start(&id);
+        let colors = self.colors.clone();
+        let field = cx.new(|cx| HotkeyRecorder::new(colors, cx));
+        let handle = field.read(cx).focus_handle().clone();
+        let subscriptions = [
+            cx.subscribe_in(&field, window, Self::recorder_event),
+            cx.on_blur(&handle, window, |page, window, cx| {
+                let effect = page.flow.cancel();
+                page.step(effect, window, cx);
+            }),
+            cx.observe_window_activation(window, |page, window, cx| {
+                if !window.is_window_active() {
+                    let effect = page.flow.cancel();
+                    page.step(effect, window, cx);
+                }
+            }),
+        ];
+        // Replaced before the focus moves, so the field it replaces cannot
+        // cancel this recording as it loses focus.
+        self.recorder = Some(RecorderView {
+            field,
+            autosave: None,
+            _subscriptions: subscriptions,
+        });
+        window.focus(&handle);
+        self.step(effect, window, cx);
+    }
+
+    /// End any recording, keeping the hotkey: the window is closing.
+    pub fn stop_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let effect = self.flow.cancel();
+        self.step(effect, window, cx);
+    }
+
+    fn recorder_event(
+        &mut self,
+        _: &Entity<HotkeyRecorder>,
+        event: &RecorderEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let effect = match event {
+            RecorderEvent::Changed(capture) => {
+                let reserved = &self.reserved;
+                self.flow
+                    .press(capture.clone(), Instant::now(), &self.shortcuts, |chord| {
+                        let (launcher, timers) = reserved.as_ref()?;
+                        reserved_by(chord, launcher, timers.as_ref())
+                    });
+                self.schedule_autosave(window, cx);
+                cx.notify();
+                return;
+            }
+            RecorderEvent::Save => self.flow.save(),
+            RecorderEvent::Cancel => self.flow.cancel(),
+            RecorderEvent::Clear => self.flow.clear(),
+        };
+        self.step(effect, window, cx);
+    }
+
+    /// Save a free chord when its wait is over. A newer key replaces the
+    /// wait, dropping this one.
+    fn schedule_autosave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let at = match self.flow.recording().map(|recording| &recording.verdict) {
+            Some(Verdict::Pending { at, .. }) => Some(*at),
+            _ => None,
+        };
+        let task = at.map(|at| {
+            let wait = at.saturating_duration_since(Instant::now());
+            cx.spawn_in(window, async move |page, cx| {
+                cx.background_executor().timer(wait).await;
+                page.update_in(cx, |page, window, cx| {
+                    if let Some(task) = page.recorder.as_mut().and_then(|v| v.autosave.take()) {
+                        task.detach();
+                    }
+                    // At its own deadline: a newer one is later, and waits.
+                    let effect = page.flow.tick(at);
+                    page.step(effect, window, cx);
+                })
+                .ok();
+            })
+        });
+        if let Some(view) = &mut self.recorder {
+            view.autosave = task;
+        }
+    }
+
+    /// Carry out what the flow decided: tell the daemon recording began, or
+    /// write what it ended with and tell the daemon it is over. Written
+    /// first, so the reload that resumes the hotkeys reads it.
+    fn step(&mut self, effect: Option<Effect>, window: &mut Window, cx: &mut Context<Self>) {
+        match effect {
+            None => {}
+            Some(Effect::Suspend) => cx.emit(ShortcutsPageEvent::Recording(true)),
+            Some(Effect::Resume(save)) => {
+                let refocus = self
+                    .recorder
+                    .take()
+                    .is_some_and(|view| view.field.read(cx).focus_handle().is_focused(window));
+                if let Some(save) = save {
+                    self.save_hotkey(save, cx);
+                }
+                cx.emit(ShortcutsPageEvent::Recording(false));
+                if refocus {
+                    self.focus(window, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn save_hotkey(&mut self, Save { id, chord }: Save, cx: &mut Context<Self>) {
+        if self.shortcuts.hotkey_of(&id) == chord.as_ref() {
+            return;
+        }
+        let taken = self.shortcuts.set_hotkey(&id, chord.clone());
+        self.failures.remove(&id);
+        let title = self.title_of(&id);
+        self.status = Some(
+            match (&chord, &taken) {
+                (Some(chord), Some(other)) => {
+                    format!("{title} is {chord}, taken from {}", self.title_of(other))
+                }
+                (Some(chord), None) => format!("{title} is {chord}"),
+                (None, _) => format!("Removed the hotkey of {title}"),
+            }
+            .into(),
+        );
+        if let Some(other) = &taken {
+            self.failures.remove(other);
+        }
         self.write(cx);
         self.refilter(cx);
     }
 
+    /// Overwrite: take the chord from the command that has it.
+    fn overwrite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let effect = self.flow.save();
+        self.step(effect, window, cx);
+    }
+
+    fn clear_hotkey(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.flow.recording().is_some_and(|r| r.id == id) {
+            let effect = self.flow.clear();
+            self.step(effect, window, cx);
+            return;
+        }
+        self.stop_recording(window, cx);
+        let id = id.to_string();
+        self.save_hotkey(Save { id, chord: None }, cx);
+    }
+
+    /// What the row recording says: what the keys come to.
+    fn recording_note(&self, id: &str) -> Option<(String, bool)> {
+        let recording = self.flow.recording().filter(|r| r.id == id)?;
+        Some(match &recording.verdict {
+            Verdict::Waiting => match &recording.capture {
+                Capture::Invalid { why, .. } => (why.to_string(), true),
+                _ => ("Esc cancels, Backspace removes the hotkey".into(), false),
+            },
+            // No countdown: a figure that changes each tenth of a second
+            // would redraw the window for nothing but itself.
+            Verdict::Pending { .. } => ("Saving\u{2026} Enter saves now".into(), false),
+            // Overwrite follows it on the row; Enter does the same.
+            Verdict::Taken { owner, .. } => (format!("Used by {}", self.title_of(owner)), true),
+            Verdict::Reserved { why, .. } => (why.to_string(), true),
+        })
+    }
+
     /// What a row says under its title: what is wrong with it, or its kind.
     fn row_note(&self, item: &Item, conflicts: &BTreeMap<String, Vec<String>>) -> (String, bool) {
+        if let Some(note) = self.recording_note(&item.id) {
+            return note;
+        }
         if let Some(edit) = self.alias.as_ref().filter(|edit| edit.id == item.id)
             && let Some(why) = edit.error
         {
@@ -478,7 +739,8 @@ impl Render for ShortcutsPage {
                 range
                     .filter_map(|row| {
                         let index = *page.shown.get(row)?;
-                        Some(page.render_row(index, &conflicts, cx))
+                        let selected = row == page.selected;
+                        Some(page.render_row(index, selected, &conflicts, cx))
                     })
                     .collect::<Vec<_>>()
             }),
@@ -487,6 +749,10 @@ impl Render for ShortcutsPage {
         .h_full();
 
         div()
+            .key_context(LIST_CONTEXT)
+            .on_action(cx.listener(Self::next_shortcut))
+            .on_action(cx.listener(Self::previous_shortcut))
+            .on_action(cx.listener(Self::record_chosen))
             .size_full()
             .p(px(metrics::CONTENT_PADDING))
             .flex()
@@ -512,6 +778,7 @@ impl ShortcutsPage {
     fn render_row(
         &self,
         index: usize,
+        selected: bool,
         conflicts: &BTreeMap<String, Vec<String>>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -555,14 +822,22 @@ impl ShortcutsPage {
             )
             .child(
                 div()
-                    .truncate()
+                    .flex()
+                    .items_center()
+                    .gap(px(metrics::ICON_GAP))
                     .text_size(px(metrics::text::HINT))
-                    .text_color(color(if problem {
-                        colors.text_error
-                    } else {
-                        colors.text_muted
-                    }))
-                    .child(note),
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_color(color(if problem {
+                                colors.text_error
+                            } else {
+                                colors.text_muted
+                            }))
+                            .child(note),
+                    )
+                    .children(self.overwrite_button(&id, cx)),
             );
 
         div()
@@ -574,6 +849,7 @@ impl ShortcutsPage {
             .gap(px(metrics::CARD_ROW_GAP))
             .border_t_1()
             .border_color(color(colors.border_subtle))
+            .when(selected, |row| row.bg(color(colors.selection_background)))
             .child(
                 div()
                     .flex_1()
@@ -628,21 +904,60 @@ impl ShortcutsPage {
         .into_any_element()
     }
 
+    /// Overwrite, beside "Used by", on the row whose chord another command
+    /// has.
+    fn overwrite_button(&self, id: &str, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let recording = self.flow.recording().filter(|r| r.id == id)?;
+        if !matches!(recording.verdict, Verdict::Taken { .. }) {
+            return None;
+        }
+        Some(
+            div()
+                .id(SharedString::from(format!("overwrite-{id}")))
+                .flex_none()
+                .cursor_pointer()
+                .text_color(color(self.colors.accent))
+                .hover(|button| button.text_color(color(self.colors.text_primary)))
+                .on_click(cx.listener(|page, _, window, cx| page.overwrite(window, cx)))
+                .child("Overwrite")
+                .into_any_element(),
+        )
+    }
+
     fn render_hotkey(&self, id: &str, cx: &mut Context<Self>) -> gpui::AnyElement {
         let colors = &self.colors;
         let chord = self.shortcuts.hotkey_of(id);
         let failed = self.failures.contains_key(id);
         let target = id.to_string();
-        let shown = match chord {
-            Some(chord) => {
-                let caps = crate::hotkey_recorder::Capture::Chord(chord.clone()).caps();
+        let recorder = self
+            .recorder
+            .as_ref()
+            .filter(|_| self.flow.recording().is_some_and(|r| r.id == id));
+        let shown = match (recorder, chord) {
+            (Some(view), _) => view.field.clone().into_any_element(),
+            (None, Some(chord)) => {
+                let caps = Capture::Chord(chord.clone()).caps();
                 keycaps(&caps, failed, colors).into_any_element()
             }
-            None => div()
+            (None, None) => div()
                 .text_color(color(colors.text_muted))
                 .child("Record Hotkey")
                 .into_any_element(),
         };
+        let field = field_box(colors)
+            .id(SharedString::from(format!("hotkey-{id}")))
+            .flex_1()
+            .min_w(px(0.0))
+            .when(recorder.is_some(), |field| {
+                field.border_color(color(colors.selection_border))
+            })
+            .when(recorder.is_none(), |field| {
+                let target = target.clone();
+                field.cursor_pointer().on_click(
+                    cx.listener(move |page, _, window, cx| page.record(target.clone(), window, cx)),
+                )
+            })
+            .child(shown);
         div()
             .w(px(metrics::SHORTCUT_HOTKEY_WIDTH))
             .flex_none()
@@ -650,7 +965,7 @@ impl ShortcutsPage {
             .items_center()
             .gap(px(metrics::KEYCAP_GAP))
             .text_size(px(metrics::text::FIELD))
-            .child(field_box(colors).flex_1().min_w(px(0.0)).child(shown))
+            .child(field)
             // Reserved whether or not there is a hotkey to clear (I-10).
             .child(
                 div()
@@ -667,9 +982,9 @@ impl ShortcutsPage {
                         clear
                             .cursor_pointer()
                             .hover(|clear| clear.text_color(color(colors.text_primary)))
-                            .on_click(
-                                cx.listener(move |page, _, _, cx| page.clear_hotkey(&target, cx)),
-                            )
+                            .on_click(cx.listener(move |page, _, window, cx| {
+                                page.clear_hotkey(&target, window, cx)
+                            }))
                             .child("\u{2715}")
                     }),
             )

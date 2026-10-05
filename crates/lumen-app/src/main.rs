@@ -423,7 +423,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     // thread (7.53).
     let hotkeys = Rc::new(RefCell::new(Vec::new()));
     let applied = Rc::new(RefCell::new(Applied::default()));
-    let reload_shortcuts = watch_shortcuts(
+    let shortcut_commands = watch_shortcuts(
         cx,
         &platform,
         &paths,
@@ -447,7 +447,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         reload_theme,
         timers,
         hotkeys,
-        reload_shortcuts,
+        shortcut_commands,
         applied,
     };
 
@@ -564,8 +564,9 @@ struct Surfaces {
     /// `shortcuts.json`, as the registrations are (7.53).
     hotkeys: Rc<RefCell<Vec<String>>>,
     /// Asks the shortcuts watch to apply `shortcuts.json` again, for the
-    /// reload that re-reads everything the user edits by hand.
-    reload_shortcuts: mpsc::UnboundedSender<()>,
+    /// reload that re-reads everything the user edits by hand, or to
+    /// suspend and resume the command hotkeys around a recording.
+    shortcut_commands: mpsc::UnboundedSender<ShortcutsCommand>,
     /// What the last apply loaded and could not register, for a settings
     /// window opened after it.
     applied: Rc<RefCell<Applied>>,
@@ -709,6 +710,47 @@ fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
     .detach();
 }
 
+/// What the shortcuts watch is asked to do (F17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShortcutsCommand {
+    /// Apply `shortcuts.json` again: it changed, or a reload asked.
+    Reload,
+    /// A hotkey is being recorded: unregister the command hotkeys, so
+    /// pressing one is recorded rather than run (7.56).
+    Suspend,
+    /// Recording ended, or the settings window closed: register them again,
+    /// from the file as it is now.
+    Resume,
+}
+
+/// What the watch does about a burst of commands.
+#[derive(Debug, PartialEq, Eq)]
+enum ShortcutsStep {
+    Nothing,
+    Apply,
+    Suspend,
+}
+
+/// The latest of Suspend and Resume in a burst decides; a Reload while
+/// suspended registers nothing -- the Resume that ends it reads the file
+/// then, so the newest table is the one registered. A Resume with nothing
+/// suspended (the window closed, not recording) does nothing.
+fn shortcuts_step(suspended: &mut bool, burst: &[ShortcutsCommand]) -> ShortcutsStep {
+    let wanted = burst.iter().rev().find_map(|command| match command {
+        ShortcutsCommand::Suspend => Some(true),
+        ShortcutsCommand::Resume => Some(false),
+        ShortcutsCommand::Reload => None,
+    });
+    let reload = burst.contains(&ShortcutsCommand::Reload);
+    let was = std::mem::replace(suspended, wanted.unwrap_or(*suspended));
+    match (was, *suspended) {
+        (false, true) => ShortcutsStep::Suspend,
+        (true, false) => ShortcutsStep::Apply,
+        (false, false) if reload => ShortcutsStep::Apply,
+        _ => ShortcutsStep::Nothing,
+    }
+}
+
 /// Register the command hotkeys in `shortcuts.json`, and again whenever it is
 /// saved or the returned sender asks (F17).
 ///
@@ -717,8 +759,8 @@ fn watch_quicklinks(cx: &mut App, surfaces: &Surfaces) {
 /// answer, and the UI thread waits on nothing. The slot table is replaced,
 /// and the launcher given the aliases, on the UI thread once the answer is
 /// in, so a press is always resolved against the table `handle` can see.
-/// Reloads run one after another in this one task, so two saves in a row
-/// cannot register out of order.
+/// Reloads, and the suspending and resuming around a recording, run one
+/// after another in this one task, so none can register out of order.
 fn watch_shortcuts(
     cx: &mut App,
     platform: &Arc<dyn Platform>,
@@ -726,16 +768,16 @@ fn watch_shortcuts(
     table: &Rc<RefCell<Vec<String>>>,
     launcher: gpui::WindowHandle<Launcher>,
     view: ShortcutsView,
-) -> mpsc::UnboundedSender<()> {
+) -> mpsc::UnboundedSender<ShortcutsCommand> {
     use lumen_core::watcher::FileWatcher;
 
     let path = paths.shortcuts_file();
-    let (reload, mut changes) = mpsc::unbounded::<()>();
+    let (commands, mut received) = mpsc::unbounded::<ShortcutsCommand>();
     // Without a watch, the hotkeys are still registered once, and again on
     // every explicit reload.
-    let sink = reload.clone();
+    let sink = commands.clone();
     let watcher = FileWatcher::start(&path, move || {
-        let _ = sink.unbounded_send(());
+        let _ = sink.unbounded_send(ShortcutsCommand::Reload);
     })
     .inspect_err(|error| {
         log::warn!("command hotkeys will need a reload to change: {error:#}");
@@ -746,15 +788,55 @@ fn watch_shortcuts(
     let table = table.clone();
     cx.spawn(async move |cx| {
         let _watcher = watcher;
-        loop {
-            apply_shortcuts(&platform, &path, &table, launcher, &view, cx).await;
-            if !next_change(&mut changes, cx).await {
-                break;
+        let mut suspended = false;
+        apply_shortcuts(&platform, &path, &table, launcher, &view, cx).await;
+        while let Some(burst) = next_commands(&mut received, cx).await {
+            match shortcuts_step(&mut suspended, &burst) {
+                ShortcutsStep::Nothing => {}
+                ShortcutsStep::Apply => {
+                    apply_shortcuts(&platform, &path, &table, launcher, &view, cx).await
+                }
+                ShortcutsStep::Suspend => suspend_shortcuts(&platform, &table, cx).await,
             }
         }
     })
     .detach();
-    reload
+    commands
+}
+
+/// Wait for the next command, and take the others already sent. A reload
+/// lets its burst of file events settle first, as [`next_change`] does.
+async fn next_commands(
+    received: &mut mpsc::UnboundedReceiver<ShortcutsCommand>,
+    cx: &gpui::AsyncApp,
+) -> Option<Vec<ShortcutsCommand>> {
+    let first = received.next().await?;
+    if first == ShortcutsCommand::Reload {
+        cx.background_executor().timer(SETTLE).await;
+    }
+    let mut burst = vec![first];
+    while let Ok(command) = received.try_recv() {
+        burst.push(command);
+    }
+    Some(burst)
+}
+
+/// Unregister every command hotkey while one is recorded (7.56). The
+/// launcher's and the timers' stay: the launcher must stay summonable.
+async fn suspend_shortcuts(
+    platform: &Arc<dyn Platform>,
+    table: &Rc<RefCell<Vec<String>>>,
+    cx: &mut gpui::AsyncApp,
+) {
+    let platform = platform.clone();
+    let suspended = cx
+        .background_spawn(async move { platform.set_command_hotkeys(&[]) })
+        .await;
+    match suspended {
+        Ok(_) => log::info!("command hotkeys suspended while recording"),
+        Err(error) => log::warn!("could not suspend the command hotkeys: {error:#}"),
+    }
+    table.borrow_mut().clear();
 }
 
 /// Load `path`, register its hotkeys as the whole set, and give the launcher
@@ -873,6 +955,7 @@ fn open_settings(
         .update(cx, |launcher, _window, _cx| launcher.catalogue())
         .ok();
     let applied = surfaces.applied.borrow().clone();
+    let reserved = (config.hotkey.clone(), config.timers.hotkey.clone());
     window
         .update(cx, |settings, window, cx| {
             settings.load(entries, cx);
@@ -896,6 +979,7 @@ fn open_settings(
                 settings.set_catalogue(catalogue, cx);
             }
             settings.shortcuts_applied(applied.shortcuts, applied.failures, cx);
+            settings.set_reserved_hotkeys(reserved.0, reserved.1, cx);
             settings.reload_shortcuts(cx);
             settings.focus(window, cx);
         })
@@ -991,6 +1075,7 @@ fn subscribe_to_settings(
     let sheets = surfaces.sheets.clone();
     let paths = surfaces.paths.clone();
     let launcher = surfaces.launcher;
+    let shortcut_commands = surfaces.shortcut_commands.clone();
 
     cx.subscribe(&entity, move |_entity: Entity<Settings>, event, cx| {
         match event {
@@ -1027,7 +1112,20 @@ fn subscribe_to_settings(
                     }
                 });
             }
+            // Through the watch's own queue, behind any reload already in
+            // it, so suspending and resuming cannot pass one (7.56).
+            SettingsEvent::RecordingHotkey(on) => {
+                let command = if *on {
+                    ShortcutsCommand::Suspend
+                } else {
+                    ShortcutsCommand::Resume
+                };
+                let _ = shortcut_commands.unbounded_send(command);
+            }
             SettingsEvent::Closed => {
+                // The page resumes as it closes; this covers any way it
+                // might not, and does nothing when nothing is suspended.
+                let _ = shortcut_commands.unbounded_send(ShortcutsCommand::Resume);
                 let platform = platform.clone();
                 off_the_callback(cx, move || platform.hide_window(WindowRole::Settings, None));
             }
@@ -1749,7 +1847,9 @@ fn handle(
             surfaces.reload_sheets();
             // The hotkeys and aliases too, whether or not the watch saw
             // the file change.
-            let _ = surfaces.reload_shortcuts.unbounded_send(());
+            let _ = surfaces
+                .shortcut_commands
+                .unbounded_send(ShortcutsCommand::Reload);
             // Scripts, snippets and quicklinks live in the launcher's index,
             // so reloading is two halves: the sheet library here, and a
             // reindex there. The settings page keeps its own copy of the
@@ -2426,4 +2526,68 @@ async fn record_image(
             }
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ShortcutsCommand::*, ShortcutsStep, shortcuts_step};
+
+    #[test]
+    fn recording_suspends_once_and_resuming_applies_the_file() {
+        let mut suspended = false;
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Suspend]),
+            ShortcutsStep::Suspend
+        );
+        assert!(suspended);
+        // Another row recording: still suspended, not again.
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Suspend]),
+            ShortcutsStep::Nothing
+        );
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Resume]),
+            ShortcutsStep::Apply
+        );
+        assert!(!suspended);
+    }
+
+    /// A save while recording is applied by the resume, never before it.
+    #[test]
+    fn a_reload_while_suspended_registers_nothing() {
+        let mut suspended = false;
+        shortcuts_step(&mut suspended, &[Suspend]);
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Reload]),
+            ShortcutsStep::Nothing
+        );
+        assert!(suspended);
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Resume, Suspend, Reload]),
+            ShortcutsStep::Nothing,
+            "the next row records at once"
+        );
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Reload, Resume]),
+            ShortcutsStep::Apply
+        );
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Reload]),
+            ShortcutsStep::Apply
+        );
+    }
+
+    #[test]
+    fn a_resume_with_nothing_suspended_does_nothing() {
+        let mut suspended = false;
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Resume]),
+            ShortcutsStep::Nothing
+        );
+        assert_eq!(
+            shortcuts_step(&mut suspended, &[Suspend, Resume]),
+            ShortcutsStep::Nothing
+        );
+        assert!(!suspended);
+    }
 }

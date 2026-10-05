@@ -21,7 +21,10 @@ use gpui::{
     Context, Div, FocusHandle, KeyDownEvent, ModifiersChangedEvent, SharedString, Window, actions,
     div, px,
 };
+use std::time::{Duration, Instant};
+
 use lumen_core::layout::settings as metrics;
+use lumen_core::shortcuts::Shortcuts;
 use lumen_core::theme::Colors;
 use lumen_platform::{Chord, Modifiers, canonical_key};
 
@@ -173,6 +176,137 @@ fn unshifted(character: &str) -> Option<&'static str> {
         "?" => "Slash",
         _ => return None,
     })
+}
+
+/// How long a free chord waits before it is saved: time to see the caps and
+/// change one's mind. Enter saves at once.
+pub const AUTOSAVE: Duration = Duration::from_millis(1500);
+
+/// What a recorded chord comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Nothing to save: modifiers alone, or a key that makes no hotkey.
+    Waiting,
+    /// No other command has it: saved `at` then, or on Enter.
+    Pending { chord: Chord, at: Instant },
+    /// `owner` has it: saved, taking it, only on Overwrite (Enter).
+    Taken { chord: Chord, owner: String },
+    /// One of Lumen's own, and why: never saved.
+    Reserved { chord: Chord, why: &'static str },
+}
+
+/// The row being recorded, and what has been pressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recording {
+    pub id: String,
+    pub capture: Capture,
+    pub verdict: Verdict,
+}
+
+/// A hotkey to write: `id` bound to `chord`, or unbound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Save {
+    pub id: String,
+    pub chord: Option<Chord>,
+}
+
+/// What the page does after a step of the [`Flow`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Effect {
+    /// Recording began: the daemon suspends the command hotkeys.
+    Suspend,
+    /// Recording ended: write `Save` if there is one, then the daemon
+    /// registers the hotkeys again.
+    Resume(Option<Save>),
+}
+
+/// The recorder's flow on the page, without a window (7.56): idle, then
+/// recording one row until a save, a clear or a cancel ends it. Every way
+/// out is [`Effect::Resume`], once, so the hotkeys a start suspended always
+/// come back.
+#[derive(Debug, Default)]
+pub struct Flow {
+    recording: Option<Recording>,
+}
+
+impl Flow {
+    pub fn recording(&self) -> Option<&Recording> {
+        self.recording.as_ref()
+    }
+
+    /// Record `id`'s hotkey. Suspends unless a row was already recording.
+    pub fn start(&mut self, id: &str) -> Option<Effect> {
+        let was = self.recording.replace(Recording {
+            id: id.to_string(),
+            capture: Capture::default(),
+            verdict: Verdict::Waiting,
+        });
+        was.is_none().then_some(Effect::Suspend)
+    }
+
+    /// A key went down, or the modifiers changed: judge the chord against
+    /// the table and Lumen's own hotkeys (`reserved`).
+    pub fn press(
+        &mut self,
+        capture: Capture,
+        now: Instant,
+        shortcuts: &Shortcuts,
+        reserved: impl Fn(&Chord) -> Option<&'static str>,
+    ) {
+        let Some(recording) = &mut self.recording else {
+            return;
+        };
+        recording.verdict = match &capture {
+            Capture::Chord(chord) => {
+                let chord = chord.clone();
+                if let Some(why) = reserved(&chord) {
+                    Verdict::Reserved { chord, why }
+                } else if let Some(owner) = shortcuts.hotkey_owner(&chord, &recording.id) {
+                    let owner = owner.to_string();
+                    Verdict::Taken { chord, owner }
+                } else {
+                    let at = now + AUTOSAVE;
+                    Verdict::Pending { chord, at }
+                }
+            }
+            Capture::Held(_) | Capture::Invalid { .. } => Verdict::Waiting,
+        };
+        recording.capture = capture;
+    }
+
+    /// Time passed: a free chord whose wait is over is saved.
+    pub fn tick(&mut self, now: Instant) -> Option<Effect> {
+        match &self.recording.as_ref()?.verdict {
+            Verdict::Pending { at, .. } if *at <= now => self.save(),
+            _ => None,
+        }
+    }
+
+    /// Enter, or Overwrite: a free chord now, a taken one from its owner.
+    pub fn save(&mut self) -> Option<Effect> {
+        let chord = match &self.recording.as_ref()?.verdict {
+            Verdict::Pending { chord, .. } | Verdict::Taken { chord, .. } => chord.clone(),
+            Verdict::Waiting | Verdict::Reserved { .. } => return None,
+        };
+        self.end(Some(chord))
+    }
+
+    /// Backspace: the row loses its hotkey.
+    pub fn clear(&mut self) -> Option<Effect> {
+        self.end(None)
+    }
+
+    /// Escape, focus elsewhere, the window hidden: the hotkey stays as it
+    /// was.
+    pub fn cancel(&mut self) -> Option<Effect> {
+        self.recording.take()?;
+        Some(Effect::Resume(None))
+    }
+
+    fn end(&mut self, chord: Option<Chord>) -> Option<Effect> {
+        let id = self.recording.take()?.id;
+        Some(Effect::Resume(Some(Save { id, chord })))
+    }
 }
 
 /// What the recorder tells the page.
@@ -406,6 +540,155 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn table() -> Shortcuts {
+        let mut shortcuts = Shortcuts::default();
+        shortcuts.set_hotkey("window:center", Some(chord("Ctrl+Alt+C")));
+        shortcuts.set_hotkey("app:code", Some(chord("Ctrl+Alt+V")));
+        shortcuts
+    }
+
+    fn launcher(chord: &Chord) -> Option<&'static str> {
+        (chord.to_string() == "Alt+Space").then_some("Used by the Lumen launcher")
+    }
+
+    /// A flow recording `app:code`, with `keys` pressed at `now`.
+    fn pressed_at(keys: &str, now: Instant) -> Flow {
+        let mut flow = Flow::default();
+        assert_eq!(flow.start("app:code"), Some(Effect::Suspend));
+        flow.press(pressed(keys), now, &table(), launcher);
+        flow
+    }
+
+    fn saved(text: Option<&str>) -> Option<Effect> {
+        Some(Effect::Resume(Some(Save {
+            id: "app:code".into(),
+            chord: text.map(chord),
+        })))
+    }
+
+    #[test]
+    fn a_free_chord_saves_once_its_wait_is_over() {
+        let now = Instant::now();
+        let mut flow = pressed_at("ctrl-alt-k", now);
+        assert!(matches!(
+            flow.recording().unwrap().verdict,
+            Verdict::Pending { at, .. } if at == now + AUTOSAVE
+        ));
+        assert_eq!(flow.tick(now + AUTOSAVE / 2), None);
+        assert_eq!(flow.tick(now + AUTOSAVE), saved(Some("Ctrl+Alt+K")));
+        assert_eq!(flow.recording(), None);
+        assert_eq!(flow.tick(now + AUTOSAVE * 2), None, "resumed once");
+    }
+
+    #[test]
+    fn enter_saves_a_free_chord_at_once() {
+        let mut flow = pressed_at("ctrl-alt-k", Instant::now());
+        assert_eq!(flow.save(), saved(Some("Ctrl+Alt+K")));
+        assert_eq!(flow.save(), None);
+    }
+
+    #[test]
+    fn a_new_key_starts_the_wait_again() {
+        let now = Instant::now();
+        let mut flow = pressed_at("ctrl-alt-k", now);
+        let later = now + AUTOSAVE / 2;
+        flow.press(pressed("ctrl-alt-j"), later, &table(), launcher);
+        assert_eq!(flow.tick(now + AUTOSAVE), None);
+        assert_eq!(flow.tick(later + AUTOSAVE), saved(Some("Ctrl+Alt+J")));
+    }
+
+    #[test]
+    fn nothing_saves_until_there_is_a_chord() {
+        let now = Instant::now();
+        let mut flow = pressed_at("k", now);
+        assert_eq!(flow.recording().unwrap().verdict, Verdict::Waiting);
+        assert_eq!(flow.tick(now + AUTOSAVE * 2), None);
+        assert_eq!(flow.save(), None);
+        assert!(flow.recording().is_some(), "still recording");
+    }
+
+    #[test]
+    fn a_chord_another_command_has_saves_only_on_overwrite() {
+        let now = Instant::now();
+        let mut flow = pressed_at("ctrl-alt-c", now);
+        assert_eq!(
+            flow.recording().unwrap().verdict,
+            Verdict::Taken {
+                chord: chord("Ctrl+Alt+C"),
+                owner: "window:center".into(),
+            }
+        );
+        assert_eq!(flow.tick(now + AUTOSAVE * 2), None);
+        assert_eq!(flow.save(), saved(Some("Ctrl+Alt+C")));
+    }
+
+    /// The row's own chord is no conflict.
+    #[test]
+    fn the_rows_own_chord_is_free() {
+        let flow = pressed_at("ctrl-alt-v", Instant::now());
+        assert!(matches!(
+            flow.recording().unwrap().verdict,
+            Verdict::Pending { .. }
+        ));
+    }
+
+    #[test]
+    fn lumens_own_hotkey_never_saves() {
+        let now = Instant::now();
+        let mut flow = pressed_at("alt-space", now);
+        assert_eq!(
+            flow.recording().unwrap().verdict,
+            Verdict::Reserved {
+                chord: chord("Alt+Space"),
+                why: "Used by the Lumen launcher",
+            }
+        );
+        assert_eq!(flow.tick(now + AUTOSAVE * 2), None);
+        assert_eq!(flow.save(), None);
+        assert_eq!(flow.cancel(), Some(Effect::Resume(None)));
+    }
+
+    #[test]
+    fn escape_keeps_the_hotkey_and_backspace_removes_it() {
+        let mut flow = pressed_at("ctrl-alt-k", Instant::now());
+        assert_eq!(flow.cancel(), Some(Effect::Resume(None)));
+        assert_eq!(flow.cancel(), None);
+
+        let mut flow = pressed_at("ctrl-alt-k", Instant::now());
+        assert_eq!(flow.clear(), saved(None));
+        assert_eq!(flow.clear(), None);
+    }
+
+    /// Suspended by the first start, and resumed by whichever exit comes
+    /// first -- the window hidden or focus lost being a cancel -- and never
+    /// twice.
+    #[test]
+    fn every_way_out_resumes_the_hotkeys_once() {
+        let now = Instant::now();
+        type Exit = fn(&mut Flow, Instant) -> Option<Effect>;
+        let exits: [Exit; 4] = [
+            |flow, _| flow.cancel(),
+            |flow, _| flow.clear(),
+            |flow, _| flow.save(),
+            |flow, now| flow.tick(now + AUTOSAVE),
+        ];
+        for exit in exits {
+            let mut flow = pressed_at("ctrl-alt-k", now);
+            assert!(matches!(exit(&mut flow, now), Some(Effect::Resume(_))));
+            assert_eq!(flow.recording(), None);
+            for again in exits {
+                assert_eq!(again(&mut flow, now), None);
+            }
+        }
+
+        // Another row while recording: still suspended, not again.
+        let mut flow = pressed_at("ctrl-alt-k", now);
+        assert_eq!(flow.start("window:center"), None);
+        assert_eq!(flow.recording().unwrap().id, "window:center");
+        assert_eq!(flow.recording().unwrap().verdict, Verdict::Waiting);
+        assert_eq!(flow.cancel(), Some(Effect::Resume(None)));
     }
 
     #[test]

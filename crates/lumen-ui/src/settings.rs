@@ -44,7 +44,7 @@ use crate::clock_page::ClockPage;
 use crate::currency_page::CurrencyPage;
 use crate::file_search_page::{FileSearchPage, FileSearchPageEvent};
 use crate::quicklinks_page::{PageEvent, QuicklinksPage};
-use crate::shortcuts_page::ShortcutsPage;
+use crate::shortcuts_page::{ShortcutsPage, ShortcutsPageEvent};
 use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 use crate::timers_page::{TimersPage, TimersPageEvent};
@@ -176,6 +176,10 @@ pub enum SettingsEvent {
     /// *Rebuild File Index* on the File Search page (F16): the launcher
     /// holds the index.
     RebuildFileIndex,
+    /// The Shortcuts page began recording a hotkey, or stopped (F17): the
+    /// daemon suspends the command hotkeys meanwhile, so pressing one is
+    /// recorded rather than run (7.56).
+    RecordingHotkey(bool),
 }
 
 impl gpui::EventEmitter<SettingsEvent> for Settings {}
@@ -405,6 +409,13 @@ impl Settings {
             cx.new(|cx| ShortcutsPage::new(file, platform, colors, cx))
         };
         cx.observe(&shortcuts, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(
+            &shortcuts,
+            |_, _, event: &ShortcutsPageEvent, cx| match event {
+                ShortcutsPageEvent::Recording(on) => cx.emit(SettingsEvent::RecordingHotkey(*on)),
+            },
+        )
+        .detach();
 
         let timers = {
             let colors = theme.colors.clone();
@@ -458,6 +469,18 @@ impl Settings {
     /// Re-read `shortcuts.json` (F17): when the window opens.
     pub fn reload_shortcuts(&mut self, cx: &mut Context<Self>) {
         self.shortcuts.update(cx, |page, cx| page.reload(cx));
+    }
+
+    /// The launcher's and the timers' hotkeys, which no command may take:
+    /// on open.
+    pub fn set_reserved_hotkeys(
+        &mut self,
+        launcher: lumen_platform::Hotkey,
+        timers: Option<lumen_platform::Hotkey>,
+        cx: &mut Context<Self>,
+    ) {
+        self.shortcuts
+            .update(cx, |page, _| page.set_reserved(launcher, timers));
     }
 
     /// The launcher's index, for the Shortcuts page's rows: on open.
@@ -828,14 +851,22 @@ impl Settings {
         cx.notify();
     }
 
-    fn discard(&mut self, _: &DiscardChanges, _: &mut Window, cx: &mut Context<Self>) {
+    /// Any hotkey being recorded is cancelled first, so the command hotkeys
+    /// it suspended come back before the window goes.
+    fn closing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.shortcuts
+            .update(cx, |page, cx| page.stop_recording(window, cx));
         cx.emit(SettingsEvent::Closed);
+    }
+
+    fn discard(&mut self, _: &DiscardChanges, window: &mut Window, cx: &mut Context<Self>) {
+        self.closing(window, cx);
         self.status = Some("Reopen settings to reload from disk".into());
         cx.notify();
     }
 
-    fn close(&mut self, _: &CloseSettings, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(SettingsEvent::Closed);
+    fn close(&mut self, _: &CloseSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.closing(window, cx);
     }
 
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {

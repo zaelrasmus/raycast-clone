@@ -655,6 +655,22 @@ scripts, extensions -- with its icon, its kind, its alias and its hotkey.
   would not register -- another application holds it -- says so on its
   row, in red.
 
+To record a hotkey, click the row's hotkey field, or choose the row with Up
+and Down and press Enter, then press the combination. The keys show as caps
+while they are held, and the row says what they come to:
+
+- **Free**: saved after a moment, or at once with Enter.
+- **Used by another command**: saved only with **Overwrite** (or Enter),
+  which takes it from that command.
+- **Not a hotkey** -- a letter with no modifier, a key that cannot be bound
+  -- or **one of Lumen's own** (the launcher's or the timers' hotkey): said
+  on the row, never saved.
+
+Esc, clicking away or closing the window keeps the hotkey as it was;
+Backspace removes it. While a row records, the other command hotkeys are
+turned off, so pressing one records it instead of running it; they come
+back as soon as recording ends. The launcher's hotkey stays on throughout.
+
 Every change is written to `shortcuts.json` at once and applies without a
 restart. The list is the launcher's index as it was when settings opened:
 reopen settings to see an application installed since.
