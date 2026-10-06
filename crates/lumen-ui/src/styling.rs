@@ -247,6 +247,18 @@ impl Geometry {
     pub fn card_label_gap(&self) -> Pixels {
         px(self.metrics.card_label_gap)
     }
+
+    pub fn grid_cell(&self) -> Pixels {
+        px(self.metrics.grid_cell)
+    }
+
+    pub fn grid_gap(&self) -> Pixels {
+        px(self.metrics.grid_gap)
+    }
+
+    pub fn grid_radius(&self) -> Pixels {
+        px(self.metrics.grid_radius)
+    }
 }
 
 /// Geometry tokens, pre-converted to `Pixels`.
@@ -361,6 +373,23 @@ mod tests {
         let above = widths_of(rule_above(div(), &thick));
         assert_eq!(above.top, Some(px(2.0).into()));
         assert_eq!(above.bottom, None);
+    }
+
+    /// The grid's tokens reach the renderer as the style set them (F18).
+    #[test]
+    fn the_grid_tokens_follow_the_style() {
+        let mut theme = Theme::default();
+        let base = Geometry::of(&theme);
+        assert_eq!(base.grid_cell(), px(82.0));
+        assert_eq!(base.grid_gap(), px(8.0));
+        assert_eq!(base.grid_radius(), px(8.0));
+        theme.style.metrics.grid_cell = 96.0;
+        theme.style.metrics.grid_gap = 4.0;
+        theme.style.metrics.grid_radius = 12.0;
+        let set = Geometry::of(&theme);
+        assert_eq!(set.grid_cell(), px(96.0));
+        assert_eq!(set.grid_gap(), px(4.0));
+        assert_eq!(set.grid_radius(), px(12.0));
     }
 
     #[test]

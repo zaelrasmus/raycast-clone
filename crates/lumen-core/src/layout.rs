@@ -373,6 +373,38 @@ pub mod view {
     /// kind leaves the metadata where the eye found it, a few rows down.
     /// Its lines past it are clipped; the pane scrolls to what is under it.
     pub const DETAIL_CARD_MAX_HEIGHT: f32 = DETAIL_IMAGE_HEIGHT;
+
+    /// A grid's cell, the space between cells and a cell's corner (F18):
+    /// the base of `grid.cell`, `grid.gap` and `grid.radius`. Measured from
+    /// Raycast's *Search Emoji & Symbols* at 750 wide.
+    pub const GRID_CELL: f32 = 82.0;
+    pub const GRID_GAP: f32 = 8.0;
+    pub const GRID_RADIUS: f32 = 8.0;
+
+    /// The glyph's side as a share of its cell: 45 in Raycast's 82.
+    ///
+    /// A proportion, not a token, so a style that resizes the cell keeps the
+    /// air around the glyph it was measured with.
+    pub const GRID_GLYPH: f32 = 0.55;
+
+    /// How many columns a grid has in this much width (F18).
+    ///
+    /// Not a token, because structure is not themeable (I-11): as many cells
+    /// as fit with a gap between each, and none after the last. Never fewer
+    /// than one, so the selection always has somewhere to be.
+    pub fn grid_columns(width: f32, cell: f32, gap: f32) -> usize {
+        let columns = ((width + gap) / (cell + gap)).floor();
+        if columns.is_finite() && columns >= 1.0 {
+            columns as usize
+        } else {
+            1
+        }
+    }
+
+    /// The glyph's side in a cell this size, in whole pixels.
+    pub fn grid_glyph(cell: f32) -> f32 {
+        (cell * GRID_GLYPH).round()
+    }
 }
 
 /// Type sizes. Not themeable (I-11); a theme may change the family only.
@@ -689,6 +721,7 @@ const _: () = assert!(settings::KEYS_FIELD_WIDTH * 2.0 < settings::WIDTH - setti
 #[cfg(test)]
 mod tests {
     use super::action_panel::{self, breaks};
+    use super::view;
     use crate::item::ActionGroup::{Copy, Favorite, Primary};
 
     #[test]
@@ -772,5 +805,40 @@ mod tests {
             action_panel::height(&many, 3),
             action_panel::height(&many[..3], 12)
         );
+    }
+
+    /// Raycast's grid at 750 wide, less 16 either side: eight cells of 82
+    /// with 8 between them take 712 of the 718.
+    #[test]
+    fn the_grid_takes_as_many_columns_as_fit() {
+        assert_eq!(view::grid_columns(718.0, 82.0, 8.0), 8);
+        // Exactly eight cells and seven gaps, and one pixel short of them.
+        assert_eq!(view::grid_columns(712.0, 82.0, 8.0), 8);
+        assert_eq!(view::grid_columns(711.0, 82.0, 8.0), 7);
+        // No trailing gap is needed after the last column.
+        assert_eq!(view::grid_columns(82.0, 82.0, 8.0), 1);
+        assert_eq!(view::grid_columns(172.0, 82.0, 8.0), 2);
+        assert_eq!(view::grid_columns(718.0, 82.0, 0.0), 8);
+        assert_eq!(view::grid_columns(738.0, 82.0, 0.0), 9);
+    }
+
+    /// Narrower than one cell, or a width that is not a width, still draws
+    /// one column: the selection always has somewhere to be.
+    #[test]
+    fn the_grid_never_has_fewer_than_one_column() {
+        assert_eq!(view::grid_columns(40.0, 82.0, 8.0), 1);
+        assert_eq!(view::grid_columns(0.0, 82.0, 8.0), 1);
+        assert_eq!(view::grid_columns(-10.0, 82.0, 8.0), 1);
+        assert_eq!(view::grid_columns(f32::NAN, 82.0, 8.0), 1);
+        assert_eq!(view::grid_columns(718.0, 0.0, 0.0), 1);
+    }
+
+    /// The glyph is the cell's proportion, in whole pixels: Raycast's 45 in
+    /// its 82.
+    #[test]
+    fn the_glyph_is_a_fixed_share_of_the_cell() {
+        assert_eq!(view::grid_glyph(view::GRID_CELL), 45.0);
+        assert_eq!(view::grid_glyph(56.0), 31.0);
+        assert_eq!(view::grid_glyph(128.0), 70.0);
     }
 }

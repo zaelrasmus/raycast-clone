@@ -118,6 +118,13 @@ pub struct Metrics {
     /// [`Metrics::actions_rows`]. The popover's height is computed from it,
     /// never set (I-10).
     pub actions_max_rows: f32,
+    /// A grid's square cell, the space between cells and a cell's corner
+    /// (F18). How many columns there are is not a token: as many as fit,
+    /// through `layout::view::grid_columns`, since structure is not
+    /// themeable (I-11). The glyph is a fixed share of the cell.
+    pub grid_cell: f32,
+    pub grid_gap: f32,
+    pub grid_radius: f32,
 }
 
 impl Metrics {
@@ -168,6 +175,9 @@ impl Metrics {
         actions_offset_x: layout::action_panel::INSET,
         actions_offset_y: layout::action_panel::INSET,
         actions_max_rows: layout::action_panel::MAX_ROWS as f32,
+        grid_cell: layout::view::GRID_CELL,
+        grid_gap: layout::view::GRID_GAP,
+        grid_radius: layout::view::GRID_RADIUS,
     };
 
     /// The token names a style may set, each with where it lands and its
@@ -215,6 +225,17 @@ impl Metrics {
             "actions.offset-x" => (&mut self.actions_offset_x, 0.0, 64.0),
             "actions.offset-y" => (&mut self.actions_offset_y, 0.0, 64.0),
             "actions.max-rows" => (&mut self.actions_max_rows, 3.0, 12.0),
+            // Down to where a glyph, at its share, still reads as a picture
+            // (31 px); up to the 128 px a Fluent image would be drawn from,
+            // where the narrowest window still fits three columns. Every cell
+            // is shorter than the shortest list, so none needs a relation.
+            "grid.cell" => (&mut self.grid_cell, 56.0, 128.0),
+            // Zero tiles the cells; past three times the base, the gaps read
+            // as columns of their own.
+            "grid.gap" => (&mut self.grid_gap, 0.0, 24.0),
+            // Up to a circle in a cell near the smallest; the relation below
+            // keeps it within the cell actually set.
+            "grid.radius" => (&mut self.grid_radius, 0.0, 32.0),
             _ => return None,
         })
     }
@@ -299,7 +320,7 @@ impl Metrics {
             CardLabels::Plain => 0.0,
             CardLabels::Chips => layout::CARD_CHIP_PADDING_Y * 2.0,
         };
-        let checks: [(bool, &'static str, &'static [&'static str]); 12] = [
+        let checks: [(bool, &'static str, &'static [&'static str]); 13] = [
             (
                 self.list_height >= self.row_height * 3.0,
                 "the list holds at least three rows",
@@ -370,6 +391,11 @@ impl Metrics {
                     "card.rows",
                     "card.label-gap",
                 ],
+            ),
+            (
+                self.grid_radius * 2.0 <= self.grid_cell,
+                "a cell's corner fits in the cell",
+                &["grid.radius", "grid.cell"],
             ),
         ];
         checks
@@ -829,7 +855,7 @@ impl Default for Style {
 }
 
 /// How many tokens [`Metrics::slot`] knows; bounds the relation passes.
-const TOKEN_COUNT: usize = 38;
+const TOKEN_COUNT: usize = 41;
 
 fn nearest_weight(value: f32) -> f32 {
     WEIGHTS
@@ -922,6 +948,9 @@ mod tests {
             "actions.offset-x",
             "actions.offset-y",
             "actions.max-rows",
+            "grid.cell",
+            "grid.gap",
+            "grid.radius",
         ];
         assert_eq!(names.len(), TOKEN_COUNT);
         let mut metrics = Metrics::BASE;
@@ -1093,6 +1122,79 @@ mod tests {
         // The weight snaps to a face the typeface has, as the others do.
         let snapped = Style::resolve(&file(&[("weight.card", 540.0)], &[]));
         assert_eq!(snapped.metrics.weight_card, 500.0);
+    }
+
+    /// The grid's tokens are Raycast's, measured at 750 wide: a style that
+    /// sets none of them draws its cells (F18).
+    #[test]
+    fn the_grid_tokens_default_to_raycasts() {
+        let metrics = Style::resolve(&file(&[], &[])).metrics;
+        assert_eq!(metrics.grid_cell, 82.0);
+        assert_eq!(metrics.grid_gap, 8.0);
+        assert_eq!(metrics.grid_radius, 8.0);
+        assert_eq!(metrics.grid_cell, layout::view::GRID_CELL);
+        assert_eq!(metrics.grid_gap, layout::view::GRID_GAP);
+        assert_eq!(metrics.grid_radius, layout::view::GRID_RADIUS);
+    }
+
+    #[test]
+    fn the_grid_tokens_are_set_and_clamped() {
+        let set = Style::resolve(&file(
+            &[
+                ("grid.cell", 96.0),
+                ("grid.gap", 12.0),
+                ("grid.radius", 12.0),
+            ],
+            &[],
+        ));
+        assert_eq!(set.metrics.grid_cell, 96.0);
+        assert_eq!(set.metrics.grid_gap, 12.0);
+        assert_eq!(set.metrics.grid_radius, 12.0);
+
+        let high = Style::resolve(&file(
+            &[
+                ("grid.cell", 400.0),
+                ("grid.gap", 99.0),
+                ("grid.radius", 99.0),
+            ],
+            &[],
+        ));
+        assert_eq!(high.metrics.grid_cell, 128.0);
+        assert_eq!(high.metrics.grid_gap, 24.0);
+        assert_eq!(high.metrics.grid_radius, 32.0);
+        let low = Style::resolve(&file(
+            &[
+                ("grid.cell", 10.0),
+                ("grid.gap", -4.0),
+                ("grid.radius", -1.0),
+            ],
+            &[],
+        ));
+        assert_eq!(low.metrics.grid_cell, 56.0);
+        assert_eq!(low.metrics.grid_gap, 0.0);
+        assert_eq!(low.metrics.grid_radius, 0.0);
+    }
+
+    /// A corner wider than half the cell: the cell and its corner go back to
+    /// the base, and the gap the style set stands.
+    #[test]
+    fn a_cells_corner_must_fit_the_cell() {
+        let style = Style::resolve(&file(
+            &[
+                ("grid.cell", 56.0),
+                ("grid.radius", 30.0),
+                ("grid.gap", 4.0),
+            ],
+            &[],
+        ));
+        assert_eq!(style.metrics.grid_cell, Metrics::BASE.grid_cell);
+        assert_eq!(style.metrics.grid_radius, Metrics::BASE.grid_radius);
+        assert_eq!(style.metrics.grid_gap, 4.0);
+
+        // Half the cell exactly is a circle, and fits.
+        let round = Style::resolve(&file(&[("grid.cell", 60.0), ("grid.radius", 30.0)], &[]));
+        assert_eq!(round.metrics.grid_cell, 60.0);
+        assert_eq!(round.metrics.grid_radius, 30.0);
     }
 
     /// Rows are whole: a fraction rounds, it does not draw half a row.
