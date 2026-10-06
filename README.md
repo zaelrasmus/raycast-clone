@@ -838,6 +838,8 @@ for its hotkey. **Ctrl+Shift+,** opens the panel on them directly.
   is named in the footer and saved only with **Overwrite** (Enter). Hiding
   the launcher cancels it.
 - **Delete**: saved at once.
+- **Reset Ranking**: offered once the command has been used; forgets its
+  usage so it ranks as if never opened, and the footer says so.
 
 Esc, clicking away or closing the window keeps the hotkey as it was;
 Backspace removes it. While a row records, the other command hotkeys are

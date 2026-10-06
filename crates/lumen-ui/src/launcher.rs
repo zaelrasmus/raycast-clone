@@ -308,6 +308,12 @@ fn configure_actions(
         .collect()
 }
 
+/// Reset Ranking, for a row of the index that has a history: nothing to
+/// reset on one never used, and no other row is ranked by it.
+fn reset_ranking_action(source: Source, boost: u32) -> Option<Action> {
+    (matches!(source, Source::Indexed(_)) && boost > 0).then_some(Action::ResetRanking)
+}
+
 /// A root row's alias being typed, or its hotkey recorded, in the search
 /// row (F17). The row is held by id: the list behind may move.
 struct Configuring {
@@ -1245,6 +1251,9 @@ pub struct Launcher {
     shortcut_table: lumen_core::shortcuts::Shortcuts,
     /// Configure Command's prompt, while it is open (F17).
     configuring: Option<Configuring>,
+    /// The row whose ranking was just reset: the footer says so while it is
+    /// selected, until the query changes or the launcher is shown again.
+    ranking_reset: Option<String>,
     /// The recorder's steps while a hotkey is recorded here.
     recording: Flow,
 }
@@ -1271,6 +1280,7 @@ impl Launcher {
         let query_changes = cx.subscribe(&query_field, |launcher, _, event, cx| match event {
             TextFieldEvent::Changed(text) => {
                 launcher.query.clone_from(text);
+                launcher.ranking_reset = None;
                 launcher.rerank(cx);
                 launcher.query_files(cx);
                 cx.notify();
@@ -1366,6 +1376,7 @@ impl Launcher {
             shortcuts: Shortcuts::read(&cx.key_bindings().borrow()),
             shortcut_table: lumen_core::shortcuts::Shortcuts::default(),
             configuring: None,
+            ranking_reset: None,
             recording: Flow::default(),
         };
 
@@ -2349,6 +2360,7 @@ impl Launcher {
     pub fn on_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.stop_configuring(window, cx);
         self.clear_query_text(cx);
+        self.ranking_reset = None;
         self.selected = 0;
         self.appearances = self.appearances.wrapping_add(1);
         self.rates_asked = false;
@@ -3667,6 +3679,10 @@ impl Launcher {
                     &item.id,
                     &self.shortcut_table,
                 ));
+                actions.extend(reset_ranking_action(
+                    hit.source,
+                    self.root.frecency().boost(&item.id),
+                ));
             }
         }
         actions
@@ -4459,6 +4475,11 @@ impl Launcher {
             self.configure(configure, window, cx);
             return;
         }
+        if action == Action::ResetRanking {
+            self.close_action_panel(cx);
+            self.reset_ranking(cx);
+            return;
+        }
         let Some(item) = self.selected_item() else {
             return;
         };
@@ -4704,7 +4725,9 @@ impl Launcher {
             action if opens_in_launcher(&action) => Hotkeyed::InLauncher(action),
             // A favourite is changed on a row, from the panel: a hotkey has
             // no row, and changes nothing. Nor is a row configured.
-            Action::Favorite(_) | Action::Configure(_) => return Some(Hotkeyed::Done),
+            Action::Favorite(_) | Action::Configure(_) | Action::ResetRanking => {
+                return Some(Hotkeyed::Done);
+            }
             Action::OpenLink(open) => Hotkeyed::Perform {
                 action: Action::OpenLink(open.or_browser(self.config.preferred_browser.as_deref())),
                 kind,
@@ -4732,6 +4755,23 @@ impl Launcher {
                 .detach();
         }
         self.save_frecency(history, cx);
+    }
+
+    /// Reset Ranking: forget the selected row's usage, rank again, and say
+    /// so in the footer. Nothing for a row the panel would not offer it on.
+    fn reset_ranking(&mut self, cx: &mut Context<Self>) {
+        if !self.available_actions().contains(&Action::ResetRanking) {
+            return;
+        }
+        let Some(id) = self.selected_item().map(|item| item.id.clone()) else {
+            return;
+        };
+        let Some(history) = self.root.reset_ranking(&id) else {
+            return;
+        };
+        self.save_frecency(history, cx);
+        self.rerank_keeping(&id, cx);
+        self.ranking_reset = Some(id);
     }
 
     /// Write the usage history, off this thread.
@@ -6247,6 +6287,13 @@ impl Launcher {
                     .is_some_and(|r| matches!(r.verdict, Verdict::Taken { .. }));
                 (note, if taken { "Overwrite" } else { "Save" }.to_string())
             }
+            // Reset Ranking's confirmation, while its row is selected.
+            None if matches!(self.mode, Mode::Root)
+                && self.ranking_reset.is_some()
+                && self.selected_item().map(|item| &item.id) == self.ranking_reset.as_ref() =>
+            {
+                ("Ranking reset".to_string(), verb)
+            }
             None => (status, verb),
         };
 
@@ -7205,6 +7252,25 @@ mod tests {
                 ("Set Hotkey", ActionGroup::Configure)
             ]
         );
+    }
+
+    /// Reset Ranking is offered on an indexed row with a history, and nowhere
+    /// else: there is nothing to reset on a row never used, and an answer, a
+    /// file or a fallback is not ranked by this history.
+    #[test]
+    fn only_a_used_indexed_row_can_have_its_ranking_reset() {
+        use lumen_core::root::Source;
+
+        assert_eq!(
+            super::reset_ranking_action(Source::Indexed(0), 3),
+            Some(Action::ResetRanking)
+        );
+        assert_eq!(super::reset_ranking_action(Source::Indexed(0), 0), None);
+        for source in [Source::Answer(0), Source::File(0), Source::Fallback(0)] {
+            assert_eq!(super::reset_ranking_action(source, 3), None);
+        }
+        assert_eq!(Action::ResetRanking.verb(), "Reset Ranking");
+        assert_eq!(Action::ResetRanking.group(), ActionGroup::Configure);
     }
 
     /// A folder's panel opens it: it is no application. And it can be kept

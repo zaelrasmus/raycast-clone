@@ -110,6 +110,10 @@ pub enum Action {
     /// the row's own actions, like `Favorite`, and carried out in the
     /// launcher, which writes `shortcuts.json`.
     Configure(crate::shortcuts::Configure),
+    /// Forget the row's usage, so it ranks as if never opened. Offered beside
+    /// the row's own actions when it has a history, and carried out in the
+    /// launcher, which writes `frecency.json`.
+    ResetRanking,
     /// Open it, raising a copy that is already running rather than starting a
     /// second one.
     Launch(LaunchTarget),
@@ -230,7 +234,7 @@ pub enum ActionGroup {
     Manage,
     /// Adding the row to the favourites, or moving it among them (F15).
     Favorite,
-    /// The row's alias and hotkey (F17).
+    /// The row's alias and hotkey (F17), and resetting its ranking.
     Configure,
 }
 
@@ -296,6 +300,7 @@ impl Action {
         match self {
             Action::Favorite(change) => change.verb(),
             Action::Configure(configure) => configure.verb(),
+            Action::ResetRanking => "Reset Ranking",
             Action::Launch(_) => "Open Application",
             Action::LaunchNew(_) => "New Application Window",
             Action::CopyToClipboard(_) => "Copy",
@@ -349,7 +354,7 @@ impl Action {
     pub fn group(&self) -> ActionGroup {
         match self {
             Action::Favorite(_) => ActionGroup::Favorite,
-            Action::Configure(_) => ActionGroup::Configure,
+            Action::Configure(_) | Action::ResetRanking => ActionGroup::Configure,
             Action::LaunchNew(_) | Action::ChooseBrowser(_) => ActionGroup::Alternate,
             Action::OpenLink(open) if open.private => ActionGroup::Alternate,
             Action::CopyToClipboard(_) | Action::CopyAnswer(_) | Action::CopyExpression(_) => {
@@ -396,6 +401,7 @@ impl Action {
             Action::Favorite(Change::MoveDown) => "arrow-down",
             Action::Configure(configure) if configure.is_alias() => "text",
             Action::Configure(_) => "keyboard",
+            Action::ResetRanking => "arrow-down",
             Action::Launch(_) | Action::OpenLink(_) => "open",
             Action::LaunchNew(_)
             | Action::ArrangeWindow(_)
@@ -457,6 +463,7 @@ impl Action {
             | Action::OpenTimerForm { .. }
             | Action::Favorite(_)
             | Action::Configure(_)
+            | Action::ResetRanking
             | Action::Timer(_) => {
                 anyhow::bail!("{self:?} is carried out by the launcher's owner, not the platform")
             }

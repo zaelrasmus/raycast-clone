@@ -1142,6 +1142,16 @@ impl RootSearch {
         Some(self.frecency.clone())
     }
 
+    /// Reset Ranking: forget `id`'s usage, and the history to save, or
+    /// `None` when it had none.
+    pub fn reset_ranking(&mut self, id: &str) -> Option<Frecency> {
+        if !self.frecency.forget([id]) {
+            return None;
+        }
+        self.home = None;
+        Some(self.frecency.clone())
+    }
+
     pub fn record_use(&mut self, id: &str) -> Frecency {
         self.frecency.record(id);
         self.home = None;
@@ -1452,6 +1462,28 @@ mod tests {
             )])
         );
         assert!(!root.sections()[0].header);
+    }
+
+    /// Reset Ranking drops one row's history, and only when it has one: the
+    /// row falls back to where the alphabet puts it.
+    #[test]
+    fn resetting_a_ranking_drops_only_that_history() {
+        let mut root = mixed();
+        root.rank("");
+        let unused = titles(&root);
+        assert!(root.reset_ranking("Slack").is_none());
+
+        root.record_use("Slack");
+        root.record_use("Search Snippets");
+        root.rank("");
+        assert_ne!(titles(&root), unused);
+
+        let history = root.reset_ranking("Slack").expect("Slack had a history");
+        assert_eq!(history.boost("Slack"), 0);
+        assert!(history.boost("Search Snippets") > 0);
+        root.reset_ranking("Search Snippets");
+        root.rank("");
+        assert_eq!(titles(&root), unused);
     }
 
     /// What no section claims is not browsed, and a name this build does not
