@@ -2182,7 +2182,12 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) {
         self.shortcut_table = shortcuts.clone();
-        if self.root.set_shortcuts(shortcuts) && matches!(self.mode, Mode::Root) {
+        let forgot = self.root.forget_hotkeyed(shortcuts);
+        let changed = forgot.is_some();
+        if let Some(history) = forgot {
+            self.save_frecency(history, cx);
+        }
+        if (self.root.set_shortcuts(shortcuts) || changed) && matches!(self.mode, Mode::Root) {
             self.rerank(cx);
             cx.notify();
         }
@@ -4707,13 +4712,8 @@ impl Launcher {
             action => Hotkeyed::Perform { action, kind },
         };
 
-        let private = matches!(
-            &hotkeyed,
-            Hotkeyed::Perform { action: Action::OpenLink(open), .. } if open.private
-        );
-        if !private {
-            self.record_use(id, cx);
-        }
+        // Not recorded as a use: a command run by its hotkey is one the user
+        // does not look for in the list, so it must not climb it (F17).
         Some(hotkeyed)
     }
 
@@ -4731,6 +4731,11 @@ impl Launcher {
             cx.background_spawn(async move { index.set_boosts(&history) })
                 .detach();
         }
+        self.save_frecency(history, cx);
+    }
+
+    /// Write the usage history, off this thread.
+    fn save_frecency(&self, history: Frecency, cx: &mut Context<Self>) {
         let path = self.paths.frecency_file();
         cx.background_spawn(async move {
             if let Err(error) = history.save(&path) {

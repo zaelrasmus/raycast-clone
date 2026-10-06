@@ -1127,6 +1127,21 @@ impl RootSearch {
     ///
     /// Returned rather than written: the write is disk I/O and belongs on a
     /// background thread, which is the caller's to choose.
+    /// Forget the usage of every command that has a hotkey (F17), and the
+    /// history to save when anything was forgotten.
+    ///
+    /// A command run by its hotkey is one the user does not look for in the
+    /// list, so its use must not push it up there; Raycast keeps such
+    /// commands out of its suggestions for the same reason.
+    pub fn forget_hotkeyed(&mut self, shortcuts: &crate::shortcuts::Shortcuts) -> Option<Frecency> {
+        let ids = shortcuts.hotkeys().into_iter().map(|(id, _)| id);
+        if !self.frecency.forget(ids) {
+            return None;
+        }
+        self.home = None;
+        Some(self.frecency.clone())
+    }
+
     pub fn record_use(&mut self, id: &str) -> Frecency {
         self.frecency.record(id);
         self.home = None;

@@ -774,6 +774,11 @@ in that command, the hotkey hides it, like the launcher's own key. An id
 whose application is uninstalled keeps its hotkey, which works again if it
 is reinstalled.
 
+A command with a hotkey does not climb the list with use. Its presses are
+not counted, and its earlier usage is dropped when the hotkey is set, so a
+window command pressed forty times a day does not push your applications
+down. Search for it by name and it is still found.
+
 An `alias` is a short name typed in the launcher:
 
 - **Typed whole** (`lh`), its command is the first row, above every match.

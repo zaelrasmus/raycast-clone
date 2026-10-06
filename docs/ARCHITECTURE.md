@@ -3517,10 +3517,14 @@ whenever the file is saved. A press resolves the slot to an id and the id to
 the item in the launcher's index, then runs the item's first action with the
 launcher left hidden.
 
-The launcher resolves it because it already holds the index and the usage
-history. A use is recorded there, by the code `Enter` uses, so a command run
-by its hotkey ranks as one run from the list, and frecency is written in one
-place. What comes back is only what needs the daemon: a builtin, a timer, a
+The launcher resolves it because it already holds the index. A hotkey press
+is not recorded as a use, and a command that has a hotkey has its usage
+history dropped whenever the shortcuts file is applied. A hotkey is evidence
+that the user does not look for that command in the list, so its use must
+not push it up there over what they do look for: forty minimises a day would
+otherwise outrank every application. Raycast keeps commands with hotkeys out
+of its suggestions for the same reason. What comes back is only what needs
+the daemon: a builtin, a timer, a
 platform call on a background thread, or an arrangement.
 
 An arrangement is the one place this differs from 7.15. From the launcher,

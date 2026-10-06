@@ -108,6 +108,14 @@ impl Frecency {
         true
     }
 
+    /// Drop the histories of `ids`. Whether anything changed, so a caller
+    /// saves only when it must.
+    pub fn forget<'a>(&mut self, ids: impl IntoIterator<Item = &'a str>) -> bool {
+        ids.into_iter().fold(false, |changed, id| {
+            self.entries.remove(id).is_some() | changed
+        })
+    }
+
     /// The ranking bonus for `id`, to be added to a match score.
     pub fn boost(&self, id: &str) -> u32 {
         self.boost_at(id, now())
@@ -163,6 +171,21 @@ mod tests {
     use super::*;
 
     const DAY: u64 = 24 * 60 * 60;
+
+    #[test]
+    fn forgetting_drops_only_the_named_histories() {
+        let mut frecency = Frecency::new();
+        frecency.record("window:minimize");
+        frecency.record("app:code");
+
+        assert!(frecency.forget(["window:minimize", "window:absent"]));
+        assert_eq!(frecency.boost("window:minimize"), 0);
+        assert!(frecency.boost("app:code") > 0);
+        assert!(
+            !frecency.forget(["window:minimize"]),
+            "nothing left to drop"
+        );
+    }
 
     #[test]
     fn unknown_entries_get_no_boost() {
