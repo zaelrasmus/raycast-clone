@@ -2167,7 +2167,7 @@ The style schema, version 1. Base values are the constants as F14 left them.
 | `actions.width` | 440 | 280--720 | The action panel's popover; never wider than the window less `actions.offset-x` either side (7.47) |
 | `actions.offset-x`, `actions.offset-y` | 8 | 0--64 | In from the edges `actions.anchor` names, across and down; right or down from the centre on a centred axis. The window keeps `actions.offset-y` clear above and below the popover (7.47) |
 | `actions.max-rows` | 7 | 3--12 | The popover's rows shown before it scrolls, read as whole rows; its height is computed from them (7.47) |
-| `grid.cell` | 82 | 56--128 | A grid's square cell; the glyph is a fixed 0.55 of it, and the columns are as many as fit, never a token (F18) |
+| `grid.cell` | 82 | 56--128 | A grid's minimum cell side; cells stretch to fill the row. The glyph is a fixed 0.55 of the stretched cell, and the columns are as many as fit, never a token (F18) |
 | `grid.gap` | 8 | 0--24 | Between a grid's cells, across and down (F18) |
 | `grid.radius` | 8 | 0--32 | A grid cell's corner; at most half the cell (F18) |
 

@@ -1089,6 +1089,9 @@ struct ViewState {
     /// The flattened rows after the current filter. Rebuilt when the query
     /// changes, not on every frame.
     rows: Vec<crate::view::Row>,
+    /// The side of a grid's cells, the one `rows` were cut with (F18): what
+    /// a strip is as tall as, for sizing, scrolling and drawing alike.
+    cell: f32,
     /// GPUI's virtualised-list state. Replaced whenever `rows` changes length,
     /// because it caches measured heights by index.
     list: gpui::ListState,
@@ -2472,7 +2475,7 @@ impl Launcher {
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
         let restyled = theme.style != self.theme.style;
-        let columns = self.open_grid_columns();
+        let fit = self.open_grid_fit();
         // Icons are extracted at a resolution that follows their square, so
         // a style that changes the square needs them extracted again, or a
         // larger icon is a small one stretched (F1, F15). Once per change of
@@ -2488,7 +2491,7 @@ impl Launcher {
         if restyled {
             self.rebuild_rows();
         }
-        if self.open_grid_columns() != columns {
+        if self.open_grid_fit() != fit {
             self.restrip_view();
         }
         // A style is geometry: the window's height and its anchor may both
@@ -2524,10 +2527,10 @@ impl Launcher {
         let units_changed = self.root.set_weather_units(config.weather.units);
         let arranged = config.root != self.config.root;
         self.root.set_arrangement(config.root.clone());
-        let columns = self.open_grid_columns();
+        let fit = self.open_grid_fit();
         self.config = config;
         // A configured width is the grid's too.
-        if self.open_grid_columns() != columns {
+        if self.open_grid_fit() != fit {
             self.restrip_view();
         }
         if (units_changed || arranged) && matches!(self.mode, Mode::Root) {
@@ -2593,7 +2596,8 @@ impl Launcher {
         let cap = self.config.list_height(metrics) - self.card_height();
         let mut used = 0.0;
         for row in &self.rows {
-            let height = crate::view::row_height(row, metrics);
+            // The root list has no grid, so no strips to use a cell side.
+            let height = crate::view::row_height(row, metrics, metrics.grid_cell);
             if used + height > cap {
                 break;
             }
@@ -2692,6 +2696,7 @@ impl Launcher {
             &state.rows,
             shape,
             metrics,
+            state.cell,
             self.config.list_height(metrics),
             self.config.full_list_height(metrics),
         )
@@ -2942,9 +2947,12 @@ impl Launcher {
             lumen_core::view::View::Detail(_) => Vec::new(),
         };
 
-        let rows = match &view {
-            lumen_core::view::View::List(list) => crate::view::rows(list, self.view_columns(list)),
-            lumen_core::view::View::Detail(_) => Vec::new(),
+        let (rows, cell) = match &view {
+            lumen_core::view::View::List(list) => {
+                let fit = self.view_grid_fit(list);
+                (crate::view::rows(list, fit.columns), fit.cell)
+            }
+            lumen_core::view::View::Detail(_) => (Vec::new(), self.metrics().grid_cell),
         };
 
         self.clear_query_text(cx);
@@ -2957,6 +2965,7 @@ impl Launcher {
             list: crate::view::list_state(rows.len()),
             selected: 0,
             rows,
+            cell,
             candidates: Arc::new(candidates),
             sent_query: String::new(),
             completions: None,
@@ -2983,9 +2992,9 @@ impl Launcher {
     }
 
     /// The active style's geometry, as numbers, for sizing the window.
-    /// How many columns a view's list has in this window (F18).
-    fn view_columns(&self, list: &lumen_core::view::List) -> usize {
-        crate::view::grid_columns(list, self.metrics(), self.width())
+    /// How a view's list fits this window: its columns and their cells (F18).
+    fn view_grid_fit(&self, list: &lumen_core::view::List) -> crate::view::GridFit {
+        crate::view::grid_fit(list, self.metrics(), self.width())
     }
 
     fn metrics(&self) -> &lumen_core::style::Metrics {
@@ -3015,6 +3024,7 @@ impl Launcher {
             loading: true,
             view: lumen_core::view::View::List(Default::default()),
             rows: Vec::new(),
+            cell: self.metrics().grid_cell,
             list: crate::view::list_state(0),
             selected: 0,
             candidates: Arc::new(Vec::new()),
@@ -3122,6 +3132,7 @@ impl Launcher {
         let (item_ix, offset) = crate::view::reveal(
             &state.rows,
             self.metrics(),
+            state.cell,
             (top.item_ix, f32::from(top.offset_in_item)),
             row,
             self.view_rows_height(state),
@@ -3575,7 +3586,8 @@ impl Launcher {
             return;
         };
 
-        let rows = crate::view::rows_where(list, self.view_columns(list), |index| {
+        let fit = self.view_grid_fit(list);
+        let rows = crate::view::rows_where(list, fit.columns, |index| {
             keep.as_ref().is_none_or(|keep| keep.contains(&index))
         });
 
@@ -3593,17 +3605,19 @@ impl Launcher {
 
         state.list = crate::view::list_state(rows.len());
         state.rows = rows;
+        state.cell = fit.cell;
     }
 
-    /// How many columns the open view's grid has now, if a grid is open.
-    fn open_grid_columns(&self) -> Option<usize> {
+    /// How the open view's grid fits the window now, if a grid is open.
+    fn open_grid_fit(&self) -> Option<crate::view::GridFit> {
         let Mode::View(state) = &self.mode else {
             return None;
         };
         let lumen_core::view::View::List(list) = &state.view else {
             return None;
         };
-        (list.presentation == lumen_core::view::Presentation::Grid).then(|| self.view_columns(list))
+        (list.presentation == lumen_core::view::Presentation::Grid)
+            .then(|| self.view_grid_fit(list))
     }
 
     /// Cut the open grid into strips again, for a width that has changed
@@ -4450,6 +4464,8 @@ impl Launcher {
         let (item_ix, offset) = crate::view::reveal(
             &self.rows,
             self.metrics(),
+            // The root list has no grid.
+            self.metrics().grid_cell,
             (top.item_ix, f32::from(top.offset_in_item)),
             row,
             self.rows_height(),
@@ -5916,6 +5932,7 @@ impl Launcher {
             lumen_core::view::View::List(list) => crate::view::render_list(
                 list,
                 &state.rows,
+                state.cell,
                 &state.list,
                 state.selected,
                 &self.theme,

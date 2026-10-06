@@ -119,9 +119,11 @@ pub struct Metrics {
     /// never set (I-10).
     pub actions_max_rows: f32,
     /// A grid's square cell, the space between cells and a cell's corner
-    /// (F18). How many columns there are is not a token: as many as fit,
-    /// through `layout::view::grid_columns`, since structure is not
-    /// themeable (I-11). The glyph is a fixed share of the cell.
+    /// (F18). `grid_cell` is the minimum cell side; cells stretch to fill
+    /// the row, through `layout::view::grid_cell_side`. How many columns
+    /// there are is not a token: as many as fit, through
+    /// `layout::view::grid_columns`, since structure is not themeable
+    /// (I-11). The glyph is a fixed share of the stretched cell.
     pub grid_cell: f32,
     pub grid_gap: f32,
     pub grid_radius: f32,

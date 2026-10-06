@@ -200,23 +200,36 @@ pub fn grid_move(rows: &[Row], selected: usize, direction: Direction) -> Option<
     cells.get(column).or(cells.last()).copied()
 }
 
-/// How many columns `list` has in a window `width` wide: those that fit
-/// between the gutters, in the list's share of the window beside a detail
-/// pane. A list of rows has one.
-pub fn grid_columns(list: &List, metrics: &Metrics, width: f32) -> usize {
+/// How a grid fits its width (F18): how many columns, and the side of the
+/// cells they share it with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridFit {
+    pub columns: usize,
+    /// Every cell's side, the short last strip's too: `grid.cell` or more,
+    /// stretched so a full strip fills the width.
+    pub cell: f32,
+}
+
+/// How `list` fits a window `width` wide: the columns that fit between the
+/// gutters, in the list's share of the window beside a detail pane, and the
+/// cells stretched to fill them. A list of rows has one column, and its cell
+/// is the style's, unused.
+pub fn grid_fit(list: &List, metrics: &Metrics, width: f32) -> GridFit {
     if list.presentation != Presentation::Grid {
-        return 1;
+        return GridFit {
+            columns: 1,
+            cell: metrics.grid_cell,
+        };
     }
     let width = if list.showing_detail {
         width * layout::view::DETAIL_LIST_SHARE
     } else {
         width
-    };
-    layout::view::grid_columns(
-        width - 2.0 * metrics.gutter,
-        metrics.grid_cell,
-        metrics.grid_gap,
-    )
+    } - 2.0 * metrics.gutter;
+    GridFit {
+        columns: layout::view::grid_columns(width, metrics.grid_cell, metrics.grid_gap),
+        cell: layout::view::grid_cell_side(width, metrics.grid_cell, metrics.grid_gap),
+    }
 }
 
 /// Fresh list state for `count` rows.
@@ -227,12 +240,15 @@ pub fn list_state(count: usize) -> ListState {
 }
 
 /// The height of one row, so the window can be sized before anything is drawn.
-pub fn row_height(row: &Row, metrics: &Metrics) -> f32 {
+///
+/// `cell` is the grid's cell side, [`GridFit::cell`], which a strip is
+/// as tall as with its gap; a list of rows has no strips to use it.
+pub fn row_height(row: &Row, metrics: &Metrics, cell: f32) -> f32 {
     match row {
         Row::Section(..) => metrics.section_height,
         Row::Item(_) => metrics.row_height,
         // Every strip, the short last one too (I-10).
-        Row::Cells(_) => metrics.grid_cell + metrics.grid_gap,
+        Row::Cells(_) => cell + metrics.grid_gap,
     }
 }
 
@@ -263,7 +279,14 @@ pub enum Shape {
 /// way through the last row it shows. Accumulating whole rows until the
 /// next one would not fit is what keeps I-10's promise here: a partial row
 /// is never left clipped at the bottom edge.
-pub fn rows_height(rows: &[Row], shape: Shape, metrics: &Metrics, cap: f32, full: f32) -> f32 {
+pub fn rows_height(
+    rows: &[Row],
+    shape: Shape,
+    metrics: &Metrics,
+    cell: f32,
+    cap: f32,
+    full: f32,
+) -> f32 {
     if shape == Shape::Detail {
         return full;
     }
@@ -278,7 +301,7 @@ pub fn rows_height(rows: &[Row], shape: Shape, metrics: &Metrics, cap: f32, full
     let mut used = 0.0;
     let mut all_fit = true;
     for row in rows {
-        let height = row_height(row, metrics);
+        let height = row_height(row, metrics, cell);
         if used + height > cap {
             all_fit = false;
             break;
@@ -299,7 +322,7 @@ pub fn rows_height(rows: &[Row], shape: Shape, metrics: &Metrics, cap: f32, full
     // A single row taller than the whole cap is shown anyway: an empty
     // window is worse than one row that does not quite fit.
     if used == 0.0 {
-        return row_height(&rows[0], metrics);
+        return row_height(&rows[0], metrics, cell);
     }
 
     used
@@ -319,11 +342,12 @@ pub fn rows_height(rows: &[Row], shape: Shape, metrics: &Metrics, cap: f32, full
 pub fn reveal(
     rows: &[Row],
     metrics: &Metrics,
+    cell: f32,
     top: (usize, f32),
     row: usize,
     viewport: f32,
 ) -> (usize, f32) {
-    let row_height = |row: &Row| row_height(row, metrics);
+    let row_height = |row: &Row| row_height(row, metrics, cell);
     let offset = |index: usize| -> f32 { rows.iter().take(index).map(row_height).sum() };
     let Some(target) = rows.get(row) else {
         return top;
@@ -360,11 +384,13 @@ pub fn reveal(
 ///
 /// `selected` is an index into the flat item order, not into `rows`: the
 /// selection moves between items and steps over headers, because a header is
-/// not something you can choose.
+/// not something you can choose. `cell` is the side of a grid's cells, the
+/// one its rows were cut with, [`GridFit::cell`].
 #[allow(clippy::too_many_arguments)]
 pub fn render_list(
     source: &List,
     rows: &[Row],
+    cell: f32,
     state: &ListState,
     selected: usize,
     theme: &Theme,
@@ -419,6 +445,7 @@ pub fn render_list(
                     },
                     Some(Row::Cells(cells)) => render_strip(
                         cells,
+                        cell,
                         &items,
                         selected,
                         &colors,
@@ -904,11 +931,13 @@ fn render_item(
         .into_any_element()
 }
 
-/// One strip of a grid (F18): square cells a gap apart from the gutter on,
-/// with the gap below them, so every strip is the same height (I-10).
+/// One strip of a grid (F18): square cells `cell` wide, a gap apart from the
+/// gutter on, with the gap below them, so every strip is the same height
+/// (I-10). A short last strip's cells are as wide, from the left.
 #[allow(clippy::too_many_arguments)]
 fn render_strip(
     cells: &[usize],
+    cell: f32,
     items: &[Item],
     selected: usize,
     colors: &Colors,
@@ -917,15 +946,16 @@ fn render_strip(
     icons: &IconCache,
     cx: &mut App,
 ) -> AnyElement {
+    let side = px(cell);
     div()
-        .h(geometry.grid_cell() + geometry.grid_gap())
+        .h(side + geometry.grid_gap())
         .px(geometry.gutter())
         .flex()
         .gap(geometry.grid_gap())
         .children(cells.iter().map(|&index| {
             let selected = index == selected;
             div()
-                .size(geometry.grid_cell())
+                .size(side)
                 .flex_none()
                 .flex()
                 .items_center()
@@ -942,6 +972,7 @@ fn render_strip(
                 })
                 .child(render_glyph(
                     items.get(index).and_then(|item| item.icon.as_ref()),
+                    cell,
                     colors,
                     geometry,
                     images,
@@ -952,17 +983,18 @@ fn render_strip(
         .into_any_element()
 }
 
-/// A cell's glyph, centred at its share of the cell. On its own so a
-/// picture of the emoji can take the text's place later.
+/// A cell's glyph, centred at its share of a cell `cell` wide. On its own
+/// so a picture of the emoji can take the text's place later.
 fn render_glyph(
     icon: Option<&Icon>,
+    cell: f32,
     colors: &Colors,
     geometry: &Geometry,
     images: &ImageCache,
     icons: &IconCache,
     cx: &mut App,
 ) -> AnyElement {
-    let size = px(layout::view::grid_glyph(geometry.metrics().grid_cell));
+    let size = px(layout::view::grid_glyph(cell));
     match icon {
         Some(Icon::Text { text }) => div()
             .size(size)
@@ -1498,18 +1530,29 @@ mod tests {
     }
 
     /// A strip is a cell and a gap tall, every one of them, the short last
-    /// one included (I-10); a header is as tall as in a list of rows.
+    /// one included (I-10); a header is as tall as in a list of rows. The
+    /// cell is the stretched one, not the style's minimum.
     #[test]
     fn a_strip_is_a_cell_and_a_gap_tall() {
         let metrics = Metrics::BASE;
-        let strip = metrics.grid_cell + metrics.grid_gap;
-        let rows = rows(&grid(), 8);
+        let fit = grid_fit(&grid(), &metrics, metrics.window_width);
+        assert_eq!(
+            fit,
+            GridFit {
+                columns: 7,
+                cell: 92.0
+            }
+        );
+        let strip = fit.cell + metrics.grid_gap;
+        let rows = rows(&grid(), fit.columns);
+        let height = |row: &Row| row_height(row, &metrics, fit.cell);
 
-        assert_eq!(row_height(&rows[7], &metrics), strip);
-        assert_eq!(row_height(&rows[6], &metrics), strip);
-        assert_eq!(row_height(&rows[0], &metrics), metrics.section_height);
-        let total: f32 = rows.iter().map(|row| row_height(row, &metrics)).sum();
-        assert_eq!(total, 5.0 * metrics.section_height + 7.0 * strip);
+        assert!(strip > metrics.grid_cell + metrics.grid_gap);
+        assert_eq!(height(&rows[7]), strip);
+        assert_eq!(height(rows.last().unwrap()), strip);
+        assert_eq!(height(&rows[0]), metrics.section_height);
+        let total: f32 = rows.iter().map(height).sum();
+        assert_eq!(total, 5.0 * metrics.section_height + 8.0 * strip);
     }
 
     /// Revealing the last cell from the top scrolls the list so its strip's
@@ -1518,18 +1561,22 @@ mod tests {
     fn revealing_a_cell_below_the_fold_scrolls_to_its_strip() {
         let metrics = Metrics::BASE;
         let rows = rows(&grid(), 8);
-        let height = |row: &Row| row_height(row, &metrics);
-        let viewport = metrics.section_height * 2.0 + (metrics.grid_cell + metrics.grid_gap) * 3.0;
+        let cell = 92.0;
+        let height = |row: &Row| row_height(row, &metrics, cell);
+        let viewport = metrics.section_height * 2.0 + (cell + metrics.grid_gap) * 3.0;
 
         let target = row_of(&rows, 34).unwrap();
-        let (index, offset) = reveal(&rows, &metrics, (0, 0.0), target, viewport);
+        let (index, offset) = reveal(&rows, &metrics, cell, (0, 0.0), target, viewport);
         let top: f32 = rows[..index].iter().map(height).sum::<f32>() + offset;
         let total: f32 = rows.iter().map(height).sum();
         assert_eq!(top, total - viewport);
 
         // Back up to the first cell of a section: its header shows too.
         let first = row_of(&rows, 9).unwrap();
-        assert_eq!(reveal(&rows, &metrics, (9, 0.0), first, viewport), (5, 0.0));
+        assert_eq!(
+            reveal(&rows, &metrics, cell, (9, 0.0), first, viewport),
+            (5, 0.0)
+        );
     }
 
     /// The columns are the ones that fit in the window less the gutter
@@ -1542,12 +1589,19 @@ mod tests {
             columns * metrics.grid_cell + (columns - 1.0) * metrics.grid_gap + 2.0 * metrics.gutter
         };
 
-        assert_eq!(grid_columns(&list, &metrics, width(8.0)), 8);
-        assert_eq!(grid_columns(&list, &metrics, width(8.0) - 1.0), 7);
+        let columns = |width| grid_fit(&list, &metrics, width).columns;
+        assert_eq!(columns(width(8.0)), 8);
+        assert_eq!(columns(width(8.0) - 1.0), 7);
+        // Exactly eight: the minimum. A pixel short, seven stretched to fill.
+        assert_eq!(
+            grid_fit(&list, &metrics, width(8.0)).cell,
+            metrics.grid_cell
+        );
+        assert!(grid_fit(&list, &metrics, width(8.0) - 1.0).cell > metrics.grid_cell);
         list.showing_detail = true;
         let pane = (width(8.0) - 2.0 * metrics.gutter) / layout::view::DETAIL_LIST_SHARE
             + 2.0 * metrics.gutter;
-        assert!(grid_columns(&list, &metrics, pane) < 8);
+        assert!(grid_fit(&list, &metrics, pane).columns < 8);
     }
 
     /// A preview card is in the palette's monospace family unless the user
@@ -1622,23 +1676,44 @@ mod tests {
         let metrics = Metrics::BASE;
         let header = metrics.section_height;
         let item = metrics.row_height;
-        let row_height = |row: &Row| row_height(row, &metrics);
+        let row_height = |row: &Row| row_height(row, &metrics, metrics.grid_cell);
         // What the launcher gives it: two headers and six items.
         let viewport = header * 2.0 + item * 6.0;
 
         // Visible already: nothing moves.
         assert_eq!(
-            reveal(&rows, &Metrics::BASE, (0, 0.0), 7, viewport),
+            reveal(
+                &rows,
+                &Metrics::BASE,
+                Metrics::BASE.grid_cell,
+                (0, 0.0),
+                7,
+                viewport
+            ),
             (0, 0.0)
         );
 
         // The second verb, one row below the edge: scroll by one item.
-        let (index, offset) = reveal(&rows, &Metrics::BASE, (0, 0.0), 8, viewport);
+        let (index, offset) = reveal(
+            &rows,
+            &Metrics::BASE,
+            Metrics::BASE.grid_cell,
+            (0, 0.0),
+            8,
+            viewport,
+        );
         let top: f32 = rows[..index].iter().map(row_height).sum::<f32>() + offset;
         assert_eq!(top, item);
 
         // The last row, from the top.
-        let (index, offset) = reveal(&rows, &Metrics::BASE, (0, 0.0), 12, viewport);
+        let (index, offset) = reveal(
+            &rows,
+            &Metrics::BASE,
+            Metrics::BASE.grid_cell,
+            (0, 0.0),
+            12,
+            viewport,
+        );
         let top: f32 = rows[..index].iter().map(row_height).sum::<f32>() + offset;
         let total: f32 = rows.iter().map(row_height).sum();
         assert_eq!(top, total - viewport);
@@ -1652,9 +1727,29 @@ mod tests {
         rows.extend((5..11).map(Row::Item));
 
         // Scrolled so the first verb (row 7) is above the top edge.
-        assert_eq!(reveal(&rows, &Metrics::BASE, (9, 0.0), 7, 200.0), (6, 0.0));
+        assert_eq!(
+            reveal(
+                &rows,
+                &Metrics::BASE,
+                Metrics::BASE.grid_cell,
+                (9, 0.0),
+                7,
+                200.0
+            ),
+            (6, 0.0)
+        );
         // And back to the very first item: its header too.
-        assert_eq!(reveal(&rows, &Metrics::BASE, (9, 0.0), 1, 200.0), (0, 0.0));
+        assert_eq!(
+            reveal(
+                &rows,
+                &Metrics::BASE,
+                Metrics::BASE.grid_cell,
+                (9, 0.0),
+                1,
+                200.0
+            ),
+            (0, 0.0)
+        );
     }
 
     /// Carbon's numbers: a list 371 tall holds nine 38 px rows, 342.
@@ -1673,14 +1768,20 @@ mod tests {
         let (metrics, cap, full) = carbon();
         let rows = vec![Row::Section("Today".into(), None), Row::Item(0)];
 
-        assert_eq!(rows_height(&rows, Shape::Pane, &metrics, cap, full), full);
+        assert_eq!(
+            rows_height(&rows, Shape::Pane, &metrics, metrics.grid_cell, cap, full),
+            full
+        );
     }
 
     #[test]
     fn a_detail_view_is_as_tall_as_a_full_root_list() {
         let (metrics, cap, full) = carbon();
 
-        assert_eq!(rows_height(&[], Shape::Detail, &metrics, cap, full), full);
+        assert_eq!(
+            rows_height(&[], Shape::Detail, &metrics, metrics.grid_cell, cap, full),
+            full
+        );
     }
 
     /// Two headers and eight rows fit in 371 and are taller than nine rows:
@@ -1693,7 +1794,7 @@ mod tests {
         rows.push(Row::Section("Yesterday".into(), None));
         rows.extend((4..8).map(Row::Item));
 
-        let height = rows_height(&rows, Shape::Pane, &metrics, cap, full);
+        let height = rows_height(&rows, Shape::Pane, &metrics, metrics.grid_cell, cap, full);
 
         assert_eq!(height, 2.0 * 32.0 + 8.0 * 38.0);
         assert!(height > full && height <= cap);
@@ -1709,7 +1810,7 @@ mod tests {
 
         for shape in [Shape::List, Shape::Pane] {
             assert_eq!(
-                rows_height(&rows, shape, &metrics, cap, full),
+                rows_height(&rows, shape, &metrics, metrics.grid_cell, cap, full),
                 32.0 + 8.0 * 38.0
             );
         }
@@ -1721,7 +1822,7 @@ mod tests {
         let rows = vec![Row::Item(0), Row::Item(1)];
 
         assert_eq!(
-            rows_height(&rows, Shape::List, &metrics, cap, full),
+            rows_height(&rows, Shape::List, &metrics, metrics.grid_cell, cap, full),
             2.0 * 38.0
         );
     }
@@ -1735,7 +1836,10 @@ mod tests {
         let (metrics, cap, full) = carbon();
 
         for shape in [Shape::List, Shape::Pane] {
-            assert_eq!(rows_height(&[], shape, &metrics, cap, full), full);
+            assert_eq!(
+                rows_height(&[], shape, &metrics, metrics.grid_cell, cap, full),
+                full
+            );
         }
     }
 
@@ -1743,8 +1847,8 @@ mod tests {
     fn a_header_is_shorter_than_a_row() {
         let metrics = Metrics::BASE;
         assert!(
-            row_height(&Row::Section("x".into(), None), &metrics)
-                < row_height(&Row::Item(0), &metrics)
+            row_height(&Row::Section("x".into(), None), &metrics, metrics.grid_cell)
+                < row_height(&Row::Item(0), &metrics, metrics.grid_cell)
         );
     }
 

@@ -401,6 +401,23 @@ pub mod view {
         }
     }
 
+    /// A cell's side in this much width (F18): `min_cell` is the least it
+    /// may be, and the cells stretch so a full strip fills the width, as
+    /// Raycast's do.
+    ///
+    /// The columns are [`grid_columns`]'s, and the side is what they share
+    /// of the width once the gaps between them are taken out, in whole
+    /// pixels so every cell is the same size. Floored, so the strip never
+    /// overflows; the pixels left over are fewer than the columns. Never
+    /// less than `min_cell`, so a width narrower than one cell still draws
+    /// one whole.
+    pub fn grid_cell_side(width: f32, min_cell: f32, gap: f32) -> f32 {
+        let columns = grid_columns(width, min_cell, gap) as f32;
+        let side = ((width - (columns - 1.0) * gap) / columns).floor();
+        // `max` drops a NaN for the minimum, as it drops a width too narrow.
+        side.max(min_cell)
+    }
+
     /// The glyph's side in a cell this size, in whole pixels.
     pub fn grid_glyph(cell: f32) -> f32 {
         (cell * GRID_GLYPH).round()
@@ -831,6 +848,43 @@ mod tests {
         assert_eq!(view::grid_columns(-10.0, 82.0, 8.0), 1);
         assert_eq!(view::grid_columns(f32::NAN, 82.0, 8.0), 1);
         assert_eq!(view::grid_columns(718.0, 0.0, 0.0), 1);
+    }
+
+    /// Cells that fit exactly are the minimum: Raycast's eight in 712.
+    #[test]
+    fn cells_that_fit_exactly_keep_the_minimum_side() {
+        assert_eq!(view::grid_cell_side(712.0, 82.0, 8.0), 82.0);
+        assert_eq!(view::grid_cell_side(82.0, 82.0, 8.0), 82.0);
+        assert_eq!(view::grid_cell_side(172.0, 82.0, 8.0), 82.0);
+    }
+
+    /// At the base window's width the grid has seven columns, and they
+    /// stretch to fill the row instead of leaving most of an eighth empty.
+    #[test]
+    fn cells_stretch_to_fill_the_row() {
+        let metrics = crate::style::Metrics::BASE;
+        let width = metrics.window_width - 2.0 * metrics.gutter;
+        let (cell, gap) = (metrics.grid_cell, metrics.grid_gap);
+        let columns = view::grid_columns(width, cell, gap);
+        let side = view::grid_cell_side(width, cell, gap);
+
+        assert_eq!(columns, 7);
+        assert_eq!(side, 92.0);
+        let used = columns as f32 * side + (columns - 1) as f32 * gap;
+        assert!(used <= width);
+        assert!(width - used < columns as f32);
+        // Whole pixels, floored: 7 columns in 700 share 652 as 93.14.
+        assert_eq!(view::grid_cell_side(700.0, 82.0, 8.0), 93.0);
+    }
+
+    /// One column takes the whole width; narrower than a cell, or not a
+    /// width at all, it is still a whole cell.
+    #[test]
+    fn one_column_takes_the_whole_width() {
+        assert_eq!(view::grid_cell_side(150.0, 82.0, 8.0), 150.0);
+        assert_eq!(view::grid_cell_side(40.0, 82.0, 8.0), 82.0);
+        assert_eq!(view::grid_cell_side(0.0, 82.0, 8.0), 82.0);
+        assert_eq!(view::grid_cell_side(f32::NAN, 82.0, 8.0), 82.0);
     }
 
     /// The glyph is the cell's proportion, in whole pixels: Raycast's 45 in
