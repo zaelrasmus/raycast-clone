@@ -217,7 +217,7 @@ unsafe fn move_to_adjacent_monitor(hwnd: HWND, layout: WindowLayout) -> Result<R
 /// return, because "next monitor" has to mean the one to the right every time.
 /// The enumeration order follows the display adapter and can change when a
 /// monitor is unplugged and plugged back in.
-fn enumerate() -> Result<Vec<HMONITOR>> {
+pub(crate) fn enumerate() -> Result<Vec<HMONITOR>> {
     let mut found: Vec<(HMONITOR, i32, i32)> = Vec::new();
 
     unsafe extern "system" fn callback(
@@ -250,7 +250,7 @@ fn enumerate() -> Result<Vec<HMONITOR>> {
 }
 
 /// The rectangle DWM actually draws, which is what the user sees.
-unsafe fn frame_bounds(hwnd: HWND) -> Result<Rect> {
+pub(crate) unsafe fn frame_bounds(hwnd: HWND) -> Result<Rect> {
     unsafe {
         let mut rect = RECT::default();
         DwmGetWindowAttribute(
@@ -271,7 +271,7 @@ unsafe fn frame_bounds(hwnd: HWND) -> Result<Rect> {
 }
 
 /// The window's outer rectangle, invisible border included.
-unsafe fn outer_bounds(hwnd: HWND) -> Result<Rect> {
+pub(crate) unsafe fn outer_bounds(hwnd: HWND) -> Result<Rect> {
     unsafe {
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &mut rect).context("GetWindowRect")?;
@@ -285,7 +285,7 @@ unsafe fn outer_bounds(hwnd: HWND) -> Result<Rect> {
 }
 
 /// Put the window's *visible* edges on `target`.
-unsafe fn place(hwnd: HWND, target: Rect) -> Result<()> {
+pub(crate) unsafe fn place(hwnd: HWND, target: Rect) -> Result<()> {
     unsafe {
         let mut outer = RECT::default();
         GetWindowRect(hwnd, &mut outer).context("GetWindowRect")?;

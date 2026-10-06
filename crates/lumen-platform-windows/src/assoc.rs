@@ -60,7 +60,7 @@ pub(crate) fn apps_for(path: &Path) -> Result<Vec<AppChoice>> {
 /// shell is what knows each handler's command line.
 pub(crate) fn open_path_with(path: &Path, app_id: &str) -> Result<()> {
     if app_id == EXPLORER {
-        return crate::shell_execute(&path.to_string_lossy());
+        return crate::shell_execute(&path.to_string_lossy(), None);
     }
     let extension = extension(path)
         .with_context(|| format!("{} has no extension to choose an app by", path.display()))?;

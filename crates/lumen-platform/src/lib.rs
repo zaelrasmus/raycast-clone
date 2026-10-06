@@ -17,6 +17,7 @@ use raw_window_handle::RawWindowHandle;
 pub mod chord;
 pub mod events;
 pub mod geometry;
+pub mod layouts;
 pub mod tiling;
 pub mod tray;
 pub mod window_commands;
@@ -27,6 +28,7 @@ pub use events::{
     GestureEvent, GestureSink, HoldPhase, Hotkey, Modifier, Modifiers,
 };
 pub use geometry::{MonitorInfo, Rect};
+pub use layouts::{AppTarget, Argument, LayoutEntry, LayoutReport, OtherWindows, WindowLayoutSpec};
 pub use tiling::{
     Anchor, Cycling, Gaps, LayoutKind, Length, Offset, Placement, WindowLayout, WindowSettings,
 };
@@ -585,6 +587,19 @@ pub trait Platform: Send + Sync {
     /// [`Platform::arrange_window`]. Logical pixels: each arrangement scales
     /// them by its monitor's scale factor.
     fn set_window_settings(&self, settings: WindowSettings);
+
+    /// Put each entry's application where the layout says, launching the
+    /// ones that are not running, then deal with the other windows on the
+    /// displays it uses (F17, 7.60).
+    ///
+    /// Blocking: it waits for launched applications' windows, a few seconds
+    /// at most, so it is called off the UI thread and never by search (I-3).
+    fn apply_layout(&self, spec: &WindowLayoutSpec) -> Result<LayoutReport>;
+
+    /// The windows on screen as layout entries, front first: each one's
+    /// application and its place as percentages of its monitor's work area
+    /// (7.60), at most [`layouts::MAX_PER_DISPLAY`] per display.
+    fn current_layout(&self) -> Result<Vec<LayoutEntry>>;
 
     /// Paste text into a window that is not ours (F11).
     ///

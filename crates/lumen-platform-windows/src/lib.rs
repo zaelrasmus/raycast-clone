@@ -15,8 +15,8 @@ use anyhow::{Context as _, Result};
 use lumen_platform::{
     AppEntry, ApplicationsSink, Browser, Chord, ClipboardContent, ClipboardSink, DateStyle,
     FocusOwner, ForegroundApp, GestureSink, Hotkey, HotkeyError, IconImage, IconSource, LaunchMode,
-    LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink, WindowLayout,
-    WindowRole, WindowSettings,
+    LaunchTarget, LayoutEntry, LayoutReport, LocalTime, MonitorInfo, Paste, Platform, Rect,
+    TrayInfo, TraySink, WindowLayout, WindowLayoutSpec, WindowRole, WindowSettings,
 };
 use raw_window_handle::RawWindowHandle;
 use windows::Win32::Foundation::HWND;
@@ -38,6 +38,7 @@ mod files;
 mod foreground;
 mod icons;
 mod input;
+mod layouts;
 mod monitor;
 mod paste;
 mod scripts;
@@ -233,7 +234,7 @@ impl Platform for WindowsPlatform {
                 anyhow::bail!("desktop entries are a Linux concept: {}", path.display())
             }
         };
-        shell_execute(&parsing_name)
+        shell_execute(&parsing_name, None)
     }
 
     fn start_clipboard_listener(&self, sink: ClipboardSink) -> Result<()> {
@@ -250,6 +251,14 @@ impl Platform for WindowsPlatform {
 
     fn set_window_settings(&self, settings: WindowSettings) {
         *self.arranging.settings.lock() = settings;
+    }
+
+    fn apply_layout(&self, spec: &WindowLayoutSpec) -> Result<LayoutReport> {
+        layouts::apply(&self.placements, &self.arranging, spec)
+    }
+
+    fn current_layout(&self) -> Result<Vec<LayoutEntry>> {
+        layouts::current()
     }
 
     fn format_date(
@@ -306,7 +315,7 @@ impl Platform for WindowsPlatform {
         match (browser, private) {
             (Some(browser), _) => browsers::open(url, browser, private),
             // The shell resolves a URL to whatever the user chose in Settings.
-            (None, false) => shell_execute(url),
+            (None, false) => shell_execute(url, None),
             // But it takes no flags, so a private window needs the program.
             (None, true) => browsers::open(url, &browsers::default()?, true),
         }
@@ -388,17 +397,21 @@ impl Platform for WindowsPlatform {
 ///
 /// Deliberately not `Command::spawn`: the shell is what knows a shortcut's
 /// arguments, working directory and elevation requirements, and what can
-/// activate a packaged application at all.
-fn shell_execute(parsing_name: &str) -> Result<()> {
+/// activate a packaged application at all. `parameters` are its command line.
+pub(crate) fn shell_execute(parsing_name: &str, parameters: Option<&str>) -> Result<()> {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+    let parameters = parameters.map(com::wide);
     let result = unsafe {
         ShellExecuteW(
             None,
             &com::wide("open"),
             &com::wide(parsing_name),
-            None,
+            match &parameters {
+                Some(wide) => windows::core::PCWSTR(wide.as_ptr()),
+                None => windows::core::PCWSTR::null(),
+            },
             None,
             SW_SHOWNORMAL,
         )

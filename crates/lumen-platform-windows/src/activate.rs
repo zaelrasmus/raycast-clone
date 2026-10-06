@@ -70,7 +70,7 @@ use crate::com;
 /// `.Zed` as an extension and produced `zedindustries` -- which matches no
 /// process on earth. A match is now anything in either list.
 #[derive(Debug, Default)]
-struct Identity {
+pub(crate) struct Identity {
     /// Model ids to compare against a window's own, exactly.
     aumids: Vec<String>,
     /// Lowercased executable stems, any of which counts as a match.
@@ -135,7 +135,7 @@ pub fn raise_existing(target: &LaunchTarget) -> Result<bool> {
 }
 
 /// Work out what to look for.
-fn identify(target: &LaunchTarget) -> Identity {
+pub(crate) fn identify(target: &LaunchTarget) -> Identity {
     let parsing = match target {
         LaunchTarget::ShellExecute(name) => name.clone(),
         LaunchTarget::AppUserModelId(aumid) => {
@@ -284,7 +284,7 @@ fn is_candidate(hwnd: HWND) -> bool {
     }
 }
 
-fn matches(hwnd: HWND, identity: &Identity) -> bool {
+pub(crate) fn matches(hwnd: HWND, identity: &Identity) -> bool {
     // The model id first: it is exact, and for a packaged application it is the
     // only thing that can work.
     if !identity.aumids.is_empty()
@@ -299,6 +299,11 @@ fn matches(hwnd: HWND, identity: &Identity) -> bool {
 
 /// A window's Application User Model ID, when it has one.
 fn window_aumid(hwnd: HWND) -> Option<String> {
+    window_aumid_as_written(hwnd).map(|aumid| aumid.to_lowercase())
+}
+
+/// [`window_aumid`] in the case the application gave it, to launch it by.
+pub(crate) fn window_aumid_as_written(hwnd: HWND) -> Option<String> {
     unsafe {
         let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd).ok()?;
 
@@ -315,12 +320,17 @@ fn window_aumid(hwnd: HWND) -> Option<String> {
 
         let value = store.GetValue(&key).ok()?;
         let text = value.to_string();
-        (!text.is_empty()).then(|| text.to_lowercase())
+        (!text.is_empty()).then_some(text)
     }
 }
 
 /// The lowercased stem of the executable a window belongs to.
 fn window_stem(hwnd: HWND) -> Option<String> {
+    stem_of(&image_path(hwnd)?)
+}
+
+/// The full path of the executable a window belongs to.
+pub(crate) fn image_path(hwnd: HWND) -> Option<String> {
     unsafe {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
@@ -342,8 +352,7 @@ fn window_stem(hwnd: HWND) -> Option<String> {
         let _ = windows::Win32::Foundation::CloseHandle(process);
         queried.ok()?;
 
-        let path = String::from_utf16_lossy(&buffer[..length as usize]);
-        stem_of(&path)
+        Some(String::from_utf16_lossy(&buffer[..length as usize]))
     }
 }
 

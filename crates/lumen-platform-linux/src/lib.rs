@@ -31,8 +31,8 @@ use anyhow::Result;
 use lumen_platform::{
     AppChoice, AppEntry, ApplicationsSink, Browser, Chord, ClipboardContent, ClipboardSink,
     DateStyle, FocusOwner, ForegroundApp, GestureSink, Hotkey, HotkeyError, IconImage, IconSource,
-    LaunchMode, LaunchTarget, LocalTime, MonitorInfo, Paste, Platform, Rect, TrayInfo, TraySink,
-    WindowLayout, WindowRole, WindowSettings,
+    LaunchMode, LaunchTarget, LayoutEntry, LayoutReport, LocalTime, MonitorInfo, Paste, Platform,
+    Rect, TrayInfo, TraySink, WindowLayout, WindowLayoutSpec, WindowRole, WindowSettings,
 };
 use raw_window_handle::RawWindowHandle;
 
@@ -179,6 +179,16 @@ impl Platform for LinuxPlatform {
         // calls this at startup, before any window is arranged. Hyprland has
         // gaps of its own (`general:gaps_in`, `gaps_out`); whether these
         // defer to them is an F5 decision.
+    }
+
+    fn apply_layout(&self, _spec: &WindowLayoutSpec) -> Result<LayoutReport> {
+        // An error rather than a `todo!()`: a layout is run from a hotkey or
+        // the launcher, and the answer is a notification, not a crash.
+        anyhow::bail!("window layouts come to Linux with F5")
+    }
+
+    fn current_layout(&self) -> Result<Vec<LayoutEntry>> {
+        anyhow::bail!("window layouts come to Linux with F5")
     }
 
     fn spawn_extension(

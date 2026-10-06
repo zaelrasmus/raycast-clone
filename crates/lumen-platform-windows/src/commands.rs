@@ -92,7 +92,7 @@ fn minimised(key: u64) -> bool {
 }
 
 /// Remember where `hwnd` is, before Lumen moves or minimises it.
-fn record(history: &Placements, hwnd: HWND, minimising: bool) {
+pub(crate) fn record(history: &Placements, hwnd: HWND, minimising: bool) {
     let mut placement = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
         ..Default::default()
@@ -284,7 +284,7 @@ fn application(hwnd: HWND) -> Application {
 }
 
 /// Every top-level window, in z-order, front first.
-fn top_level_windows() -> Vec<HWND> {
+pub(crate) fn top_level_windows() -> Vec<HWND> {
     let mut found: Vec<HWND> = Vec::new();
 
     unsafe extern "system" fn visit(hwnd: HWND, state: LPARAM) -> BOOL {
@@ -301,7 +301,7 @@ fn top_level_windows() -> Vec<HWND> {
 }
 
 /// What the choices in `window_commands` need to know about `hwnd`.
-fn facts(hwnd: HWND) -> WindowFacts {
+pub(crate) fn facts(hwnd: HWND) -> WindowFacts {
     unsafe {
         let visible = IsWindowVisible(hwnd).as_bool();
         if !visible {
