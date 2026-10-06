@@ -162,6 +162,7 @@ pub fn refusal(what: &str, timer: Option<&Timer>, now: Millis) -> View {
     };
     View::List(List {
         presentation: Default::default(),
+        select: None,
         showing_detail: false,
         placeholder: Some("Esc to go back".into()),
         filtering: Filtering::Host,

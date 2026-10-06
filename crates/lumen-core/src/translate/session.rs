@@ -414,6 +414,7 @@ impl Session {
 
         View::List(List {
             presentation: Default::default(),
+            select: None,
             showing_detail: false,
             placeholder: Some(format!(
                 "Translate {}",

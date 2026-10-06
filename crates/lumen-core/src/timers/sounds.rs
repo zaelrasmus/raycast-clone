@@ -77,6 +77,7 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
 
     View::List(List {
         presentation: Default::default(),
+        select: None,
         showing_detail: false,
         placeholder: Some("Search alert sounds".into()),
         filtering: Filtering::Host,

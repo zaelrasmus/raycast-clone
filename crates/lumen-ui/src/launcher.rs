@@ -188,7 +188,8 @@ struct PanelEntry {
     /// For a root row they are read from the keymap -- see
     /// [`crate::keymap::Shortcuts`] -- and for a view's they are what the
     /// extension asked to have shown, which is displayed, never bound: see
-    /// `lumen_core::view::Action::shortcut`.
+    /// `lumen_core::view::Action::shortcut`. A view's action that a favourite
+    /// key runs shows that key instead: see [`view_panel_entries`].
     shortcut: Vec<String>,
     /// The icon drawn at its start. The square is reserved whether or not
     /// there is one (I-10).
@@ -239,6 +240,91 @@ fn root_panel_entries(
             group: action.group(),
         })
         .collect()
+}
+
+/// One of the keys that pin and move a favourite, as an open view sees it:
+/// they run the selected item's action of the matching id (see
+/// `lumen_core::view::favorite_action`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FavoriteKey {
+    Toggle,
+    Up,
+    Down,
+}
+
+impl FavoriteKey {
+    /// The key that runs a view's action with this id, if one does.
+    fn of(action_id: &str) -> Option<Self> {
+        use lumen_core::view::favorite_action::{MOVE_DOWN, MOVE_UP, PIN, UNPIN};
+        match action_id {
+            PIN | UNPIN => Some(Self::Toggle),
+            MOVE_UP => Some(Self::Up),
+            MOVE_DOWN => Some(Self::Down),
+            _ => None,
+        }
+    }
+
+    /// Its keycaps, as the keymap binds it.
+    fn caps(self, shortcuts: &Shortcuts) -> Vec<String> {
+        match self {
+            Self::Toggle => shortcuts.toggle_favorite.clone(),
+            Self::Up => shortcuts.move_up.clone(),
+            Self::Down => shortcuts.move_down.clone(),
+        }
+    }
+}
+
+/// The action of a view's selected item that `key` runs: its pin or its
+/// unpin, whichever it has, or a move. `None` when it has none.
+fn view_favorite_action(
+    key: FavoriteKey,
+    actions: &[lumen_core::view::Action],
+) -> Option<&lumen_core::view::Action> {
+    actions
+        .iter()
+        .find(|action| FavoriteKey::of(&action.id) == Some(key))
+}
+
+/// An open view's panel rows for `actions`: the keys the extension asked to
+/// have shown, displayed and never bound, except on an action a favourite
+/// key runs, which shows that key as the keymap binds it. One run of rows.
+fn view_panel_entries(
+    actions: &[lumen_core::view::Action],
+    shortcuts: &Shortcuts,
+) -> Vec<PanelEntry> {
+    actions
+        .iter()
+        .map(|action| PanelEntry {
+            title: action.title.clone(),
+            shortcut: match FavoriteKey::of(&action.id) {
+                Some(key) => key.caps(shortcuts),
+                None => action
+                    .shortcut
+                    .as_deref()
+                    .map(crate::overlay::keycaps)
+                    .unwrap_or_default(),
+            },
+            glyph: action.icon.clone(),
+            group: ActionGroup::Primary,
+        })
+        .collect()
+}
+
+/// Where the selection goes when a view's list is drawn again: on the item
+/// it names in `select`, if that is shown, else on the one that was
+/// selected, if it still is. `shown` says whether an item's index is on
+/// screen, which a host filter may have decided it is not.
+fn kept_selection(
+    list: &lumen_core::view::List,
+    hint: Option<&str>,
+    previous: Option<&str>,
+    shown: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    [hint, previous].into_iter().flatten().find_map(|id| {
+        list.items()
+            .position(|item| item.id == id)
+            .filter(|index| shown(*index))
+    })
 }
 
 /// Which of the panel's rows `query` keeps, by their place in the panel and
@@ -3062,6 +3148,12 @@ impl Launcher {
             lumen_core::view::View::Detail(_) => None,
         };
 
+        // Unless the view names the item to select: one whose id changed,
+        // an emoji pinned out of Frequently Used, cannot be kept by it.
+        let hint = match &view {
+            lumen_core::view::View::List(list) => list.select.as_deref().cloned(),
+            lumen_core::view::View::Detail(_) => None,
+        };
         state.candidates = Arc::new(match &view {
             lumen_core::view::View::List(list) => list.items().map(candidate_for).collect(),
             lumen_core::view::View::Detail(_) => Vec::new(),
@@ -3073,7 +3165,7 @@ impl Launcher {
         // arriving while the user is typing does not silently widen the list
         // back out underneath them.
         self.refilter_view();
-        self.keep_selection(selected_id);
+        self.keep_selection(hint, selected_id);
         // What was typed while the view was starting: the placeholder it
         // replaced filtered in the host, so nothing was sent then, and
         // `search files` Enter `carbon` typed at once lost `carbon`.
@@ -3097,24 +3189,23 @@ impl Launcher {
         cx.notify();
     }
 
-    /// Put the selection back on the item with this id, if it is still shown.
-    fn keep_selection(&mut self, id: Option<String>) {
-        let Some(id) = id else {
-            return;
-        };
+    /// Put the selection on the item the view names in `hint`, or back on
+    /// the item with id `previous`, whichever is first still shown.
+    fn keep_selection(&mut self, hint: Option<String>, previous: Option<String>) {
         let Mode::View(state) = &mut self.mode else {
             return;
         };
         let lumen_core::view::View::List(list) = &state.view else {
             return;
         };
-        let Some(index) = list.items().position(|item| item.id == id) else {
+        let rows = &state.rows;
+        let Some(index) = kept_selection(list, hint.as_deref(), previous.as_deref(), |index| {
+            crate::view::row_of(rows, index).is_some()
+        }) else {
             return;
         };
-        if crate::view::row_of(&state.rows, index).is_some() {
-            state.selected = index;
-            self.reveal_view_selection();
-        }
+        state.selected = index;
+        self.reveal_view_selection();
     }
 
     /// Scroll the open view so its selected item is fully visible.
@@ -3632,7 +3723,7 @@ impl Launcher {
         };
         let selected = list.item(state.selected).map(|item| item.id.clone());
         self.refilter_view();
-        self.keep_selection(selected);
+        self.keep_selection(None, selected);
     }
 
     /// The items currently on screen in a view, in display order.
@@ -3799,7 +3890,39 @@ impl Launcher {
         self.rerank_keeping(&id, cx);
     }
 
+    /// In an open view, run the selected item's action that `key` names, as
+    /// if it had been chosen from the panel; nothing when it has none. Says
+    /// whether a view was open, which leaves the root list's favourites alone.
+    fn view_favorite_key(&mut self, key: FavoriteKey, cx: &mut Context<Self>) -> bool {
+        let Mode::View(state) = &self.mode else {
+            return false;
+        };
+        if self.picker.is_some() {
+            return true;
+        }
+        let lumen_core::view::View::List(list) = &state.view else {
+            return true;
+        };
+        let Some(item) = list.item(state.selected) else {
+            return true;
+        };
+        let Some(action) = view_favorite_action(key, &item.actions) else {
+            return true;
+        };
+        let event = lumen_core::view::Event::ActionInvoked {
+            item: Some(item.id.clone()),
+            action: action.id.clone(),
+        };
+        self.tell_extension(event);
+        self.close_action_panel(cx);
+        cx.notify();
+        true
+    }
+
     fn toggle_favorite(&mut self, _: &ToggleFavorite, _: &mut Window, cx: &mut Context<Self>) {
+        if self.view_favorite_key(FavoriteKey::Toggle, cx) {
+            return;
+        }
         let Some(hit) = self.hits().get(self.selected) else {
             return;
         };
@@ -3813,10 +3936,16 @@ impl Launcher {
     }
 
     fn move_favorite_up(&mut self, _: &MoveFavoriteUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.view_favorite_key(FavoriteKey::Up, cx) {
+            return;
+        }
         self.change_favorite(FavoriteChange::MoveUp, cx);
     }
 
     fn move_favorite_down(&mut self, _: &MoveFavoriteDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.view_favorite_key(FavoriteKey::Down, cx) {
+            return;
+        }
         self.change_favorite(FavoriteChange::MoveDown, cx);
     }
 
@@ -4142,21 +4271,9 @@ impl Launcher {
                 self.available_actions(),
                 &self.shortcuts,
             ),
-            Mode::View(state) => state
-                .view
-                .actions(state.selected)
-                .iter()
-                .map(|action| PanelEntry {
-                    title: action.title.clone(),
-                    shortcut: action
-                        .shortcut
-                        .as_deref()
-                        .map(crate::overlay::keycaps)
-                        .unwrap_or_default(),
-                    glyph: action.icon.clone(),
-                    group: ActionGroup::Primary,
-                })
-                .collect(),
+            Mode::View(state) => {
+                view_panel_entries(state.view.actions(state.selected), &self.shortcuts)
+            }
             Mode::Form(_) => Vec::new(),
         }
     }
@@ -6965,10 +7082,10 @@ fn grid_status(list: &lumen_core::view::List, selected: usize) -> Option<String>
 mod tests {
 
     use super::{
-        LauncherEvent, Summons, calculated, card_extent, card_label, grid_status, inside_command,
-        level_change, opening_selection, opens_in_launcher, operator_ranges, panel_matches,
-        query_to_send, refiltered_selection, root_panel_entries, second_action, summons,
-        visible_panel_rows,
+        FavoriteKey, LauncherEvent, Summons, calculated, card_extent, card_label, grid_status,
+        inside_command, kept_selection, level_change, opening_selection, opens_in_launcher,
+        operator_ranges, panel_matches, query_to_send, refiltered_selection, root_panel_entries,
+        second_action, summons, view_favorite_action, view_panel_entries, visible_panel_rows,
     };
     use lumen_core::config::FileSearchConfig;
     use lumen_core::file_index::IndexDetail;
@@ -7032,6 +7149,81 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// A view that names an item has it selected, wherever the selection
+    /// was; one that does not, or names one not shown, keeps it by id.
+    #[test]
+    fn a_view_selects_the_item_it_names_or_keeps_the_selection() {
+        let list = grid(None, &["a", "b", "c"]);
+        let all = |_: usize| true;
+        assert_eq!(kept_selection(&list, Some("c"), Some("a"), all), Some(2));
+        assert_eq!(kept_selection(&list, None, Some("b"), all), Some(1));
+        assert_eq!(kept_selection(&list, Some("x"), Some("b"), all), Some(1));
+        // Filtered out: as if it were not there.
+        let not_c = |index: usize| index != 2;
+        assert_eq!(kept_selection(&list, Some("c"), Some("a"), not_c), Some(0));
+        assert_eq!(kept_selection(&list, Some("x"), Some("y"), all), None);
+        assert_eq!(kept_selection(&list, None, None, all), None);
+    }
+
+    fn view_action(id: &str) -> lumen_core::view::Action {
+        lumen_core::view::Action {
+            id: id.into(),
+            title: id.into(),
+            ..Default::default()
+        }
+    }
+
+    /// The favourite keys run a view's pin, unpin and moves, whichever of
+    /// them the selected item has, and nothing when it has none.
+    #[test]
+    fn the_favourite_keys_run_a_views_pin_and_moves() {
+        use lumen_core::view::favorite_action::{MOVE_DOWN, MOVE_UP, PIN, UNPIN};
+        let pinned = [
+            view_action("paste"),
+            view_action(UNPIN),
+            view_action(MOVE_UP),
+        ];
+        let id = |key, actions: &[lumen_core::view::Action]| {
+            view_favorite_action(key, actions).map(|action| action.id.clone())
+        };
+        assert_eq!(
+            id(FavoriteKey::Toggle, &pinned[..]),
+            Some(UNPIN.to_string())
+        );
+        assert_eq!(id(FavoriteKey::Up, &pinned[..]), Some(MOVE_UP.to_string()));
+        assert_eq!(id(FavoriteKey::Down, &pinned[..]), None);
+
+        let unpinned = [view_action("paste"), view_action(PIN)];
+        assert_eq!(
+            id(FavoriteKey::Toggle, &unpinned[..]),
+            Some(PIN.to_string())
+        );
+        assert_eq!(
+            id(FavoriteKey::Down, &[view_action(MOVE_DOWN)][..]),
+            Some(MOVE_DOWN.to_string())
+        );
+        assert_eq!(id(FavoriteKey::Toggle, &[view_action("paste")][..]), None);
+    }
+
+    /// A view's pin shows the key that runs it, read from the bindings, in
+    /// place of whatever it asked to have shown; other actions keep theirs.
+    #[test]
+    fn a_views_panel_shows_the_favourite_keys_from_the_keymap() {
+        use lumen_core::view::favorite_action::{MOVE_UP, PIN};
+        let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
+        let shortcuts = crate::keymap::Shortcuts::read(&keymap);
+        let mut copy = view_action("copy");
+        copy.shortcut = Some("Ctrl+Shift+C".into());
+        let mut pin = view_action(PIN);
+        pin.shortcut = Some("Ctrl+P".into());
+
+        let rows = view_panel_entries(&[copy, pin, view_action(MOVE_UP)], &shortcuts);
+
+        assert_eq!(rows[0].shortcut, ["Ctrl", "Shift", "C"]);
+        assert_eq!(rows[1].shortcut, ["Ctrl", "Shift", "F"]);
+        assert_eq!(rows[2].shortcut, ["Ctrl", "Alt", "\u{2191}"]);
     }
 
     /// A grid's footer names the view and the selected cell, with an en

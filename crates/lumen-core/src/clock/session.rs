@@ -295,6 +295,7 @@ impl Session {
 
         View::List(List {
             presentation: Default::default(),
+            select: None,
             placeholder: Some(self.browse.placeholder(self.places)),
             filtering: Filtering::Extension,
             scopes: Vec::new(),

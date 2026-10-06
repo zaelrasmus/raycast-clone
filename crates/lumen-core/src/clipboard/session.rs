@@ -225,6 +225,7 @@ impl Session {
 
         View::List(List {
             presentation: Default::default(),
+            select: None,
             placeholder: Some("Type to filter entries\u{2026}".into()),
             filtering: Filtering::Extension,
             scopes: vec![self.type_scope()],

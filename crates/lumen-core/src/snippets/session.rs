@@ -301,6 +301,7 @@ impl Session {
         };
         View::List(List {
             presentation: Default::default(),
+            select: None,
             placeholder: Some(String::new()),
             filtering: Filtering::Extension,
             scopes: Vec::new(),
@@ -470,6 +471,7 @@ impl Session {
         };
         View::List(List {
             presentation: Default::default(),
+            select: None,
             placeholder: Some(placeholder),
             filtering: Filtering::Extension,
             scopes: Vec::new(),
@@ -559,6 +561,7 @@ impl Session {
 
         View::List(List {
             presentation: Default::default(),
+            select: None,
             placeholder: Some("Search snippets\u{2026}".into()),
             filtering: Filtering::Extension,
             scopes: vec![self.tag_scope()],

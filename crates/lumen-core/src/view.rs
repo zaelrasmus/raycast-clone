@@ -123,6 +123,18 @@ pub struct List {
     /// Rows, the default, or a grid of the same items (F18).
     #[serde(default)]
     pub presentation: Presentation,
+    /// The id of the item to select once this list is drawn (F18).
+    ///
+    /// When set, the host selects this item after rendering, and scrolls to
+    /// it; otherwise, or when no such item is shown, it keeps the selection
+    /// by id as before. For a change that moves the selected item to another
+    /// id, such as an emoji pinned out of *Frequently Used*: kept by id, the
+    /// selection would stay at its index and land on a neighbour. A hint, not
+    /// state: the next list that does not set it keeps the selection again.
+    ///
+    /// Boxed so a list grows by a pointer and not a string: every session's
+    /// `Effect::Render(View)` is held by value beside small variants.
+    pub select: Option<Box<String>>,
     pub sections: Vec<Section>,
 }
 
@@ -427,6 +439,23 @@ pub struct Action {
     pub icon: Option<Icon>,
 }
 
+/// The ids of a view's actions that the host's favourite keys perform (F18).
+///
+/// An [`Action::shortcut`] is displayed and never bound, so a view cannot ask
+/// for a key; it can name an action as one of these instead. The key that adds
+/// or removes a root favourite runs the selected item's [`PIN`] or [`UNPIN`],
+/// whichever it has, and the keys that move one run [`MOVE_UP`] and
+/// [`MOVE_DOWN`]: the host sends [`Event::ActionInvoked`] as if the action
+/// had been chosen from the panel. The panel shows that key beside the
+/// action, read from the keymap as a root row's is (7.44, I-14), in place of
+/// any `shortcut`. An item without the action ignores the key.
+pub mod favorite_action {
+    pub const PIN: &str = "pin";
+    pub const UNPIN: &str = "unpin";
+    pub const MOVE_UP: &str = "move-up";
+    pub const MOVE_DOWN: &str = "move-down";
+}
+
 /// What to show when a list has nothing in it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
@@ -610,6 +639,7 @@ mod tests {
     fn the_tree_round_trips_through_json() {
         let view = View::List(List {
             presentation: Default::default(),
+            select: Some(Box::new("a".into())),
             placeholder: Some("Search issues".into()),
             filtering: Filtering::Extension,
             scopes: vec![scope(&["mine", "all"], "mine")],
@@ -696,6 +726,21 @@ mod tests {
 
         let json = serde_json::to_value(List::default()).unwrap();
         assert_eq!(json["presentation"], "rows");
+    }
+
+    /// A list that names no item to select leaves the selection where it
+    /// was, as every list written before the hint did.
+    #[test]
+    fn a_list_selects_nothing_unless_it_says_so() {
+        let View::List(list) = from_json(r#"{ "type": "list" }"#).unwrap() else {
+            panic!("expected a list")
+        };
+        assert_eq!(list.select, None);
+
+        let View::List(list) = from_json(r#"{ "type": "list", "select": "a" }"#).unwrap() else {
+            panic!("expected a list")
+        };
+        assert_eq!(list.select.as_deref().map(String::as_str), Some("a"));
     }
 
     #[test]

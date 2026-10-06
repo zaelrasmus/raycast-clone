@@ -26,10 +26,9 @@ pub const PASTE: &str = "paste";
 pub const COPY: &str = "copy";
 pub const COPY_UNICODE: &str = "copy-unicode";
 pub const COPY_NAME: &str = "copy-name";
-pub const PIN: &str = "pin";
-pub const UNPIN: &str = "unpin";
-pub const MOVE_UP: &str = "move-up";
-pub const MOVE_DOWN: &str = "move-down";
+/// The host's favourite keys run these: see
+/// [`favorite_action`](crate::view::favorite_action).
+pub use crate::view::favorite_action::{MOVE_DOWN, MOVE_UP, PIN, UNPIN};
 pub const FORGET: &str = "forget";
 
 /// The most emoji *Frequently Used* shows: two strips of the default
@@ -116,7 +115,7 @@ impl Session {
                     COPY => Effect::Copy(chars.to_string()),
                     COPY_UNICODE => Effect::Copy(codepoints(chars)),
                     COPY_NAME => Effect::Copy(title_case(&entry.name)),
-                    _ => return self.arrange(chars, &action),
+                    _ => return self.arrange(&item, chars, &action),
                 };
                 // Saved first: pasting and copying close the view.
                 self.saved.record(chars);
@@ -126,9 +125,13 @@ impl Session {
         }
     }
 
-    /// Pin, unpin, move or forget `chars`: saved and drawn again when
-    /// anything changed, nothing at all when not.
-    fn arrange(&mut self, chars: &str, action: &str) -> Vec<Effect> {
+    /// Pin, unpin, move or forget `chars`, acted on as `item`: saved and
+    /// drawn again when anything changed, nothing at all when not.
+    ///
+    /// The view drawn asks the host to select the emoji where it is now,
+    /// since its id may have gone: pinned out of *Frequently Used*, it is
+    /// `pinned:` and no longer `frequent:`.
+    fn arrange(&mut self, item: &str, chars: &str, action: &str) -> Vec<Effect> {
         let changed = match action {
             PIN => self.saved.pin(chars),
             UNPIN => self.saved.unpin(chars),
@@ -143,10 +146,11 @@ impl Session {
         if !changed {
             return Vec::new();
         }
-        vec![
-            Effect::Save(self.saved.clone()),
-            Effect::Render(self.view()),
-        ]
+        let mut view = self.view();
+        if let View::List(list) = &mut view {
+            list.select = where_now(list, item, chars).map(Box::new);
+        }
+        vec![Effect::Save(self.saved.clone()), Effect::Render(view)]
     }
 
     /// The entry an item stands for: its id is its characters, after the
@@ -215,6 +219,7 @@ impl Session {
 
         View::List(List {
             presentation: Presentation::Grid,
+            select: None,
             placeholder: Some("Search Emoji & Symbols\u{2026}".into()),
             filtering: Filtering::Extension,
             scopes: vec![self.category_scope()],
@@ -345,6 +350,20 @@ impl Items<'_> {
             detail: None,
         }
     }
+}
+
+/// The id `chars` has in `list` after a change made to it as `item`: in
+/// the section it was acted on, if it is still there, else pinned, else
+/// frequently used, else in its category or the results.
+fn where_now(list: &List, item: &str, chars: &str) -> Option<String> {
+    let acted_in = [PINNED_ITEM, FREQUENT_ITEM]
+        .into_iter()
+        .find(|prefix| item.starts_with(prefix))
+        .unwrap_or("");
+    [acted_in, PINNED_ITEM, FREQUENT_ITEM, ""]
+        .into_iter()
+        .map(|prefix| format!("{prefix}{chars}"))
+        .find(|id| list.items().any(|item| item.id == *id))
 }
 
 fn action(id: &str, title: &str) -> Action {
@@ -766,6 +785,55 @@ mod tests {
         assert!(saved(&effects).usage.is_empty());
         assert!(!titles(&session).contains(&"Frequently Used".to_string()));
         assert!(!action_ids(&session, SUN).contains(&FORGET.to_string()));
+    }
+
+    /// The item the render after `effects` asks the host to select.
+    fn selected(effects: &[Effect]) -> Option<String> {
+        effects.iter().find_map(|effect| match effect {
+            Effect::Render(view) => list(view).select.as_deref().cloned(),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_selection_follows_an_emoji_to_where_it_is_drawn_now() {
+        let mut session = Session::default();
+        invoke(&mut session, SUN, COPY);
+        let effects = invoke(&mut session, &format!("frequent:{SUN}"), PIN);
+        assert_eq!(selected(&effects), Some(format!("pinned:{SUN}")));
+
+        // Used, so it goes back to Frequently Used.
+        let effects = invoke(&mut session, &format!("pinned:{SUN}"), UNPIN);
+        assert_eq!(selected(&effects), Some(format!("frequent:{SUN}")));
+
+        let effects = invoke(&mut session, &format!("frequent:{SUN}"), FORGET);
+        assert_eq!(selected(&effects), Some(SUN.to_string()));
+
+        // Never used, so only its category is left.
+        invoke(&mut session, GRIN, PIN);
+        let effects = invoke(&mut session, &format!("pinned:{GRIN}"), UNPIN);
+        assert_eq!(selected(&effects), Some(GRIN.to_string()));
+    }
+
+    #[test]
+    fn a_moved_or_category_pin_stays_where_it_was_acted_on() {
+        let mut session = Session::default();
+        invoke(&mut session, GRIN, PIN);
+        let effects = invoke(&mut session, SUN, PIN);
+        assert_eq!(selected(&effects), Some(SUN.to_string()));
+        let effects = invoke(&mut session, &format!("pinned:{SUN}"), MOVE_UP);
+        assert_eq!(selected(&effects), Some(format!("pinned:{SUN}")));
+    }
+
+    #[test]
+    fn only_a_rearrangement_asks_for_a_selection() {
+        let mut session = Session::default();
+        invoke(&mut session, SUN, PIN);
+        assert_eq!(list(&session.view()).select, None);
+        let effects = session.event(Event::QueryChanged {
+            query: "sun".into(),
+        });
+        assert_eq!(selected(&effects), None);
     }
 
     #[test]

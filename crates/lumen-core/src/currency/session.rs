@@ -275,6 +275,7 @@ impl Session {
 
         View::List(List {
             presentation: Default::default(),
+            select: None,
             showing_detail: false,
             placeholder: Some(format!("Convert from {}", self.from.name)),
             filtering: Filtering::Extension,
