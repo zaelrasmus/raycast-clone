@@ -1513,6 +1513,9 @@ fn subscribe_to_launcher(
                 LauncherEvent::Paste(ref paste) => {
                     paste_into(&platform, &config, &shell, &launcher, paste.clone(), cx)
                 }
+                LauncherEvent::PasteKeepOpen(ref paste) => {
+                    paste_keep_open(&platform, &config, &shell, &launcher, paste.clone(), cx)
+                }
                 // Handled above, before this task was spawned.
                 LauncherEvent::RunExtension { .. }
                 | LauncherEvent::RunTranslate { .. }
@@ -2619,24 +2622,105 @@ fn paste_into(
     std::thread::Builder::new()
         .name("lumen-paste-request".into())
         .spawn(move || {
-            // Which program it is decides the keystroke: some terminals pass
-            // `Ctrl+V` on rather than pasting. Asked here, off the UI thread.
-            let executable = platform
-                .window_application(target)
-                .ok()
-                .flatten()
-                .and_then(|app| app.executable);
-            paste.keys = snippets.keys_for(executable.as_deref());
-            log::debug!("pasting into {executable:?} with {:?}", paste.keys);
+            let _one_at_a_time = pasting();
+            paste.keys = keys_for(&*platform, &snippets, target);
             if let Err(error) = platform.paste(target, &paste) {
-                log::warn!("could not paste: {error:#}");
-                if let Err(error) = platform.notify("Couldn't paste", &format!("{error:#}")) {
-                    log::warn!("could not say so: {error:#}");
-                }
+                paste_failed(&*platform, &error);
             }
         })
         .context("starting the paste")?;
     Ok(())
+}
+
+/// Paste into the window the launcher was opened over and leave the launcher
+/// as it is, to paste again (F18, *Paste and Keep Window Open*).
+///
+/// Nothing is hidden, so nothing is reset, and `restore_to` stays the
+/// target of the next paste. The platform lends the target the foreground
+/// and gives it back; until it has, the launcher is told not to take the
+/// focus it loses for the user leaving.
+fn paste_keep_open(
+    platform: &Arc<dyn Platform>,
+    config: &Config,
+    shell: &Rc<RefCell<Shell>>,
+    launcher: &gpui::WindowHandle<Launcher>,
+    mut paste: lumen_platform::Paste,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
+    let launcher = *launcher;
+    let done = move |cx: &mut gpui::AsyncApp| {
+        launcher
+            .update(cx, |launcher, _window, _cx| launcher.paste_kept_open_done())
+            .ok();
+    };
+
+    let Some(target) = shell.borrow().restore_to else {
+        // Opened from the desktop: copied, as `paste_into` does, and the
+        // launcher stays.
+        log::info!("no window to paste into; copied the snippet instead");
+        done(cx);
+        return platform.set_clipboard_text(&paste.text);
+    };
+
+    let (finished, finishing) = futures::channel::oneshot::channel::<()>();
+    let platform = platform.clone();
+    let snippets = config.snippets.clone();
+    let started = std::thread::Builder::new()
+        .name("lumen-paste-request".into())
+        .spawn(move || {
+            let _one_at_a_time = pasting();
+            paste.keys = keys_for(&*platform, &snippets, target);
+            if let Err(error) = platform.paste_keep_open(target, &paste) {
+                paste_failed(&*platform, &error);
+            }
+            let _ = finished.send(());
+        });
+    if let Err(error) = started {
+        done(cx);
+        return Err(error).context("starting the paste");
+    }
+    cx.spawn(async move |cx| {
+        // Sent or dropped, the paste is over either way.
+        let _ = finishing.await;
+        done(cx);
+    })
+    .detach();
+    Ok(())
+}
+
+/// One paste at a time, whichever kind: held for the whole of one, so a
+/// second waits for the first to have put the clipboard back and, kept open,
+/// given the foreground back, rather than interleaving with it.
+fn pasting() -> std::sync::MutexGuard<'static, ()> {
+    static PASTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Nothing is guarded but the turn: a paste that panicked leaves it free.
+    PASTING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The keystroke that pastes into `target`. Which program it is decides it:
+/// some terminals pass `Ctrl+V` on rather than pasting. Off the UI thread.
+fn keys_for(
+    platform: &dyn Platform,
+    snippets: &lumen_core::snippets::SnippetsConfig,
+    target: lumen_platform::FocusOwner,
+) -> lumen_platform::PasteKeys {
+    let executable = platform
+        .window_application(target)
+        .ok()
+        .flatten()
+        .and_then(|app| app.executable);
+    let keys = snippets.keys_for(executable.as_deref());
+    log::debug!("pasting into {executable:?} with {keys:?}");
+    keys
+}
+
+fn paste_failed(platform: &dyn Platform, error: &anyhow::Error) {
+    log::warn!("could not paste: {error:#}");
+    if let Err(error) = platform.notify("Couldn't paste", &format!("{error:#}")) {
+        log::warn!("could not say so: {error:#}");
+    }
 }
 
 fn resize(

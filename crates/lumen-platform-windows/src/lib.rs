@@ -278,6 +278,10 @@ impl Platform for WindowsPlatform {
         paste::paste(window, paste)
     }
 
+    fn paste_keep_open(&self, window: FocusOwner, paste: &Paste) -> Result<()> {
+        paste::paste_keep_open(window, paste, self.window(WindowRole::Launcher)?)
+    }
+
     fn spawn_extension(
         &self,
         program: &str,

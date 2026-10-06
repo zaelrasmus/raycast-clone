@@ -614,6 +614,22 @@ pub trait Platform: Send + Sync {
     /// text or has been given up on. Call it on a thread of its own.
     fn paste(&self, window: FocusOwner, paste: &Paste) -> Result<()>;
 
+    /// Paste into `window` as [`Platform::paste`] does, with the launcher
+    /// still showing, and give the foreground back to it afterwards (F18,
+    /// *Paste and Keep Window Open*).
+    ///
+    /// The launcher has not hidden, so the foreground is given to `window`
+    /// here, and taken back to the [`WindowRole::Launcher`] only once the
+    /// window has read the text or has been given up on -- never after a
+    /// delay of its own, and the keystroke is never sent twice. The text is
+    /// offered so that the read can be seen whatever
+    /// [`Paste::restore_clipboard`] says, which decides only whether the
+    /// clipboard is put back.
+    ///
+    /// Blocking, until the foreground has been given back. Call it on a
+    /// thread of its own, one paste at a time.
+    fn paste_keep_open(&self, window: FocusOwner, paste: &Paste) -> Result<()>;
+
     /// A date or time written the way the user's regional settings write it,
     /// or `locale`'s (`"fr-FR"`) when one is named (F11).
     ///

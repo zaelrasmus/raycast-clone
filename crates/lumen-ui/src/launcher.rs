@@ -98,6 +98,9 @@ actions!(
         MoveFavoriteUp,
         /// Move the selected favourite one place down (F15).
         MoveFavoriteDown,
+        /// Run an open view's *Paste and Keep Window Open* on the selected
+        /// item (F18).
+        PasteKeepOpen,
         /// Complete a typed path to the selected row's name (F16).
         CompletePath,
         /// Open the action panel on the selected row's alias and hotkey
@@ -243,24 +246,27 @@ fn root_panel_entries(
         .collect()
 }
 
-/// One of the keys that pin and move a favourite, as an open view sees it:
-/// they run the selected item's action of the matching id (see
-/// `lumen_core::view::favorite_action`).
+/// One of the keys an open view's well-known actions get: they run the
+/// selected item's action of the matching id (see
+/// `lumen_core::view::favorite_action` and `lumen_core::view::paste_action`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FavoriteKey {
+enum ViewKey {
     Toggle,
     Up,
     Down,
+    PasteKeepOpen,
 }
 
-impl FavoriteKey {
+impl ViewKey {
     /// The key that runs a view's action with this id, if one does.
     fn of(action_id: &str) -> Option<Self> {
         use lumen_core::view::favorite_action::{MOVE_DOWN, MOVE_UP, PIN, UNPIN};
+        use lumen_core::view::paste_action::KEEP_OPEN;
         match action_id {
             PIN | UNPIN => Some(Self::Toggle),
             MOVE_UP => Some(Self::Up),
             MOVE_DOWN => Some(Self::Down),
+            KEEP_OPEN => Some(Self::PasteKeepOpen),
             _ => None,
         }
     }
@@ -271,24 +277,26 @@ impl FavoriteKey {
             Self::Toggle => shortcuts.toggle_favorite.clone(),
             Self::Up => shortcuts.move_up.clone(),
             Self::Down => shortcuts.move_down.clone(),
+            Self::PasteKeepOpen => shortcuts.paste_keep_open.clone(),
         }
     }
 }
 
 /// The action of a view's selected item that `key` runs: its pin or its
-/// unpin, whichever it has, or a move. `None` when it has none.
-fn view_favorite_action(
-    key: FavoriteKey,
+/// unpin, whichever it has, a move, or its keep-open paste. `None` when it
+/// has none.
+fn view_key_action(
+    key: ViewKey,
     actions: &[lumen_core::view::Action],
 ) -> Option<&lumen_core::view::Action> {
     actions
         .iter()
-        .find(|action| FavoriteKey::of(&action.id) == Some(key))
+        .find(|action| ViewKey::of(&action.id) == Some(key))
 }
 
 /// An open view's panel rows for `actions`: the keys the extension asked to
-/// have shown, displayed and never bound, except on an action a favourite
-/// key runs, which shows that key as the keymap binds it. One run of rows.
+/// have shown, displayed and never bound, except on an action a view key
+/// runs, which shows that key as the keymap binds it. One run of rows.
 fn view_panel_entries(
     actions: &[lumen_core::view::Action],
     shortcuts: &Shortcuts,
@@ -297,7 +305,7 @@ fn view_panel_entries(
         .iter()
         .map(|action| PanelEntry {
             title: action.title.clone(),
-            shortcut: match FavoriteKey::of(&action.id) {
+            shortcut: match ViewKey::of(&action.id) {
                 Some(key) => key.caps(shortcuts),
                 None => action
                     .shortcut
@@ -1308,6 +1316,10 @@ pub struct Launcher {
     /// *Search Files* has the folder picker up, over this window (slice
     /// 5): losing focus to it is not the user leaving.
     picking_folder: bool,
+    /// Pastes that keep the window open and have not finished (F18): the
+    /// foreground is lent to the target while one runs, which is not the
+    /// user leaving either.
+    pastes_kept_open: usize,
 
     /// A copy of the field's text, updated on every edit. Ranking reads it on
     /// every keystroke, and reaching into another entity for it each time
@@ -1499,6 +1511,7 @@ impl Launcher {
             files_indexing: 0,
             file_search: None,
             picking_folder: false,
+            pastes_kept_open: 0,
             query: String::new(),
             selected: 0,
             rows: Vec::new(),
@@ -2579,7 +2592,10 @@ impl Launcher {
             return;
         }
 
-        if !self.config.window.dismiss_on_focus_loss || self.picking_folder {
+        if !self.config.window.dismiss_on_focus_loss
+            || self.picking_folder
+            || self.pastes_kept_open > 0
+        {
             return;
         }
 
@@ -3388,6 +3404,23 @@ impl Launcher {
         cx.emit(LauncherEvent::Paste(paste));
     }
 
+    /// Paste `paste` into the window the launcher was opened over and stay
+    /// as it is: the query, the scope, the scroll and the selection (F18).
+    ///
+    /// The foreground is lent to that window while the paste runs, so the
+    /// focus it takes is not a dismissal until the daemon says the paste is
+    /// over, with [`Self::paste_kept_open_done`].
+    pub fn paste_keep_open(&mut self, paste: lumen_platform::Paste, cx: &mut Context<Self>) {
+        self.pastes_kept_open += 1;
+        cx.emit(LauncherEvent::PasteKeepOpen(paste));
+    }
+
+    /// A paste that kept the window open has finished, the foreground given
+    /// back or given up on.
+    pub fn paste_kept_open_done(&mut self) {
+        self.pastes_kept_open = self.pastes_kept_open.saturating_sub(1);
+    }
+
     /// A table of exchange rates the daemon fetched or read (F9), for the
     /// root list's conversions.
     pub fn set_rates(
@@ -3988,7 +4021,7 @@ impl Launcher {
     /// In an open view, run the selected item's action that `key` names, as
     /// if it had been chosen from the panel; nothing when it has none. Says
     /// whether a view was open, which leaves the root list's favourites alone.
-    fn view_favorite_key(&mut self, key: FavoriteKey, cx: &mut Context<Self>) -> bool {
+    fn run_view_key(&mut self, key: ViewKey, cx: &mut Context<Self>) -> bool {
         let Mode::View(state) = &self.mode else {
             return false;
         };
@@ -4001,7 +4034,7 @@ impl Launcher {
         let Some(item) = list.item(state.selected) else {
             return true;
         };
-        let Some(action) = view_favorite_action(key, &item.actions) else {
+        let Some(action) = view_key_action(key, &item.actions) else {
             return true;
         };
         let event = lumen_core::view::Event::ActionInvoked {
@@ -4015,7 +4048,7 @@ impl Launcher {
     }
 
     fn toggle_favorite(&mut self, _: &ToggleFavorite, _: &mut Window, cx: &mut Context<Self>) {
-        if self.view_favorite_key(FavoriteKey::Toggle, cx) {
+        if self.run_view_key(ViewKey::Toggle, cx) {
             return;
         }
         let Some(hit) = self.hits().get(self.selected) else {
@@ -4031,17 +4064,23 @@ impl Launcher {
     }
 
     fn move_favorite_up(&mut self, _: &MoveFavoriteUp, _: &mut Window, cx: &mut Context<Self>) {
-        if self.view_favorite_key(FavoriteKey::Up, cx) {
+        if self.run_view_key(ViewKey::Up, cx) {
             return;
         }
         self.change_favorite(FavoriteChange::MoveUp, cx);
     }
 
     fn move_favorite_down(&mut self, _: &MoveFavoriteDown, _: &mut Window, cx: &mut Context<Self>) {
-        if self.view_favorite_key(FavoriteKey::Down, cx) {
+        if self.run_view_key(ViewKey::Down, cx) {
             return;
         }
         self.change_favorite(FavoriteChange::MoveDown, cx);
+    }
+
+    /// Ctrl+Shift+Enter: an open view's keep-open paste. Nothing in the root
+    /// list, which has none.
+    fn paste_keep_open_key(&mut self, _: &PasteKeepOpen, _: &mut Window, cx: &mut Context<Self>) {
+        self.run_view_key(ViewKey::PasteKeepOpen, cx);
     }
 
     // -- Configure Command (F17) -------------------------------------------
@@ -5741,6 +5780,9 @@ pub enum LauncherEvent {
     ArrangeWindow(lumen_platform::WindowLayout),
     /// Hide, then paste into the window the launcher was opened over (F11).
     Paste(lumen_platform::Paste),
+    /// Paste into the window the launcher was opened over without hiding,
+    /// and give the foreground back to the launcher afterwards (F18).
+    PasteKeepOpen(lumen_platform::Paste),
     /// The content changed size, so the window should be resized to hug it.
     ///
     /// A height rather than a row count, because the launcher has two kinds of
@@ -5804,6 +5846,7 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::toggle_favorite))
             .on_action(cx.listener(Self::move_favorite_up))
             .on_action(cx.listener(Self::move_favorite_down))
+            .on_action(cx.listener(Self::paste_keep_open_key))
             .on_action(cx.listener(Self::configure_command))
             .on_action(cx.listener(Self::grid_left))
             .on_action(cx.listener(Self::grid_right))
@@ -7258,10 +7301,10 @@ fn grid_status(list: &lumen_core::view::List, selected: usize) -> Option<String>
 mod tests {
 
     use super::{
-        FavoriteKey, LauncherEvent, Summons, calculated, card_extent, card_label, grid_status,
+        LauncherEvent, Summons, ViewKey, calculated, card_extent, card_label, grid_status,
         inside_command, kept_selection, level_change, opening_selection, opens_in_launcher,
         operator_ranges, panel_matches, query_to_send, refiltered_selection, render_selection,
-        root_panel_entries, second_action, summons, view_favorite_action, view_panel_entries,
+        root_panel_entries, second_action, summons, view_key_action, view_panel_entries,
         visible_panel_rows,
     };
     use lumen_core::config::FileSearchConfig;
@@ -7398,25 +7441,46 @@ mod tests {
             view_action(MOVE_UP),
         ];
         let id = |key, actions: &[lumen_core::view::Action]| {
-            view_favorite_action(key, actions).map(|action| action.id.clone())
+            view_key_action(key, actions).map(|action| action.id.clone())
         };
-        assert_eq!(
-            id(FavoriteKey::Toggle, &pinned[..]),
-            Some(UNPIN.to_string())
-        );
-        assert_eq!(id(FavoriteKey::Up, &pinned[..]), Some(MOVE_UP.to_string()));
-        assert_eq!(id(FavoriteKey::Down, &pinned[..]), None);
+        assert_eq!(id(ViewKey::Toggle, &pinned[..]), Some(UNPIN.to_string()));
+        assert_eq!(id(ViewKey::Up, &pinned[..]), Some(MOVE_UP.to_string()));
+        assert_eq!(id(ViewKey::Down, &pinned[..]), None);
 
         let unpinned = [view_action("paste"), view_action(PIN)];
+        assert_eq!(id(ViewKey::Toggle, &unpinned[..]), Some(PIN.to_string()));
         assert_eq!(
-            id(FavoriteKey::Toggle, &unpinned[..]),
-            Some(PIN.to_string())
-        );
-        assert_eq!(
-            id(FavoriteKey::Down, &[view_action(MOVE_DOWN)][..]),
+            id(ViewKey::Down, &[view_action(MOVE_DOWN)][..]),
             Some(MOVE_DOWN.to_string())
         );
-        assert_eq!(id(FavoriteKey::Toggle, &[view_action("paste")][..]), None);
+        assert_eq!(id(ViewKey::Toggle, &[view_action("paste")][..]), None);
+    }
+
+    /// `Ctrl+Shift+Enter` runs a view's *Paste and Keep Window Open*, and
+    /// nothing on an item without it.
+    #[test]
+    fn the_keep_open_key_runs_a_views_keep_open_paste() {
+        use lumen_core::view::paste_action::KEEP_OPEN;
+        let actions = [view_action("paste"), view_action(KEEP_OPEN)];
+        assert_eq!(
+            view_key_action(ViewKey::PasteKeepOpen, &actions).map(|action| action.id.as_str()),
+            Some(KEEP_OPEN)
+        );
+        assert_eq!(
+            view_key_action(ViewKey::PasteKeepOpen, &[view_action("paste")]),
+            None
+        );
+        assert_eq!(ViewKey::of(KEEP_OPEN), Some(ViewKey::PasteKeepOpen));
+    }
+
+    /// The panel shows the keep-open key from the bindings, not a label.
+    #[test]
+    fn a_views_panel_shows_the_keep_open_key_from_the_keymap() {
+        use lumen_core::view::paste_action::KEEP_OPEN;
+        let keymap = gpui::Keymap::new(crate::keymap::launcher_bindings());
+        let shortcuts = crate::keymap::Shortcuts::read(&keymap);
+        let rows = view_panel_entries(&[view_action(KEEP_OPEN)], &shortcuts);
+        assert_eq!(rows[0].shortcut, ["Ctrl", "Shift", "\u{21b5}"]);
     }
 
     /// A view's pin shows the key that runs it, read from the bindings, in

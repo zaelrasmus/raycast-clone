@@ -62,10 +62,12 @@ pub fn run(
                             .update(cx, |launcher, _window, cx| launcher.show_view(view, cx))
                             .ok();
                     }
-                    Effect::Paste(text) => {
-                        let paste = paste(text);
+                    Effect::Paste { text, keep_open } => {
                         window
-                            .update(cx, |launcher, _window, cx| launcher.paste(paste, cx))
+                            .update(cx, |launcher, _window, cx| match request(text, keep_open) {
+                                Request::Close(paste) => launcher.paste(paste, cx),
+                                Request::KeepOpen(paste) => launcher.paste_keep_open(paste, cx),
+                            })
                             .ok();
                     }
                     Effect::Save(state) => {
@@ -117,6 +119,25 @@ pub fn run(
     .detach();
 }
 
+/// How the launcher is asked to paste an emoji.
+#[derive(Debug, PartialEq)]
+enum Request {
+    /// *Paste*: the launcher closes.
+    Close(lumen_platform::Paste),
+    /// *Paste and Keep Window Open*: the grid stays as it is, to paste
+    /// another.
+    KeepOpen(lumen_platform::Paste),
+}
+
+fn request(text: String, keep_open: bool) -> Request {
+    let paste = paste(text);
+    if keep_open {
+        Request::KeepOpen(paste)
+    } else {
+        Request::Close(paste)
+    }
+}
+
 /// An emoji typed into the window the launcher was opened over, as Raycast
 /// does it: what was on the clipboard is put back, and the emoji is not
 /// recorded in the history -- it was inserted, not copied.
@@ -147,5 +168,22 @@ mod tests {
         assert_eq!(paste.caret_back, 0);
         assert!(paste.files.is_empty());
         assert!(paste.image.is_none());
+    }
+
+    /// *Paste and Keep Window Open* is the same paste, asked for without
+    /// closing; *Paste* closes.
+    #[test]
+    fn a_paste_that_keeps_the_window_open_is_the_same_paste() {
+        let Request::KeepOpen(kept) = request("\u{1F600}".into(), true) else {
+            panic!("a keep-open paste closed the launcher");
+        };
+        assert_eq!(kept, paste("\u{1F600}".into()));
+        assert!(kept.restore_clipboard);
+        assert!(kept.keep_out_of_history);
+
+        assert_eq!(
+            request("\u{1F600}".into(), false),
+            Request::Close(paste("\u{1F600}".into()))
+        );
     }
 }

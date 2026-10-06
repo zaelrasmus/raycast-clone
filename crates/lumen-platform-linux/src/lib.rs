@@ -262,6 +262,10 @@ impl Platform for LinuxPlatform {
         )
     }
 
+    fn paste_keep_open(&self, _window: FocusOwner, _paste: &Paste) -> Result<()> {
+        todo!("F5: paste as above, then focus the launcher again (Hyprland's focuswindow)")
+    }
+
     fn installed_browsers(&self) -> Result<Vec<Browser>> {
         todo!("F5: desktop entries whose MimeType lists x-scheme-handler/https")
     }

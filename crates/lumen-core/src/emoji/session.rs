@@ -23,6 +23,9 @@ pub const CATEGORY_SCOPE: &str = "category";
 const ALL_CATEGORIES: &str = "";
 /// What `Enter` does, and the rest of the action panel.
 pub const PASTE: &str = "paste";
+/// The host's *Paste and Keep Window Open* key runs this: see
+/// [`paste_action`](crate::view::paste_action).
+pub const PASTE_KEEP_OPEN: &str = crate::view::paste_action::KEEP_OPEN;
 pub const COPY: &str = "copy";
 pub const COPY_UNICODE: &str = "copy-unicode";
 pub const COPY_NAME: &str = "copy-name";
@@ -51,8 +54,10 @@ const FREQUENT_ITEM: &str = "frequent:";
 pub enum Effect {
     /// Draw this.
     Render(View),
-    /// Close the launcher and paste this into the window it was opened over.
-    Paste(String),
+    /// Paste `text` into the window the launcher was opened over: closing
+    /// the launcher, or with `keep_open` leaving it as it is, to paste
+    /// another.
+    Paste { text: String, keep_open: bool },
     /// Put this on the clipboard.
     Copy(String),
     /// Write this to `emoji.json`, off the UI thread.
@@ -125,7 +130,10 @@ impl Session {
                 let chars = &*entry.chars;
                 let toned = entry.toned(self.saved.skin_tone);
                 let done = match action.as_str() {
-                    PASTE => Effect::Paste(toned.to_string()),
+                    PASTE | PASTE_KEEP_OPEN => Effect::Paste {
+                        text: toned.to_string(),
+                        keep_open: action == PASTE_KEEP_OPEN,
+                    },
                     COPY => Effect::Copy(toned.to_string()),
                     COPY_UNICODE => Effect::Copy(codepoints(toned)),
                     COPY_NAME => Effect::Copy(title_case(&entry.name)),
@@ -144,7 +152,12 @@ impl Session {
                 };
                 // Saved first: pasting and copying close the view.
                 self.saved.record(chars);
-                vec![Effect::Save(self.saved.clone()), done]
+                let mut effects = vec![Effect::Save(self.saved.clone()), done];
+                // Still open: drawn again, so Frequently Used has it now.
+                if action == PASTE_KEEP_OPEN {
+                    effects.push(Effect::Render(self.view()));
+                }
+                effects
             }
             _ => Vec::new(),
         }
@@ -385,6 +398,7 @@ impl Items<'_> {
         let chars = &*entry.chars;
         let mut actions = vec![
             action(PASTE, "Paste"),
+            action(PASTE_KEEP_OPEN, "Paste and Keep Window Open"),
             action(COPY, "Copy to Clipboard"),
             action(COPY_UNICODE, "Copy Unicode"),
             action(COPY_NAME, "Copy Name"),
@@ -494,6 +508,14 @@ mod tests {
         match view {
             View::List(list) => list,
             View::Detail(_) => panic!("expected a list"),
+        }
+    }
+
+    /// What *Paste* asks for: the launcher closes.
+    fn pasted(text: &str) -> Effect {
+        Effect::Paste {
+            text: text.into(),
+            keep_open: false,
         }
     }
 
@@ -624,6 +646,7 @@ mod tests {
             actions,
             [
                 (PASTE, "Paste"),
+                (PASTE_KEEP_OPEN, "Paste and Keep Window Open"),
                 (COPY, "Copy to Clipboard"),
                 (COPY_UNICODE, "Copy Unicode"),
                 (COPY_NAME, "Copy Name"),
@@ -634,7 +657,7 @@ mod tests {
 
         // Each after the save that records the use.
         let mut last = |action: &str| invoke(&mut session, SUN, action).pop();
-        assert_eq!(last(PASTE), Some(Effect::Paste(SUN.into())));
+        assert_eq!(last(PASTE), Some(pasted(SUN)));
         assert_eq!(last(COPY), Some(Effect::Copy(SUN.into())));
         assert_eq!(
             last(COPY_UNICODE),
@@ -746,7 +769,7 @@ mod tests {
         let mut session = Session::new(State::load(&path));
 
         let effects = invoke(&mut session, SUN, PASTE);
-        assert_eq!(effects.last(), Some(&Effect::Paste(SUN.into())));
+        assert_eq!(effects.last(), Some(&pasted(SUN)));
         assert!(
             matches!(effects[0], Effect::Save(_)),
             "saved before closing"
@@ -763,6 +786,37 @@ mod tests {
         // Still in its category, under its own id.
         assert!(list(&view).items().any(|item| item.id == SUN));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// *Paste and Keep Window Open* pastes the same emoji as *Paste*, keeps
+    /// the launcher open, counts as a use, and draws the grid again so
+    /// *Frequently Used* shows it at once.
+    #[test]
+    fn paste_and_keep_window_open_counts_the_use_and_redraws() {
+        let mut session = in_tone(SkinTone::Medium);
+
+        let effects = invoke(&mut session, THUMBS, PASTE_KEEP_OPEN);
+        let [Effect::Save(state), paste, Effect::Render(view)] = &effects[..] else {
+            panic!("expected a save, a paste and a render, got {effects:?}");
+        };
+        assert_eq!(state.usage[THUMBS].count, 1);
+        assert_eq!(
+            *paste,
+            Effect::Paste {
+                text: THUMBS_MEDIUM.into(),
+                keep_open: true,
+            }
+        );
+        assert_eq!(
+            list(view).sections[0].title.as_deref(),
+            Some("Frequently Used")
+        );
+        // Still in its category, under its own id, which keeps it selected.
+        assert!(list(view).items().any(|item| item.id == THUMBS));
+
+        // A second one adds to the count.
+        invoke(&mut session, THUMBS, PASTE_KEEP_OPEN);
+        assert_eq!(session.saved.usage[THUMBS].count, 2);
     }
 
     #[test]
@@ -810,7 +864,10 @@ mod tests {
         assert_eq!(section_ids(&session, "Pinned"), [format!("pinned:{SUN}")]);
 
         let actions = action_ids(&session, &format!("pinned:{SUN}"));
-        assert_eq!(&actions[..4], [PASTE, COPY, COPY_UNICODE, COPY_NAME]);
+        assert_eq!(
+            &actions[..5],
+            [PASTE, PASTE_KEEP_OPEN, COPY, COPY_UNICODE, COPY_NAME]
+        );
         assert!(actions.contains(&UNPIN.to_string()));
         assert!(!actions.contains(&PIN.to_string()));
         // Used, so it can be forgotten; alone, so it cannot move.
@@ -1107,7 +1164,7 @@ mod tests {
         assert_eq!(glyph(&session, THUMBS), THUMBS_MEDIUM);
 
         let mut last = |action: &str| invoke(&mut session, THUMBS, action).pop();
-        assert_eq!(last(PASTE), Some(Effect::Paste(THUMBS_MEDIUM.into())));
+        assert_eq!(last(PASTE), Some(pasted(THUMBS_MEDIUM)));
         assert_eq!(last(COPY), Some(Effect::Copy(THUMBS_MEDIUM.into())));
         assert_eq!(
             last(COPY_UNICODE),
@@ -1125,10 +1182,7 @@ mod tests {
         query(&mut session, "sun");
         assert_eq!(glyph(&session, SUN), SUN);
         assert!(tone_actions(&session, SUN).is_empty());
-        assert_eq!(
-            invoke(&mut session, SUN, PASTE).pop(),
-            Some(Effect::Paste(SUN.into()))
-        );
+        assert_eq!(invoke(&mut session, SUN, PASTE).pop(), Some(pasted(SUN)));
     }
 
     #[test]

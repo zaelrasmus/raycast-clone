@@ -32,8 +32,8 @@ use crate::hotkey_recorder::{CancelRecording, ClearRecording, SaveRecording};
 use crate::launcher::{
     Activate, AskArgument, ClearQuery, CompletePath, ConfigureCommand, Dismiss, GRID_CONTEXT,
     GridDown, GridLeft, GridRight, GridUp, MoveFavoriteDown, MoveFavoriteUp, NextScope,
-    PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast, SelectNext,
-    SelectPrevious, TYPED_PATH_CONTEXT, ToggleActionPanel, ToggleFavorite,
+    PasteKeepOpen, PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast,
+    SelectNext, SelectPrevious, TYPED_PATH_CONTEXT, ToggleActionPanel, ToggleFavorite,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
@@ -189,6 +189,11 @@ const BINDINGS: &[Binding] = &[
         keys: "ctrl-enter",
         group: "Actions",
         description: Some("Run the second action"),
+    },
+    Binding {
+        keys: "ctrl-shift-enter",
+        group: "Actions",
+        description: Some("Paste and keep the window open"),
     },
     Binding {
         keys: "tab",
@@ -401,6 +406,9 @@ pub(crate) fn launcher_bindings() -> Vec<KeyBinding> {
         // or in its query field takes the chord; the snippet form does, but
         // it is deeper and has no list to run anything on.
         KeyBinding::new("ctrl-enter", RunSecondaryAction, Some(CONTEXT)),
+        // Paste and Keep Window Open (F18), as Raycast binds it: runs an
+        // open view's action of that id, and nothing in the root list.
+        KeyBinding::new("ctrl-shift-enter", PasteKeepOpen, Some(CONTEXT)),
         // Tab, as in Raycast: the selected quicklink takes what is typed next
         // as its argument. Enter on the same row does it too; Tab is for when
         // the row is not the first thing Enter would run.
@@ -752,6 +760,8 @@ pub struct Shortcuts {
     pub toggle_favorite: Vec<String>,
     pub move_up: Vec<String>,
     pub move_down: Vec<String>,
+    /// What runs a view's *Paste and Keep Window Open*.
+    pub paste_keep_open: Vec<String>,
 }
 
 impl Shortcuts {
@@ -762,6 +772,7 @@ impl Shortcuts {
             toggle_favorite: keys_of(keymap, &ToggleFavorite),
             move_up: keys_of(keymap, &MoveFavoriteUp),
             move_down: keys_of(keymap, &MoveFavoriteDown),
+            paste_keep_open: keys_of(keymap, &PasteKeepOpen),
         }
     }
 }
@@ -1013,6 +1024,32 @@ mod tests {
             })
             .count();
         assert_eq!(taken, 1);
+    }
+
+    /// Ctrl+Shift+Enter is *Paste and Keep Window Open*'s alone, in the
+    /// launcher and in a grid.
+    #[test]
+    fn ctrl_shift_enter_pastes_and_keeps_the_window_open() {
+        let chord = gpui::Keystroke::parse("ctrl-shift-enter").unwrap();
+        let taken = launcher_bindings()
+            .iter()
+            .filter(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(|keystroke| keystroke.inner())
+                    .eq([&chord])
+            })
+            .count();
+        assert_eq!(taken, 1);
+        assert_eq!(
+            resolves_to("ctrl-shift-enter", &[CONTEXT]),
+            Some("lumen::PasteKeepOpen")
+        );
+        assert_eq!(
+            resolves_to("ctrl-shift-enter", &[CONTEXT, GRID_CONTEXT]),
+            Some("lumen::PasteKeepOpen")
+        );
     }
 
     /// What `keys` runs with the search field focused inside `contexts`,

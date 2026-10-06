@@ -456,6 +456,18 @@ pub mod favorite_action {
     pub const MOVE_DOWN: &str = "move-down";
 }
 
+/// The id of a view's action that the host's *Paste and Keep Window Open*
+/// key performs (F18).
+///
+/// As with [`favorite_action`]: `Ctrl+Shift+Enter` runs the selected item's
+/// action with this id, sent as [`Event::ActionInvoked`] as if it had been
+/// chosen from the panel, and the panel shows that key, read from the
+/// keymap. What it does is the view's; it is meant for a paste that leaves
+/// the launcher open, as Raycast's is. An item without it ignores the key.
+pub mod paste_action {
+    pub const KEEP_OPEN: &str = "paste-keep-open";
+}
+
 /// What to show when a list has nothing in it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]

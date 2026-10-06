@@ -38,6 +38,17 @@
 //!
 //! If somebody else replaces the clipboard in the meantime, nothing is put
 //! back: what they copied is newer than what was there.
+//!
+//! # Keeping the launcher open
+//!
+//! *Paste and Keep Window Open* (F18) does not hide the launcher: the
+//! foreground is given to the target with a plain `SetForegroundWindow`,
+//! which the launcher, in front, may do, and taken back the same way once
+//! the paste is over -- read, given up on, or the clipboard replaced. Never
+//! after a delay of its own: the keystroke waits in the target's queue until
+//! it is handled, and taking the foreground back first can leave it unread.
+//! The text is offered by delayed rendering whether or not the clipboard is
+//! put back, so that the read is seen.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -60,8 +71,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
     GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HWND_MESSAGE, KillTimer, MSG,
-    PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_DESTROYCLIPBOARD, WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_TIMER, WNDCLASSW,
+    PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROYCLIPBOARD, WM_RENDERALLFORMATS, WM_RENDERFORMAT,
+    WM_TIMER, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -91,7 +103,35 @@ const VK_V: VIRTUAL_KEY = VIRTUAL_KEY(0x56);
 const MAX_CARET_BACK: usize = 2000;
 
 pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
+    deliver(window, paste, false)
+}
+
+/// [`paste`] with the launcher, `launcher`, left showing: the foreground is
+/// lent to the target and given back once the paste is over.
+pub fn paste_keep_open(window: FocusOwner, paste: &Paste, launcher: HWND) -> Result<()> {
+    let outcome = deliver(window, paste, true);
+    // Read, given up on, or the clipboard replaced: `deliver` returns only
+    // then, so the target has had the keystroke.
+    if !unsafe { SetForegroundWindow(launcher) }.as_bool() {
+        let front = unsafe { GetForegroundWindow() };
+        log::debug!(
+            "could not take the foreground back to the launcher; {:?} ({}) has it",
+            front.0,
+            class_of(front)
+        );
+    }
+    outcome
+}
+
+/// Type `paste` into `window`. With `keep_open` the launcher is still in
+/// front, so the foreground is handed to `window` here rather than by
+/// hiding, and the read is always watched for.
+fn deliver(window: FocusOwner, paste: &Paste, keep_open: bool) -> Result<()> {
     let target = HWND(window.0 as *mut c_void);
+    // The window that owns the clipboard watches for the read: needed to
+    // put the clipboard back, and to know when the launcher may have the
+    // foreground again.
+    let watched = paste.restore_clipboard || keep_open;
 
     // The text always, or the files and their names (F12); the HTML beside
     // it when there is some, which a document or a mail reads in preference.
@@ -102,8 +142,8 @@ pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
     } else {
         vec![(u32::from(CF_UNICODETEXT.0), clipboard::utf16(&paste.text))]
     };
-    // Only for a paste that stays: a restored one is marked by its owner.
-    if paste.keep_out_of_history && !paste.restore_clipboard {
+    // Only for a paste nobody watches: a watched one is marked by its owner.
+    if paste.keep_out_of_history && !watched {
         let exclude = clipboard::exclude_format();
         if exclude != 0 {
             formats.push((exclude, vec![0]));
@@ -116,27 +156,43 @@ pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
         }
     }
 
+    if keep_open {
+        // The chord that asked for this is still down. Let go of in front of
+        // the launcher, the target never sees Shift's release, nor a
+        // `Ctrl+Shift+V` made of it.
+        wait_for_modifiers();
+        // The launcher is in front, so this is allowed.
+        if !unsafe { SetForegroundWindow(target) }.as_bool() {
+            log::debug!("SetForegroundWindow refused the paste's target");
+        }
+    }
     if !wait_for_foreground(target) {
         // Typing into whatever is in front instead is the race 7.15 exists
         // to avoid, so nothing is typed; the text is not lost either.
         clipboard::set_formats(&formats)?;
         bail!("the window did not come back to the front, so the snippet was copied instead");
     }
-    wait_for_modifiers();
+    if !keep_open {
+        wait_for_modifiers();
+    }
 
-    if !paste.restore_clipboard {
+    if !watched {
         clipboard::set_formats(&formats)?;
         return send_keys(paste.keys, paste.caret_back);
     }
 
     // A thread of its own: the window that owns the clipboard needs a message
     // loop, and the caller's thread is not one to borrow.
-    let keys = paste.keys;
-    let caret_back = paste.caret_back;
+    let send = Delivery {
+        keys: paste.keys,
+        caret_back: paste.caret_back,
+        put_back: paste.restore_clipboard,
+        keep_out_of_history: paste.keep_out_of_history,
+    };
     let raw = window.0;
     std::thread::Builder::new()
         .name("lumen-paste".into())
-        .spawn(move || Owner::run(HWND(raw as *mut c_void), formats, keys, caret_back))
+        .spawn(move || Owner::run(HWND(raw as *mut c_void), formats, send))
         .context("starting the paste")?
         .join()
         .map_err(|_| anyhow!("the paste stopped unexpectedly"))?
@@ -239,6 +295,16 @@ fn send_keys(keys: PasteKeys, caret_back: usize) -> Result<()> {
     Ok(())
 }
 
+/// How a watched paste is typed, and what becomes of the clipboard after.
+struct Delivery {
+    keys: PasteKeys,
+    caret_back: usize,
+    /// Put back what was there once the text is read; else leave the text.
+    put_back: bool,
+    /// For a text that is left: keep it out of the history all the same.
+    keep_out_of_history: bool,
+}
+
 /// The window that owns the clipboard while a paste is read, and what it
 /// knows. Reached from the window procedure, one paste per thread.
 struct Owner {
@@ -252,6 +318,10 @@ struct Owner {
     formats: Vec<(u32, Vec<u8>)>,
     /// Everything that was on the clipboard, to put back.
     saved: Vec<(u32, Vec<u8>)>,
+    /// Put it back once read; `false` leaves the text, supplied.
+    put_back: bool,
+    /// A text that is left is kept out of the history all the same.
+    keep_out_of_history: bool,
     exclude: u32,
     history: u32,
     /// The target has asked for the text.
@@ -274,12 +344,7 @@ thread_local! {
 }
 
 impl Owner {
-    fn run(
-        target: HWND,
-        formats: Vec<(u32, Vec<u8>)>,
-        keys: PasteKeys,
-        caret_back: usize,
-    ) -> Result<()> {
+    fn run(target: HWND, formats: Vec<(u32, Vec<u8>)>, send: Delivery) -> Result<()> {
         let hwnd = unsafe { create_window()? };
         let mut target_process = 0u32;
         unsafe { GetWindowThreadProcessId(target, Some(&mut target_process)) };
@@ -290,6 +355,8 @@ impl Owner {
             target_executable: foreground::executable_of(target),
             formats,
             saved: Vec::new(),
+            put_back: send.put_back,
+            keep_out_of_history: send.keep_out_of_history,
             exclude: unsafe {
                 RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"))
             },
@@ -303,7 +370,7 @@ impl Owner {
 
         let offered = with_owner(|owner| owner.offer()).unwrap_or(Ok(()));
         let result = offered.and_then(|()| {
-            send_keys(keys, caret_back)?;
+            send_keys(send.keys, send.caret_back)?;
             unsafe { SetTimer(Some(hwnd), READ_TIMER, READ_WAIT.as_millis() as u32, None) };
             pump();
             with_owner(|owner| owner.outcome.take())
@@ -322,11 +389,13 @@ impl Owner {
     /// and not yet supplied.
     fn offer(&mut self) -> Result<()> {
         let _lock = ClipboardLock::acquire_for(self.hwnd)?;
-        self.saved = unsafe { saved_formats() };
-        log::debug!(
-            "paste: kept {} clipboard formats to put back",
-            self.saved.len()
-        );
+        if self.put_back {
+            self.saved = unsafe { saved_formats() };
+            log::debug!(
+                "paste: kept {} clipboard formats to put back",
+                self.saved.len()
+            );
+        }
         unsafe { EmptyClipboard() }.context("EmptyClipboard")?;
 
         unsafe {
@@ -336,7 +405,15 @@ impl Owner {
             for (format, _) in &self.formats {
                 let _ = SetClipboardData(*format, None);
             }
-            self.mark()?;
+            if self.put_back {
+                self.mark()?;
+            } else if self.keep_out_of_history && self.exclude != 0 {
+                // As an unwatched paste that stays is marked: out of Lumen's
+                // history only.
+                let marker = clipboard::global(&[0])?;
+                SetClipboardData(self.exclude, Some(HANDLE(marker.0)))
+                    .context("marking the paste as not for history")?;
+            }
         }
         self.owed = self.formats.iter().map(|(format, _)| *format).collect();
         Ok(())
@@ -624,7 +701,12 @@ extern "system" fn window_proc(
             );
             with_owner(|owner| {
                 let outcome = if wparam.0 == GRACE_TIMER || owner.read_by_other {
-                    owner.restore()
+                    if owner.put_back {
+                        owner.restore()
+                    } else {
+                        // Taken, and the text stays: supplied, as it goes.
+                        owner.give_up()
+                    }
                 } else {
                     owner.give_up().and_then(|()| {
                         Err(anyhow!(
