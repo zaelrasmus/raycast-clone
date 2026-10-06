@@ -2928,8 +2928,11 @@ impl Launcher {
                 self.open_file_search(window, cx);
                 return;
             }
-            // Not yet wired (F18, task 5b).
-            lumen_core::ViewSource::Emoji => return,
+            // Pasting and the clipboard are the daemon's (F18).
+            lumen_core::ViewSource::Emoji => {
+                cx.emit(LauncherEvent::RunEmoji);
+                return;
+            }
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view
@@ -5383,6 +5386,8 @@ pub enum LauncherEvent {
     },
     /// *Clipboard History* was chosen (F12).
     RunClipboard,
+    /// *Search Emoji & Symbols* was chosen (F18).
+    RunEmoji,
     /// *World Clock* was chosen (F13).
     RunClock,
     /// *Weather* was chosen (F13), on a city's report or on the list.
@@ -6319,6 +6324,13 @@ impl Launcher {
             .picker
             .as_ref()
             .and_then(|picker| scopes.get(picker.scope).map(|scope| (picker.scope, scope)));
+        let grid = match &self.mode {
+            Mode::View(state) => match &state.view {
+                lumen_core::view::View::List(list) => grid_status(list, state.selected),
+                lumen_core::view::View::Detail(_) => None,
+            },
+            Mode::Root | Mode::Form(_) => None,
+        };
         let status = match (&self.mode, count) {
             (Mode::Form(_), _) => "Next field  Tab".to_string(),
             // What is counting, while nothing is typed: the launcher opens
@@ -6337,6 +6349,8 @@ impl Launcher {
                 format!("{}  Tab", next.title)
             }
             (Mode::View(_), _) if picking.is_some() => String::new(),
+            // A cell is a glyph without its name, so the footer says it (F18).
+            (Mode::View(_), _) if grid.is_some() => grid.unwrap_or_default(),
             // On a typed path Tab is the path's, not the scope's (F16).
             (Mode::View(_), _) if self.path_completion().is_some() => "Complete  Tab".to_string(),
             // What Tab does is not visible from the pills alone.
@@ -6906,13 +6920,38 @@ fn calculated(item: &Item, action: &Action) -> Option<LauncherEvent> {
     }
 }
 
+/// A grid's footer line, Raycast's: the view's name and the selected
+/// cell's title, `Search Emoji & Symbols \u{2013} Sun` (F18). A cell is a
+/// glyph without its name, so the footer says it. `None` for rows, which
+/// show their titles themselves.
+///
+/// The name is the search field's placeholder without its ellipsis: a view
+/// has no title of its own, and its placeholder is what it calls itself.
+fn grid_status(list: &lumen_core::view::List, selected: usize) -> Option<String> {
+    if list.presentation != lumen_core::view::Presentation::Grid {
+        return None;
+    }
+    let name = list
+        .placeholder
+        .as_deref()
+        .map(|placeholder| placeholder.trim_end_matches(['\u{2026}', '.']).trim_end());
+    let title = list.item(selected).map(|item| item.title.as_str());
+    match (name, title) {
+        (Some(name), Some(title)) => Some(format!("{name} \u{2013} {title}")),
+        (Some(name), None) => Some(name.to_string()),
+        (None, Some(title)) => Some(title.to_string()),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::{
-        LauncherEvent, Summons, calculated, card_extent, card_label, inside_command, level_change,
-        opening_selection, opens_in_launcher, operator_ranges, panel_matches, query_to_send,
-        refiltered_selection, root_panel_entries, second_action, summons, visible_panel_rows,
+        LauncherEvent, Summons, calculated, card_extent, card_label, grid_status, inside_command,
+        level_change, opening_selection, opens_in_launcher, operator_ranges, panel_matches,
+        query_to_send, refiltered_selection, root_panel_entries, second_action, summons,
+        visible_panel_rows,
     };
     use lumen_core::config::FileSearchConfig;
     use lumen_core::file_index::IndexDetail;
@@ -6957,6 +6996,63 @@ mod tests {
         assert!(!inside_command(Some(clipboard), clipboard, true));
         assert!(!inside_command(Some(clipboard), "builtin:timers", false));
         assert!(!inside_command(None, clipboard, false));
+    }
+
+    fn grid(placeholder: Option<&str>, titles: &[&str]) -> lumen_core::view::List {
+        lumen_core::view::List {
+            presentation: lumen_core::view::Presentation::Grid,
+            placeholder: placeholder.map(Into::into),
+            sections: vec![lumen_core::view::Section {
+                items: titles
+                    .iter()
+                    .map(|title| lumen_core::view::Item {
+                        id: (*title).into(),
+                        title: (*title).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// A grid's footer names the view and the selected cell, with an en
+    /// dash, as Raycast's does; the ellipsis is the placeholder's, not the
+    /// name's.
+    #[test]
+    fn a_grid_footer_names_the_view_and_the_selected_cell() {
+        let list = grid(Some("Search Emoji & Symbols\u{2026}"), &["Sun", "Moon"]);
+        assert_eq!(
+            grid_status(&list, 1).as_deref(),
+            Some("Search Emoji & Symbols \u{2013} Moon")
+        );
+        let dots = grid(Some("Search Emoji & Symbols..."), &["Sun"]);
+        assert_eq!(
+            grid_status(&dots, 0).as_deref(),
+            Some("Search Emoji & Symbols \u{2013} Sun")
+        );
+    }
+
+    /// Without a selection the name alone; without a name the title alone.
+    #[test]
+    fn a_grid_footer_says_what_it_has() {
+        let empty = grid(Some("Search Emoji & Symbols\u{2026}"), &[]);
+        assert_eq!(
+            grid_status(&empty, 0).as_deref(),
+            Some("Search Emoji & Symbols")
+        );
+        let nameless = grid(None, &["Sun"]);
+        assert_eq!(grid_status(&nameless, 0).as_deref(), Some("Sun"));
+        assert_eq!(grid_status(&grid(None, &[]), 0), None);
+    }
+
+    /// Rows show their titles, so their footer is unchanged.
+    #[test]
+    fn a_rows_footer_is_not_a_grid_one() {
+        let mut list = grid(Some("Search Snippets\u{2026}"), &["Sun"]);
+        list.presentation = lumen_core::view::Presentation::Rows;
+        assert_eq!(grid_status(&list, 0), None);
     }
 
     /// A change of `files.index-detail` alone is a switch of level, made

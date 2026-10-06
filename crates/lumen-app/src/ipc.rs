@@ -98,6 +98,8 @@ pub enum Message {
     },
     /// Open *Clipboard History* (F12).
     RunClipboard,
+    /// Open *Search Emoji & Symbols* (F18).
+    RunEmoji,
     /// Open *World Clock* (F13).
     RunClock,
     /// Open *Weather* (F13), on a city's report or on the list.

@@ -1,8 +1,5 @@
 # Measure the per-frame cost of the emoji grid (F18) while Down is held.
 #
-# NEEDS THE VIEW FROM F18 TASK 5. Until Search Emoji & Symbols exists, typing
-# `emoji` and Enter opens nothing and this script measures the wrong thing.
-#
 # The budget is the typing one (p95 < 8 ms per frame), held over the grid:
 # every row the selection moves into view brings eight glyphs the atlas may
 # not have yet, and a colour glyph is rasterised by DirectWrite on the frame
@@ -21,6 +18,10 @@
 # So every keystroke first checks that the foreground window belongs to the
 # daemon, and the script stops rather than type into anything else.
 #
+# The daemon runs in a `LUMEN_HOME` of its own, with its own socket (F15), so
+# it starts beside the installed one and reads and writes nothing of it. Only
+# the process this script started is stopped.
+#
 #   powershell -File scripts/measure-grid.ps1 -Exe target/release/lumen.exe
 
 param(
@@ -32,6 +33,8 @@ param(
     # Enough to walk the emoji groups: 1,637 emoji are 205 rows of eight.
     [int] $Downs = 200,
     [int] $Rights = 20,
+    # The test daemon's config, data and cache.
+    [string] $LumenHome = (Join-Path ([IO.Path]::GetTempPath()) 'lumen-grid-home'),
     # Keep the daemon's log and print where it is, to see what was counted.
     [switch] $KeepLog
 )
@@ -67,10 +70,9 @@ function Line-Count {
     @(Get-Content $log -Encoding UTF8 -ErrorAction SilentlyContinue).Count
 }
 
-# By name as well: a copied build (lumen-head.exe) runs as lumen-head.
-$name = [IO.Path]::GetFileNameWithoutExtension($exe)
-Get-Process lumen, $name -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
+# Set for the daemon and for `show` and `hide`, which find it by its socket.
+New-Item -ItemType Directory -Force $LumenHome | Out-Null
+$env:LUMEN_HOME = (Resolve-Path $LumenHome).Path
 
 $env:ZED_MEASUREMENTS = '1'
 $daemon = Start-Process -FilePath $exe -PassThru -RedirectStandardError $log -WindowStyle Hidden
@@ -96,15 +98,15 @@ try {
         Start-Sleep -Milliseconds 300
         $ranges += , @($start, (Line-Count))
 
-        # If the launcher reopens in the view rather than at the root, the
-        # next `emoji` lands in the view's search field: compare the first
-        # summons with the rest using -KeepLog.
+        # The launcher reopens at the root (`Launcher::on_shown`), so the
+        # next `emoji` is a root search again.
         & $exe hide
         Start-Sleep -Milliseconds 1500
     }
 } finally {
     Stop-Process -Id $daemon.Id -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 300
+    Remove-Item Env:\LUMEN_HOME
 }
 
 $lines = @(Get-Content $log -Encoding UTF8)

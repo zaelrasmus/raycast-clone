@@ -43,6 +43,7 @@ mod clipboard;
 mod clock;
 mod currency;
 mod dictionary;
+mod emoji;
 mod extensions;
 mod ipc;
 mod snippets;
@@ -1450,6 +1451,10 @@ fn subscribe_to_launcher(
                 let _ = commands.unbounded_send(Message::RunClipboard);
                 return;
             }
+            LauncherEvent::RunEmoji => {
+                let _ = commands.unbounded_send(Message::RunEmoji);
+                return;
+            }
             LauncherEvent::RunClock => {
                 let _ = commands.unbounded_send(Message::RunClock);
                 return;
@@ -1511,6 +1516,7 @@ fn subscribe_to_launcher(
                 | LauncherEvent::RunDictionary
                 | LauncherEvent::RunSnippets { .. }
                 | LauncherEvent::RunClipboard
+                | LauncherEvent::RunEmoji
                 | LauncherEvent::RunClock
                 | LauncherEvent::RunWeather { .. }
                 | LauncherEvent::RefreshWeather { .. }
@@ -2064,6 +2070,12 @@ fn handle(
             let window = surfaces.launcher;
             cx.update(move |cx| clipboard::run(platform, window, cx))
                 .context("reaching the app to open the clipboard history")
+        }
+        Message::RunEmoji => {
+            let platform = platform.clone();
+            let window = surfaces.launcher;
+            cx.update(move |cx| emoji::run(platform, window, cx))
+                .context("reaching the app to open the emoji and symbols")
         }
         Message::RunClock => {
             let platform = platform.clone();
