@@ -12,20 +12,21 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    SharedString, Subscription, Window, actions, div, px,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString,
+    Subscription, Window, actions, div, px,
 };
 use lumen_core::layout::settings as metrics;
 use lumen_core::providers::window_commands::CustomWindowCommand;
 use lumen_core::theme::Colors;
 use lumen_platform::{Anchor, Gaps, Length, MonitorInfo, Offset, Placement, Rect};
 
+use crate::placement_fields::{
+    PlacementFields, display_preview, either, form_buttons, line, place_preview,
+};
 use crate::quicklink_form::{
     CancelForm, NextField, PreviousField, SubmitForm, TOGGLE_CONTEXT, ToggleFallback,
 };
-use crate::settings::text_button;
 use crate::settings_ui as ui;
-use crate::styling::color;
 use crate::text_field::{TextField, TextFieldEvent};
 
 actions!(
@@ -49,10 +50,7 @@ pub const CONTEXT: &str = "WindowCommandForm";
 pub const ANCHOR_CONTEXT: &str = "AnchorGrid";
 
 /// What the caption calls the display: the platform names none.
-const DISPLAY: &str = "This display";
-
-/// The four figures, in the order they are drawn and focused.
-const FIELDS: [&str; 4] = ["W", "H", "X", "Y"];
+pub const DISPLAY: &str = "This display";
 
 /// What the field's figure is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,14 +60,14 @@ pub enum Unit {
 }
 
 impl Unit {
-    fn suffix(self) -> &'static str {
+    pub fn suffix(self) -> &'static str {
         match self {
             Self::Percent => "%",
             Self::Points => "pt",
         }
     }
 
-    fn other(self) -> Self {
+    pub fn other(self) -> Self {
         match self {
             Self::Percent => Self::Points,
             Self::Points => Self::Percent,
@@ -285,14 +283,11 @@ pub struct WindowCommandEditor {
     /// The command edited; `None` while creating one.
     id: Option<String>,
     name: Entity<TextField>,
-    fields: [Entity<TextField>; 4],
-    units: [Unit; 4],
-    anchor: Anchor,
+    placement: PlacementFields,
     gaps: bool,
     gaps_focus: FocusHandle,
-    grid_focus: FocusHandle,
     preview: Preview,
-    _changes: Vec<Subscription>,
+    _changes: Subscription,
 }
 
 impl EventEmitter<EditorEvent> for WindowCommandEditor {}
@@ -320,40 +315,20 @@ impl WindowCommandEditor {
                 },
             ),
         };
-        let shown = [
-            length_field(placement.width),
-            length_field(placement.height),
-            offset_field(placement.x),
-            offset_field(placement.y),
-        ];
-        let placeholders = ["Auto", "Auto", "0", "0"];
         let name = cx.new(|cx| TextField::new(name, "Reading", colors.clone(), cx));
-        let fields = [0, 1, 2, 3].map(|index| {
-            let text = shown[index].0.clone();
-            let placeholder = placeholders[index];
-            cx.new(|cx| TextField::new(text, placeholder, colors.clone(), cx))
+        let changes = cx.subscribe(&name, |_, _, event: &TextFieldEvent, cx| {
+            if matches!(event, TextFieldEvent::Changed(_)) {
+                cx.notify();
+            }
         });
-        let changes = std::iter::once(&name)
-            .chain(&fields)
-            .map(|field| {
-                cx.subscribe(field, |_, _, event: &TextFieldEvent, cx| {
-                    if matches!(event, TextFieldEvent::Changed(_)) {
-                        cx.notify();
-                    }
-                })
-            })
-            .collect();
         Self {
-            colors,
             id,
             name,
-            fields,
-            units: shown.map(|(_, unit)| unit),
-            anchor: placement.anchor,
+            placement: PlacementFields::new(placement, &colors, cx),
             gaps: placement.gaps,
             gaps_focus: cx.focus_handle(),
-            grid_focus: cx.focus_handle(),
             preview,
+            colors,
             _changes: changes,
         }
     }
@@ -363,16 +338,19 @@ impl WindowCommandEditor {
     }
 
     pub fn set_colors(&mut self, colors: Colors, cx: &mut Context<Self>) {
-        for field in std::iter::once(&self.name).chain(&self.fields) {
-            field.update(cx, |field, cx| field.set_colors(colors.clone(), cx));
-        }
+        self.name
+            .update(cx, |field, cx| field.set_colors(colors.clone(), cx));
+        self.placement.set_colors(&colors, cx);
         self.colors = colors;
         cx.notify();
     }
 
     fn read(&self, cx: &App) -> (Option<Placement>, [Option<String>; 4]) {
-        let texts = [0, 1, 2, 3].map(|index| self.fields[index].read(cx).text());
-        read_placement(texts, self.units, self.anchor, self.gaps)
+        self.placement.read(self.gaps, cx)
+    }
+
+    fn fields(editor: &mut Self) -> &mut PlacementFields {
+        &mut editor.placement
     }
 
     /// The name to save, and the placement, when both are there.
@@ -400,11 +378,9 @@ impl WindowCommandEditor {
 
     /// Name, the four figures, gaps, the grid.
     fn step_focus(&mut self, by: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let mut stops: Vec<FocusHandle> = std::iter::once(&self.name)
-            .chain(&self.fields)
-            .map(|field| field.focus_handle(cx))
-            .collect();
-        stops.extend([self.gaps_focus.clone(), self.grid_focus.clone()]);
+        let mut stops = vec![self.name.focus_handle(cx)];
+        stops.extend(self.placement.field_stops(cx));
+        stops.extend([self.gaps_focus.clone(), self.placement.grid_focus().clone()]);
         let at = stops
             .iter()
             .position(|stop| stop.is_focused(window))
@@ -425,11 +401,6 @@ impl WindowCommandEditor {
         self.gaps = !self.gaps;
         cx.notify();
     }
-
-    fn move_anchor(&mut self, step: Step, cx: &mut Context<Self>) {
-        self.anchor = move_anchor(self.anchor, step);
-        cx.notify();
-    }
 }
 
 impl Render for WindowCommandEditor {
@@ -446,26 +417,14 @@ impl Render for WindowCommandEditor {
             Some(_) => "Save  Ctrl+Enter",
             None => "Create  Ctrl+Enter",
         };
-        let buttons = div()
-            .flex()
-            .justify_end()
-            .gap(px(metrics::GAP))
-            .child(text_button(
-                "window-command-cancel",
-                "Cancel  Esc",
-                &colors,
-                cx.listener(|editor, _, window, cx| editor.cancel(&CancelForm, window, cx)),
-            ))
-            .child(match ready {
-                true => text_button(
-                    "window-command-save",
-                    save,
-                    &colors,
-                    cx.listener(|editor, _, window, cx| editor.submit(&SubmitForm, window, cx)),
-                )
-                .into_any_element(),
-                false => disabled_button(save, &colors),
-            });
+        let buttons = form_buttons(
+            "window-command",
+            save,
+            ready,
+            &colors,
+            cx.listener(|editor, _, window, cx| editor.cancel(&CancelForm, window, cx)),
+            cx.listener(|editor, _, window, cx| editor.submit(&SubmitForm, window, cx)),
+        );
 
         let fields = div()
             .flex_1()
@@ -473,12 +432,24 @@ impl Render for WindowCommandEditor {
             .flex()
             .flex_col()
             .child(line("Name", ui::control(self.name.clone()), &colors))
-            .child(line("Size", self.pair(0, cx), &colors))
+            .child(line(
+                "Size",
+                self.placement.pair(0, &colors, cx, Self::fields),
+                &colors,
+            ))
             .child(ui::note(either(&errors[0], &errors[1]), true, &colors))
-            .child(line("Offset", self.pair(2, cx), &colors))
+            .child(line(
+                "Offset",
+                self.placement.pair(2, &colors, cx, Self::fields),
+                &colors,
+            ))
             .child(ui::note(either(&errors[2], &errors[3]), true, &colors))
             .child(line("Use gaps", self.gaps_toggle(window, cx), &colors))
-            .child(line("Position", self.grid(window, cx), &colors));
+            .child(line(
+                "Position",
+                self.placement.grid(&colors, window, cx, Self::fields),
+                &colors,
+            ));
 
         ui::page("window-command-editor")
             .key_context(CONTEXT)
@@ -510,37 +481,6 @@ impl Render for WindowCommandEditor {
 }
 
 impl WindowCommandEditor {
-    /// Two figures side by side, each with its unit: W and H, or X and Y.
-    fn pair(&self, first: usize, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(metrics::GAP))
-            .children([first, first + 1].map(|index| {
-                let unit = self.units[index];
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(metrics::ICON_GAP))
-                    .child(
-                        div()
-                            .text_size(px(metrics::text::LABEL))
-                            .text_color(color(self.colors.text_muted))
-                            .child(FIELDS[index]),
-                    )
-                    .child(ui::narrow(self.fields[index].clone()))
-                    .child(div().w(px(metrics::UNIT_WIDTH)).child(text_button(
-                        ("window-command-unit", index),
-                        unit.suffix(),
-                        &self.colors,
-                        cx.listener(move |editor, _, _, cx| {
-                            editor.units[index] = editor.units[index].other();
-                            cx.notify();
-                        }),
-                    )))
-            }))
-    }
-
     fn gaps_toggle(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.gaps_focus.is_focused(window);
         div()
@@ -558,94 +498,15 @@ impl WindowCommandEditor {
             .child(ui::toggle(self.gaps, focused, &self.colors))
     }
 
-    /// Nine cells, the anchor's filled; the arrow keys move it while the
-    /// grid has focus.
-    fn grid(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = &self.colors;
-        let focused = self.grid_focus.is_focused(window);
-        let cell = |index: usize, cx: &mut Context<Self>| {
-            let anchor = Anchor::ALL[index];
-            let selected = anchor == self.anchor;
-            div()
-                .id(("window-command-anchor", index))
-                .size(px(metrics::ANCHOR_CELL))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(metrics::KEYCAP_RADIUS))
-                .bg(color(match selected {
-                    true => colors.accent,
-                    false => colors.surface_background,
-                }))
-                .cursor_pointer()
-                .on_click(cx.listener(move |editor, _, window, cx| {
-                    window.focus(&editor.grid_focus);
-                    editor.anchor = anchor;
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .size(px(metrics::ANCHOR_MARK))
-                        .rounded_full()
-                        .bg(color(match selected {
-                            true => colors.text_on_accent,
-                            false => colors.border_strong,
-                        })),
-                )
-        };
-        let rows: Vec<Div> = (0..3)
-            .map(|row| {
-                div()
-                    .flex()
-                    .gap(px(metrics::ANCHOR_GAP))
-                    .children((0..3).map(|column| cell(row * 3 + column, cx)))
-            })
-            .collect();
-        div()
-            .id("window-command-grid")
-            .key_context(ANCHOR_CONTEXT)
-            .track_focus(&self.grid_focus)
-            .on_action(
-                cx.listener(|editor, _: &MoveAnchorUp, _, cx| editor.move_anchor(Step::Up, cx)),
-            )
-            .on_action(
-                cx.listener(|editor, _: &MoveAnchorDown, _, cx| editor.move_anchor(Step::Down, cx)),
-            )
-            .on_action(
-                cx.listener(|editor, _: &MoveAnchorLeft, _, cx| editor.move_anchor(Step::Left, cx)),
-            )
-            .on_action(
-                cx.listener(|editor, _: &MoveAnchorRight, _, cx| {
-                    editor.move_anchor(Step::Right, cx)
-                }),
-            )
-            .my(px(metrics::GAP))
-            .p(px(metrics::ANCHOR_GAP))
-            .flex()
-            .flex_col()
-            .gap(px(metrics::ANCHOR_GAP))
-            .rounded(px(metrics::FIELD_RADIUS))
-            .border_1()
-            .border_color(color(match focused {
-                true => colors.accent,
-                false => colors.border_subtle,
-            }))
-            .children(rows)
-    }
-
     /// The display, scaled into a fixed box, and the window where the
     /// command would put one at 60% by 60% in the middle of it.
     fn preview(&self, placement: Option<Placement>, colors: &Colors) -> impl IntoElement {
-        let frame = (metrics::PREVIEW_WIDTH, metrics::PREVIEW_HEIGHT);
-        let placed = self.preview.monitor.and_then(|monitor| {
-            let current = representative(monitor.work_area);
-            let rect = placement?.place(
-                monitor.work_area,
-                current,
-                monitor.scale_factor,
-                self.preview.gaps,
-            );
-            Some((monitor, rect))
+        let monitor = self.preview.monitor;
+        let placed = monitor.and_then(|monitor| {
+            Some((
+                monitor,
+                place_preview(&placement?, monitor, self.preview.gaps),
+            ))
         });
         let caption: SharedString = match placed {
             Some((monitor, rect)) => {
@@ -657,93 +518,12 @@ impl WindowCommandEditor {
                 )
                 .into()
             }
-            None if self.preview.monitor.is_none() => "No display to preview".into(),
+            None if monitor.is_none() => "No display to preview".into(),
             None => DISPLAY.into(),
         };
-        let boxed = |scaled: Scaled| {
-            div()
-                .absolute()
-                .left(px(scaled.x))
-                .top(px(scaled.y))
-                .w(px(scaled.width))
-                .h(px(scaled.height))
-                .rounded(px(metrics::KEYCAP_RADIUS))
-                .border_1()
-        };
-        let drawn = self.preview.monitor.map(|monitor| {
-            let rect = placed.map_or(Rect::default(), |(_, rect)| rect);
-            let (screen, window) = fit(monitor.work_area, rect, frame);
-            boxed(screen)
-                .bg(color(colors.surface_background))
-                .border_color(color(colors.border_strong))
-                .when(placed.is_some(), |screen| {
-                    screen.child(
-                        boxed(window)
-                            .bg(color(colors.selection_background))
-                            .border_color(color(colors.accent)),
-                    )
-                })
-        });
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(px(metrics::GAP))
-            .child(
-                div()
-                    .relative()
-                    .w(px(frame.0))
-                    .h(px(frame.1))
-                    .children(drawn),
-            )
-            .child(
-                div()
-                    .w(px(frame.0))
-                    .truncate()
-                    .text_size(px(metrics::text::HINT))
-                    .text_color(color(colors.text_muted))
-                    .child(caption),
-            )
+        let windows: Vec<Rect> = placed.map(|(_, rect)| rect).into_iter().collect();
+        display_preview(monitor, &windows, Some(0), caption, colors)
     }
-}
-
-/// A label and its control, one row of the form.
-fn line(label: &'static str, control: impl IntoElement, colors: &Colors) -> Div {
-    div()
-        .min_h(px(metrics::CARD_ROW_HEIGHT))
-        .flex()
-        .items_center()
-        .gap(px(metrics::GAP))
-        .child(
-            div()
-                .w(px(metrics::FORM_LABEL_WIDTH))
-                .flex_none()
-                .text_size(px(metrics::text::LABEL))
-                .text_color(color(colors.text_primary))
-                .child(label),
-        )
-        .child(control)
-}
-
-/// The first of two problems, or nothing.
-fn either(first: &Option<String>, second: &Option<String>) -> String {
-    first.clone().or_else(|| second.clone()).unwrap_or_default()
-}
-
-/// A button that cannot be pressed yet: as a text button, muted.
-fn disabled_button(label: &'static str, colors: &Colors) -> AnyElement {
-    div()
-        .h(px(metrics::FIELD_HEIGHT))
-        .px(px(metrics::FIELD_PADDING))
-        .flex()
-        .items_center()
-        .rounded(px(metrics::FIELD_RADIUS))
-        .border_1()
-        .border_color(color(colors.border_subtle))
-        .text_size(px(metrics::text::LABEL))
-        .text_color(color(colors.text_placeholder))
-        .child(label)
-        .into_any_element()
 }
 
 #[cfg(test)]

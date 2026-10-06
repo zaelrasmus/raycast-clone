@@ -242,6 +242,13 @@ impl Select {
             .and_then(|choice| choice.value.as_deref())
     }
 
+    /// What the list says for the chosen option.
+    pub fn label(&self) -> Option<&str> {
+        self.choices
+            .get(self.selected)
+            .map(|choice| choice.label.as_str())
+    }
+
     /// Replace the options, keeping the selection where it was.
     pub fn set_choices(&mut self, choices: Vec<Choice>, selected: usize, cx: &mut Context<Self>) {
         self.selected = selected.min(choices.len().saturating_sub(1));

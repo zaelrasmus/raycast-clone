@@ -549,6 +549,25 @@ windows on screen, up to eight per display, are saved as a layout named
 `Layout <date> <time>`. Rename it or change it in the file; saving the file
 takes effect immediately.
 
+Or use **Settings -> Window Management -> Custom Layouts**, which lists the
+layouts with Edit, Duplicate and Delete. **Create Layout** opens the editor
+on an empty layout; **Save Current Layout** there reads the windows on screen
+and opens the editor on them, not yet saved, so you can trim and rename
+before saving. In the editor:
+
+- **Name**, **Use preferred gap settings** (the screen gap round each
+  window) and **Other windows** (leave, minimise or close them).
+- **Applications**: a row per window. Select a row to edit it; **Add
+  Application** adds one to the selected row's display, **Remove** removes
+  the selected one. At most eight per display.
+- For the selected row: **App** (the launcher's applications), **Start
+  with** (nothing, a URL, a file or folder, or arguments), **Display**
+  (Display 1 is index `0`), and the size, offset and anchor, as in the
+  command editor. The preview draws every window on that display, the
+  selected one highlighted.
+
+What stops Save is said under the card. `Ctrl+Enter` saves, `Esc` goes back.
+
 ```json
 {
   "layouts": [

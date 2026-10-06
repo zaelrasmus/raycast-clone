@@ -294,7 +294,7 @@ fn saved(path: &Path, entries: Result<Vec<LayoutEntry>>, name: &str) -> (String,
 
 /// The windows on screen as a layout: exactly where they are, so no gaps
 /// added, and nothing done to the rest.
-fn snapshot(entries: Vec<LayoutEntry>) -> WindowLayoutSpec {
+pub fn snapshot(entries: Vec<LayoutEntry>) -> WindowLayoutSpec {
     WindowLayoutSpec {
         entries,
         gaps: false,
@@ -303,7 +303,7 @@ fn snapshot(entries: Vec<LayoutEntry>) -> WindowLayoutSpec {
 }
 
 /// `Layout 2026-10-05 14:30`, in the user's time.
-fn now_name() -> String {
+pub fn now_name() -> String {
     name_at(&jiff::Zoned::now())
 }
 

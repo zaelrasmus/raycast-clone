@@ -432,7 +432,17 @@ impl Settings {
             let colors = theme.colors.clone();
             let config_file = config_file.clone();
             let commands_file = paths.window_commands_file();
-            cx.new(|cx| WindowManagementPage::new(config_file, commands_file, platform, colors, cx))
+            let layouts_file = paths.window_layouts_file();
+            cx.new(|cx| {
+                WindowManagementPage::new(
+                    config_file,
+                    commands_file,
+                    layouts_file,
+                    platform,
+                    colors,
+                    cx,
+                )
+            })
         };
         cx.observe(&window_management, |_, _, cx| cx.notify())
             .detach();
@@ -519,12 +529,16 @@ impl Settings {
             .update(cx, |page, _| page.set_reserved(launcher, timers));
     }
 
-    /// The launcher's index, for the Shortcuts page's rows: on open.
+    /// The launcher's index, for the Shortcuts page's rows and the window
+    /// layouts' applications: on open.
     pub fn set_catalogue(
         &mut self,
         catalogue: std::sync::Arc<Vec<lumen_core::Candidate>>,
         cx: &mut Context<Self>,
     ) {
+        let apps = catalogue.clone();
+        self.window_management
+            .update(cx, |page, _| page.set_catalogue(apps));
         self.shortcuts
             .update(cx, |page, cx| page.set_catalogue(catalogue, cx));
     }

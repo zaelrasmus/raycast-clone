@@ -29,6 +29,7 @@ pub mod images;
 pub mod keymap;
 pub mod launcher;
 pub mod overlay;
+pub mod placement_fields;
 pub mod quicklink_form;
 pub mod quicklinks_page;
 pub mod select;
@@ -45,6 +46,7 @@ pub mod translate_page;
 pub mod view;
 pub mod weather_page;
 pub mod window_command_editor;
+pub mod window_layout_editor;
 pub mod window_management_page;
 
 pub use assets::Assets;

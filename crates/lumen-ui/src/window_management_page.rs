@@ -11,6 +11,10 @@
 //! page's place while it is open. Every change goes through
 //! [`window_commands::edit`], which reads the file afresh; the daemon
 //! watches it and indexes the commands again.
+//!
+//! Then the user's window layouts (7.60), `window-layouts.json`, the same
+//! way, in [`WindowLayoutEditor`]. *Save Current Layout* reads the windows on
+//! screen and opens the editor on them, unsaved, as Raycast does.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,9 +24,11 @@ use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, SharedString, Subscription,
     Window, div, px,
 };
+use lumen_core::Candidate;
 use lumen_core::config::{GAP, WindowManagementConfig};
 use lumen_core::layout::settings as metrics;
 use lumen_core::providers::window_commands::{self, CustomWindowCommand};
+use lumen_core::providers::window_layouts::{self, CustomWindowLayout};
 use lumen_core::theme::Colors;
 use lumen_platform::{Cycling, MonitorInfo, Platform, WindowSettings};
 use serde_json::Value;
@@ -35,6 +41,7 @@ use crate::settings_ui as ui;
 use crate::styling::color;
 use crate::translate_page::FORM_CONTEXT;
 use crate::window_command_editor::{EditorEvent, Preview, WindowCommandEditor, summary};
+use crate::window_layout_editor::{Draft, LayoutEditorEvent, WindowLayoutEditor};
 
 /// The gaps offered, in logical pixels. A file may say any other within
 /// [`GAP`]; it is shown as its number.
@@ -57,6 +64,13 @@ const CYCLING: [(Cycling, &str, &str); 3] = [
 pub enum WindowManagementEvent {
     /// Show the Shortcuts page, searching for the window commands.
     OpenShortcuts,
+}
+
+/// What the delete dialog would delete.
+#[derive(Debug, Clone)]
+enum Doomed {
+    Command(CustomWindowCommand),
+    Layout(CustomWindowLayout),
 }
 
 /// Which of the two gaps.
@@ -83,8 +97,14 @@ pub struct WindowManagementPage {
     platform: Arc<dyn Platform>,
     monitor: Option<MonitorInfo>,
     editor: Option<(Entity<WindowCommandEditor>, Subscription)>,
-    /// The command waiting on the delete dialog.
-    confirming: Option<CustomWindowCommand>,
+    /// `window-layouts.json`, the layouts as it last read, and the
+    /// launcher's catalogue, whose applications a layout picks from.
+    layouts_path: PathBuf,
+    layouts: Vec<CustomWindowLayout>,
+    catalogue: Arc<Vec<Candidate>>,
+    layout_editor: Option<(Entity<WindowLayoutEditor>, Subscription)>,
+    /// The command or layout waiting on the delete dialog.
+    confirming: Option<Doomed>,
     dialog_focus: FocusHandle,
     refocus: bool,
 }
@@ -95,6 +115,7 @@ impl WindowManagementPage {
     pub fn new(
         path: PathBuf,
         commands_path: PathBuf,
+        layouts_path: PathBuf,
         platform: Arc<dyn Platform>,
         colors: Colors,
         cx: &mut Context<Self>,
@@ -117,6 +138,10 @@ impl WindowManagementPage {
             platform,
             monitor: None,
             editor: None,
+            layouts_path,
+            layouts: Vec::new(),
+            catalogue: Arc::default(),
+            layout_editor: None,
             confirming: None,
             dialog_focus: cx.focus_handle(),
             refocus: false,
@@ -132,20 +157,23 @@ impl WindowManagementPage {
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
         let commands_path = self.commands_path.clone();
+        let layouts_path = self.layouts_path.clone();
         let platform = self.platform.clone();
         cx.spawn(async move |this, cx| {
-            let (read, commands, monitor) = cx
+            let (read, commands, layouts, monitor) = cx
                 .background_executor()
                 .spawn(async move {
                     (
                         WindowManagementConfig::read(&path),
                         window_commands::load(&commands_path),
+                        window_layouts::load(&layouts_path),
                         platform.cursor_monitor().ok(),
                     )
                 })
                 .await;
             this.update(cx, |page, cx| {
                 page.commands = commands;
+                page.layouts = layouts;
                 page.monitor = monitor.or(page.monitor);
                 match read {
                     Ok(config) => {
@@ -245,17 +273,7 @@ impl WindowManagementPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let gap = shown_gap(&self.screen_gap, cx).unwrap_or_default();
-        let preview = Preview {
-            monitor: self.monitor,
-            gaps: self.monitor.map_or_else(Default::default, |monitor| {
-                WindowSettings {
-                    screen_gap: gap.max(0) as u32,
-                    ..WindowSettings::default()
-                }
-                .gaps(monitor.scale_factor)
-            }),
-        };
+        let preview = self.preview(cx);
         let colors = self.colors.clone();
         let editor = cx.new(|cx| WindowCommandEditor::new(command, preview, colors, cx));
         let events = cx.subscribe(&editor, |page, _, event: &EditorEvent, cx| {
@@ -284,6 +302,21 @@ impl WindowManagementPage {
         self.editor = Some((editor, events));
         self.error = None;
         cx.notify();
+    }
+
+    /// The display the editors draw on, and the screen gap there.
+    fn preview(&self, cx: &App) -> Preview {
+        let gap = shown_gap(&self.screen_gap, cx).unwrap_or_default();
+        Preview {
+            monitor: self.monitor,
+            gaps: self.monitor.map_or_else(Default::default, |monitor| {
+                WindowSettings {
+                    screen_gap: gap.max(0) as u32,
+                    ..WindowSettings::default()
+                }
+                .gaps(monitor.scale_factor)
+            }),
+        }
     }
 
     /// Change `window-commands.json`, off the UI thread, then read it again.
@@ -322,13 +355,111 @@ impl WindowManagementPage {
         });
     }
 
-    fn ask_delete(
+    // -- Custom layouts -------------------------------------------------------
+
+    /// The launcher's index, whose applications a layout picks from: when
+    /// the settings window opens.
+    pub fn set_catalogue(&mut self, catalogue: Arc<Vec<Candidate>>) {
+        self.catalogue = catalogue;
+    }
+
+    /// Open the layout editor on `draft`.
+    fn open_layout_editor(&mut self, draft: Draft, window: &mut Window, cx: &mut Context<Self>) {
+        let (preview, catalogue) = (self.preview(cx), self.catalogue.clone());
+        let colors = self.colors.clone();
+        let editor = cx.new(|cx| WindowLayoutEditor::new(draft, catalogue, preview, colors, cx));
+        let events = cx.subscribe(&editor, |page, _, event: &LayoutEditorEvent, cx| {
+            match event.clone() {
+                LayoutEditorEvent::Save { id, name, spec } => {
+                    let done = format!("Saved {name}");
+                    page.change_layouts(done, cx, move |layouts| match &id {
+                        Some(id) => window_layouts::update(layouts, id, &name, spec),
+                        None => {
+                            window_layouts::add(layouts, &name, spec);
+                            true
+                        }
+                    });
+                }
+                LayoutEditorEvent::Cancelled => page.status = None,
+            }
+            page.layout_editor = None;
+            page.refocus = true;
+            cx.notify();
+        });
+        editor.read(cx).focus(window, cx);
+        self.layout_editor = Some((editor, events));
+        self.error = None;
+        cx.notify();
+    }
+
+    /// Read the windows on screen off the UI thread, then open the editor on
+    /// them, unsaved.
+    fn save_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let platform = self.platform.clone();
+        self.status = Some("Reading the windows on screen\u{2026}".into());
+        self.error = None;
+        cx.spawn_in(window, async move |this, cx| {
+            let read = cx
+                .background_executor()
+                .spawn(async move { platform.current_layout() })
+                .await;
+            this.update_in(cx, |page, window, cx| {
+                page.status = None;
+                match read {
+                    Ok(entries) if entries.is_empty() => {
+                        page.error = Some("There are no windows to save".into());
+                    }
+                    Ok(entries) => {
+                        let draft = Draft::current(entries, window_layouts::now_name());
+                        page.open_layout_editor(draft, window, cx);
+                    }
+                    Err(error) => page.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Change `window-layouts.json`, off the UI thread, then read it again.
+    fn change_layouts(
         &mut self,
-        command: CustomWindowCommand,
-        window: &mut Window,
+        done: String,
         cx: &mut Context<Self>,
+        change: impl FnOnce(&mut Vec<CustomWindowLayout>) -> bool + Send + 'static,
     ) {
-        self.confirming = Some(command);
+        let path = self.layouts_path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { window_layouts::edit(&path, change) })
+                .await;
+            this.update(cx, |page, cx| {
+                match result {
+                    Ok(true) => page.status = Some(done.into()),
+                    Ok(false) => page.error = Some("That layout is no longer in the file".into()),
+                    Err(error) => {
+                        log::warn!("could not save window layouts: {error:#}");
+                        page.error = Some(format!("{error:#}"));
+                    }
+                }
+                page.reload(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn duplicate_layout(&mut self, id: String, cx: &mut Context<Self>) {
+        self.change_layouts("Duplicated".into(), cx, move |layouts| {
+            window_layouts::duplicate(layouts, &id).is_some()
+        });
+    }
+
+    fn ask_delete(&mut self, doomed: Doomed, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirming = Some(doomed);
         window.focus(&self.dialog_focus);
         cx.notify();
     }
@@ -340,22 +471,33 @@ impl WindowManagementPage {
     }
 
     fn confirm_dialog(&mut self, _: &ConfirmDialog, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(command) = self.confirming.take() else {
+        let Some(doomed) = self.confirming.take() else {
             return;
         };
         self.focus(window, cx);
-        let done = format!("Deleted {}", command.name);
-        self.change(done, cx, move |commands| {
-            window_commands::remove(commands, &command.id)
-        });
+        match doomed {
+            Doomed::Command(command) => {
+                let done = format!("Deleted {}", command.name);
+                self.change(done, cx, move |commands| {
+                    window_commands::remove(commands, &command.id)
+                });
+            }
+            Doomed::Layout(layout) => {
+                let done = format!("Deleted {}", layout.name);
+                self.change_layouts(done, cx, move |layouts| {
+                    window_layouts::remove(layouts, &layout.id)
+                });
+            }
+        }
     }
 
     // -- Focus ----------------------------------------------------------------
 
     pub fn focus(&self, window: &mut Window, cx: &App) {
-        match &self.editor {
-            Some((editor, _)) => editor.read(cx).focus(window, cx),
-            None => window.focus(self.gap.read(cx).focus_handle()),
+        match (&self.editor, &self.layout_editor) {
+            (Some((editor, _)), _) => editor.read(cx).focus(window, cx),
+            (None, Some((editor, _))) => editor.read(cx).focus(window, cx),
+            (None, None) => window.focus(self.gap.read(cx).focus_handle()),
         }
     }
 
@@ -388,12 +530,15 @@ impl WindowManagementPage {
         if let Some((editor, _)) = &self.editor {
             editor.update(cx, |editor, cx| editor.set_colors(colors.clone(), cx));
         }
+        if let Some((editor, _)) = &self.layout_editor {
+            editor.update(cx, |editor, cx| editor.set_colors(colors.clone(), cx));
+        }
         self.colors = colors;
         cx.notify();
     }
 
     pub fn status(&self) -> Option<SharedString> {
-        if self.editor.is_some() {
+        if self.editor.is_some() || self.layout_editor.is_some() {
             return Some("Ctrl+Enter to save, Esc to go back".into());
         }
         self.status.clone()
@@ -401,7 +546,16 @@ impl WindowManagementPage {
 
     /// The delete confirmation, over the whole window, drawn by the host.
     pub fn render_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let command = self.confirming.as_ref()?;
+        let (name, body) = match self.confirming.as_ref()? {
+            Doomed::Command(command) => (
+                &command.name,
+                "The command goes from the launcher, with its hotkey and alias.",
+            ),
+            Doomed::Layout(layout) => (
+                &layout.name,
+                "The layout goes from the launcher, with its hotkey and alias.",
+            ),
+        };
         let colors = &self.colors;
         let buttons = div()
             .pt(px(metrics::GAP))
@@ -438,13 +592,13 @@ impl WindowManagementPage {
                 div()
                     .text_size(px(metrics::text::TITLE))
                     .text_color(color(colors.text_primary))
-                    .child(format!("Delete {}?", command.name)),
+                    .child(format!("Delete {name}?")),
             )
             .child(
                 div()
                     .text_size(px(metrics::text::HINT))
                     .text_color(color(colors.text_muted))
-                    .child("The command goes from the launcher, with its hotkey and alias."),
+                    .child(body),
             )
             .child(buttons);
         Some(
@@ -544,9 +698,10 @@ impl Render for WindowManagementPage {
             self.focus(window, cx);
         }
         let colors = self.colors.clone();
-        let content = match &self.editor {
-            Some((editor, _)) => editor.clone().into_any_element(),
-            None => self.render_form(&colors, cx),
+        let content = match (&self.editor, &self.layout_editor) {
+            (Some((editor, _)), _) => editor.clone().into_any_element(),
+            (None, Some((editor, _))) => editor.clone().into_any_element(),
+            (None, None) => self.render_form(&colors, cx),
         };
         div().size_full().flex().overflow_hidden().child(content)
     }
@@ -616,6 +771,8 @@ impl WindowManagementPage {
             ))
             .child(ui::section_title("Custom Commands", colors))
             .child(ui::card(self.command_rows(colors, cx), colors))
+            .child(ui::section_title("Custom Layouts", colors))
+            .child(ui::card(self.layout_rows(colors, cx), colors))
             .child(ui::note(message, is_error, colors))
             .into_any_element()
     }
@@ -649,7 +806,7 @@ impl WindowManagementPage {
                     "Delete\u{2026}",
                     colors,
                     cx.listener(move |page, _, window, cx| {
-                        page.ask_delete(delete.clone(), window, cx)
+                        page.ask_delete(Doomed::Command(delete.clone()), window, cx)
                     }),
                 ));
             rows.push(ui::row(
@@ -669,6 +826,71 @@ impl WindowManagementPage {
             "New window command",
             Some("A size, an anchor and an offset of your own".into()),
             create,
+            colors,
+        ));
+        rows
+    }
+
+    /// A row per layout, with its buttons, then Create and Save Current.
+    fn layout_rows(&self, colors: &Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(self.layouts.len() + 1);
+        for (index, layout) in self.layouts.iter().enumerate() {
+            let edit = layout.clone();
+            let id = layout.id.clone();
+            let delete = layout.clone();
+            let buttons = div()
+                .flex()
+                .gap(px(metrics::GAP))
+                .child(text_button(
+                    ("window-layout-edit", index),
+                    "Edit",
+                    colors,
+                    cx.listener(move |page, _, window, cx| {
+                        page.open_layout_editor(edit.clone().into(), window, cx)
+                    }),
+                ))
+                .child(text_button(
+                    ("window-layout-duplicate", index),
+                    "Duplicate",
+                    colors,
+                    cx.listener(move |page, _, _, cx| page.duplicate_layout(id.clone(), cx)),
+                ))
+                .child(text_button(
+                    ("window-layout-delete", index),
+                    "Delete\u{2026}",
+                    colors,
+                    cx.listener(move |page, _, window, cx| {
+                        page.ask_delete(Doomed::Layout(delete.clone()), window, cx)
+                    }),
+                ));
+            rows.push(ui::row(
+                layout.name.clone(),
+                Some(window_layouts::apps(layout.spec.entries.len()).into()),
+                buttons,
+                colors,
+            ));
+        }
+        let buttons = div()
+            .flex()
+            .gap(px(metrics::GAP))
+            .child(text_button(
+                "window-layout-save-current",
+                "Save Current Layout",
+                colors,
+                cx.listener(|page, _, window, cx| page.save_current(window, cx)),
+            ))
+            .child(text_button(
+                "window-layout-create",
+                "Create Layout",
+                colors,
+                cx.listener(|page, _, window, cx| {
+                    page.open_layout_editor(Draft::new(), window, cx)
+                }),
+            ));
+        rows.push(ui::row(
+            "New window layout",
+            Some("Several applications placed at once".into()),
+            buttons,
             colors,
         ));
         rows
