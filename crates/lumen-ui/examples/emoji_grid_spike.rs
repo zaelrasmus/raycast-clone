@@ -31,7 +31,7 @@
 //! ```text
 //! # F18, task 4a: --evict adds a second half to the scroll. After it ends the
 //! # window drops its emoji glyphs (`Window::drop_emoji_glyphs`, ARCHITECTURE
-//! # 7.53), draws the first screen again, saves it to
+//! # 7.61), draws the first screen again, saves it to
 //! # target\emoji-spike-evicted.png, then scrolls N frames a second time.
 //! cargo run --release -p lumen-ui --example emoji_grid_spike -- --scroll 201 --evict
 //! ```

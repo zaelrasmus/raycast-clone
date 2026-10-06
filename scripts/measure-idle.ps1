@@ -143,7 +143,7 @@ $spent = $process.TotalProcessorTime.TotalMilliseconds - $before
 'private      {0:N1} MB' -f ($process.PrivateMemorySize64 / 1MB)
 'threads      {0}' -f $process.Threads.Count
 
-# The atlas textures are GPU memory, not in the working set (7.53).
+# The atlas textures are GPU memory, not in the working set (7.61).
 $gpu = Get-Counter -ErrorAction SilentlyContinue `
     "\GPU Process Memory(pid_$($process.Id)_*)\Shared Usage",
     "\GPU Process Memory(pid_$($process.Id)_*)\Dedicated Usage"
