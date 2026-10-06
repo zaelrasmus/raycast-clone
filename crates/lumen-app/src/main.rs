@@ -647,7 +647,7 @@ fn subscribe_to_overlay(
         let shell = shell.clone();
 
         // Off the callback before touching a window. See `off_the_callback`.
-        off_the_callback(cx, move || {
+        off_the_callback(cx, move |_| {
             // Hiding at the start of the fade would mean there was no fade;
             // hiding here, after it, is what lets the window stop compositing
             // once it is genuinely invisible.
@@ -1231,7 +1231,9 @@ fn subscribe_to_settings(
                 // might not, and does nothing when nothing is suspended.
                 let _ = shortcut_commands.unbounded_send(ShortcutsCommand::Resume);
                 let platform = platform.clone();
-                off_the_callback(cx, move || platform.hide_window(WindowRole::Settings, None));
+                off_the_callback(cx, move |_| {
+                    platform.hide_window(WindowRole::Settings, None)
+                });
             }
         }
     })
@@ -1365,6 +1367,7 @@ fn subscribe_to_launcher(
     let Ok(entity) = window.entity(cx) else {
         return;
     };
+    let window = *window;
 
     cx.subscribe(&entity, move |entity: Entity<Launcher>, event, cx| {
         // The launcher is about to hide: the pictures it drew go with it
@@ -1398,6 +1401,7 @@ fn subscribe_to_launcher(
 
         let platform = platform.clone();
         let shell = shell.clone();
+        let launcher = window;
         // Read at the moment of the event, so a resize after an edit to
         // config.json lands where the new configuration says.
         let config = config.borrow().clone();
@@ -1491,21 +1495,23 @@ fn subscribe_to_launcher(
             _ => {}
         }
 
-        off_the_callback(cx, move || {
+        off_the_callback(cx, move |cx| {
             let outcome = match event {
-                LauncherEvent::Dismissed => hide(&platform, &shell),
+                LauncherEvent::Dismissed => hide(&platform, &shell, &launcher, cx),
                 LauncherEvent::Resized {
                     height,
                     anchor,
                     width,
                 } => resize(&platform, &config, &shell, height, anchor, width),
-                LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
+                LauncherEvent::ArrangeWindow(layout) => {
+                    arrange(&platform, &shell, &launcher, layout, cx)
+                }
                 // Hidden already by the `Dismissed` before it; asked again
                 // so the launcher is never among the windows (7.60).
-                LauncherEvent::WindowLayout(ref request) => hide(&platform, &shell)
+                LauncherEvent::WindowLayout(ref request) => hide(&platform, &shell, &launcher, cx)
                     .and_then(|()| window_layout(&platform, layouts, request.clone(), draft, None)),
                 LauncherEvent::Paste(ref paste) => {
-                    paste_into(&platform, &config, &shell, paste.clone())
+                    paste_into(&platform, &config, &shell, &launcher, paste.clone(), cx)
                 }
                 // Handled above, before this task was spawned.
                 LauncherEvent::RunExtension { .. }
@@ -1564,9 +1570,9 @@ fn subscribe_to_launcher(
 /// being resized at that moment, which is not the kind of thing to leave to
 /// luck. Spawning puts the work on the foreground executor, where it runs on
 /// this thread, in order, with no borrow held.
-fn off_the_callback(cx: &mut App, work: impl FnOnce() -> Result<()> + 'static) {
-    cx.spawn(async move |_cx| {
-        if let Err(error) = work() {
+fn off_the_callback(cx: &mut App, work: impl FnOnce(&mut gpui::AsyncApp) -> Result<()> + 'static) {
+    cx.spawn(async move |cx| {
+        if let Err(error) = work(cx) {
             log::error!("{error:#}");
         }
     })
@@ -1965,13 +1971,13 @@ fn handle(
         Message::Toggle => {
             let visible = shell.borrow().visible;
             if visible {
-                hide(platform, shell)
+                hide(platform, shell, &surfaces.launcher, cx)
             } else {
                 show(platform, config, shell, &surfaces.launcher, cx)
             }
         }
         Message::Show => show(platform, config, shell, &surfaces.launcher, cx),
-        Message::Hide => hide(platform, shell),
+        Message::Hide => hide(platform, shell, &surfaces.launcher, cx),
         Message::OverlayPress => show_overlay(platform, shell, surfaces, cx),
         Message::OverlayRelease => hide_overlay(surfaces, cx),
         Message::Settings => open_settings(platform, config, surfaces, cx),
@@ -2033,7 +2039,7 @@ fn handle(
         Message::ShowTimers => {
             let visible = shell.borrow().visible;
             if visible && surfaces.timers.is_viewing() {
-                return hide(platform, shell);
+                return hide(platform, shell, &surfaces.launcher, cx);
             }
             if !visible {
                 show(platform, config, shell, &surfaces.launcher, cx)?;
@@ -2178,7 +2184,7 @@ fn run_hotkey(
             .read_with(cx, |launcher, _| launcher.is_inside(&id))
             .unwrap_or(false);
     if summons(visible, inside) == Summons::Hide {
-        hide(platform, shell)?;
+        hide(platform, shell, &surfaces.launcher, cx)?;
         timing::report_hotkey_done(pressed);
         return Ok(());
     }
@@ -2227,7 +2233,7 @@ fn run_hotkey(
             timing::report_hotkey_done(pressed);
         }
         Hotkeyed::WindowLayout(request) => {
-            hide(platform, shell)?;
+            hide(platform, shell, &surfaces.launcher, cx)?;
             window_layout(
                 platform,
                 surfaces.paths.window_layouts_file(),
@@ -2450,7 +2456,12 @@ fn dictionary_setup(config: &Config, paths: &Paths) -> dictionary::Setup {
     }
 }
 
-fn hide(platform: &Arc<dyn Platform>, shell: &Rc<RefCell<Shell>>) -> Result<()> {
+fn hide(
+    platform: &Arc<dyn Platform>,
+    shell: &Rc<RefCell<Shell>>,
+    launcher: &gpui::WindowHandle<Launcher>,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
     let restore_to = {
         let mut shell = shell.borrow_mut();
         if !shell.visible {
@@ -2460,7 +2471,15 @@ fn hide(platform: &Arc<dyn Platform>, shell: &Rc<RefCell<Shell>>) -> Result<()> 
         shell.restore_to.take()
     };
 
-    platform.hide_window(WindowRole::Launcher, restore_to)
+    platform.hide_window(WindowRole::Launcher, restore_to)?;
+
+    // Every colour emoji the grid drew is held in the atlas until evicted
+    // (7.53), so none is kept while nobody is looking. Never inside a draw:
+    // this runs on the run loop, after the window has gone.
+    launcher
+        .update(cx, |_, window, _| window.drop_emoji_glyphs())
+        .ok();
+    Ok(())
 }
 
 /// Start an extension's command (F4, step 3).
@@ -2508,10 +2527,12 @@ fn run_extension(
 fn arrange(
     platform: &Arc<dyn Platform>,
     shell: &Rc<RefCell<Shell>>,
+    launcher: &gpui::WindowHandle<Launcher>,
     layout: lumen_platform::WindowLayout,
+    cx: &mut gpui::AsyncApp,
 ) -> Result<()> {
     let target = shell.borrow().restore_to;
-    hide(platform, shell)?;
+    hide(platform, shell, launcher, cx)?;
 
     if target.is_none() && layout.needs_window() {
         // Nothing had the foreground when the launcher appeared: the user came
@@ -2579,10 +2600,12 @@ fn paste_into(
     platform: &Arc<dyn Platform>,
     config: &Config,
     shell: &Rc<RefCell<Shell>>,
+    launcher: &gpui::WindowHandle<Launcher>,
     mut paste: lumen_platform::Paste,
+    cx: &mut gpui::AsyncApp,
 ) -> Result<()> {
     let target = shell.borrow().restore_to;
-    hide(platform, shell)?;
+    hide(platform, shell, launcher, cx)?;
 
     let Some(target) = target else {
         // Opened from the desktop: there is no window to paste into, so the

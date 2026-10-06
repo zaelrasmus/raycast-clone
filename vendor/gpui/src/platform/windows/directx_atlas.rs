@@ -139,6 +139,7 @@ impl PlatformAtlas for DirectXAtlas {
             }
             false
         });
+        let mut dropped = false;
         for (index, slot) in textures.textures.iter_mut().enumerate() {
             if slot
                 .as_mut()
@@ -146,6 +147,19 @@ impl PlatformAtlas for DirectXAtlas {
             {
                 *slot = None;
                 textures.free_list.push(index);
+                dropped = true;
+            }
+        }
+        // LUMEN PATCH (docs/ARCHITECTURE.md, 7.53): D3D11 defers destroying a
+        // released texture until the next flush, and a hidden window never
+        // presents to cause one. The last sprite batch's atlas also stays
+        // bound to slot 0, holding its texture; every textured draw binds it
+        // again. Unbind, then flush, so the memory goes now.
+        if dropped {
+            unsafe {
+                state.device_context.VSSetShaderResources(0, Some(&[None]));
+                state.device_context.PSSetShaderResources(0, Some(&[None]));
+                state.device_context.Flush();
             }
         }
     }

@@ -6,8 +6,9 @@
 # taken on trust.
 #
 # Starts the given build, lets it settle, then samples it while nobody touches
-# it. Any Lumen daemon already running is stopped first, because a second
-# `lumen` toggles the running one instead of starting its own.
+# it. The daemon runs in a `LUMEN_HOME` of its own, with its own socket (F15),
+# so it starts beside an installed one, reads and writes nothing of it, and
+# only the processes this script started are stopped.
 #
 # The build is run once and quit before it is measured. The first time a GPU
 # driver sees an executable path it compiles the renderer's shaders for it,
@@ -23,6 +24,12 @@
 # hidden -- the daemon sleeps until the nearest deadline and does not tick:
 #
 #   powershell -File scripts/measure-idle.ps1 -Exe target/release/lumen.exe -Timers 25m,1h,90m
+#
+# After the emoji grid (F18) has been walked end to end and hidden again, which
+# is the most glyphs a summons can leave behind. Keys are sent with SendKeys,
+# each only once the launcher is in front, as in measure-grid.ps1:
+#
+#   powershell -File scripts/measure-idle.ps1 -Exe target/release/lumen.exe -Walk
 
 param(
     [Parameter(Mandatory)] [string] $Exe,
@@ -32,29 +39,29 @@ param(
     [int] $SampleSeconds = 60,
     # Durations to start with `lumen timer` before settling. Longer than the
     # measurement, so none of them ends inside it.
-    [string[]] $Timers = @()
+    [string[]] $Timers = @(),
+    # Walk the whole emoji grid, then hide, before settling.
+    [switch] $Walk,
+    # 1,637 emoji are 205 rows of eight.
+    [int] $Downs = 210,
+    # The test daemon's config, data and cache.
+    [string] $LumenHome = (Join-Path ([IO.Path]::GetTempPath()) 'lumen-idle-home')
 )
 
 $ErrorActionPreference = 'Stop'
 
 $exe = (Resolve-Path $Exe).Path
 
-# By name, not just `lumen`: a build copied as lumen-head.exe runs as a
-# process called lumen-head, and a daemon left running would answer the next
-# launch over IPC, which then toggles it and exits instead of being measured.
-$name = [IO.Path]::GetFileNameWithoutExtension($exe)
-
-function Stop-Lumen {
-    Get-Process lumen, $name -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Seconds 2
-}
-
-Stop-Lumen
+# Set for the daemon and for `timer`, `show` and `hide`, which find it by its
+# socket.
+New-Item -ItemType Directory -Force $LumenHome | Out-Null
+$env:LUMEN_HOME = (Resolve-Path $LumenHome).Path
 
 # Warm the driver's shader cache for this path (see above).
-Start-Process -FilePath $exe -WindowStyle Hidden
+$warm = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 5
-Stop-Lumen
+Stop-Process -Id $warm.Id -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
 
 $process = Start-Process -FilePath $exe -PassThru
 
@@ -72,6 +79,43 @@ if ($Timers.Count -gt 0) {
         }
     }
     'timers       {0}' -f ($Timers -join ', ')
+}
+
+if ($Walk) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class Foreground {
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    public static uint Pid() {
+        uint pid;
+        GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+        return pid;
+    }
+}
+'@
+    $shell = New-Object -ComObject WScript.Shell
+    function Send-Keys($keys, $delay = 33) {
+        if ([Foreground]::Pid() -ne $process.Id) {
+            Stop-Process -Id $process.Id -Force
+            Remove-Item Env:\LUMEN_HOME
+            throw 'the launcher is not in front; stopping rather than typing into another window'
+        }
+        $shell.SendKeys($keys)
+        Start-Sleep -Milliseconds $delay
+    }
+
+    Start-Sleep -Seconds $SettleSeconds
+    & $exe show
+    Start-Sleep -Milliseconds 800
+    foreach ($key in 'e', 'm', 'o', 'j', 'i') { Send-Keys $key 70 }
+    Start-Sleep -Milliseconds 300
+    Send-Keys '{ENTER}' 700
+    for ($k = 0; $k -lt $Downs; $k++) { Send-Keys '{DOWN}' }
+    Start-Sleep -Milliseconds 300
+    & $exe hide
+    'walked       {0} rows of the emoji grid, then hid' -f $Downs
 }
 
 Start-Sleep -Seconds $SettleSeconds
@@ -99,6 +143,16 @@ $spent = $process.TotalProcessorTime.TotalMilliseconds - $before
 'private      {0:N1} MB' -f ($process.PrivateMemorySize64 / 1MB)
 'threads      {0}' -f $process.Threads.Count
 
+# The atlas textures are GPU memory, not in the working set (7.53).
+$gpu = Get-Counter -ErrorAction SilentlyContinue `
+    "\GPU Process Memory(pid_$($process.Id)_*)\Shared Usage",
+    "\GPU Process Memory(pid_$($process.Id)_*)\Dedicated Usage"
+if ($gpu) {
+    $samples = $gpu.CounterSamples
+    'GPU shared   {0:N1} MB' -f (($samples | Where-Object Path -like '*shared usage' | Measure-Object CookedValue -Sum).Sum / 1MB)
+    'GPU dedic.   {0:N1} MB' -f (($samples | Where-Object Path -like '*dedicated usage' | Measure-Object CookedValue -Sum).Sum / 1MB)
+}
+
 # Which threads woke, so a regression points at its source.
 foreach ($thread in $process.Threads) {
     $start = $threads[$thread.Id]
@@ -110,3 +164,4 @@ foreach ($thread in $process.Threads) {
 }
 
 Stop-Process -Id $process.Id -Force
+Remove-Item Env:\LUMEN_HOME

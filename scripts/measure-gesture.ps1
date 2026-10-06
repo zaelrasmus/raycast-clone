@@ -8,22 +8,27 @@
 # milliseconds between the key and WM_HOTKEY are not in the figure -- the same
 # boundary timing.rs documents.
 #
+# The daemon runs in a `LUMEN_HOME` of its own, with its own socket (F15), so
+# it starts beside an installed one and only the process this script started
+# is stopped.
+#
 #   powershell -File scripts/measure-gesture.ps1 -Exe target/release/lumen.exe
 
 param(
     [Parameter(Mandatory)] [string] $Exe,
     [int] $Summons = 15,
-    [int] $SettleSeconds = 10
+    [int] $SettleSeconds = 10,
+    # The test daemon's config, data and cache.
+    [string] $LumenHome = (Join-Path ([IO.Path]::GetTempPath()) 'lumen-gesture-home')
 )
 
 $ErrorActionPreference = 'Stop'
 $exe = (Resolve-Path $Exe).Path
 $log = Join-Path ([IO.Path]::GetTempPath()) "lumen-gesture-$PID.log"
 
-# By name as well: a copied build (lumen-head.exe) runs as lumen-head.
-$name = [IO.Path]::GetFileNameWithoutExtension($exe)
-Get-Process lumen, $name -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
+# Set for the daemon and for `show` and `hide`, which find it by its socket.
+New-Item -ItemType Directory -Force $LumenHome | Out-Null
+$env:LUMEN_HOME = (Resolve-Path $LumenHome).Path
 
 $daemon = Start-Process -FilePath $exe -PassThru -RedirectStandardError $log -WindowStyle Hidden
 Start-Sleep -Seconds $SettleSeconds
@@ -40,6 +45,7 @@ for ($i = 0; $i -lt $Summons; $i++) {
 Start-Sleep -Milliseconds 500
 Stop-Process -Id $daemon.Id -Force
 Start-Sleep -Milliseconds 300
+Remove-Item Env:\LUMEN_HOME
 
 $text = Get-Content $log -Raw
 $frames = [regex]::Matches($text, 'gesture to first frame: (\d+) ms') |
