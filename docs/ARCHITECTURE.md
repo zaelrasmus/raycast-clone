@@ -4018,6 +4018,80 @@ Segoe UI Emoji font file mapped and touched. So the patch settles the GPU
 side, and the idle budget is a separate question about CPU-side memory, to
 measure with `scripts/measure-idle.ps1` once the view hides.
 
+### 7.54 Colour emoji are composited on the CPU, as a patch to gpui
+
+Holding Down in the F18 grid broke the frame budget: `scripts/measure-grid.ps1`
+measured p50 4.2 ms but p95 10.8 to 24.3 ms and a max of 44 ms. Every strip
+that scrolls into view brings up to eight emoji the atlas has never seen, and
+a colour glyph is rasterised on the frame that first draws it.
+
+gpui 0.2.2 rasterises a colour glyph in `rasterize_color`
+(`platform/windows/direct_write.rs`). DirectWrite translates it into its COLR
+layers, each an alpha mask with one colour, and gpui draws them on the GPU:
+per glyph it creates a texture and view for every layer, a constant buffer, a
+render target, its view and a staging texture, draws each layer with the
+`emoji_rasterization` shader, copies the target to the staging texture and maps
+it for reading, which waits for the GPU to finish. Timed per phase over the
+1,600 emoji of the spike's first pass (release, about 9.7 layers each):
+
+| Phase | Per emoji |
+| --- | --- |
+| Raster bounds, `TranslateColorGlyphRun` | 0.006 ms |
+| Layer alpha masks (DirectWrite, on the CPU) | 0.040 ms |
+| Layer textures and views | 0.086 ms |
+| Constant buffer, render target, staging texture | 0.086 ms |
+| Drawing the layers | 0.015 ms |
+| `CopyResource` and the blocking `Map` | 0.44 ms |
+| Reading back, un-premultiplying | 0.020 ms |
+
+About 0.69 ms an emoji, 5.5 ms for a strip of eight: the whole gap between a
+cold and a warm frame. Two thirds of it is the readback, and it cannot be
+batched or reused away: `rasterize_glyph` returns the pixels synchronously,
+one glyph at a time, so each call must wait for its own draw. Creating the
+resources once would save a quarter and keep the wait.
+
+The GPU pass does little: a source-over blend of a few small masks, each
+scaled by a colour, after the contrast and gamma correction in
+`alpha_correction.hlsl`. The patch does that on the CPU. The new
+`rasterize_color` collects the same layers from DirectWrite and blends each
+into a premultiplied BGRA buffer with the shader's arithmetic and the pass's
+blend state (`ONE`, `INV_SRC_ALPHA`), rounding to eight bits after every
+layer as the `B8G8R8A8_UNORM` target did; the correction is computed once per
+layer as a 256-entry table. Un-premultiplying is unchanged. Upstream's
+function is kept unmodified as `rasterize_color_gpu`, unused and allowed to be
+dead, so the diff is additions only and re-applies across a gpui upgrade in
+one place. The changed blocks are marked `LUMEN PATCH (docs/ARCHITECTURE.md,
+7.54)`.
+
+What it deliberately does not do: remove the GPU path, its shader or the
+pipeline objects `GPUState` builds for it (they cost a few kilobytes, once);
+touch monochrome text, which DirectWrite already rasterises on the CPU; or
+support colour formats other than COLR, which upstream does not either.
+
+The output was checked against upstream's before it was removed from the
+call: both paths run on each of 1,600 emoji, alpha differed by at most 1 in
+255 and colour on pixels at least half opaque by at most 2; larger
+differences, up to 9, are only at faint edges, where un-premultiplying
+amplifies a rounding step. On screen the spike's first page differs by at
+most 2 in 255.
+
+Measured, release, before and after on the same machine. The spike is
+`emoji_grid_spike --scroll 402` with `ZED_MEASUREMENTS=1`, one new strip a
+frame in the cold pass and none in the warm one, three runs after;
+`measure-grid.ps1` is the real view, 880 frames over four summons per run.
+
+| | Before | After |
+| --- | --- | --- |
+| Rasterising one emoji | 0.69 ms | 0.14 ms |
+| Spike, cold | p50 6.6, p95 8.7–8.8, max 10–11 ms | p50 2.2, p95 2.6–2.8, max 3.3 ms |
+| Spike, warm | p50 1.0, p95 1.2 ms | p50 1.0, p95 1.2 ms |
+| `measure-grid.ps1` | p95 10.8–24.3, max 17–44 ms | p95 5.4–5.5, max 7.2–8.7 ms |
+
+The grid is inside the 8 ms budget with nothing on Lumen's side, so the
+fallback planned for F18 (rasterising the next strip in a frame of its own
+between key presses) is not built. Across a gpui upgrade the check is the
+spike's cold pass and a screenshot of the first page beside the old one.
+
 ## 8. Risk register
 
 | # | Risk | Phase | Status |

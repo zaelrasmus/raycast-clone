@@ -850,7 +850,148 @@ impl DirectWriteState {
         Ok(bitmap_data)
     }
 
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.54): the colour layers are composited on
+    // the CPU, with the same arithmetic as `emoji_rasterization_fragment` and the
+    // blend state in `GPUState::new`, instead of drawn on the GPU and read back.
+    // The readback blocked for ~0.45 ms per glyph. The GPU path below is upstream's,
+    // unmodified and no longer called.
     fn rasterize_color(
+        &self,
+        params: &RenderGlyphParams,
+        glyph_bounds: Bounds<DevicePixels>,
+    ) -> Result<Vec<u8>> {
+        let width = glyph_bounds.size.width.0 as usize;
+        let height = glyph_bounds.size.height.0 as usize;
+        let baseline_origin_x =
+            params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor;
+        let baseline_origin_y =
+            params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor;
+        let transform = DWRITE_MATRIX {
+            m11: params.scale_factor,
+            m12: 0.0,
+            m21: 0.0,
+            m22: params.scale_factor,
+            dx: 0.0,
+            dy: 0.0,
+        };
+        let font = &self.fonts[params.font_id.0];
+        let glyph_id = [params.glyph_id.0 as u16];
+        let advance = [glyph_bounds.size.width.0 as f32];
+        let offset = [DWRITE_GLYPH_OFFSET {
+            advanceOffset: -glyph_bounds.origin.x.0 as f32 / params.scale_factor,
+            ascenderOffset: glyph_bounds.origin.y.0 as f32 / params.scale_factor,
+        }];
+        let glyph_run = DWRITE_GLYPH_RUN {
+            fontFace: unsafe { std::mem::transmute_copy(&font.font_face) },
+            fontEmSize: params.font_size.0,
+            glyphCount: 1,
+            glyphIndices: glyph_id.as_ptr(),
+            glyphAdvances: advance.as_ptr(),
+            glyphOffsets: offset.as_ptr(),
+            isSideways: BOOL(0),
+            bidiLevel: 0,
+        };
+        let color_enumerator = unsafe {
+            self.components.factory.TranslateColorGlyphRun(
+                Vector2::new(baseline_origin_x, baseline_origin_y),
+                &glyph_run,
+                None,
+                DWRITE_GLYPH_IMAGE_FORMATS_COLR,
+                DWRITE_MEASURING_MODE_NATURAL,
+                Some(&transform),
+                0,
+            )
+        }?;
+        let crate::FontInfo {
+            gamma_ratios: g,
+            grayscale_enhanced_contrast,
+        } = DirectXRenderer::get_font_info();
+
+        // Premultiplied BGRA, rounded to 8 bits after every layer as the
+        // B8G8R8A8_UNORM render target was.
+        let mut rasterized = vec![0u8; width * height * 4];
+        let mut alpha_data = Vec::new();
+        loop {
+            let color_run = unsafe { &*color_enumerator.GetCurrentRun()? };
+            let image_format = color_run.glyphImageFormat & !DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE;
+            if image_format == DWRITE_GLYPH_IMAGE_FORMATS_COLR {
+                let color_analysis = unsafe {
+                    self.components.factory.CreateGlyphRunAnalysis(
+                        &color_run.Base.glyphRun as *const _,
+                        Some(&transform),
+                        DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                        DWRITE_GRID_FIT_MODE_DEFAULT,
+                        DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                        baseline_origin_x,
+                        baseline_origin_y,
+                    )
+                }?;
+                let b =
+                    unsafe { color_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1) }?;
+                let layer_width = (b.right - b.left).max(0) as usize;
+                if layer_width > 0 && b.bottom > b.top {
+                    alpha_data.clear();
+                    alpha_data.resize(layer_width * (b.bottom - b.top) as usize, 0u8);
+                    unsafe {
+                        color_analysis.CreateAlphaTexture(
+                            DWRITE_TEXTURE_ALIASED_1x1,
+                            &b,
+                            &mut alpha_data,
+                        )
+                    }?;
+                    let c = color_run.Base.runColor;
+                    // `apply_contrast_and_gamma_correction` in alpha_correction.hlsl.
+                    let brightness = c.r * 0.30 + c.g * 0.59 + c.b * 0.11;
+                    let k =
+                        grayscale_enhanced_contrast * (4.0 * (0.75 - brightness)).clamp(0.0, 1.0);
+                    let mut ramp = [[0f32; 4]; 256];
+                    for (sample, out) in ramp.iter_mut().enumerate() {
+                        let s = sample as f32 / 255.0;
+                        let a = s * (k + 1.0) / (s * k + 1.0);
+                        let correction =
+                            (g[0] * brightness + g[1]) * a + (g[2] * brightness + g[3]);
+                        let a = (a + a * (1.0 - a) * correction) * c.a;
+                        *out = [c.b * a, c.g * a, c.r * a, a];
+                    }
+                    for y in b.top.max(0)..b.bottom.min(height as i32) {
+                        for x in b.left.max(0)..b.right.min(width as i32) {
+                            let sample = alpha_data
+                                [(y - b.top) as usize * layer_width + (x - b.left) as usize];
+                            if sample == 0 {
+                                continue;
+                            }
+                            let src = &ramp[sample as usize];
+                            let i = (y as usize * width + x as usize) * 4;
+                            for (ch, dst) in rasterized[i..i + 4].iter_mut().enumerate() {
+                                let blended = src[ch] + *dst as f32 / 255.0 * (1.0 - src[3]);
+                                *dst = (blended.clamp(0.0, 1.0) * 255.0).round() as u8;
+                            }
+                        }
+                    }
+                }
+            }
+            if !unsafe { color_enumerator.MoveNext() }.is_ok_and(|e| e.as_bool()) {
+                break;
+            }
+        }
+
+        // Convert from premultiplied to straight alpha
+        for chunk in rasterized.chunks_exact_mut(4) {
+            let a = chunk[3] as f32;
+            if a > 0.0 {
+                let inv_a = 255.0 / a;
+                for ch in &mut chunk[..3] {
+                    *ch = (*ch as f32 * inv_a).clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        Ok(rasterized)
+    }
+
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.54): upstream's `rasterize_color`, renamed.
+    #[allow(dead_code)]
+    fn rasterize_color_gpu(
         &self,
         params: &RenderGlyphParams,
         glyph_bounds: Bounds<DevicePixels>,

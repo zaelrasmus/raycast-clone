@@ -36,6 +36,12 @@
 //! cargo run --release -p lumen-ui --example emoji_grid_spike -- --scroll 201 --evict
 //! ```
 //!
+//! ```text
+//! # F18, task 4d: --shot NAME draws the still screen, waits --wait-ms, saves
+//! # it to target\NAME.png and quits.
+//! cargo run --release -p lumen-ui --example emoji_grid_spike -- --still --offset 210 --shot emoji-symbols
+//! ```
+//!
 //! With --evict the spike prints its own memory to stderr at four points: (a)
 //! after the first frame, (b) after the scroll, (c) `--wait-ms` after the
 //! eviction and (d) after the second scroll. Each line gives the working set,
@@ -79,6 +85,8 @@ struct Spike {
     evict: bool,
     /// Whether the eviction has happened, so the second scroll ends the run.
     evicted: bool,
+    /// Save the still screen to target\NAME.png and quit (`--shot NAME`).
+    shot: Option<String>,
 }
 
 /// Runs a PowerShell script and returns its trimmed output.
@@ -213,6 +221,24 @@ impl Spike {
 
 impl Render for Spike {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let (Mode::Still, Some(name), false) = (self.mode, &self.shot, self.started_wait) {
+            self.started_wait = true;
+            let wait = self.wait;
+            let path = std::env::current_dir()
+                .unwrap_or_default()
+                .join("target")
+                .join(format!("{name}.png"));
+            cx.spawn(async move |_, cx| {
+                cx.background_executor().timer(wait).await;
+                let shot = path.display().to_string();
+                cx.background_executor()
+                    .spawn(async move { screenshot(&shot) })
+                    .await;
+                eprintln!("spike: screenshot {}", path.display());
+                cx.update(|cx| cx.quit()).ok();
+            })
+            .detach();
+        }
         if let Mode::Scroll { frames } = self.mode {
             match self.advanced {
                 None if !self.started_wait => {
@@ -287,6 +313,7 @@ fn main() {
     let mut offset = 0;
     let mut wait = Duration::from_millis(2000);
     let mut evict = false;
+    let mut shot = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = || -> usize {
@@ -300,6 +327,7 @@ fn main() {
             "--offset" => offset = number(),
             "--wait-ms" => wait = Duration::from_millis(number() as u64),
             "--evict" => evict = true,
+            "--shot" => shot = args.next(),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -337,6 +365,7 @@ fn main() {
                         started_wait: false,
                         evict,
                         evicted: false,
+                        shot,
                     })
                 },
             )
