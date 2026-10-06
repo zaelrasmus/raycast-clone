@@ -27,7 +27,22 @@
 //! starts and the same again after it ends before quitting, printing
 //! `spike: first frame`, `spike: scroll done` to stderr, so the working set can
 //! be sampled from outside at both points.
+//!
+//! ```text
+//! # F18, task 4a: --evict adds a second half to the scroll. After it ends the
+//! # window drops its emoji glyphs (`Window::drop_emoji_glyphs`, ARCHITECTURE
+//! # 7.53), draws the first screen again, saves it to
+//! # target\emoji-spike-evicted.png, then scrolls N frames a second time.
+//! cargo run --release -p lumen-ui --example emoji_grid_spike -- --scroll 201 --evict
+//! ```
+//!
+//! With --evict the spike prints its own memory to stderr at four points: (a)
+//! after the first frame, (b) after the scroll, (c) `--wait-ms` after the
+//! eviction and (d) after the second scroll. Each line gives the working set,
+//! the private bytes and the process's GPU memory (the `GPU Process Memory`
+//! counters), where the atlas textures are counted.
 
+use std::process::Command;
 use std::time::Duration;
 
 use gpui::{
@@ -60,13 +75,83 @@ struct Spike {
     /// Frames advanced so far; `None` until the scroll has started.
     advanced: Option<usize>,
     started_wait: bool,
+    /// Drop the emoji glyphs after the scroll and scroll again (`--evict`).
+    evict: bool,
+    /// Whether the eviction has happened, so the second scroll ends the run.
+    evicted: bool,
+}
+
+/// Runs a PowerShell script and returns its trimmed output.
+fn powershell(script: &str) -> String {
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// This process's working set, private bytes and GPU memory (dedicated,
+/// shared), in MB.
+fn memory_mb() -> [f64; 4] {
+    let script = format!(
+        r#"$id = {pid}
+$p = Get-Process -Id $id
+$memory = "\GPU Process Memory(pid_$($id)_*)"
+$c = (Get-Counter "$memory\Dedicated Usage", "$memory\Shared Usage").CounterSamples
+$d = ($c | Where-Object Path -like '*dedicated*' | Measure-Object CookedValue -Sum).Sum
+$s = ($c | Where-Object Path -like '*shared*' | Measure-Object CookedValue -Sum).Sum
+"$($p.WorkingSet64) $($p.PrivateMemorySize64) $d $s""#,
+        pid = std::process::id(),
+    );
+    let output = powershell(&script);
+    let mut values = output
+        .split_whitespace()
+        .map(|value| value.parse::<f64>().unwrap_or(0.0) / (1024.0 * 1024.0));
+    std::array::from_fn(|_| values.next().unwrap_or(0.0))
+}
+
+/// Saves this process's main window, as it is on screen, to `path`.
+fn screenshot(path: &str) {
+    let script = format!(
+        r#"Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class SpikeWin {{
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  public struct RECT {{ public int L, T, R, B; }}
+}}
+"@
+[SpikeWin]::SetProcessDPIAware() | Out-Null
+$r = New-Object SpikeWin+RECT
+[SpikeWin]::GetWindowRect((Get-Process -Id {pid}).MainWindowHandle, [ref]$r) | Out-Null
+$bmp = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size)
+$bmp.Save('{path}', [System.Drawing.Imaging.ImageFormat]::Png)"#,
+        pid = std::process::id(),
+    );
+    powershell(&script);
+}
+
+/// Prints the working set under `label`, sampled off the UI thread.
+async fn report(label: &str, cx: &mut gpui::AsyncApp) {
+    let [working_set, private, dedicated, shared] =
+        cx.background_executor().spawn(async { memory_mb() }).await;
+    eprintln!(
+        "spike: working set {label}: {working_set:.1} MB (private {private:.1}, GPU dedicated {dedicated:.1}, GPU shared {shared:.1})"
+    );
 }
 
 impl Spike {
     fn begin_scroll(&mut self, cx: &mut Context<Self>) {
         let wait = self.wait;
+        let evict = self.evict;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
+            if evict {
+                report("(a) first frame", cx).await;
+            }
             this.update(cx, |spike, cx| {
                 eprintln!("spike: pass 1");
                 spike.advanced = Some(0);
@@ -77,11 +162,49 @@ impl Spike {
         .detach();
     }
 
-    fn finish(&self, cx: &mut Context<Self>) {
+    fn finish(&self, window: &Window, cx: &mut Context<Self>) {
         eprintln!("spike: scroll done");
         let wait = self.wait;
+        if self.evict && !self.evicted {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                report("(b) after the scroll", cx).await;
+                this.update_in(cx, |spike, window, cx| {
+                    eprintln!("spike: evict");
+                    window.drop_emoji_glyphs();
+                    spike.evicted = true;
+                    spike.row = 0;
+                    spike.advanced = None;
+                    cx.notify();
+                })
+                .ok();
+                cx.background_executor().timer(wait).await;
+                report("(c) after the eviction", cx).await;
+                let path = std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("target")
+                    .join("emoji-spike-evicted.png");
+                let shot = path.display().to_string();
+                cx.background_executor()
+                    .spawn(async move { screenshot(&shot) })
+                    .await;
+                eprintln!("spike: screenshot {}", path.display());
+                this.update(cx, |spike, cx| {
+                    eprintln!("spike: pass 1 again");
+                    spike.advanced = Some(0);
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
+        let evict = self.evict;
         cx.spawn(async move |_, cx| {
             cx.background_executor().timer(wait).await;
+            if evict {
+                report("(d) after the second scroll", cx).await;
+            }
             cx.update(|cx| cx.quit()).ok();
         })
         .detach();
@@ -112,7 +235,7 @@ impl Render for Spike {
                 Some(done) => {
                     self.advanced = Some(done + 1);
                     if done == frames {
-                        self.finish(cx);
+                        self.finish(window, cx);
                     }
                 }
             }
@@ -163,6 +286,7 @@ fn main() {
     let mut mode = Mode::Still;
     let mut offset = 0;
     let mut wait = Duration::from_millis(2000);
+    let mut evict = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = || -> usize {
@@ -175,6 +299,7 @@ fn main() {
             "--scroll" => mode = Mode::Scroll { frames: number() },
             "--offset" => offset = number(),
             "--wait-ms" => wait = Duration::from_millis(number() as u64),
+            "--evict" => evict = true,
             other => panic!("unknown argument {other}"),
         }
     }
@@ -210,6 +335,8 @@ fn main() {
                         wait,
                         advanced: None,
                         started_wait: false,
+                        evict,
+                        evicted: false,
                     })
                 },
             )

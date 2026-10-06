@@ -3208,6 +3208,16 @@ impl Window {
         Ok(())
     }
 
+    /// Removes every colour emoji glyph from the sprite atlas and marks the
+    /// window for a full redraw, so no sprite of the last frame is presented
+    /// against a freed tile. Does nothing while the window is drawing.
+    pub fn drop_emoji_glyphs(&mut self) {
+        if self.invalidator.not_drawing() {
+            self.sprite_atlas.remove_emoji_glyphs();
+            self.refresh();
+        }
+    }
+
     /// Add a node to the layout tree for the current frame. Takes the `Style` of the element for which
     /// layout is being requested, along with the layout ids of any children. This method is called during
     /// calls to the [`Element::request_layout`] trait method and enables any element to participate in layout.

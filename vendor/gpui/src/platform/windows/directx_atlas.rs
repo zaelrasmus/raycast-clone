@@ -118,6 +118,37 @@ impl PlatformAtlas for DirectXAtlas {
             }
         }
     }
+
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.53): unlike `remove`, frees each
+    // tile's space, since a polychrome texture can hold images too. A texture
+    // left with no tile is dropped and its slot goes to the free list.
+    fn remove_emoji_glyphs(&self) {
+        let mut lock = self.0.lock();
+        let state = &mut *lock;
+        let textures = &mut state.polychrome_textures;
+        state.tiles_by_key.retain(|key, tile| {
+            let AtlasKey::Glyph(params) = key else {
+                return true;
+            };
+            if !params.is_emoji {
+                return true;
+            }
+            if let Some(Some(texture)) = textures.textures.get_mut(tile.texture_id.index as usize) {
+                texture.allocator.deallocate(tile.tile_id.into());
+                texture.decrement_ref_count();
+            }
+            false
+        });
+        for (index, slot) in textures.textures.iter_mut().enumerate() {
+            if slot
+                .as_mut()
+                .is_some_and(DirectXAtlasTexture::is_unreferenced)
+            {
+                *slot = None;
+                textures.free_list.push(index);
+            }
+        }
+    }
 }
 
 impl DirectXAtlasState {

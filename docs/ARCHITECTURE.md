@@ -3952,6 +3952,69 @@ on, every entry of that display placed, the selected one in the accent.
 numbered from 1 as the editor numbers them. Saving goes through `edit`,
 atomically, and the daemon's watcher reindexes.
 
+### 7.53 Colour emoji can be evicted from the glyph atlas, as a patch to gpui
+
+gpui 0.2.2 keeps every glyph it has rasterised in the window's sprite atlas
+for the life of the window. Only images can be removed (`Window::drop_image`
+through `PlatformAtlas::remove`); glyphs never are. Colour emoji are glyphs
+with `is_emoji` set, stored in the polychrome textures (BGRA, 1024x1024,
+4 MB each), apart from ordinary text in the monochrome ones. Lumen's window
+is never destroyed (I-4), so every emoji the F18 grid ever showed would stay
+in GPU memory until the daemon exits.
+
+The patch adds `Window::drop_emoji_glyphs`, beside `drop_image`, and
+`PlatformAtlas::remove_emoji_glyphs` under it. The DirectX atlas removes every
+key that is an emoji glyph, gives each tile's rectangle back to its texture's
+allocator, and drops every polychrome texture left with no tile, putting its
+slot on the free list; a later insert allocates a new texture there.
+Monochrome text, SVGs and images are untouched, and a texture an image still
+shares with emoji keeps the image and gets the emoji's space back. The window
+is then refreshed, which draws the next frame from scratch with cached views
+not reused: the last frame's sprites still name the freed textures, and
+presenting them again would fail on an empty slot. For that reason the call
+does nothing while the window is drawing. The trait method has an empty
+default, which the test atlas keeps; the Metal and Blade atlases are not
+built on Windows. The changed lines in `platform.rs`, `window.rs` and
+`platform/windows/directx_atlas.rs` are marked
+`LUMEN PATCH (docs/ARCHITECTURE.md, 7.53)`.
+
+Upstream's own `remove` decrements a texture's count and drops it when it
+reaches zero, but never deallocates the tile, so an image removed from a
+shared texture leaves its space unusable until the texture empties; it also
+removes the key twice, which is harmless. The patch does not rely on it and
+does not fix it.
+
+What it deliberately does not do: wire the call into hiding the launcher
+(that comes with the F18 view), evict monochrome glyphs, or touch the text
+system. `TextSystem` caches each glyph's raster bounds, a few dozen bytes per
+emoji; bounds stay valid after eviction and name no tile, so the next paint
+re-rasterises from them.
+
+Measured with `emoji_grid_spike --scroll 201 --evict` (release, twice, the
+same figures within 0.3 MB): every one of the 1,637 emoji drawn at 56 px,
+then evicted, then drawn again. GPU memory is the process's `GPU Process
+Memory` counters.
+
+| | Working set | Private | GPU shared | GPU dedicated |
+| --- | --- | --- | --- | --- |
+| (a) First frame | 61 MB | 90 MB | 16.2 MB | 8.1 MB |
+| (b) After the scroll | 100 MB | 108 MB | 44.2 MB | 18.0 MB |
+| (c) After the eviction | 100 MB | 112 MB | 20.2 MB | 9.9 MB |
+| (d) After a second scroll | 107 MB | 111 MB | 40.2 MB | 18.0 MB |
+
+The eviction returns the atlas: 32 MB of GPU memory goes back, and a second
+pass takes it again without growing, so the cycle does not leak. The first
+screen redraws correctly after it, and the second pass costs what a cold one
+does (frame p50 7.9 ms against 6.7), which shows the glyphs really are
+rasterised again. The working set does not fall. The atlas textures are not
+in it; what grows there is the rasterisation path: about 18 MB of private
+memory (DirectWrite and the per-glyph D3D scratch textures in
+`direct_write.rs`, kept by their heaps and reused by the second pass, which
+adds about 3 MB) and about 20 MB of shared pages, consistent with the 12.9 MB
+Segoe UI Emoji font file mapped and touched. So the patch settles the GPU
+side, and the idle budget is a separate question about CPU-side memory, to
+measure with `scripts/measure-idle.ps1` once the view hides.
+
 ## 8. Risk register
 
 | # | Risk | Phase | Status |
