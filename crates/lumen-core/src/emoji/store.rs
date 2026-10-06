@@ -23,6 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
+use super::CustomKeywords;
+
 /// How long it takes for a use to decay to half its weight: frecency's.
 const HALF_LIFE_SECS: f64 = 14.0 * 24.0 * 60.0 * 60.0;
 
@@ -33,6 +35,9 @@ pub struct State {
     pub pinned: Vec<String>,
     /// By characters. Ordered, so the file does not churn between saves.
     pub usage: BTreeMap<String, Usage>,
+    /// The user's own keywords, by characters (task 7): lowercase, trimmed,
+    /// once each, never an empty list. A file written before them has none.
+    pub keywords: CustomKeywords,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +136,19 @@ impl State {
         self.usage.remove(chars).is_some()
     }
 
+    /// Give `chars` these keywords, or take its own away with none. Whether
+    /// that changed anything.
+    pub fn set_keywords(&mut self, chars: &str, keywords: Vec<String>) -> bool {
+        if keywords.is_empty() {
+            return self.keywords.remove(chars).is_some();
+        }
+        if self.keywords.get(chars) == Some(&keywords) {
+            return false;
+        }
+        self.keywords.insert(chars.to_string(), keywords);
+        true
+    }
+
     pub fn is_used(&self, chars: &str) -> bool {
         self.usage.contains_key(chars)
     }
@@ -142,6 +160,23 @@ impl State {
             (usage.count as f64 + 1.0).ln() * 0.5f64.powf(age / HALF_LIFE_SECS)
         })
     }
+}
+
+/// Keywords as typed in the form: split on commas, trimmed, lowercased,
+/// without the empty ones and without repeats, in the order typed.
+pub fn parse_keywords(text: &str) -> Vec<String> {
+    let mut keywords: Vec<String> = Vec::new();
+    for keyword in text.split(',').map(|k| k.trim().to_lowercase()) {
+        if !keyword.is_empty() && !keywords.contains(&keyword) {
+            keywords.push(keyword);
+        }
+    }
+    keywords
+}
+
+/// Keywords as the form shows them, to be parsed back the same.
+pub fn join_keywords(keywords: &[String]) -> String {
+    keywords.join(", ")
 }
 
 pub fn now() -> u64 {
@@ -213,5 +248,49 @@ mod tests {
         std::fs::write(&path, "{ nonsense").unwrap();
         assert_eq!(State::load(&path), State::default());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn custom_keywords_round_trip_and_an_older_file_has_none() {
+        let dir = std::env::temp_dir().join(format!("lumen-emoji-keywords-{}", std::process::id()));
+        let path = dir.join("emoji.json");
+        let mut state = State::default();
+        assert!(state.set_keywords("\u{2600}\u{FE0F}", vec!["sunny".into(), "warm".into()]));
+        // Kept though the catalogue does not have it.
+        assert!(state.set_keywords("not an emoji", vec!["kept".into()]));
+        state.save(&path).unwrap();
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(json.contains("\"keywords\""), "{json}");
+        assert_eq!(State::load(&path), state);
+
+        // Written before custom keywords existed.
+        std::fs::write(&path, r#"{ "pinned": ["x"], "usage": {} }"#).unwrap();
+        let old = State::load(&path);
+        assert_eq!(old.pinned, ["x"]);
+        assert!(old.keywords.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn setting_no_keywords_removes_them() {
+        let mut state = State::default();
+        assert!(!state.set_keywords("a", Vec::new()));
+        assert!(state.set_keywords("a", vec!["one".into()]));
+        assert!(!state.set_keywords("a", vec!["one".into()]));
+        assert!(state.set_keywords("a", Vec::new()));
+        assert!(state.keywords.is_empty());
+    }
+
+    #[test]
+    fn keywords_are_parsed_from_what_was_typed() {
+        assert_eq!(parse_keywords("Sunny, warm , ,SUNNY"), ["sunny", "warm"]);
+        assert!(parse_keywords("").is_empty());
+        assert!(parse_keywords(" ,  , ").is_empty());
+        assert_eq!(parse_keywords("two words,x"), ["two words", "x"]);
+        assert_eq!(
+            join_keywords(&["sunny".into(), "warm".into()]),
+            "sunny, warm"
+        );
+        assert_eq!(join_keywords(&[]), "");
     }
 }

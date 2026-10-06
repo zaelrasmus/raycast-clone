@@ -74,6 +74,9 @@ const SEARCH_FIELD_CONTEXT: &str = "SearchField";
 /// The snippet form (F11).
 const SNIPPET_FORM_CONTEXT: &str = crate::snippet_form::CONTEXT;
 
+/// The custom keywords form of *Search Emoji & Symbols* (F18).
+const EMOJI_FORM_CONTEXT: &str = crate::emoji_form::CONTEXT;
+
 /// The snippet editor (F11).
 const TEXT_AREA_CONTEXT: &str = crate::text_area::CONTEXT;
 
@@ -454,6 +457,17 @@ fn grid_bindings() -> Vec<KeyBinding> {
     ]
 }
 
+/// The custom keywords form (F18): one field, so no Tab; Enter saves and
+/// Escape goes back to the grid. Deeper than the launcher's context, so
+/// Enter does not run the grid's action under it.
+fn emoji_form_bindings() -> Vec<KeyBinding> {
+    let form = Some(EMOJI_FORM_CONTEXT);
+    vec![
+        KeyBinding::new("enter", SubmitForm, form),
+        KeyBinding::new("escape", CancelForm, form),
+    ]
+}
+
 /// Text editing, identical in the launcher's query and in every settings
 /// field. Each field has its own context, so backspace edits the field that
 /// holds focus and nothing else (I-14).
@@ -502,6 +516,7 @@ fn bind_other_contexts(cx: &mut App) {
     cx.bind_keys(scope_bindings());
     cx.bind_keys(typed_path_bindings());
     cx.bind_keys(grid_bindings());
+    cx.bind_keys(emoji_form_bindings());
 
     // A quicklink form, in the launcher or in settings. Deeper than either
     // host's context, so these win there: Tab moves between fields instead of
@@ -1009,6 +1024,7 @@ mod tests {
                 .chain(scope_bindings())
                 .chain(typed_path_bindings())
                 .chain(grid_bindings())
+                .chain(emoji_form_bindings())
                 .chain(editing_bindings())
                 .collect(),
         );
@@ -1185,6 +1201,17 @@ mod tests {
         assert_eq!(resolves_to("right", list), Some("lumen::MoveRight"));
         assert_eq!(resolves_to("up", list), Some("lumen::SelectPrevious"));
         assert_eq!(resolves_to("down", list), Some("lumen::SelectNext"));
+    }
+
+    /// In the custom keywords form, Enter saves and Escape cancels, over
+    /// the launcher's own; the field's editing keys still edit.
+    #[test]
+    fn the_emoji_form_saves_and_cancels_on_its_own_keys() {
+        let form = &[CONTEXT, EMOJI_FORM_CONTEXT];
+        assert_eq!(resolves_to("enter", form), Some("lumen_form::SubmitForm"));
+        assert_eq!(resolves_to("escape", form), Some("lumen_form::CancelForm"));
+        assert_eq!(resolves_to("left", form), Some("lumen::MoveLeft"));
+        assert_eq!(resolves_to("enter", &[CONTEXT]), Some("lumen::Activate"));
     }
 
     /// The two lists in this file must describe the same keys. If someone adds

@@ -30,8 +30,8 @@ use std::time::Instant;
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, App, Context, Entity, FocusHandle, Focusable, HighlightStyle,
-    MouseButton, ScrollHandle, ScrollStrategy, Styled, StyledText, Subscription, Task,
-    UniformListScrollHandle, Window, actions, div, ease_out_quint, img, svg, uniform_list,
+    MouseButton, ScrollHandle, ScrollStrategy, SharedString, Styled, StyledText, Subscription,
+    Task, UniformListScrollHandle, Window, actions, div, ease_out_quint, img, svg, uniform_list,
 };
 use lumen_core::config::FileSearchConfig;
 use lumen_core::favorites::Change as FavoriteChange;
@@ -51,6 +51,7 @@ use lumen_core::{
 };
 use lumen_platform::Platform;
 
+use crate::emoji_form::{EmojiForm, EmojiFormEvent};
 use crate::hotkey_recorder::{Effect, Flow, HotkeyRecorder, RecorderEvent, Save, Verdict};
 use crate::icons::IconCache;
 use crate::keymap::Shortcuts;
@@ -709,19 +710,32 @@ enum PickerMove {
 struct FormState {
     form: FormKind,
     /// What the search row says instead of taking input.
-    title: &'static str,
+    title: SharedString,
     /// The form's own height, which the window hugs. A timer preset's grows
     /// when *Cycle* is turned on.
     height: f32,
     _events: Subscription,
     /// Follows the form's height, for a form whose height changes.
     _resize: Option<Subscription>,
+    /// The view the form was opened over, to go back to as it was left:
+    /// its rows, selection and scroll, and the query typed into it. Kept
+    /// rather than drawn again, so its sink -- and the loop behind it --
+    /// lives on while the form is open.
+    back: Option<FormBack>,
+}
+
+/// A view set aside under a form (F18).
+struct FormBack {
+    view: Box<ViewState>,
+    query: String,
 }
 
 enum FormKind {
     Quicklink(Entity<QuicklinkForm>),
     Timer(Entity<TimerForm>),
     Snippet(Entity<SnippetForm>),
+    /// An emoji's custom keywords (F18), over the grid.
+    Emoji(Entity<EmojiForm>),
 }
 
 /// Where a view's events go.
@@ -2554,6 +2568,7 @@ impl Launcher {
                 }
                 FormKind::Timer(form) => form.update(cx, |form, cx| form.set_colors(colors, cx)),
                 FormKind::Snippet(form) => form.update(cx, |form, cx| form.set_colors(colors, cx)),
+                FormKind::Emoji(form) => form.update(cx, |form, cx| form.set_colors(colors, cx)),
             }
         }
         self.action_field
@@ -5116,10 +5131,11 @@ impl Launcher {
         self.picker = None;
         self.mode = Mode::Form(FormState {
             form: FormKind::Quicklink(form.clone()),
-            title: "Create Quicklink",
+            title: "Create Quicklink".into(),
             height: lumen_core::layout::form::HEIGHT,
             _events: events,
             _resize: None,
+            back: None,
         });
         form.read(cx).focus(window, cx);
 
@@ -5212,10 +5228,11 @@ impl Launcher {
         self.picker = None;
         self.mode = Mode::Form(FormState {
             form: FormKind::Timer(form.clone()),
-            title,
+            title: title.into(),
             height,
             _events: events,
             _resize: Some(resize),
+            back: None,
         });
         form.read(cx).focus(window, cx);
         self.resize_if_needed(previous_height, cx);
@@ -5266,10 +5283,61 @@ impl Launcher {
         self.picker = None;
         self.mode = Mode::Form(FormState {
             form: FormKind::Snippet(form.clone()),
-            title,
+            title: title.into(),
             height,
             _events: events,
             _resize: None,
+            back: None,
+        });
+        form.read(cx).focus(window, cx);
+        self.resize_if_needed(previous_height, cx);
+        cx.notify();
+    }
+
+    /// Show the custom keywords form over the open view (F18): `title` in
+    /// the search row, `text` in its field. Saving hands what was typed to
+    /// `on_save`; either way the launcher goes back to the view as it was,
+    /// and the view answers a save with a render. Public for the daemon,
+    /// which opens it for *Add Custom Keywords* in *Search Emoji & Symbols*.
+    pub fn open_emoji_form(
+        &mut self,
+        title: String,
+        text: String,
+        on_save: impl Fn(String) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.mode, Mode::View(_)) {
+            return;
+        }
+        let previous_height = self.content_height();
+
+        let colors = self.theme.colors.clone();
+        let form = cx.new(|cx| EmojiForm::new(text, colors, cx));
+        let events = cx.subscribe_in(&form, window, move |this, _, event, window, cx| {
+            // Back first: the view's render after a save lands on it.
+            this.leave_form(None, window, cx);
+            if let EmojiFormEvent::Saved(text) = event {
+                on_save(text.clone());
+            }
+        });
+        let height = form.read(cx).height();
+
+        let query = std::mem::take(&mut self.query);
+        let Mode::View(view) = std::mem::replace(&mut self.mode, Mode::Root) else {
+            return;
+        };
+        self.action_panel = None;
+        self.argument = None;
+        self.clear_query_text(cx);
+        self.picker = None;
+        self.mode = Mode::Form(FormState {
+            form: FormKind::Emoji(form.clone()),
+            title: title.into(),
+            height,
+            _events: events,
+            _resize: None,
+            back: Some(FormBack { view, query }),
         });
         form.read(cx).focus(window, cx);
         self.resize_if_needed(previous_height, cx);
@@ -5286,6 +5354,25 @@ impl Launcher {
             return;
         }
         let previous_height = self.content_height();
+
+        // Opened over a view: back to it as it was, neither filtered nor
+        // told again, which would put the selection and the scroll back at
+        // the top. What changed is the view's to say, in a render of its own.
+        let back = match &mut self.mode {
+            Mode::Form(state) => state.back.take(),
+            _ => None,
+        };
+        if let Some(back) = back {
+            self.picker = None;
+            self.mode = Mode::View(back.view);
+            self.query_field
+                .update(cx, |field, cx| field.set_text(back.query.clone(), cx));
+            self.query = back.query;
+            self.query_field.read(cx).focus(window);
+            self.resize_if_needed(previous_height, cx);
+            cx.notify();
+            return;
+        }
 
         self.picker = None;
         self.mode = Mode::Root;
@@ -5665,6 +5752,7 @@ impl Render for Launcher {
                 FormKind::Quicklink(form) => form.clone().into_any_element(),
                 FormKind::Timer(form) => form.clone().into_any_element(),
                 FormKind::Snippet(form) => form.clone().into_any_element(),
+                FormKind::Emoji(form) => form.clone().into_any_element(),
             },
             (None, Mode::View(state)) => self.render_view(state, cx),
             (None, Mode::Root) => self.render_results(cx).into_any_element(),
@@ -5746,7 +5834,7 @@ impl Launcher {
                 .font_weight(geometry.weight_query())
                 .text_color(color(colors.text_primary))
                 .children(search_icon(&geometry, colors))
-                .child(state.title);
+                .child(state.title.clone());
         }
 
         let placeholder = match &self.mode {
@@ -6466,6 +6554,14 @@ impl Launcher {
             Mode::Root | Mode::Form(_) => None,
         };
         let status = match (&self.mode, count) {
+            // One field: there is no next one.
+            (
+                Mode::Form(FormState {
+                    form: FormKind::Emoji(_),
+                    ..
+                }),
+                _,
+            ) => String::new(),
             (Mode::Form(_), _) => "Next field  Tab".to_string(),
             // What is counting, while nothing is typed: the launcher opens
             // on it. Once a search starts, how many it found is the news (F8).
@@ -7446,6 +7542,7 @@ mod tests {
             "open_form",
             "open_timer_form",
             "open_snippet_form",
+            "open_emoji_form",
         ];
 
         // Normalised: a checkout with `core.autocrlf` has CRLF line ends.

@@ -1,6 +1,7 @@
 //! Finding an entry by what it is called.
 //!
-//! Three tiers, in order: a name or keyword that is the query, then names
+//! Three tiers, in order: a name or keyword that is the query -- the
+//! user's own keywords before Unicode's -- then names
 //! and keywords whose words start with the query's words, then whatever
 //! `nucleo-matcher` finds -- the same matcher as the root list, for a typo.
 //! Within a tier the catalogue's order stands, so *joy* lists 😂 before
@@ -23,6 +24,9 @@ enum Tier {
     /// The name is the query -- *sun* is ☀️ -- or the query is the
     /// character itself.
     Name,
+    /// One of the user's own keywords is the query. Above Unicode's: who
+    /// gave ☀️ *sunny* means it, and 🫡 has it too.
+    Custom,
     /// A keyword is the query. Below a name, or *sun* would find 😎 first:
     /// it is one of its keywords, and Unicode lists faces before the sky.
     Keyword,
@@ -80,6 +84,9 @@ impl Catalogue {
                 }
                 if folded.is_empty() {
                     return None;
+                }
+                if custom.contains(&folded) {
+                    return Some((Tier::Custom, Reverse(0), entry));
                 }
                 if keywords().any(|keyword| keyword == folded) {
                     return Some((Tier::Keyword, Reverse(0), entry));
@@ -205,6 +212,17 @@ mod tests {
         custom.insert("\u{1F389}".into(), vec!["lumenparty".into()]);
         let party = catalogue.search("lumenparty", None, &custom);
         assert_eq!(party.first().map(|e| &*e.chars), Some("\u{1F389}"));
+    }
+
+    #[test]
+    fn an_exact_custom_keyword_ranks_as_an_exact_keyword() {
+        let catalogue = catalogue();
+        let mut custom = CustomKeywords::new();
+        custom.insert("\u{2600}\u{FE0F}".into(), vec!["sunny".into()]);
+        let sunny = catalogue.search("sunny", None, &custom);
+        assert_eq!(sunny.first().map(|e| &*e.chars), Some("\u{2600}\u{FE0F}"));
+        // Without it, 🫡 leads: *sunny* is one of Unicode's keywords for it.
+        assert_ne!(found("sunny").first(), Some(&"\u{2600}\u{FE0F}"));
     }
 
     #[test]

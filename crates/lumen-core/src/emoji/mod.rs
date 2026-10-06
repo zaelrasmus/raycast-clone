@@ -20,7 +20,7 @@ mod search;
 pub mod session;
 pub mod store;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::OnceLock;
 
@@ -146,9 +146,9 @@ pub struct Entry {
     folded_keywords: Box<[Box<str>]>,
 }
 
-/// Keywords the user added, by an entry's [`Entry::chars`] (F18, task 8).
-/// Matched as the entry's own are.
-pub type CustomKeywords = HashMap<String, Vec<String>>;
+/// Keywords the user added, by an entry's [`Entry::chars`] (F18, task 7).
+/// Matched as the entry's own are. Ordered, as `emoji.json` keeps them.
+pub type CustomKeywords = BTreeMap<String, Vec<String>>;
 
 /// Every entry, in Unicode's order: the emoji groups as `emoji-test.txt`
 /// lists them, then the symbol blocks.

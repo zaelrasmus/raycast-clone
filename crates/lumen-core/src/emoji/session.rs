@@ -10,8 +10,8 @@
 //! [`Session::new`] reads the catalogue if nothing has yet (~5 ms), so it is
 //! made off the UI thread, as the clipboard's session is.
 
-use super::store::{self, State};
-use super::{Catalogue, Category, CustomKeywords, Entry, catalogue, codepoints};
+use super::store::{self, State, join_keywords, parse_keywords};
+use super::{Catalogue, Category, Entry, catalogue, codepoints};
 use crate::view::{
     Action, EmptyState, Event, Filtering, Icon, Item, List, Presentation, Scope, ScopeOption,
     Section, View,
@@ -30,6 +30,8 @@ pub const COPY_NAME: &str = "copy-name";
 /// [`favorite_action`](crate::view::favorite_action).
 pub use crate::view::favorite_action::{MOVE_DOWN, MOVE_UP, PIN, UNPIN};
 pub const FORGET: &str = "forget";
+/// *Add Custom Keywords*, or *Edit* when the emoji has some: opens the form.
+pub const CUSTOM_KEYWORDS: &str = "custom-keywords";
 
 /// The most emoji *Frequently Used* shows: two strips of the default
 /// seven-column grid and a little, enough for the handful anyone repeats
@@ -53,6 +55,14 @@ pub enum Effect {
     Copy(String),
     /// Write this to `emoji.json`, off the UI thread.
     Save(State),
+    /// Open the custom keywords form over the grid, titled `title`, with
+    /// `text` in its field. What is saved comes back to
+    /// [`Session::save_keywords`] with `item`; leaving it changes nothing.
+    EditKeywords {
+        item: String,
+        title: String,
+        text: String,
+    },
 }
 
 pub struct Session {
@@ -61,9 +71,7 @@ pub struct Session {
     query: String,
     /// `None` is every category.
     category: Option<Category>,
-    /// The user's own keywords (F18, task 7). Empty until they can be added.
-    custom: CustomKeywords,
-    /// Pins and usage, as `emoji.json` holds them.
+    /// Pins, usage and custom keywords, as `emoji.json` holds them.
     saved: State,
 }
 
@@ -79,7 +87,6 @@ impl Session {
             catalogue: catalogue(),
             query: String::new(),
             category: None,
-            custom: CustomKeywords::new(),
             saved,
         }
     }
@@ -115,6 +122,17 @@ impl Session {
                     COPY => Effect::Copy(chars.to_string()),
                     COPY_UNICODE => Effect::Copy(codepoints(chars)),
                     COPY_NAME => Effect::Copy(title_case(&entry.name)),
+                    CUSTOM_KEYWORDS => {
+                        let keywords = self.saved.keywords.get(chars);
+                        return vec![Effect::EditKeywords {
+                            title: format!(
+                                "Custom Keywords for {chars} {}",
+                                title_case(&entry.name)
+                            ),
+                            text: keywords.map(|k| join_keywords(k)).unwrap_or_default(),
+                            item,
+                        }];
+                    }
                     _ => return self.arrange(&item, chars, &action),
                 };
                 // Saved first: pasting and copying close the view.
@@ -123,6 +141,29 @@ impl Session {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The custom keywords form, saved with `text` for the emoji drawn as
+    /// `item`: an empty field takes its keywords away.
+    ///
+    /// The grid is drawn again whether or not anything changed -- the form
+    /// is closing, and the emoji is selected where it is drawn now, under
+    /// the query and category it was left with.
+    pub fn save_keywords(&mut self, item: &str, text: &str) -> Vec<Effect> {
+        let Some(entry) = self.entry(item) else {
+            return Vec::new();
+        };
+        let chars = &*entry.chars;
+        let mut effects = Vec::new();
+        if self.saved.set_keywords(chars, parse_keywords(text)) {
+            effects.push(Effect::Save(self.saved.clone()));
+        }
+        let mut view = self.view();
+        if let View::List(list) = &mut view {
+            list.select = where_now(list, item, chars).map(Box::new);
+        }
+        effects.push(Effect::Render(view));
+        effects
     }
 
     /// Pin, unpin, move or forget `chars`, acted on as `item`: saved and
@@ -213,7 +254,7 @@ impl Session {
         } else {
             let found = self
                 .catalogue
-                .search(&self.query, self.category, &self.custom);
+                .search(&self.query, self.category, &self.saved.keywords);
             items.section("Results", "", found).into_iter().collect()
         };
 
@@ -336,6 +377,14 @@ impl Items<'_> {
         if self.saved.is_used(chars) {
             actions.push(action(FORGET, "Remove from Frequently Used"));
         }
+        actions.push(action(
+            CUSTOM_KEYWORDS,
+            if self.saved.keywords.contains_key(chars) {
+                "Edit Custom Keywords"
+            } else {
+                "Add Custom Keywords"
+            },
+        ));
         Item {
             id: format!("{prefix}{chars}"),
             title: title_case(&entry.name),
@@ -534,6 +583,7 @@ mod tests {
                 (COPY_UNICODE, "Copy Unicode"),
                 (COPY_NAME, "Copy Name"),
                 (PIN, "Pin Emoji"),
+                (CUSTOM_KEYWORDS, "Add Custom Keywords"),
             ]
         );
 
@@ -868,6 +918,103 @@ mod tests {
             option: Category::ALL[0].slug().into(),
         });
         assert_eq!(titles(&session), [Category::ALL[0].label()]);
+    }
+
+    // Custom keywords (F18, task 7).
+
+    fn action_title(session: &Session, id: &str, action: &str) -> Option<String> {
+        list(&session.view())
+            .items()
+            .find(|item| item.id == id)?
+            .actions
+            .iter()
+            .find(|each| each.id == action)
+            .map(|each| each.title.clone())
+    }
+
+    fn edit(session: &mut Session, item: &str) -> (String, String, String) {
+        match &invoke(session, item, CUSTOM_KEYWORDS)[..] {
+            [Effect::EditKeywords { item, title, text }] => {
+                (item.clone(), title.clone(), text.clone())
+            }
+            other => panic!("expected the form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_keywords_action_adds_then_edits() {
+        let mut session = Session::default();
+        assert_eq!(
+            action_title(&session, SUN, CUSTOM_KEYWORDS).as_deref(),
+            Some("Add Custom Keywords")
+        );
+        assert_eq!(
+            edit(&mut session, SUN),
+            (
+                SUN.into(),
+                format!("Custom Keywords for {SUN} Sun"),
+                String::new()
+            )
+        );
+
+        session.save_keywords(SUN, "Sunny, warm , ,SUNNY");
+        assert_eq!(
+            action_title(&session, SUN, CUSTOM_KEYWORDS).as_deref(),
+            Some("Edit Custom Keywords")
+        );
+        let (_, _, text) = edit(&mut session, SUN);
+        assert_eq!(text, "sunny, warm");
+    }
+
+    #[test]
+    fn saving_keywords_stores_them_cleaned_and_empty_removes_them() {
+        let mut session = Session::default();
+        let effects = session.save_keywords(SUN, "Sunny, warm , ,SUNNY");
+        assert_eq!(saved(&effects).keywords[SUN], ["sunny", "warm"]);
+        // The same again writes nothing, but still draws the grid.
+        let again = session.save_keywords(SUN, "sunny,warm");
+        assert!(again.iter().all(|e| !matches!(e, Effect::Save(_))));
+        assert!(matches!(again[..], [Effect::Render(_)]));
+
+        let effects = session.save_keywords(SUN, "  ");
+        assert!(saved(&effects).keywords.is_empty());
+        assert_eq!(
+            action_title(&session, SUN, CUSTOM_KEYWORDS).as_deref(),
+            Some("Add Custom Keywords")
+        );
+        // Not an emoji: nothing.
+        assert!(session.save_keywords("not an emoji", "x").is_empty());
+    }
+
+    #[test]
+    fn a_custom_keyword_finds_its_emoji_first() {
+        let mut session = Session::default();
+        session.save_keywords(SUN, "Sunny");
+        query(&mut session, "sunny");
+        assert_eq!(list_ids(&session)[0], SUN);
+
+        // From the file, in a new session.
+        let session = Session::new(session.saved.clone());
+        let mut session = session;
+        query(&mut session, "sunny");
+        assert_eq!(list_ids(&session)[0], SUN);
+    }
+
+    #[test]
+    fn after_saving_the_grid_keeps_its_query_and_selects_the_emoji() {
+        let mut session = Session::default();
+        invoke(&mut session, SUN, PIN);
+        query(&mut session, "sun");
+        let effects = session.save_keywords(SUN, "sunny");
+        assert_eq!(selected(&effects), Some(SUN.to_string()));
+        assert_eq!(titles(&session), ["Results"]);
+
+        query(&mut session, "");
+        let pinned = format!("pinned:{SUN}");
+        let (item, _, _) = edit(&mut session, &pinned);
+        assert_eq!(item, pinned);
+        let effects = session.save_keywords(&pinned, "");
+        assert_eq!(selected(&effects), Some(pinned));
     }
 
     #[test]

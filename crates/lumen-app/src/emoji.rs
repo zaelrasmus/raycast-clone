@@ -5,6 +5,10 @@
 //! session is made on the background executor: it reads the catalogue the
 //! first time, and the pins and usage with it, so the first view drawn
 //! already has them (I-10).
+//!
+//! The custom keywords form is the launcher's, opened over the grid; what it
+//! saves comes back into the same loop as the view's events, so the session
+//! is only ever touched from here.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,15 +21,25 @@ use lumen_core::view::Event;
 use lumen_platform::Platform;
 use lumen_ui::{Launcher, ViewSink};
 
+/// What the loop hears: the view, or the keywords form saving.
+enum Input {
+    View(Event),
+    Keywords { item: String, text: String },
+}
+
 pub fn run(
     platform: Arc<dyn Platform>,
     file: PathBuf,
     window: gpui::WindowHandle<Launcher>,
     cx: &mut gpui::App,
 ) {
-    let (view_tx, mut events) = mpsc::unbounded::<Event>();
+    let (view_tx, mut events) = mpsc::unbounded::<Input>();
+    let view_tx = Arc::new(view_tx);
+    // Weak, so the loop ends when the view does: the sink, and a form open
+    // over it, hold the only strong ones.
+    let inputs = Arc::downgrade(&view_tx);
     let sink = ViewSink::new(move |event| {
-        let _ = view_tx.unbounded_send(event);
+        let _ = view_tx.unbounded_send(Input::View(event));
     });
     // The loading state, until the catalogue has been read.
     window
@@ -60,11 +74,25 @@ pub fn run(
                             .spawn(async move {
                                 if let Err(error) = state.save(&file) {
                                     log::warn!(
-                                        "could not save the emoji pins and usage: {error:#}"
+                                        "could not save the emoji pins, usage and keywords: {error:#}"
                                     );
                                 }
                             })
                             .detach();
+                    }
+                    Effect::EditKeywords { item, title, text } => {
+                        let Some(inputs) = inputs.upgrade() else {
+                            continue;
+                        };
+                        let on_save = move |text| {
+                            let item = item.clone();
+                            let _ = inputs.unbounded_send(Input::Keywords { item, text });
+                        };
+                        window
+                            .update(cx, |launcher, window, cx| {
+                                launcher.open_emoji_form(title, text, on_save, window, cx)
+                            })
+                            .ok();
                     }
                     Effect::Copy(text) => {
                         if let Err(error) = platform.set_clipboard_text(&text) {
@@ -77,10 +105,13 @@ pub fn run(
                     }
                 }
             }
-            let Some(event) = events.next().await else {
+            let Some(input) = events.next().await else {
                 break;
             };
-            effects = session.event(event);
+            effects = match input {
+                Input::View(event) => session.event(event),
+                Input::Keywords { item, text } => session.save_keywords(&item, &text),
+            };
         }
     })
     .detach();

@@ -20,6 +20,7 @@ pub mod clock_page;
 pub mod currency_page;
 pub mod duration_input;
 pub mod edit;
+pub mod emoji_form;
 pub mod file_search_page;
 pub mod fonts;
 pub mod home_choice;
