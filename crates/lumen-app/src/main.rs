@@ -2474,7 +2474,7 @@ fn hide(
     platform.hide_window(WindowRole::Launcher, restore_to)?;
 
     // Every colour emoji the grid drew is held in the atlas until evicted
-    // (7.53), so none is kept while nobody is looking. Never inside a draw:
+    // (7.61), so none is kept while nobody is looking. Never inside a draw:
     // this runs on the run loop, after the window has gone.
     launcher
         .update(cx, |_, window, _| window.drop_emoji_glyphs())

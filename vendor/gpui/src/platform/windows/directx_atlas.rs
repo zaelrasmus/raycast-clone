@@ -119,7 +119,7 @@ impl PlatformAtlas for DirectXAtlas {
         }
     }
 
-    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.53): unlike `remove`, frees each
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.61): unlike `remove`, frees each
     // tile's space, since a polychrome texture can hold images too. A texture
     // left with no tile is dropped and its slot goes to the free list.
     fn remove_emoji_glyphs(&self) {
@@ -150,7 +150,7 @@ impl PlatformAtlas for DirectXAtlas {
                 dropped = true;
             }
         }
-        // LUMEN PATCH (docs/ARCHITECTURE.md, 7.53): D3D11 defers destroying a
+        // LUMEN PATCH (docs/ARCHITECTURE.md, 7.61): D3D11 defers destroying a
         // released texture until the next flush, and a hidden window never
         // presents to cause one. The last sprite batch's atlas also stays
         // bound to slot 0, holding its texture; every textured draw binds it

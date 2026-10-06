@@ -850,7 +850,7 @@ impl DirectWriteState {
         Ok(bitmap_data)
     }
 
-    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.54): the colour layers are composited on
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.62): the colour layers are composited on
     // the CPU, with the same arithmetic as `emoji_rasterization_fragment` and the
     // blend state in `GPUState::new`, instead of drawn on the GPU and read back.
     // The readback blocked for ~0.45 ms per glyph. The GPU path below is upstream's,
@@ -989,7 +989,7 @@ impl DirectWriteState {
         Ok(rasterized)
     }
 
-    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.54): upstream's `rasterize_color`, renamed.
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.62): upstream's `rasterize_color`, renamed.
     #[allow(dead_code)]
     fn rasterize_color_gpu(
         &self,

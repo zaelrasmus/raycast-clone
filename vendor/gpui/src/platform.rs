@@ -766,7 +766,7 @@ pub(crate) trait PlatformAtlas: Send + Sync {
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>>;
     fn remove(&self, key: &AtlasKey);
-    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.53): evicts every colour emoji
+    // LUMEN PATCH (docs/ARCHITECTURE.md, 7.61): evicts every colour emoji
     // glyph and drops the textures it leaves empty. Only the DirectX atlas
     // overrides it; the others are not built on Windows, or are the test atlas.
     fn remove_emoji_glyphs(&self) {}

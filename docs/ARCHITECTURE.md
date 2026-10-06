@@ -3955,7 +3955,7 @@ on, every entry of that display placed, the selected one in the accent.
 numbered from 1 as the editor numbers them. Saving goes through `edit`,
 atomically, and the daemon's watcher reindexes.
 
-### 7.53 Colour emoji can be evicted from the glyph atlas, as a patch to gpui
+### 7.61 Colour emoji can be evicted from the glyph atlas, as a patch to gpui
 
 gpui 0.2.2 keeps every glyph it has rasterised in the window's sprite atlas
 for the life of the window. Only images can be removed (`Window::drop_image`
@@ -3979,7 +3979,7 @@ does nothing while the window is drawing. The trait method has an empty
 default, which the test atlas keeps; the Metal and Blade atlases are not
 built on Windows. The changed lines in `platform.rs`, `window.rs` and
 `platform/windows/directx_atlas.rs` are marked
-`LUMEN PATCH (docs/ARCHITECTURE.md, 7.53)`.
+`LUMEN PATCH (docs/ARCHITECTURE.md, 7.61)`.
 
 Upstream's own `remove` decrements a texture's count and drops it when it
 reaches zero, but never deallocates the tile, so an image removed from a
@@ -4018,7 +4018,7 @@ Segoe UI Emoji font file mapped and touched. So the patch settles the GPU
 side, and the idle budget is a separate question about CPU-side memory, to
 measure with `scripts/measure-idle.ps1` once the view hides.
 
-### 7.54 Colour emoji are composited on the CPU, as a patch to gpui
+### 7.62 Colour emoji are composited on the CPU, as a patch to gpui
 
 Holding Down in the F18 grid broke the frame budget: `scripts/measure-grid.ps1`
 measured p50 4.2 ms but p95 10.8 to 24.3 ms and a max of 44 ms. Every strip
@@ -4061,7 +4061,7 @@ layer as a 256-entry table. Un-premultiplying is unchanged. Upstream's
 function is kept unmodified as `rasterize_color_gpu`, unused and allowed to be
 dead, so the diff is additions only and re-applies across a gpui upgrade in
 one place. The changed blocks are marked `LUMEN PATCH (docs/ARCHITECTURE.md,
-7.54)`.
+7.62)`.
 
 What it deliberately does not do: remove the GPU path, its shader or the
 pipeline objects `GPUState` builds for it (they cost a few kilobytes, once);
