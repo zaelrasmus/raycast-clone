@@ -125,6 +125,7 @@ once Lumen was measured well inside them (7.36).
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
 | **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16), and five window commands -- *Minimise Window* from any state in one command, *Minimise on This Display*, *Restore Window* from a bounded per-window history that makes Minimise then Restore a round trip by hotkey, and *Focus Next* / *Previous App Window* (7.57). Gaps between arranged windows and round the screen, DPI-scaled, and repeated halves that cycle sizes or displays, configured in `window-management`, applied live, and set from a *Window Management* settings page (7.58). Custom window commands -- a size in % or pt or `auto`, a nine-point anchor and an offset -- are stored in `window-commands.json`, reloaded live and run as `window:custom:<id>` items with hotkeys like any command (7.59), and made, edited, duplicated and deleted from the *Window Management* page's editor: live validation through the placement's own parsing, a scaled preview of the display, and an anchor grid moved by the arrow keys (7.59). Custom window layouts place several applications at once, matching running windows by executable and launching the rest, with the other windows on those displays left, minimised or asked to close; stored in `window-layouts.json`, run as `window:layout:<id>` items or by hotkey, applied off the UI thread, and *Save Current Layout* opens the layout editor on a snapshot of the screen, to be named (7.60), and made, edited, duplicated and deleted from the *Window Management* page's layout editor -- applications from the launcher's catalogue, an argument, a display and the command editor's placement fields, a preview of every window on the display, `validate` gating Save -- where *Save Current Layout* opens the snapshot unsaved (7.60) |
+| **F18** | Search Emoji & Symbols: a grid of every emoji and the symbols people reach for, after Raycast's | **Done.** A bundled catalogue -- Unicode 15.1 with CLDR's names and keywords, 2,805 entries, 45 KB -- drawn with the system font (Segoe UI Emoji); a grid as a presentation of the list, with arrow keys through its cells; categories in a scope; *Paste* with the clipboard put back, *Copy to Clipboard*, *Copy Unicode* and *Copy Name*; *Pinned* and *Frequently Used*; custom keywords; a skin tone preference. Two gpui patches: colour emoji evicted from the atlas when the launcher hides (7.61) and composited on the CPU (7.62). Fluent 3D images were built and are parked on `f18-fluent-images`, not shipped. Binary 24,035,840 bytes. See F18 decisions |
 
 ### F4 build order is not optional
 
@@ -2320,6 +2321,83 @@ What was decided while building it:
   difference inside the spread between runs, under 400. Binary 21,371,392
   bytes, **+187 KB**.
 
+### F18 decisions
+
+Raycast's *Search Emoji & Symbols* is a grid: a category dropdown,
+*Frequently Used* and pins above the categories, and `Ctrl+K` for Copy
+Unicode, custom keywords and the pin. F18 builds that shape with Lumen's own
+parts. The catalogue is generated by `scripts/make-emoji.ps1` from Unicode
+15.1's `emoji-test.txt` and CLDR's annotations and committed: 2,805 entries,
+1,637 emoji and 1,168 symbols, 45 KB compressed, loaded in 4.9 ms.
+
+The decisions:
+
+- **A built-in view, not an extension.** The protocol is frozen after step 3
+  (7.37), and the grid, the pins and the paste all need the host anyway. The
+  view's source lives in `lumen_core::emoji` and speaks the same vocabulary
+  an extension would (AD-06, I-13), so nothing about it is private.
+- **The system font, not Fluent 3D images.** Segoe UI Emoji draws every emoji
+  the catalogue has, every skin tone included, at no cost to the binary; it is
+  flat Fluent where Raycast's is 3D, and that is the only difference on
+  screen. The images were built -- 1,595 at 128 px, 4.5 MB, packed by a
+  `build.rs` -- and parked with their pipeline on `f18-fluent-images`. The
+  cell draws its glyph through one function, so reviving them is no layout
+  change; if they are, the source should be 256 px resized on the CPU to the
+  cell's exact size, because gpui samples without mipmaps, and skin tones
+  would take the images to about 19 MB.
+- **The grid is a presentation of `List`.** `Presentation::Grid` beside
+  `Rows`, one field with a default, so every list already written still loads
+  (I-12) and the tree exists once (I-13). The style has `grid.cell`,
+  `grid.gap` and `grid.radius`; the number of columns is derived from the
+  width, not a token (I-11), and cells stretch to fill the strip, so
+  `grid.cell` is a minimum side. A strip is one height, cell plus gap (I-10).
+- **Arrows move in two dimensions through a key context.** A grid adds a
+  `Grid` context in which Left, Right, Up and Down are `GridLeft` and its
+  siblings, bound in the keymap (I-14): one cell sideways, one strip up or
+  down keeping the column, wrapping at the edges, without allocating per
+  press.
+- **Name first, then keyword.** The tiers are an exact name, an exact custom
+  keyword, an exact keyword, a word prefix, then fuzzy. A name above a keyword
+  because CLDR files *sun* as a keyword of the face with sunglasses: with
+  keywords equal to names, `sun` led with the wrong one.
+- **Paste puts the clipboard back.** As for snippets (F11): the emoji goes in
+  through the clipboard, which is restored afterwards, and it is kept out of
+  clipboard history.
+- **One file, keyed by the emoji's own characters.** `emoji.json` keeps the
+  pins in order, the usage, the custom keywords and the skin tone. A toned
+  variant is never a key, so changing tone keeps every pin and use; an entry
+  the catalogue no longer has is kept, not pruned, as favourites are.
+- **Frecency's maths, not its type.** *Frequently Used* ranks with the same
+  logarithm and two-week half-life as the root list, duplicated in a few
+  lines: `Frecency` cannot delete an entry, which *Remove from Frequently
+  Used* needs, and its score is truncated to a bounded boost where a section
+  needs only an order.
+- **Skin tones are Unicode's, never assembled.** A tone applies only where
+  `emoji-test.txt` lists a fully-qualified sequence with one tone throughout
+  -- 323 emoji -- and the catalogue carries those sequences whole. A modifier
+  is never inserted: in a multi-person sequence it belongs after each person,
+  which only Unicode's own list gets right.
+- **A view names its selection, and its pin actions take the favourite
+  keys.** `List::select` is a hint naming the item to select, for when the
+  selected one vanishes -- pinned from *Frequently Used*, unpinned from
+  *Pinned*. Actions whose ids are `view::favorite_action`'s answer
+  `Ctrl+Shift+F` and `Ctrl+Alt+Up`/`Down`, so the root list's keys pin and
+  move in the view too (7.44).
+- **A new query or scope selects the first result.** A self-filtering view
+  kept its old selection by id: typing `sunny` after `sun` left the second
+  result selected. Fixed in the launcher, for every view, not in the emoji
+  view.
+- **No country or subdivision flags.** Windows draws neither as a flag, only
+  as letters, so the catalogue leaves them out; the other flags stay.
+- **Open: the skin-tone actions are not a group.** The six tone actions come
+  last in the panel without a rule above them: a view's actions have no
+  groups yet (7.44), and adding them is a vocabulary change of its own.
+- **Measured, at the close.** Grid while holding Down, `measure-grid.ps1`:
+  p95 5.4--5.5 ms after 7.62. Gesture p50 12, p95 25 ms; cold start 382 ms.
+  Idle, hidden: 70.9 MB never shown, 90.4 MB after the grid was browsed,
+  100.5 MB after every emoji was walked, the worst case (7.61, 7.63). Binary
+  24,035,840 bytes, under 40 MB.
+
 ---
 
 ## 7. Deviations from the plan
@@ -3281,6 +3359,15 @@ still opens on that second action, which is why the key and the panel agree
 Three verbs changed to say what they open: *Open Application*, *New
 Application Window* and *Open Command*. The footer reads the first one's.
 
+A view's action reaches a key the same way, never by naming one (F18).
+`view::favorite_action` lists well-known ids -- `pin`, `unpin`, `move-up`,
+`move-down` -- and a view that gives an action one of them gets the favourite
+keys: `Ctrl+Shift+F` runs the selected item's `pin` or `unpin`, whichever it
+has, and `Ctrl+Alt+Up`/`Down` run the moves, sent as `ActionInvoked` as if
+chosen from the panel. The panel shows those keys from the keymap, like a
+root row's, in place of any `shortcut`. `Action::shortcut` stays
+display-only: drawn on any other action, and never bound.
+
 ### 7.45 The action panel is a popover over the list
 
 *Supersedes 7.11.* Raycast's panel floats at the bottom-right of the list with
@@ -4018,6 +4105,31 @@ Segoe UI Emoji font file mapped and touched. So the patch settles the GPU
 side, and the idle budget is a separate question about CPU-side memory, to
 measure with `scripts/measure-idle.ps1` once the view hides.
 
+**Since, with the F18 view.** The call is wired into every hide path, in
+`hide()` in `lumen-app`'s `main.rs`, after the window has gone and so never
+inside a draw. In the daemon the textures did not go at first: D3D11
+destroys a released texture only on a flush or a present, and a hidden
+window presents nothing (7.35); the last sprite batch's atlas also stayed
+bound to slot 0. So the patch unbinds slot 0 and calls `Flush()` when it
+has dropped a texture, and GPU dedicated memory goes from 40 to 11.6 MB.
+
+Hidden, with `measure-idle.ps1` (its `-Walk` walks the whole grid, then
+hides): 70.9 MB working set for a window never shown, 90.4 MB after the grid
+was opened and browsed, 100.5 MB after every emoji was walked (one run
+104.4). The first 19.5 MB is the cost of showing the window at all (7.63).
+The walk's ~10 MB more is not a leak -- no gpui or Lumen cache grows per
+emoji -- but about 3 MB of free heap in ~100-byte holes, which `HeapCompact`
+does not return, and shared pages, most likely the emoji font's. The walk is
+recorded as a worst case, not the scenario the budget enforces: nobody
+scrolls 1,637 emoji.
+
+Two remedies were declined. Trimming the working set on hide was built:
+it left 5.6 MB of working set over 123 MB of private memory, so the idle
+budget, measured as working set, could no longer fail (7.36), and it was
+removed. An allocator that returns pages (the Segment Heap, mimalloc) was
+considered and not tried: about 3 MB, in a case nobody reaches, is not worth
+a process-wide change.
+
 ### 7.62 Colour emoji are composited on the CPU, as a patch to gpui
 
 Holding Down in the F18 grid broke the frame budget: `scripts/measure-grid.ps1`
@@ -4091,6 +4203,36 @@ The grid is inside the 8 ms budget with nothing on Lumen's side, so the
 fallback planned for F18 (rasterising the next strip in a frame of its own
 between key presses) is not built. Across a gpui upgrade the check is the
 spike's cold pass and a screenshot of the first page beside the old one.
+
+### 7.63 The idle budget is measured from a window never shown
+
+`scripts/measure-idle.ps1` starts a daemon, lets it settle and samples it
+with the window hidden. That window has never been shown, and no user is in
+that state: Lumen is summoned within minutes of login and stays resident.
+The budget (< 100 MB, 7.36) has been guarding a state nobody runs.
+
+F18 found the gap. Showing the window once costs about 19.5 MB of working
+set that stays while it is hidden, in every view: 70.9 MB never shown
+against 90.4 MB after the emoji grid was opened and hidden (7.61). Measured:
+those two totals, and the GPU side, which 7.61's eviction returns. Inferred,
+not measured owner by owner: what the rest is -- the swap chain and
+DirectComposition surfaces, the atlases' first textures, driver buffers,
+DirectWrite's caches and heap growth. This is the price of I-4's warm window,
+which is what makes a summons ~8 ms, so it is not a regression to remove.
+The root list shown once and hidden has not been measured; only the grid.
+
+What to do, on `main` and not here: measure idle after showing the window
+once, on the root list, and decide the budget on that figure. A later
+experiment is releasing the heavy GPU resources on hide, measured against
+the gesture budget, which it would spend.
+
+The scripts. `measure-idle.ps1` gained `-Walk`, which walks the whole emoji
+grid and hides before sampling, and now runs its own instance in a
+`LUMEN_HOME` of its own and stops only that, as `measure-gesture.ps1`,
+`measure-grid.ps1` and `measure-hotkey.ps1` do. `measure-typing.ps1` does
+not: it stops every process named `lumen`, the installed daemon included,
+and runs on the user's own config and data. A known hazard, left for its own
+change.
 
 ## 8. Risk register
 

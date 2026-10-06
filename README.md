@@ -187,6 +187,15 @@ an aesthetic worth looking at fifty times a day.
   *Weather* shows the conditions and the week ahead. *My Places* keeps the
   cities you care about first, in both. In the root list, `time in vancouver`,
   `3pm vancouver` and `weather in vancouver` are answered directly.
+- **Search Emoji & Symbols** (F18). Every emoji and the symbols people reach
+  for -- arrows, maths, currency, box drawing -- in a grid, found by name or
+  keyword (`sun`, `heart`, `check`) and browsed by category. `Enter` pastes
+  into the window you came from and puts your clipboard back; `Ctrl+K` has
+  *Copy to Clipboard*, *Copy Unicode* (`U+2600`), *Copy Name*, *Add Custom
+  Keywords* and a skin tone for every emoji that has one. Pin the ones you
+  use with `Ctrl+Shift+F`, in your order (`Ctrl+Alt+Up` / `Down`); the ones
+  you use most come up under *Frequently Used*. Drawn with Windows' own
+  emoji font from a bundled catalogue, so nothing goes online.
 - **Lumen's own commands** in the list: open settings, reload sheets, quit.
 - **An action panel** on `Ctrl+K`: every action a row has, reachable from the
   keyboard, which is what F2 asks for.
