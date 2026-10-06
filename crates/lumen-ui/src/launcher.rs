@@ -328,6 +328,24 @@ fn kept_selection(
     })
 }
 
+/// Where the selection goes when a view draws its list again: as
+/// [`kept_selection`], except that a render answering a change of query or
+/// scope the user has not moved since leaves it on the first row (`None`)
+/// unless the view names an item.
+///
+/// `answering` is the id the selection was on when the change was told, or
+/// `None` when no change is waiting on an answer.
+fn render_selection(
+    list: &lumen_core::view::List,
+    hint: Option<&str>,
+    selected: Option<&str>,
+    answering: Option<Option<&str>>,
+    shown: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let unmoved = answering.is_some_and(|left| left == selected);
+    kept_selection(list, hint, selected.filter(|_| !unmoved), shown)
+}
+
 /// Which of the panel's rows `query` keeps, by their place in the panel and
 /// in its order; `None` when nothing is typed, which keeps every row.
 ///
@@ -1206,6 +1224,17 @@ struct ViewState {
     /// Kept so that a re-rank triggered by something other than typing does not
     /// report a change that did not happen -- see `rerank`.
     sent_query: String,
+    /// The id the selection was on when the view was last told its query or
+    /// scope changed, while no render has been answered by the user moving
+    /// off it; `None` when nothing is waiting.
+    ///
+    /// Typing puts the selection on the first row of the *old* results, and
+    /// keeping that by id across the answer would leave the old query's
+    /// first row selected wherever it falls in the new ones. Cleared by the
+    /// user moving, not by a render: renders carry no query, so the first
+    /// one may answer an older query, and the next must still start at the
+    /// top.
+    answering: Option<Option<String>>,
     /// *Search Files*' completion of a typed path to each row, by id, and
     /// the trimmed query they answer (F16): the session lives in its loop,
     /// so what `Tab` would make is handed over with every view it draws.
@@ -3069,6 +3098,7 @@ impl Launcher {
             cell,
             candidates: Arc::new(candidates),
             sent_query: String::new(),
+            answering: None,
             completions: None,
             view,
         }));
@@ -3130,6 +3160,7 @@ impl Launcher {
             selected: 0,
             candidates: Arc::new(Vec::new()),
             sent_query: String::new(),
+            answering: None,
             completions: None,
         }));
 
@@ -3180,7 +3211,7 @@ impl Launcher {
         // arriving while the user is typing does not silently widen the list
         // back out underneath them.
         self.refilter_view();
-        self.keep_selection(hint, selected_id);
+        self.answer_selection(hint, selected_id);
         // What was typed while the view was starting: the placeholder it
         // replaced filtered in the host, so nothing was sent then, and
         // `search files` Enter `carbon` typed at once lost `carbon`.
@@ -3202,6 +3233,43 @@ impl Launcher {
         }
         self.resize_if_needed(previous_height, cx);
         cx.notify();
+    }
+
+    /// Place the selection after a render: as [`Self::keep_selection`], but
+    /// on the first row while the render answers a change of query or scope
+    /// the user has not moved since.
+    fn answer_selection(&mut self, hint: Option<String>, previous: Option<String>) {
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &state.view else {
+            return;
+        };
+        let answering = state.answering.as_ref().map(Option::as_deref);
+        let rows = &state.rows;
+        let index = render_selection(
+            list,
+            hint.as_deref(),
+            previous.as_deref(),
+            answering,
+            |index| crate::view::row_of(rows, index).is_some(),
+        );
+        if answering.is_some_and(|left| left != previous.as_deref()) {
+            // Moved since: the user's choice, kept from now on.
+            state.answering = None;
+        }
+        if let Some(index) = index {
+            state.selected = index;
+            self.reveal_view_selection();
+        }
+        // Still waiting on the user: the next render starts at the top too,
+        // so remember where this one left the selection.
+        if let Mode::View(state) = &mut self.mode
+            && state.answering.is_some()
+            && let lumen_core::view::View::List(list) = &state.view
+        {
+            state.answering = Some(list.item(state.selected).map(|item| item.id.clone()));
+        }
     }
 
     /// Put the selection on the item the view names in `hint`, or back on
@@ -3542,6 +3610,7 @@ impl Launcher {
 
         self.close_picker(cx);
         if changed {
+            self.await_answer();
             self.tell_extension(lumen_core::view::Event::ScopeChanged { scope: id, option });
         }
     }
@@ -3625,7 +3694,18 @@ impl Launcher {
         };
         if let Some(query) = query_to_send(&state.view, &state.sent_query, &self.query) {
             state.sent_query = query.clone();
+            self.await_answer();
             self.tell_extension(lumen_core::view::Event::QueryChanged { query });
+        }
+    }
+
+    /// Note that the view has been told of a new query or scope, so that the
+    /// renders answering it start on the first row (see `answering`).
+    fn await_answer(&mut self) {
+        if let Mode::View(state) = &mut self.mode
+            && let lumen_core::view::View::List(list) = &state.view
+        {
+            state.answering = Some(list.item(state.selected).map(|item| item.id.clone()));
         }
     }
 
@@ -7180,8 +7260,9 @@ mod tests {
     use super::{
         FavoriteKey, LauncherEvent, Summons, calculated, card_extent, card_label, grid_status,
         inside_command, kept_selection, level_change, opening_selection, opens_in_launcher,
-        operator_ranges, panel_matches, query_to_send, refiltered_selection, root_panel_entries,
-        second_action, summons, view_favorite_action, view_panel_entries, visible_panel_rows,
+        operator_ranges, panel_matches, query_to_send, refiltered_selection, render_selection,
+        root_panel_entries, second_action, summons, view_favorite_action, view_panel_entries,
+        visible_panel_rows,
     };
     use lumen_core::config::FileSearchConfig;
     use lumen_core::file_index::IndexDetail;
@@ -7261,6 +7342,41 @@ mod tests {
         assert_eq!(kept_selection(&list, Some("c"), Some("a"), not_c), Some(0));
         assert_eq!(kept_selection(&list, Some("x"), Some("y"), all), None);
         assert_eq!(kept_selection(&list, None, None, all), None);
+    }
+
+    /// A render that answers a new query or scope starts on the first row,
+    /// even when the row the old results put first is further down the new
+    /// ones; any other render keeps the selection, and a named item wins.
+    #[test]
+    fn a_render_answering_a_change_selects_the_first_row() {
+        let list = grid(None, &["sun", "salute", "sunny"]);
+        let all = |_: usize| true;
+        // New query or scope, selection not moved since: the first row.
+        let fresh = Some(Some("salute"));
+        assert_eq!(
+            render_selection(&list, None, Some("salute"), fresh, all),
+            None
+        );
+        assert_eq!(render_selection(&list, None, None, Some(None), all), None);
+        // Moved since the change: kept, as by any other render.
+        assert_eq!(
+            render_selection(&list, None, Some("sunny"), fresh, all),
+            Some(2)
+        );
+        // No change waiting: the same query drawn again keeps it by id.
+        assert_eq!(
+            render_selection(&list, None, Some("salute"), None, all),
+            Some(1)
+        );
+        // A named item wins either way.
+        assert_eq!(
+            render_selection(&list, Some("sunny"), Some("salute"), fresh, all),
+            Some(2)
+        );
+        assert_eq!(
+            render_selection(&list, Some("sunny"), Some("sun"), None, all),
+            Some(2)
+        );
     }
 
     fn view_action(id: &str) -> lumen_core::view::Action {
