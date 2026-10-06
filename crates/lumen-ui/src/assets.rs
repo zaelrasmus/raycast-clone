@@ -273,6 +273,8 @@ mod tests {
             Action::CopyExpression("x".into()),
             Action::Builtin(Builtin::Quit),
             Action::ArrangeWindow(WindowLayout::Maximize),
+            Action::ApplyWindowLayout("x".into()),
+            Action::SaveCurrentLayout,
             Action::OpenView(ViewSource::Example),
             Action::RunScript(ScriptRun {
                 path: "x".into(),

@@ -100,7 +100,7 @@ pub fn save(path: &Path, commands: &[CustomWindowCommand]) -> Result<()> {
     replace(path, serde_json::to_string_pretty(&File { commands })?)
 }
 
-fn replace(path: &Path, source: String) -> Result<()> {
+pub(super) fn replace(path: &Path, source: String) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, source)
         .with_context(|| format!("writing {}", temporary.display()))?;
@@ -162,6 +162,14 @@ pub fn edit(
 /// A new id for a command called `name`: its slug and a suffix from the
 /// clock, lengthened until no command in `existing` has it.
 pub fn new_id(name: &str, existing: &[CustomWindowCommand]) -> String {
+    fresh_id(name, "command", |id| {
+        existing.iter().any(|command| command.id == id)
+    })
+}
+
+/// [`new_id`]'s rule for anything with an id made once: the slug of `name`,
+/// or `fallback`, and a suffix from the clock, until `taken` says no.
+pub(super) fn fresh_id(name: &str, fallback: &str, taken: impl Fn(&str) -> bool) -> String {
     let slug: String = name
         .to_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -169,7 +177,7 @@ pub fn new_id(name: &str, existing: &[CustomWindowCommand]) -> String {
         .collect::<Vec<_>>()
         .join("-");
     let slug = match slug.is_empty() {
-        true => "command".to_string(),
+        true => fallback.to_string(),
         false => slug.chars().take(32).collect(),
     };
     let mut stamp = std::time::SystemTime::now()
@@ -178,7 +186,7 @@ pub fn new_id(name: &str, existing: &[CustomWindowCommand]) -> String {
         .unwrap_or_default();
     loop {
         let id = format!("{slug}-{}", base36(stamp % 36u128.pow(6)));
-        if !existing.iter().any(|command| command.id == id) {
+        if !taken(&id) {
             return id;
         }
         stamp = stamp.wrapping_add(1);

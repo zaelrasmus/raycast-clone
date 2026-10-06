@@ -534,6 +534,57 @@ The window is never placed partly off the screen. The `id` must be unique and
 must not change: it is what hotkeys and history refer to, so you can rename a
 command freely. An entry that does not read is skipped, and the log says why.
 
+### Custom window layouts
+
+A layout places several applications at once. `%APPDATA%\Lumen\config\window-layouts.json`
+holds them; each appears in root search under its name (`window:layout:<id>`
+in `shortcuts.json`, for a hotkey). Applying one uses a window the
+application already has, matched by its executable, and launches the
+application when it has none, waiting up to five seconds for its window. Two
+entries of one application take two of its windows. Whatever never appeared
+is named in a notification.
+
+The quickest way to make one is **Save Current Layout** in the launcher: the
+windows on screen, up to eight per display, are saved as a layout named
+`Layout <date> <time>`. Rename it or change it in the file; saving the file
+takes effect immediately.
+
+```json
+{
+  "layouts": [
+    {
+      "id": "coding-k3x9q1",
+      "name": "Coding",
+      "spec": {
+        "entries": [
+          {
+            "app": { "path": "C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe", "name": "Code" },
+            "placement": { "width": "60%", "height": "100%", "anchor": "left" }
+          },
+          {
+            "app": { "path": "C:\\Program Files\\Mozilla Firefox\\firefox.exe", "name": "Firefox" },
+            "argument": { "url": "https://docs.rs" },
+            "display": 0,
+            "placement": { "width": "40%", "height": "100%", "anchor": "right" }
+          }
+        ],
+        "gaps": true,
+        "other-windows": "minimize"
+      }
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `app` | `path` is what launches it: an executable, or a Store app's `shell:AppsFolder\<id>`. `name` is what a notification calls it. |
+| `argument` | Optional: `{ "url": ... }`, `{ "path": ... }` or `{ "args": ... }`. An entry with one is always launched, to hand it over. |
+| `display` | Monitor index, left to right from `0`. A display that is not attached means the primary. |
+| `placement` | As for a custom window command, above. At most eight entries per display. |
+| `gaps` | Whether `screen-gap` is left round each window. Default `true`. |
+| `other-windows` | `"none"` (default), `"minimize"`, or `"close"` for the other windows on the displays the layout uses. Close asks each window to close, as its close button does: unsaved work still asks. |
+
 **If the launcher does not respond to `Alt+Space`,** another application already
 holds that combination — global hotkeys on Windows are first come, first served.
 Lumen still runs and still responds to `lumen toggle`; change `"key"` (or the

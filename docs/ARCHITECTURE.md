@@ -124,7 +124,7 @@ once Lumen was measured well inside them (7.36).
 | **F14** | The calculator, the rest of the way: functions and constants, units and their conversions, percentages, dates, currencies inside an expression, and a *Calculator History* | **Done.** Functions, constants and angles; 130 units in 13 families; percentages, with `%` a percentage and `mod` the remainder (7.39); dates; money inside any expression, dated by its rates; the answer as a card in the place of two rows (7.40); *Calculator History* and a *Calculator* settings page; numbers written and read as the region does, or plainly. See F14 decisions |
 | **F15** | Design: the look opened to the user. Geometry and variants in a style, chosen apart from the palette; the empty root list in sections; favourites; the settings window redesigned | **Done.** Styles with 38 bounded tokens and fourteen variants, reloaded live, sizing the window with config overrides; the search icon, the footer's mark and surface, the window's own edge; Carbon (after Raycast), Graphite (after Asyar) and Ink (after Vicinae), measured from screenshots, and following releases unless edited; a fonts folder and OpenType features; sections from `config.json`, built once and kept; favourites; every match listed; the settings window after Raycast's, with an *Appearance* page; `LUMEN_HOME` for test runs. Letter spacing is built as a `text.tracking` token (7.42, `LETTER-SPACING.md`); Graphite tracks at -0.02, and Carbon's and Graphite's type sizes were measured again. See F15 decisions |
 | **F16** | File search the rest of the way: scopes and exclusions, folders as results, an index kept on disk and matched in memory, a *Search Files* view -- see [`FILE-SEARCH.md`](FILE-SEARCH.md) | **In progress:** slices 0-2 built; the index on disk with a hot layer in memory and no ceiling (c3a), *Search Files* in two phases (c3b), a scan root never waits on (c3c); idle with 405 000 entries 80.8 MB working set, 0.004 % CPU (c4); typed paths list their folder in root and the view (6d); extra application folders listed and watched as applications (7) |
-| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16), and five window commands -- *Minimise Window* from any state in one command, *Minimise on This Display*, *Restore Window* from a bounded per-window history that makes Minimise then Restore a round trip by hotkey, and *Focus Next* / *Previous App Window* (7.57). Gaps between arranged windows and round the screen, DPI-scaled, and repeated halves that cycle sizes or displays, configured in `window-management`, applied live, and set from a *Window Management* settings page (7.58). Custom window commands -- a size in % or pt or `auto`, a nine-point anchor and an offset -- are stored in `window-commands.json`, reloaded live and run as `window:custom:<id>` items with hotkeys like any command (7.59), and made, edited, duplicated and deleted from the *Window Management* page's editor: live validation through the placement's own parsing, a scaled preview of the display, and an anchor grid moved by the arrow keys (7.59) |
+| **F17** | Global shortcuts for any command, and window management the rest of the way | **In progress.** Window commands have fixed ids; a chord is registered as a set on the listener's thread (7.53); `shortcuts.json` binds any command's id to a hotkey that runs it without the launcher, p50 3 ms, or shows the launcher already in a view, form or argument and hides it on a second press (7.54); one alias table leads a command typed by its alias (7.55); a *Shortcuts* settings page lists every indexed command with its alias, edited in place, and its hotkey, cleared in place, with each registration failure on its row; the hotkey recorder that reads keys in one place (7.56) records from the page, suspending the command hotkeys meanwhile; *Configure Command* in the launcher's action panel, or Ctrl+Shift+,, sets or deletes the selected row's alias and hotkey in place (7.56). Window management reaches Raycast's list: thirty-six layouts, adding the maximised axes, *Almost Maximise*, *Reasonable Size* with a DPI-scaled cap, *Centre Without Resizing*, fourths, sixths and the four edge moves, placed from the window's current rectangle where the layout keeps part of it (7.16), and five window commands -- *Minimise Window* from any state in one command, *Minimise on This Display*, *Restore Window* from a bounded per-window history that makes Minimise then Restore a round trip by hotkey, and *Focus Next* / *Previous App Window* (7.57). Gaps between arranged windows and round the screen, DPI-scaled, and repeated halves that cycle sizes or displays, configured in `window-management`, applied live, and set from a *Window Management* settings page (7.58). Custom window commands -- a size in % or pt or `auto`, a nine-point anchor and an offset -- are stored in `window-commands.json`, reloaded live and run as `window:custom:<id>` items with hotkeys like any command (7.59), and made, edited, duplicated and deleted from the *Window Management* page's editor: live validation through the placement's own parsing, a scaled preview of the display, and an anchor grid moved by the arrow keys (7.59). Custom window layouts place several applications at once, matching running windows by executable and launching the rest, with the other windows on those displays left, minimised or asked to close; stored in `window-layouts.json`, run as `window:layout:<id>` items or by hotkey, applied off the UI thread, and *Save Current Layout* snapshots the screen into one (7.60) |
 
 ### F4 build order is not optional
 
@@ -3857,6 +3857,68 @@ which reads the file afresh and writes back every entry that did not read
 after the rest: a typo in a hand edit is the user's to fix, not the editor's
 to drop. The daemon's watch on the file reindexes the launcher and reloads the
 page.
+
+### 7.60 Custom window layouts
+
+A layout places several applications at once, as Raycast's window layouts do
+(F17). `lumen_platform::layouts::WindowLayoutSpec` holds the entries, whether
+the screen gap applies, and what happens to the other windows. Each entry
+names an application (`AppTarget`: what launches it, and a name to report),
+an optional argument (a URL, a path or raw arguments), a display by index in
+the platform's monitor order, and a 7.59 `Placement`. A display that is not
+attached is the primary. `validate` refuses an entry with no application and
+more than eight entries on one display. Two trait methods carry it, both
+implemented on Windows and an error on Hyprland until F5 (I-9).
+
+`apply_layout` decides in `lumen_platform::layouts`, where it is tested, and
+calls the system in `lumen-platform-windows`. An entry takes the frontmost
+switchable window of its application, matched by executable (a packaged app
+by its model id, as activation matches it) that no earlier entry took. So
+two entries of one editor take two windows, and a third is launched. An
+entry with an argument is always launched, to hand the argument over. Every
+missing application is launched first, then all are waited for together:
+one look at the windows every 50 ms, five seconds in all. A launched entry
+takes a window of its application that was not there before. A browser
+handed a URL opens a tab, not a window, so after 1.5 s such an entry takes
+its application's frontmost free window. An application that allows one
+instance never gives a second entry a window of its own; the report names
+it as missing. Each window is restored from minimised or maximised, placed
+as an arrangement is, with its place recorded for *Restore Window* (7.57),
+and placed twice when it crosses to a monitor of another scale. The
+layout's windows are then raised in order, the first one active.
+
+*Minimise Others* and *Close Others* touch only the windows *Minimise on
+This Display* would, on the displays the layout uses, that the layout did
+not place. Minimising is `ShowWindowAsync`. Closing posts `WM_CLOSE`, the
+message a window's own close button sends, so a window with unsaved work
+still asks. Nothing is ever terminated, and nothing waits on another
+window's thread.
+
+`current_layout` reads the windows on screen, front first, up to eight per
+display, each as its application and a placement in percentages of its
+monitor's work area, so it lands in the same place on a display of another
+size. *Save Current Layout* (`window:save-current-layout`) appends them to
+the file as `Layout <YYYY-MM-DD HH:MM>`, in local time, with no gaps and
+nothing done to other windows, and the notification names it.
+
+The layouts live in `<config>/window-layouts.json` as `{ "layouts": [ {
+"id", "name", "spec" } ] }`, under 7.59's rules: a missing file is no
+layouts, an entry that does not read, fails `validate` or repeats an id is
+skipped alone, saves are atomic, `edit` keeps what it cannot read, and the
+id is made once. Each layout is the root item `window:layout:<id>`, whose
+subtitle counts its apps. The daemon watches the file and reindexes.
+
+Applying blocks for seconds, so it never runs on the UI thread or in
+search (I-3). The two actions are `Action::ApplyWindowLayout(id)` and
+`Action::SaveCurrentLayout`. `perform` refuses both, as it refuses
+`ArrangeWindow`. From `Enter` the launcher records the use and is
+dismissed, then hands the daemon a `window_layouts::Request`. A hotkey
+resolves to the same request through `Launcher::hotkeyed`, which records
+the use by the same path. Either way the daemon hides the launcher, so it is
+never among the windows, and runs `window_layouts::carry_out` on a thread of
+its own. It reads the layout afresh from the file by id. A failure, a layout
+applied only in part, or a saved layout is a notification: the launcher is
+gone by then. There is no editor yet; the file is edited by hand.
 
 ## 8. Risk register
 

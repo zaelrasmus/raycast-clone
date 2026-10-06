@@ -140,6 +140,15 @@ pub enum Action {
     /// front at the moment the action runs would be a race, and losing it
     /// means resizing a window the user did not choose.
     ArrangeWindow(lumen_platform::WindowLayout),
+    /// Apply the custom window layout with this id (F17, 7.60).
+    ///
+    /// The daemon's, like `ArrangeWindow`: it hides the launcher first, so
+    /// the launcher is not among the windows, then applies the layout off the
+    /// UI thread -- it can wait seconds for applications to start.
+    ApplyWindowLayout(String),
+    /// Save the windows on screen as a new layout (F17, 7.60). The daemon's,
+    /// for the same reasons.
+    SaveCurrentLayout,
     /// Replace the launcher's list with an extension's view (F4).
     ///
     /// Handled by the launcher itself rather than carried back to the daemon
@@ -297,6 +306,8 @@ impl Action {
             Action::Builtin(Builtin::RebuildFileIndex) => "Rebuild",
             Action::Builtin(Builtin::Quit) => "Quit",
             Action::ArrangeWindow(_) => "Arrange",
+            Action::ApplyWindowLayout(_) => "Apply Layout",
+            Action::SaveCurrentLayout => "Save Layout",
             Action::OpenView(_) => "Open Command",
             Action::RunScript(_) => "Run",
             Action::OpenLink(open) if open.private => "Open in Private Window",
@@ -356,6 +367,8 @@ impl Action {
             Action::Launch(_)
             | Action::Builtin(_)
             | Action::ArrangeWindow(_)
+            | Action::ApplyWindowLayout(_)
+            | Action::SaveCurrentLayout
             | Action::OpenView(_)
             | Action::RunScript(_)
             | Action::OpenLink(_)
@@ -384,7 +397,10 @@ impl Action {
             Action::Configure(configure) if configure.is_alias() => "text",
             Action::Configure(_) => "keyboard",
             Action::Launch(_) | Action::OpenLink(_) => "open",
-            Action::LaunchNew(_) | Action::ArrangeWindow(_) => "window",
+            Action::LaunchNew(_)
+            | Action::ArrangeWindow(_)
+            | Action::ApplyWindowLayout(_)
+            | Action::SaveCurrentLayout => "window",
             Action::CopyToClipboard(_) | Action::CopyAnswer(_) | Action::CopyExpression(_) => {
                 "copy"
             }
@@ -414,7 +430,8 @@ impl Action {
     /// The other three are refused rather than silently ignored, because each
     /// needs something only its caller holds: a [`Builtin`] opens windows or
     /// stops the process (the daemon's business), `ArrangeWindow` needs the
-    /// window captured before the launcher appeared (7.15), and `OpenView`
+    /// window captured before the launcher appeared (7.15), a window layout
+    /// needs the launcher hidden and the layouts file (7.60), and `OpenView`
     /// replaces the list the launcher is drawing.
     pub fn perform(&self, platform: &dyn lumen_platform::Platform) -> anyhow::Result<()> {
         use lumen_platform::LaunchMode;
@@ -429,6 +446,8 @@ impl Action {
             Action::OpenLink(open) => open.run(platform),
             Action::Builtin(_)
             | Action::ArrangeWindow(_)
+            | Action::ApplyWindowLayout(_)
+            | Action::SaveCurrentLayout
             | Action::OpenView(_)
             | Action::AskArgument(_)
             | Action::ChooseBrowser(_)
@@ -707,6 +726,20 @@ mod tests {
         };
         assert_eq!(save.group(), ActionGroup::Manage);
         assert_eq!(Action::CreateQuicklink.group(), ActionGroup::Primary);
+    }
+
+    /// A layout is applied or saved by the daemon, with the launcher hidden
+    /// (7.60); `perform` refuses both, in its exhaustive match.
+    #[test]
+    fn window_layouts_are_window_actions() {
+        for action in [
+            Action::ApplyWindowLayout("coding-abc".into()),
+            Action::SaveCurrentLayout,
+        ] {
+            assert_eq!(action.group(), ActionGroup::Primary);
+            assert_eq!(action.glyph(), "window");
+        }
+        assert_eq!(Action::ApplyWindowLayout("x".into()).verb(), "Apply Layout");
     }
 
     #[test]

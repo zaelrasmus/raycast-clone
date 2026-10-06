@@ -420,6 +420,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         tx.clone(),
         timers.clone(),
         settings.clone(),
+        paths.window_layouts_file(),
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
     let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone(), theme.clone());
@@ -460,6 +461,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     watch_sheets(cx, &surfaces);
     watch_quicklinks(cx, &surfaces);
     watch_window_commands(cx, &surfaces);
+    watch_window_layouts(cx, &surfaces);
     watch_files(cx, &surfaces);
 
     cx.spawn({
@@ -753,6 +755,36 @@ fn watch_window_commands(cx: &mut App, surfaces: &Surfaces) {
                         settings.reload_window_management(cx)
                     })
                     .ok();
+            }
+        }
+    })
+    .detach();
+}
+
+/// Re-index when `window-layouts.json` is saved (F17, 7.60), as for the
+/// window commands: off the UI thread, the old index up until the new one
+/// lands (I-3).
+fn watch_window_layouts(cx: &mut App, surfaces: &Surfaces) {
+    use lumen_core::watcher::FileWatcher;
+
+    let (sink, mut changes) = change_channel();
+    let watcher = match FileWatcher::start(&surfaces.paths.window_layouts_file(), sink) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            log::warn!("window layouts will need `lumen reload` to change: {error:#}");
+            return;
+        }
+    };
+
+    let launcher = surfaces.launcher;
+    cx.spawn(async move |cx| {
+        let _watcher = watcher;
+        while next_change(&mut changes, cx).await {
+            let reindexed = launcher.update(cx, |launcher, _window, cx| {
+                launcher.reindex_applications(cx);
+            });
+            if reindexed.is_err() {
+                break;
             }
         }
     })
@@ -1305,6 +1337,7 @@ fn subscribe_to_launcher(
     commands: mpsc::UnboundedSender<Message>,
     timers: timers::Timers,
     settings: Rc<RefCell<Option<gpui::WindowHandle<Settings>>>>,
+    layouts: std::path::PathBuf,
 ) {
     let Ok(entity) = window.entity(cx) else {
         return;
@@ -1347,6 +1380,7 @@ fn subscribe_to_launcher(
         let config = config.borrow().clone();
         let commands = commands.clone();
         let event = event.clone();
+        let layouts = layouts.clone();
 
         // Starting a process needs the `App` this callback is holding, so it
         // goes back through the same queue the hotkey and the socket use
@@ -1438,6 +1472,10 @@ fn subscribe_to_launcher(
                     width,
                 } => resize(&platform, &config, &shell, height, anchor, width),
                 LauncherEvent::ArrangeWindow(layout) => arrange(&platform, &shell, layout),
+                // Hidden already by the `Dismissed` before it; asked again
+                // so the launcher is never among the windows (7.60).
+                LauncherEvent::WindowLayout(ref request) => hide(&platform, &shell)
+                    .and_then(|()| window_layout(&platform, layouts, request.clone(), None)),
                 LauncherEvent::Paste(ref paste) => {
                     paste_into(&platform, &config, &shell, paste.clone())
                 }
@@ -2152,6 +2190,15 @@ fn run_hotkey(
             surfaces.timers.command(command, cx);
             timing::report_hotkey_done(pressed);
         }
+        Hotkeyed::WindowLayout(request) => {
+            hide(platform, shell)?;
+            window_layout(
+                platform,
+                surfaces.paths.window_layouts_file(),
+                request,
+                Some(pressed),
+            )?;
+        }
         Hotkeyed::Perform { action, kind } => {
             let platform = platform.clone();
             cx.background_spawn(async move {
@@ -2438,6 +2485,40 @@ fn arrange(
     }
 
     platform.arrange_window(target, layout)
+}
+
+/// Apply or save a window layout (F17, 7.60) on a thread of its own: applying
+/// waits for launched applications, seconds at most, and nothing on the UI
+/// thread or in search waits with it (I-3). The launcher is hidden first, by
+/// the caller. What there is to say goes to a notification: by then there is
+/// no window to say it in.
+fn window_layout(
+    platform: &Arc<dyn Platform>,
+    path: std::path::PathBuf,
+    request: lumen_core::providers::window_layouts::Request,
+    pressed: Option<std::time::Instant>,
+) -> Result<()> {
+    let platform = platform.clone();
+    std::thread::Builder::new()
+        .name("lumen-window-layout".into())
+        .spawn(move || {
+            let notice = lumen_core::providers::window_layouts::carry_out(
+                platform.as_ref(),
+                &path,
+                &request,
+            );
+            if let Some(pressed) = pressed {
+                timing::report_hotkey_done(pressed);
+            }
+            if let Some((title, body)) = notice {
+                log::info!("{request:?}: {title}: {body}");
+                if let Err(error) = platform.notify(&title, &body) {
+                    log::warn!("could not show it either: {error:#}");
+                }
+            }
+        })
+        .context("starting the window layout thread")?;
+    Ok(())
 }
 
 /// Hide, then paste into the window the launcher was opened over (F11).

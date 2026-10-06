@@ -99,6 +99,11 @@ impl Paths {
         self.config_dir.join("window-commands.json")
     }
 
+    /// Window layouts the user made (F17, 7.60), beside the window commands.
+    pub fn window_layouts_file(&self) -> PathBuf {
+        self.config_dir.join("window-layouts.json")
+    }
+
     /// Global hotkeys and aliases for any command, by item id (F17).
     /// Configuration, beside `config.json`: people edit it by hand.
     pub fn shortcuts_file(&self) -> PathBuf {

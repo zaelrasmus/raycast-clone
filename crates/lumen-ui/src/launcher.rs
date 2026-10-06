@@ -39,7 +39,7 @@ use lumen_core::file_index::{
     FileIndex, FileWatch, IndexDetail, Updated, WalkRules, digest, watch_targets,
 };
 use lumen_core::item::ActionGroup;
-use lumen_core::providers::{QuicklinkProvider, arrange};
+use lumen_core::providers::{QuicklinkProvider, arrange, window_layouts};
 use lumen_core::root::{FILES_CAP, Hit, Source};
 use lumen_core::shortcuts::{Configure, reserved_by};
 use lumen_core::style::{
@@ -4540,6 +4540,13 @@ impl Launcher {
             return;
         }
 
+        // And the window layouts (7.60): applied with the launcher gone, off
+        // the UI thread.
+        if let Some(request) = window_layouts::Request::of(&action) {
+            cx.emit(LauncherEvent::WindowLayout(request));
+            return;
+        }
+
         // A quicklink that names no browser opens in the preferred one, which
         // only the configuration knows.
         let action = match action {
@@ -4679,6 +4686,12 @@ impl Launcher {
             }
             Action::Builtin(command) => Hotkeyed::Builtin(command),
             Action::Timer(command) => Hotkeyed::Timer(command),
+            Action::ApplyWindowLayout(id) => {
+                Hotkeyed::WindowLayout(window_layouts::Request::Apply(id))
+            }
+            Action::SaveCurrentLayout => {
+                Hotkeyed::WindowLayout(window_layouts::Request::SaveCurrent)
+            }
             // Nothing opened yet, so nothing is recorded, as with `Enter`.
             action if opens_nothing_yet(&action) => {
                 return Some(Hotkeyed::InLauncher(action));
@@ -5204,6 +5217,8 @@ pub enum Hotkeyed {
     Arrange(lumen_platform::WindowLayout),
     Builtin(lumen_core::Builtin),
     Timer(lumen_core::timers::Command),
+    /// Apply or save a window layout, off the UI thread (7.60).
+    WindowLayout(window_layouts::Request),
     /// Carry out with the platform, off the UI thread. `kind` names the row
     /// in a failure notice.
     Perform {
@@ -5291,6 +5306,9 @@ pub enum LauncherEvent {
     },
     /// A timer is to be started or stopped (F8). Follows `Dismissed`.
     Timer(lumen_core::timers::Command),
+    /// A window layout is to be applied or saved (7.60). Follows
+    /// `Dismissed`.
+    WindowLayout(window_layouts::Request),
     /// The file index was installed, or started or stopped indexing (F16):
     /// the daemon hands [`Launcher::file_index_status`] to an open settings
     /// window.
@@ -6785,6 +6803,8 @@ mod tests {
         assert!(opens_in_launcher(&Action::CreateQuicklink));
         assert!(!opens_in_launcher(&Action::Builtin(Builtin::OpenSettings)));
         assert!(!opens_in_launcher(&Action::CopyToClipboard("x".into())));
+        assert!(!opens_in_launcher(&Action::ApplyWindowLayout("x".into())));
+        assert!(!opens_in_launcher(&Action::SaveCurrentLayout));
     }
 
     /// The command's hotkey is a toggle, like the launcher's: pressed inside

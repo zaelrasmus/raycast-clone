@@ -1211,6 +1211,7 @@ pub fn build_index(
         quicklinks,
         &paths.extensions_dir(),
         &paths.window_commands_file(),
+        &paths.window_layouts_file(),
         presets,
         timers,
     );
@@ -1228,6 +1229,7 @@ fn catalogue(
     quicklinks: &[providers::Quicklink],
     extensions_dir: &Path,
     window_commands: &Path,
+    window_layouts: &Path,
     presets: Vec<crate::translate::Preset>,
     timers: Vec<crate::timers::Preset>,
 ) -> Vec<Item> {
@@ -1251,6 +1253,12 @@ fn catalogue(
         log::info!("indexed {} custom window commands", commands.len());
     }
     providers.register(Box::new(providers::WindowCommandsProvider::new(commands)));
+
+    let layouts = providers::window_layouts::load(window_layouts);
+    if !layouts.is_empty() {
+        log::info!("indexed {} window layouts", layouts.len());
+    }
+    providers.register(Box::new(providers::WindowLayoutsProvider::new(layouts)));
 
     let extensions = crate::extension::scan(extensions_dir);
     if !extensions.is_empty() {
