@@ -102,6 +102,14 @@ actions!(
         /// Open the action panel on the selected row's alias and hotkey
         /// (F17).
         ConfigureCommand,
+        /// Move a grid's selection one cell left (F18).
+        GridLeft,
+        /// Move a grid's selection one cell right.
+        GridRight,
+        /// Move a grid's selection one strip up, in the same column.
+        GridUp,
+        /// Move a grid's selection one strip down, in the same column.
+        GridDown,
     ]
 );
 
@@ -118,6 +126,13 @@ pub const SCOPE_CONTEXT: &str = "Scoped";
 /// Inside the search row, and so deeper than `Scoped` as well as `Launcher`:
 /// its `Tab` beats the scope's and the argument's, and only while it is set.
 pub const TYPED_PATH_CONTEXT: &str = "TypedPath";
+
+/// The key context around the query field while the open view is a grid and
+/// nothing is in front of it (F18).
+///
+/// Deeper than `Launcher`, so its Up and Down move a strip there; its Left and
+/// Right move a cell because the query field does not bind them in a grid.
+pub const GRID_CONTEXT: &str = "Grid";
 
 /// The wall clock as the timers write it.
 fn timers_now() -> lumen_core::timers::Millis {
@@ -2457,6 +2472,7 @@ impl Launcher {
         self.query_field
             .update(cx, |field, cx| field.set_colors(colors, cx));
         let restyled = theme.style != self.theme.style;
+        let columns = self.open_grid_columns();
         // Icons are extracted at a resolution that follows their square, so
         // a style that changes the square needs them extracted again, or a
         // larger icon is a small one stretched (F1, F15). Once per change of
@@ -2471,6 +2487,9 @@ impl Launcher {
         // The headers' case is the style's, and is baked into the rows.
         if restyled {
             self.rebuild_rows();
+        }
+        if self.open_grid_columns() != columns {
+            self.restrip_view();
         }
         // A style is geometry: the window's height and its anchor may both
         // have moved, so it is re-placed even when the height alone has not
@@ -2505,7 +2524,12 @@ impl Launcher {
         let units_changed = self.root.set_weather_units(config.weather.units);
         let arranged = config.root != self.config.root;
         self.root.set_arrangement(config.root.clone());
+        let columns = self.open_grid_columns();
         self.config = config;
+        // A configured width is the grid's too.
+        if self.open_grid_columns() != columns {
+            self.restrip_view();
+        }
         if (units_changed || arranged) && matches!(self.mode, Mode::Root) {
             self.rerank(cx);
         }
@@ -3566,42 +3590,103 @@ impl Launcher {
         state.rows = rows;
     }
 
-    /// The items currently on screen in a view, in display order.
-    fn view_items(&self) -> Vec<usize> {
+    /// How many columns the open view's grid has now, if a grid is open.
+    fn open_grid_columns(&self) -> Option<usize> {
         let Mode::View(state) = &self.mode else {
-            return Vec::new();
+            return None;
         };
-        state
-            .rows
-            .iter()
-            .flat_map(crate::view::Row::items)
-            .copied()
-            .collect()
+        let lumen_core::view::View::List(list) = &state.view else {
+            return None;
+        };
+        (list.presentation == lumen_core::view::Presentation::Grid).then(|| self.view_columns(list))
+    }
+
+    /// Cut the open grid into strips again, for a width that has changed
+    /// with the style or the configuration (F18). The query's filter is
+    /// applied again with it, and the selection stays on its item.
+    fn restrip_view(&mut self) {
+        let Mode::View(state) = &self.mode else {
+            return;
+        };
+        let lumen_core::view::View::List(list) = &state.view else {
+            return;
+        };
+        let selected = list.item(state.selected).map(|item| item.id.clone());
+        self.refilter_view();
+        self.keep_selection(selected);
+    }
+
+    /// The items currently on screen in a view, in display order.
+    ///
+    /// Walked rather than collected: it is read on every key press and every
+    /// frame.
+    fn view_items(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        let rows: &[crate::view::Row] = match &self.mode {
+            Mode::View(state) => &state.rows,
+            _ => &[],
+        };
+        rows.iter().flat_map(crate::view::Row::items).copied()
+    }
+
+    /// Whether the open view is a grid with nothing in front of it, so the
+    /// arrows move through its cells (F18).
+    fn grid_open(&self) -> bool {
+        let Mode::View(state) = &self.mode else {
+            return false;
+        };
+        let lumen_core::view::View::List(list) = &state.view else {
+            return false;
+        };
+        list.presentation == lumen_core::view::Presentation::Grid
+            && self.picker.is_none()
+            && self.action_panel.is_none()
     }
 
     /// Move the selection within a view by `delta` places.
     fn move_view_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let items = self.view_items();
-        if items.is_empty() {
-            return;
-        }
-
         let Mode::View(state) = &mut self.mode else {
             return;
         };
-
-        let current = items
-            .iter()
-            .position(|index| *index == state.selected)
-            .unwrap_or(0) as isize;
-        let next = (current + delta).rem_euclid(items.len() as isize) as usize;
-        state.selected = items[next];
+        let Some(next) = crate::view::step(&state.rows, state.selected, delta) else {
+            return;
+        };
+        state.selected = next;
         self.reveal_view_selection();
 
         // Told about the move, so an extension that wants to follow the
         // selection -- a detail pane, a preview -- can.
         self.tell_selection();
         cx.notify();
+    }
+
+    /// Move a grid's selection a cell or a strip (F18).
+    fn move_grid_selection(&mut self, direction: crate::view::Direction, cx: &mut Context<Self>) {
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
+        let Some(next) = crate::view::grid_move(&state.rows, state.selected, direction) else {
+            return;
+        };
+        state.selected = next;
+        self.reveal_view_selection();
+        self.tell_selection();
+        cx.notify();
+    }
+
+    fn grid_left(&mut self, _: &GridLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_grid_selection(crate::view::Direction::Left, cx);
+    }
+
+    fn grid_right(&mut self, _: &GridRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_grid_selection(crate::view::Direction::Right, cx);
+    }
+
+    fn grid_up(&mut self, _: &GridUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_grid_selection(crate::view::Direction::Up, cx);
+    }
+
+    fn grid_down(&mut self, _: &GridDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_grid_selection(crate::view::Direction::Down, cx);
     }
 
     /// Tell the extension which row is selected now.
@@ -4298,7 +4383,7 @@ impl Launcher {
             return;
         }
         if matches!(self.mode, Mode::View(_)) {
-            let first = self.view_items().first().copied();
+            let first = self.view_items().next();
             if let (Some(first), Mode::View(state)) = (first, &mut self.mode) {
                 state.selected = first;
                 self.reveal_view_selection();
@@ -4319,7 +4404,7 @@ impl Launcher {
             return;
         }
         if matches!(self.mode, Mode::View(_)) {
-            let last = self.view_items().last().copied();
+            let last = self.view_items().next_back();
             if let (Some(last), Mode::View(state)) = (last, &mut self.mode) {
                 state.selected = last;
                 self.reveal_view_selection();
@@ -5413,6 +5498,10 @@ impl Render for Launcher {
             .on_action(cx.listener(Self::move_favorite_up))
             .on_action(cx.listener(Self::move_favorite_down))
             .on_action(cx.listener(Self::configure_command))
+            .on_action(cx.listener(Self::grid_left))
+            .on_action(cx.listener(Self::grid_right))
+            .on_action(cx.listener(Self::grid_up))
+            .on_action(cx.listener(Self::grid_down))
             .size_full()
             .flex()
             .flex_col()
@@ -5489,6 +5578,15 @@ impl Launcher {
     fn render_search_field(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.theme.colors;
         let geometry = self.geometry();
+
+        // One element, so both contexts are one level deep around the field.
+        let mut field_context = gpui::KeyContext::default();
+        if self.path_completion().is_some() {
+            field_context.add(TYPED_PATH_CONTEXT);
+        }
+        if self.grid_open() {
+            field_context.add(GRID_CONTEXT);
+        }
 
         // A view says what its own search does. "Search for apps and
         // commands" over somebody's pull requests is the launcher talking
@@ -5647,15 +5745,16 @@ impl Launcher {
                 )
             })
             // Always wrapped, so the field's place does not change; the
-            // context is set only while Tab has a path to complete. The
-            // prompt's field takes the query's place while it is open.
+            // contexts are set only while Tab has a path to complete or the
+            // arrows have a grid to move through. The prompt's field takes
+            // the query's place while it is open.
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .h_full()
-                    .when(self.path_completion().is_some(), |field| {
-                        field.key_context(TYPED_PATH_CONTEXT)
+                    .when(!field_context.is_empty(), |field| {
+                        field.key_context(field_context)
                     })
                     .map(|slot| match self.configuring.as_ref().map(|c| &c.input) {
                         Some(ConfigureInput::Alias { field, .. }) => slot
@@ -6210,7 +6309,7 @@ impl Launcher {
 
         let count = match &self.mode {
             Mode::Root => self.hits().len(),
-            Mode::View(_) => self.view_items().len(),
+            Mode::View(_) => self.view_items().count(),
             Mode::Form(_) => 0,
         };
         let scopes = self.scopes();

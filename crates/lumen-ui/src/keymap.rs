@@ -30,9 +30,10 @@ use lumen_core::sheets::{Group, MatchRule, SCHEMA_VERSION, Sheet, Shortcut};
 
 use crate::hotkey_recorder::{CancelRecording, ClearRecording, SaveRecording};
 use crate::launcher::{
-    Activate, AskArgument, ClearQuery, CompletePath, ConfigureCommand, Dismiss, MoveFavoriteDown,
-    MoveFavoriteUp, NextScope, PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst,
-    SelectLast, SelectNext, SelectPrevious, TYPED_PATH_CONTEXT, ToggleActionPanel, ToggleFavorite,
+    Activate, AskArgument, ClearQuery, CompletePath, ConfigureCommand, Dismiss, GRID_CONTEXT,
+    GridDown, GridLeft, GridRight, GridUp, MoveFavoriteDown, MoveFavoriteUp, NextScope,
+    PreviousScope, RunSecondaryAction, SCOPE_CONTEXT, SelectFirst, SelectLast, SelectNext,
+    SelectPrevious, TYPED_PATH_CONTEXT, ToggleActionPanel, ToggleFavorite,
 };
 use crate::quicklink_form::{CancelForm, NextField, PreviousField, SubmitForm, ToggleFallback};
 use crate::quicklinks_page::{CancelDialog, ConfirmDialog, EditLink, NextLink, PreviousLink};
@@ -144,6 +145,17 @@ const BINDINGS: &[Binding] = &[
         keys: "ctrl-p",
         group: "Navigation",
         description: None,
+    },
+    // In a grid, Up and Down above move a strip; Left and Right a cell (F18).
+    Binding {
+        keys: "left",
+        group: "Navigation",
+        description: Some("Move left in a grid"),
+    },
+    Binding {
+        keys: "right",
+        group: "Navigation",
+        description: Some("Move right in a grid"),
     },
     Binding {
         keys: "home",
@@ -428,11 +440,68 @@ fn typed_path_bindings() -> Vec<KeyBinding> {
     )]
 }
 
+/// A grid's arrows (F18). Its context sits around the query field while the
+/// open view is a grid, deeper than `Launcher`, so Up and Down move a strip
+/// there. Left and Right win over the field's caret because the field gives
+/// them up in a grid; see [`editing_bindings`].
+fn grid_bindings() -> Vec<KeyBinding> {
+    let grid = Some(GRID_CONTEXT);
+    vec![
+        KeyBinding::new("left", GridLeft, grid),
+        KeyBinding::new("right", GridRight, grid),
+        KeyBinding::new("up", GridUp, grid),
+        KeyBinding::new("down", GridDown, grid),
+    ]
+}
+
+/// Text editing, identical in the launcher's query and in every settings
+/// field. Each field has its own context, so backspace edits the field that
+/// holds focus and nothing else (I-14).
+///
+/// The query field's Left and Right are not bound in a grid: the field is
+/// deeper than any context around it, so they would beat the grid's however
+/// it was bound.
+fn editing_bindings() -> Vec<KeyBinding> {
+    let caret_search = format!("{SEARCH_FIELD_CONTEXT} && !{GRID_CONTEXT}");
+    let mut bindings = vec![
+        KeyBinding::new("left", MoveLeft, Some(FIELD_CONTEXT)),
+        KeyBinding::new("right", MoveRight, Some(FIELD_CONTEXT)),
+        KeyBinding::new("left", MoveLeft, Some(TEXT_AREA_CONTEXT)),
+        KeyBinding::new("right", MoveRight, Some(TEXT_AREA_CONTEXT)),
+        KeyBinding::new("left", MoveLeft, Some(caret_search.as_str())),
+        KeyBinding::new("right", MoveRight, Some(caret_search.as_str())),
+    ];
+    for context in [FIELD_CONTEXT, SEARCH_FIELD_CONTEXT, TEXT_AREA_CONTEXT] {
+        let context = Some(context);
+        bindings.extend([
+            KeyBinding::new("backspace", DeleteBackward, context),
+            KeyBinding::new("delete", DeleteForward, context),
+            KeyBinding::new("ctrl-backspace", DeleteWordBackward, context),
+            KeyBinding::new("ctrl-w", DeleteWordBackward, context),
+            KeyBinding::new("ctrl-delete", DeleteWordForward, context),
+            KeyBinding::new("ctrl-left", MoveWordLeft, context),
+            KeyBinding::new("ctrl-right", MoveWordRight, context),
+            KeyBinding::new("shift-left", SelectLeft, context),
+            KeyBinding::new("shift-right", SelectRight, context),
+            KeyBinding::new("ctrl-shift-left", SelectWordLeft, context),
+            KeyBinding::new("ctrl-shift-right", SelectWordRight, context),
+            KeyBinding::new("shift-home", SelectToStart, context),
+            KeyBinding::new("shift-end", SelectToEnd, context),
+            KeyBinding::new("ctrl-a", SelectAll, context),
+            KeyBinding::new("ctrl-c", Copy, context),
+            KeyBinding::new("ctrl-x", Cut, context),
+            KeyBinding::new("ctrl-v", Paste, context),
+        ]);
+    }
+    bindings
+}
+
 /// Everything else: the view's scope, the forms, the settings window, text
 /// editing.
 fn bind_other_contexts(cx: &mut App) {
     cx.bind_keys(scope_bindings());
     cx.bind_keys(typed_path_bindings());
+    cx.bind_keys(grid_bindings());
 
     // A quicklink form, in the launcher or in settings. Deeper than either
     // host's context, so these win there: Tab moves between fields instead of
@@ -506,33 +575,7 @@ fn bind_other_contexts(cx: &mut App) {
     cx.bind_keys(global_bindings());
     cx.bind_keys(settings_bindings());
 
-    // Text editing, identical in the launcher's query and in every settings
-    // field. Each field has its own context, so backspace edits the field that
-    // holds focus and nothing else (I-14).
-    for context in [FIELD_CONTEXT, SEARCH_FIELD_CONTEXT, TEXT_AREA_CONTEXT] {
-        let context = Some(context);
-        cx.bind_keys([
-            KeyBinding::new("backspace", DeleteBackward, context),
-            KeyBinding::new("delete", DeleteForward, context),
-            KeyBinding::new("ctrl-backspace", DeleteWordBackward, context),
-            KeyBinding::new("ctrl-w", DeleteWordBackward, context),
-            KeyBinding::new("ctrl-delete", DeleteWordForward, context),
-            KeyBinding::new("left", MoveLeft, context),
-            KeyBinding::new("right", MoveRight, context),
-            KeyBinding::new("ctrl-left", MoveWordLeft, context),
-            KeyBinding::new("ctrl-right", MoveWordRight, context),
-            KeyBinding::new("shift-left", SelectLeft, context),
-            KeyBinding::new("shift-right", SelectRight, context),
-            KeyBinding::new("ctrl-shift-left", SelectWordLeft, context),
-            KeyBinding::new("ctrl-shift-right", SelectWordRight, context),
-            KeyBinding::new("shift-home", SelectToStart, context),
-            KeyBinding::new("shift-end", SelectToEnd, context),
-            KeyBinding::new("ctrl-a", SelectAll, context),
-            KeyBinding::new("ctrl-c", Copy, context),
-            KeyBinding::new("ctrl-x", Cut, context),
-            KeyBinding::new("ctrl-v", Paste, context),
-        ]);
-    }
+    cx.bind_keys(editing_bindings());
 
     // Home and End move the caret only in a settings field. In the launcher
     // they stay on the list; see `SEARCH_FIELD_CONTEXT`.
@@ -965,6 +1008,8 @@ mod tests {
                 .into_iter()
                 .chain(scope_bindings())
                 .chain(typed_path_bindings())
+                .chain(grid_bindings())
+                .chain(editing_bindings())
                 .collect(),
         );
         let stack: Vec<gpui::KeyContext> = contexts
@@ -1114,6 +1159,32 @@ mod tests {
             Some("lumen_window_commands::MoveAnchorRight")
         );
         assert_eq!(resolve("ctrl-enter", &grid), Some("lumen_form::SubmitForm"));
+    }
+
+    /// In a grid the arrows move the selection: Left and Right a cell, over
+    /// the field's caret, Up and Down a strip. Elsewhere they do what they
+    /// did, and the rest of the field's editing keys keep working in a grid.
+    #[test]
+    fn the_arrows_move_through_a_grid_and_only_there() {
+        let grid = &[CONTEXT, GRID_CONTEXT];
+        assert_eq!(resolves_to("left", grid), Some("lumen::GridLeft"));
+        assert_eq!(resolves_to("right", grid), Some("lumen::GridRight"));
+        assert_eq!(resolves_to("up", grid), Some("lumen::GridUp"));
+        assert_eq!(resolves_to("down", grid), Some("lumen::GridDown"));
+        assert_eq!(
+            resolves_to("left", &[CONTEXT, SCOPE_CONTEXT, GRID_CONTEXT]),
+            Some("lumen::GridLeft")
+        );
+        assert_eq!(resolves_to("ctrl-left", grid), Some("lumen::MoveWordLeft"));
+        assert_eq!(resolves_to("shift-right", grid), Some("lumen::SelectRight"));
+        assert_eq!(resolves_to("home", grid), Some("lumen::SelectFirst"));
+        assert_eq!(resolves_to("ctrl-n", grid), Some("lumen::SelectNext"));
+
+        let list = &[CONTEXT];
+        assert_eq!(resolves_to("left", list), Some("lumen::MoveLeft"));
+        assert_eq!(resolves_to("right", list), Some("lumen::MoveRight"));
+        assert_eq!(resolves_to("up", list), Some("lumen::SelectPrevious"));
+        assert_eq!(resolves_to("down", list), Some("lumen::SelectNext"));
     }
 
     /// The two lists in this file must describe the same keys. If someone adds

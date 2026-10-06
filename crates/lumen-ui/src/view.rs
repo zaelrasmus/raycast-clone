@@ -137,6 +137,69 @@ pub fn row_of(rows: &[Row], item: usize) -> Option<usize> {
     rows.iter().position(|row| row.items().contains(&item))
 }
 
+/// A move of a grid's selection (F18).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// The item `delta` places from `selected` in the flat order of `rows`,
+/// wrapping at either end. A selection that is not shown counts as the first
+/// item. `None` when nothing is shown.
+///
+/// Walks the rows rather than collecting their items: it runs on every key
+/// press.
+pub fn step(rows: &[Row], selected: usize, delta: isize) -> Option<usize> {
+    let shown = || rows.iter().flat_map(Row::items).copied();
+    let count = shown().count();
+    if count == 0 {
+        return None;
+    }
+    let current = shown().position(|item| item == selected).unwrap_or(0);
+    let next = (current as isize + delta).rem_euclid(count as isize) as usize;
+    shown().nth(next)
+}
+
+/// Where a grid's selection goes from `selected` (F18).
+///
+/// Left and Right go one cell along the flat order, across strips and
+/// sections. Up and Down go to the strip before or after, headers skipped,
+/// in the same column, or to its last cell if it is shorter. Every move wraps
+/// at the ends, as a list's does. A selection that is not shown goes to the
+/// first item. `None` when nothing is shown.
+pub fn grid_move(rows: &[Row], selected: usize, direction: Direction) -> Option<usize> {
+    let ahead = match direction {
+        Direction::Left => return step(rows, selected, -1),
+        Direction::Right => return step(rows, selected, 1),
+        Direction::Up => false,
+        Direction::Down => true,
+    };
+    let Some(row) = row_of(rows, selected) else {
+        return step(rows, selected, 0);
+    };
+    let column = rows[row]
+        .items()
+        .iter()
+        .position(|&item| item == selected)?;
+
+    let count = rows.len();
+    let target = (1..=count)
+        .map(|offset| {
+            if ahead {
+                (row + offset) % count
+            } else {
+                (row + count - offset) % count
+            }
+        })
+        .find(|&index| !rows[index].items().is_empty())?;
+
+    let cells = rows[target].items();
+    cells.get(column).or(cells.last()).copied()
+}
+
 /// How many columns `list` has in a window `width` wide: those that fit
 /// between the gutters, in the list's share of the window beside a detail
 /// pane. A list of rows has one.
@@ -1341,6 +1404,97 @@ mod tests {
         assert_eq!(row_of(&rows, 34), Some(11));
         assert_eq!(row_of(&rows, 35), None);
         assert_eq!(row_of(&super::rows(&example(), 8), 1), Some(2));
+    }
+
+    /// Left and Right go one cell along the flat order, across strips and
+    /// sections, and wrap at either end as a list does.
+    #[test]
+    fn left_and_right_move_one_cell_across_strips_and_sections() {
+        let rows = rows(&grid(), 8);
+        let go = |from, direction| grid_move(&rows, from, direction);
+
+        assert_eq!(go(0, Direction::Right), Some(1));
+        assert_eq!(go(8, Direction::Right), Some(9));
+        assert_eq!(go(16, Direction::Right), Some(17));
+        assert_eq!(go(9, Direction::Left), Some(8));
+        assert_eq!(go(18, Direction::Left), Some(17));
+        assert_eq!(go(0, Direction::Left), Some(34));
+        assert_eq!(go(34, Direction::Right), Some(0));
+    }
+
+    /// Down goes to the next strip, in the same column; into a shorter strip,
+    /// to its last cell. Across a header the same.
+    #[test]
+    fn down_keeps_the_column_or_lands_on_a_short_strips_last_cell() {
+        let rows = rows(&grid(), 8);
+        let go = |from| grid_move(&rows, from, Direction::Down);
+
+        assert_eq!(go(3), Some(11));
+        assert_eq!(go(18), Some(26));
+        assert_eq!(go(12), Some(17));
+        assert_eq!(go(30), Some(34));
+        assert_eq!(go(0), Some(1));
+        assert_eq!(go(17), Some(18));
+    }
+
+    /// Up from a short strip into a full one keeps the column; into a
+    /// shorter one, its last cell.
+    #[test]
+    fn up_keeps_the_column_or_lands_on_a_short_strips_last_cell() {
+        let rows = rows(&grid(), 8);
+        let go = |from| grid_move(&rows, from, Direction::Up);
+
+        assert_eq!(go(17), Some(9));
+        assert_eq!(go(34), Some(26));
+        assert_eq!(go(13), Some(5));
+        assert_eq!(go(5), Some(0));
+        assert_eq!(go(20), Some(17));
+    }
+
+    /// At the first and last strips Up and Down wrap round, as a list's
+    /// selection does, with the same column rule.
+    #[test]
+    fn up_and_down_wrap_at_the_ends() {
+        let rows = rows(&grid(), 8);
+
+        assert_eq!(grid_move(&rows, 0, Direction::Up), Some(34));
+        assert_eq!(grid_move(&rows, 34, Direction::Down), Some(0));
+
+        let packed = rows_where(&grid(), 3, |index| (1..=8).contains(&index));
+        assert_eq!(grid_move(&packed, 2, Direction::Up), Some(8));
+        assert_eq!(grid_move(&packed, 8, Direction::Down), Some(2));
+    }
+
+    /// Nothing shown, nothing to move to; a selection that is not shown
+    /// starts from the first item.
+    #[test]
+    fn a_move_needs_something_shown() {
+        let none = rows_where(&grid(), 8, |_| false);
+        for direction in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            assert_eq!(grid_move(&none, 0, direction), None);
+        }
+        assert_eq!(step(&none, 0, 1), None);
+
+        let rows = rows_where(&grid(), 8, |index| index > 20);
+        assert_eq!(grid_move(&rows, 3, Direction::Down), Some(21));
+    }
+
+    /// A list of rows steps one item at a time and wraps, as it always has.
+    #[test]
+    fn a_list_steps_one_item_and_wraps() {
+        let rows = rows(&example(), 1);
+
+        assert_eq!(step(&rows, 0, 1), Some(1));
+        assert_eq!(step(&rows, 2, 1), Some(0));
+        assert_eq!(step(&rows, 0, -1), Some(2));
+        assert_eq!(step(&rows, 9, 1), Some(1));
+        assert_eq!(grid_move(&rows, 1, Direction::Down), Some(2));
+        assert_eq!(grid_move(&rows, 0, Direction::Up), Some(2));
     }
 
     /// A strip is a cell and a gap tall, every one of them, the short last
