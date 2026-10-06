@@ -544,15 +544,16 @@ application when it has none, waiting up to five seconds for its window. Two
 entries of one application take two of its windows. Whatever never appeared
 is named in a notification.
 
-The quickest way to make one is **Save Current Layout** in the launcher: the
-windows on screen, up to eight per display, are saved as a layout named
-`Layout <date> <time>`. Rename it or change it in the file; saving the file
-takes effect immediately.
+The quickest way to make one is **Save Current Layout** in the launcher (or
+its hotkey): it reads the windows on screen, up to eight per display, and
+opens Settings on the layout editor with them, not yet saved and not yet
+named. Type a name -- Save stays blocked until there is one -- and save. The
+file can also be edited by hand; saving it takes effect immediately.
 
 Or use **Settings -> Window Management -> Custom Layouts**, which lists the
 layouts with Edit, Duplicate and Delete. **Create Layout** opens the editor
 on an empty layout; **Save Current Layout** there reads the windows on screen
-and opens the editor on them, not yet saved, so you can trim and rename
+and opens the editor on them, not yet saved, so you can trim and name it
 before saving. In the editor:
 
 - **Name**, **Use preferred gap settings** (the screen gap round each

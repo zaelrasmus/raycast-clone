@@ -411,6 +411,10 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
     // Created the first time settings is opened; the launcher's events
     // reach it from the start (F16).
     let settings = Rc::new(RefCell::new(None));
+    let layout_draft = LayoutDraft {
+        entries: Arc::default(),
+        commands: tx.clone(),
+    };
     subscribe_to_launcher(
         cx,
         &window,
@@ -421,6 +425,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         timers.clone(),
         settings.clone(),
         paths.window_layouts_file(),
+        layout_draft.clone(),
     );
     subscribe_to_overlay(cx, &overlay, platform.clone(), shell.clone());
     let reload_theme = watch_theme(cx, &window, &overlay, &paths, live.clone(), theme.clone());
@@ -456,6 +461,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         hotkeys,
         shortcut_commands,
         applied,
+        layout_draft,
     };
 
     watch_sheets(cx, &surfaces);
@@ -579,6 +585,17 @@ struct Surfaces {
     /// What the last apply loaded and could not register, for a settings
     /// window opened after it.
     applied: Rc<RefCell<Applied>>,
+    /// The windows *Save Current Layout* read, for the settings window to
+    /// open its layout editor on.
+    layout_draft: LayoutDraft,
+}
+
+/// Where *Save Current Layout* leaves the windows it read off the UI thread,
+/// and the queue that then opens the settings window on them (7.60).
+#[derive(Clone)]
+struct LayoutDraft {
+    entries: Arc<parking_lot::Mutex<Option<Vec<lumen_platform::LayoutEntry>>>>,
+    commands: mpsc::UnboundedSender<Message>,
 }
 
 /// What one apply of `shortcuts.json` loaded, and why each hotkey that
@@ -1037,6 +1054,7 @@ fn open_settings(
         .ok();
     let applied = surfaces.applied.borrow().clone();
     let reserved = (config.hotkey.clone(), config.timers.hotkey.clone());
+    let draft = surfaces.layout_draft.entries.lock().take();
     window
         .update(cx, |settings, window, cx| {
             settings.load(entries, cx);
@@ -1063,6 +1081,9 @@ fn open_settings(
             settings.shortcuts_applied(applied.shortcuts, applied.failures, cx);
             settings.set_reserved_hotkeys(reserved.0, reserved.1, cx);
             settings.reload_shortcuts(cx);
+            if let Some(entries) = draft {
+                settings.edit_layout_draft(entries, window, cx);
+            }
             settings.focus(window, cx);
         })
         .ok();
@@ -1338,6 +1359,7 @@ fn subscribe_to_launcher(
     timers: timers::Timers,
     settings: Rc<RefCell<Option<gpui::WindowHandle<Settings>>>>,
     layouts: std::path::PathBuf,
+    draft: LayoutDraft,
 ) {
     let Ok(entity) = window.entity(cx) else {
         return;
@@ -1381,6 +1403,7 @@ fn subscribe_to_launcher(
         let commands = commands.clone();
         let event = event.clone();
         let layouts = layouts.clone();
+        let draft = draft.clone();
 
         // Starting a process needs the `App` this callback is holding, so it
         // goes back through the same queue the hotkey and the socket use
@@ -1475,7 +1498,7 @@ fn subscribe_to_launcher(
                 // Hidden already by the `Dismissed` before it; asked again
                 // so the launcher is never among the windows (7.60).
                 LauncherEvent::WindowLayout(ref request) => hide(&platform, &shell)
-                    .and_then(|()| window_layout(&platform, layouts, request.clone(), None)),
+                    .and_then(|()| window_layout(&platform, layouts, request.clone(), draft, None)),
                 LauncherEvent::Paste(ref paste) => {
                     paste_into(&platform, &config, &shell, paste.clone())
                 }
@@ -2196,6 +2219,7 @@ fn run_hotkey(
                 platform,
                 surfaces.paths.window_layouts_file(),
                 request,
+                surfaces.layout_draft.clone(),
                 Some(pressed),
             )?;
         }
@@ -2491,22 +2515,33 @@ fn arrange(
 /// waits for launched applications, seconds at most, and nothing on the UI
 /// thread or in search waits with it (I-3). The launcher is hidden first, by
 /// the caller. What there is to say goes to a notification: by then there is
-/// no window to say it in.
+/// no window to say it in. Saving writes nothing: the windows read go to
+/// the settings window's layout editor, to be named there.
 fn window_layout(
     platform: &Arc<dyn Platform>,
     path: std::path::PathBuf,
     request: lumen_core::providers::window_layouts::Request,
+    draft: LayoutDraft,
     pressed: Option<std::time::Instant>,
 ) -> Result<()> {
+    use lumen_core::providers::window_layouts::Outcome;
     let platform = platform.clone();
     std::thread::Builder::new()
         .name("lumen-window-layout".into())
         .spawn(move || {
-            let notice = lumen_core::providers::window_layouts::carry_out(
+            let outcome = lumen_core::providers::window_layouts::carry_out(
                 platform.as_ref(),
                 &path,
                 &request,
             );
+            let notice = match outcome {
+                Outcome::Notice(notice) => notice,
+                Outcome::Draft(entries) => {
+                    *draft.entries.lock() = Some(entries);
+                    let _ = draft.commands.unbounded_send(Message::Settings);
+                    None
+                }
+            };
             if let Some(pressed) = pressed {
                 timing::report_hotkey_done(pressed);
             }

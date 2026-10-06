@@ -83,11 +83,12 @@ impl Draft {
         }
     }
 
-    /// *Save Current Layout*: the windows on screen, unsaved, under `name`.
-    pub fn current(entries: Vec<LayoutEntry>, name: String) -> Self {
+    /// *Save Current Layout*: the windows on screen, unsaved and unnamed, so
+    /// the user names it before it can be saved.
+    pub fn current(entries: Vec<LayoutEntry>) -> Self {
         Self {
             id: None,
-            name,
+            name: String::new(),
             spec: window_layouts::snapshot(entries),
         }
     }
@@ -321,7 +322,7 @@ impl WindowLayoutEditor {
         colors: Colors,
         cx: &mut Context<Self>,
     ) -> Self {
-        let name = cx.new(|cx| TextField::new(draft.name, "Coding", colors.clone(), cx));
+        let name = cx.new(|cx| TextField::new(draft.name, "Layout name", colors.clone(), cx));
         let choices = OTHER_WINDOWS
             .iter()
             .map(|(_, value, label)| Choice {
@@ -794,8 +795,13 @@ mod tests {
     #[test]
     fn save_current_layout_opens_an_unsaved_snapshot() {
         let entries = vec![entry("a.exe", 0), entry("b.exe", 1)];
-        let draft = Draft::current(entries.clone(), "Layout 2026-10-05 14:30".into());
+        let draft = Draft::current(entries.clone());
         assert_eq!(draft.id, None);
+        assert_eq!(
+            problem(&draft.name, Some(&draft.spec)).as_deref(),
+            Some("Give the layout a name"),
+            "named by the user before it can be saved"
+        );
         assert_eq!(draft.spec.entries, entries);
         assert!(!draft.spec.gaps, "where the windows are, no gap added");
         assert_eq!(draft.spec.other_windows, OtherWindows::None);

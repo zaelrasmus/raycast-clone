@@ -30,7 +30,7 @@ use lumen_core::layout::settings as metrics;
 use lumen_core::providers::window_commands::{self, CustomWindowCommand};
 use lumen_core::providers::window_layouts::{self, CustomWindowLayout};
 use lumen_core::theme::Colors;
-use lumen_platform::{Cycling, MonitorInfo, Platform, WindowSettings};
+use lumen_platform::{Cycling, LayoutEntry, MonitorInfo, Platform, WindowSettings};
 use serde_json::Value;
 
 use crate::quicklink_form::{NextField, PreviousField};
@@ -392,6 +392,17 @@ impl WindowManagementPage {
         cx.notify();
     }
 
+    /// Open the editor on `entries`, the windows on screen, unsaved and
+    /// unnamed: the button below, and the root command (7.60).
+    pub fn edit_current(
+        &mut self,
+        entries: Vec<LayoutEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_layout_editor(Draft::current(entries), window, cx);
+    }
+
     /// Read the windows on screen off the UI thread, then open the editor on
     /// them, unsaved.
     fn save_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -409,10 +420,7 @@ impl WindowManagementPage {
                     Ok(entries) if entries.is_empty() => {
                         page.error = Some("There are no windows to save".into());
                     }
-                    Ok(entries) => {
-                        let draft = Draft::current(entries, window_layouts::now_name());
-                        page.open_layout_editor(draft, window, cx);
-                    }
+                    Ok(entries) => page.edit_current(entries, window, cx),
                     Err(error) => page.error = Some(format!("{error:#}")),
                 }
                 cx.notify();

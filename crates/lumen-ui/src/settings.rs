@@ -608,6 +608,21 @@ impl Settings {
             .update(cx, |page, cx| page.reload(cx));
     }
 
+    /// Open the Window Management page's layout editor on `entries`, the
+    /// windows on screen, for the user to name: the root *Save Current
+    /// Layout* (7.60).
+    pub fn edit_layout_draft(
+        &mut self,
+        entries: Vec<lumen_platform::LayoutEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.page = Page::WindowManagement;
+        self.window_management
+            .update(cx, |page, cx| page.edit_current(entries, window, cx));
+        cx.notify();
+    }
+
     /// Re-read the files section of `config.json`, for the same reasons
     /// (F16).
     pub fn reload_files(&mut self, cx: &mut Context<Self>) {

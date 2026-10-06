@@ -234,27 +234,33 @@ impl Request {
     }
 }
 
+/// What came of a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Something to say -- a failure, a part done -- or nothing.
+    Notice(Option<(String, String)>),
+    /// The windows on screen, for the layout editor to open on, unsaved, so
+    /// the user names the layout before it is written.
+    Draft(Vec<LayoutEntry>),
+}
+
 /// Carry out `request` against the file at `path`. Blocking -- applying
-/// waits for launched applications, five seconds at most -- so the daemon
-/// calls it off the UI thread, with the launcher hidden. A notice to show
-/// when there is something to say: a failure, a part done, a layout saved.
-pub fn carry_out(
-    platform: &dyn Platform,
-    path: &Path,
-    request: &Request,
-) -> Option<(String, String)> {
+/// waits for launched applications, five seconds at most, and reading the
+/// windows walks every one -- so the daemon calls it off the UI thread, with
+/// the launcher hidden.
+pub fn carry_out(platform: &dyn Platform, path: &Path, request: &Request) -> Outcome {
     match request {
         Request::Apply(id) => {
             let Some(layout) = load(path).into_iter().find(|layout| &layout.id == id) else {
-                return Some(applied(
+                return Outcome::Notice(Some(applied(
                     id,
                     Err(anyhow::anyhow!("no layout {id:?} in {}", path.display())),
-                ));
+                )));
             };
             let notice = applied(&layout.name, platform.apply_layout(&layout.spec));
-            Some(notice).filter(|(title, _)| !title.is_empty())
+            Outcome::Notice(Some(notice).filter(|(title, _)| !title.is_empty()))
         }
-        Request::SaveCurrent => Some(saved(path, platform.current_layout(), &now_name())),
+        Request::SaveCurrent => current(platform.current_layout()),
     }
 }
 
@@ -271,24 +277,14 @@ fn applied(name: &str, outcome: Result<LayoutReport>) -> (String, String) {
     }
 }
 
-/// Save what is on screen as a layout called `name`.
-fn saved(path: &Path, entries: Result<Vec<LayoutEntry>>, name: &str) -> (String, String) {
-    let failed = |error: anyhow::Error| ("Couldn't save layout".to_string(), format!("{error:#}"));
-    let entries = match entries {
-        Ok(entries) if entries.is_empty() => {
-            return failed(anyhow::anyhow!("there are no windows to save"));
-        }
-        Ok(entries) => entries,
-        Err(error) => return failed(error),
-    };
-    let count = entries.len();
-    let spec = snapshot(entries);
-    match edit(path, |layouts| {
-        add(layouts, name, spec);
-        true
-    }) {
-        Ok(_) => (format!("Saved layout {name}"), apps(count)),
-        Err(error) => failed(error),
+/// What is on screen as a draft to name, or why there is none. Nothing is
+/// written: the editor saves it, once named.
+fn current(entries: Result<Vec<LayoutEntry>>) -> Outcome {
+    let failed = |why: String| Outcome::Notice(Some(("Couldn't save layout".into(), why)));
+    match entries {
+        Ok(entries) if entries.is_empty() => failed("there are no windows to save".into()),
+        Ok(entries) => Outcome::Draft(entries),
+        Err(error) => failed(format!("{error:#}")),
     }
 }
 
@@ -300,15 +296,6 @@ pub fn snapshot(entries: Vec<LayoutEntry>) -> WindowLayoutSpec {
         gaps: false,
         other_windows: OtherWindows::None,
     }
-}
-
-/// `Layout 2026-10-05 14:30`, in the user's time.
-pub fn now_name() -> String {
-    name_at(&jiff::Zoned::now())
-}
-
-fn name_at(when: &jiff::Zoned) -> String {
-    format!("Layout {}", when.strftime("%Y-%m-%d %H:%M"))
 }
 
 /// The layouts as root search entries, and *Save Current Layout*.
@@ -586,36 +573,20 @@ mod tests {
     }
 
     #[test]
-    fn saving_appends_a_snapshot_named_for_the_minute() {
-        let path = temporary("snapshot");
-        std::fs::remove_file(&path).ok();
-        let when: jiff::Zoned = "2026-10-05T14:30:59[UTC]".parse().unwrap();
-        let name = name_at(&when);
-        assert_eq!(name, "Layout 2026-10-05 14:30");
-
+    fn saving_the_current_layout_drafts_it_and_writes_nothing() {
         let entries = vec![entry("a.exe", 0), entry("b.exe", 1)];
+        assert_eq!(current(Ok(entries.clone())), Outcome::Draft(entries));
+        let Outcome::Notice(Some((title, body))) = current(Ok(Vec::new())) else {
+            panic!("no windows is said, not drafted");
+        };
+        assert_eq!(title, "Couldn't save layout");
+        assert_eq!(body, "there are no windows to save");
         assert_eq!(
-            saved(&path, Ok(entries.clone()), &name),
-            (
-                "Saved layout Layout 2026-10-05 14:30".into(),
-                "2 apps".into()
-            )
+            current(Err(anyhow::anyhow!("not on Linux yet"))),
+            Outcome::Notice(Some((
+                "Couldn't save layout".into(),
+                "not on Linux yet".into()
+            )))
         );
-        let loaded = load(&path);
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].spec.entries, entries);
-        assert!(!loaded[0].spec.gaps);
-        assert_eq!(loaded[0].spec.other_windows, OtherWindows::None);
-
-        assert_eq!(
-            saved(&path, Ok(Vec::new()), &name).0,
-            "Couldn't save layout"
-        );
-        assert_eq!(
-            saved(&path, Err(anyhow::anyhow!("not on Linux yet")), &name).1,
-            "not on Linux yet"
-        );
-        assert_eq!(load(&path).len(), 1);
-        std::fs::remove_file(path).ok();
     }
 }
