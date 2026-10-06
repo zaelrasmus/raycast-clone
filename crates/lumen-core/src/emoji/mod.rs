@@ -18,6 +18,7 @@
 
 mod search;
 pub mod session;
+pub mod store;
 
 use std::collections::HashMap;
 use std::io::Read;

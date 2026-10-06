@@ -2073,8 +2073,9 @@ fn handle(
         }
         Message::RunEmoji => {
             let platform = platform.clone();
+            let path = surfaces.paths.emoji_file();
             let window = surfaces.launcher;
-            cx.update(move |cx| emoji::run(platform, window, cx))
+            cx.update(move |cx| emoji::run(platform, path, window, cx))
                 .context("reaching the app to open the emoji and symbols")
         }
         Message::RunClock => {

@@ -181,6 +181,11 @@ impl Paths {
         self.data_dir.join("dictionary.json")
     }
 
+    /// The emoji pinned and how often each was used (F18).
+    pub fn emoji_file(&self) -> PathBuf {
+        self.data_dir.join("emoji.json")
+    }
+
     /// *My Places*, shared by World Clock and Weather (F13).
     pub fn places_file(&self) -> PathBuf {
         self.data_dir.join("places.json")

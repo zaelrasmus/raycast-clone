@@ -10,6 +10,7 @@
 //! [`Session::new`] reads the catalogue if nothing has yet (~5 ms), so it is
 //! made off the UI thread, as the clipboard's session is.
 
+use super::store::{self, State};
 use super::{Catalogue, Category, CustomKeywords, Entry, catalogue, codepoints};
 use crate::view::{
     Action, EmptyState, Event, Filtering, Icon, Item, List, Presentation, Scope, ScopeOption,
@@ -25,6 +26,22 @@ pub const PASTE: &str = "paste";
 pub const COPY: &str = "copy";
 pub const COPY_UNICODE: &str = "copy-unicode";
 pub const COPY_NAME: &str = "copy-name";
+pub const PIN: &str = "pin";
+pub const UNPIN: &str = "unpin";
+pub const MOVE_UP: &str = "move-up";
+pub const MOVE_DOWN: &str = "move-down";
+pub const FORGET: &str = "forget";
+
+/// The most emoji *Frequently Used* shows: two strips of the default
+/// seven-column grid and a little, enough for the handful anyone repeats
+/// without pushing the categories below the fold.
+const FREQUENT_LIMIT: usize = 16;
+
+/// Before the characters, in the id of an emoji drawn in *Pinned* or
+/// *Frequently Used*: it is drawn in its category too, under the bare
+/// characters, and ids are unique within a view.
+const PINNED_ITEM: &str = "pinned:";
+const FREQUENT_ITEM: &str = "frequent:";
 
 /// What the daemon is asked to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +52,8 @@ pub enum Effect {
     Paste(String),
     /// Put this on the clipboard.
     Copy(String),
+    /// Write this to `emoji.json`, off the UI thread.
+    Save(State),
 }
 
 pub struct Session {
@@ -45,21 +64,24 @@ pub struct Session {
     category: Option<Category>,
     /// The user's own keywords (F18, task 7). Empty until they can be added.
     custom: CustomKeywords,
+    /// Pins and usage, as `emoji.json` holds them.
+    saved: State,
 }
 
 impl Default for Session {
     fn default() -> Self {
-        Self::new()
+        Self::new(State::default())
     }
 }
 
 impl Session {
-    pub fn new() -> Self {
+    pub fn new(saved: State) -> Self {
         Self {
             catalogue: catalogue(),
             query: String::new(),
             category: None,
             custom: CustomKeywords::new(),
+            saved,
         }
     }
 
@@ -88,34 +110,107 @@ impl Session {
                 let Some(entry) = self.entry(&item) else {
                     return Vec::new();
                 };
-                match action.as_str() {
-                    PASTE => vec![Effect::Paste(entry.chars.to_string())],
-                    COPY => vec![Effect::Copy(entry.chars.to_string())],
-                    COPY_UNICODE => vec![Effect::Copy(codepoints(&entry.chars))],
-                    COPY_NAME => vec![Effect::Copy(title_case(&entry.name))],
-                    _ => Vec::new(),
-                }
+                let chars = &*entry.chars;
+                let done = match action.as_str() {
+                    PASTE => Effect::Paste(chars.to_string()),
+                    COPY => Effect::Copy(chars.to_string()),
+                    COPY_UNICODE => Effect::Copy(codepoints(chars)),
+                    COPY_NAME => Effect::Copy(title_case(&entry.name)),
+                    _ => return self.arrange(chars, &action),
+                };
+                // Saved first: pasting and copying close the view.
+                self.saved.record(chars);
+                vec![Effect::Save(self.saved.clone()), done]
             }
             _ => Vec::new(),
         }
     }
 
-    /// The entry an item stands for: its id is its characters.
-    fn entry(&self, chars: &str) -> Option<&'static Entry> {
+    /// Pin, unpin, move or forget `chars`: saved and drawn again when
+    /// anything changed, nothing at all when not.
+    fn arrange(&mut self, chars: &str, action: &str) -> Vec<Effect> {
+        let changed = match action {
+            PIN => self.saved.pin(chars),
+            UNPIN => self.saved.unpin(chars),
+            MOVE_UP | MOVE_DOWN => {
+                let visible = self.pinned();
+                let visible: Vec<&str> = visible.iter().map(|entry| &*entry.chars).collect();
+                self.saved.move_pinned(chars, action == MOVE_UP, &visible)
+            }
+            FORGET => self.saved.forget(chars),
+            _ => false,
+        };
+        if !changed {
+            return Vec::new();
+        }
+        vec![
+            Effect::Save(self.saved.clone()),
+            Effect::Render(self.view()),
+        ]
+    }
+
+    /// The entry an item stands for: its id is its characters, after the
+    /// prefix of the section it was drawn in, if any.
+    fn entry(&self, id: &str) -> Option<&'static Entry> {
+        let chars = [PINNED_ITEM, FREQUENT_ITEM]
+            .iter()
+            .find_map(|prefix| id.strip_prefix(prefix))
+            .unwrap_or(id);
         self.catalogue
             .entries()
             .iter()
             .find(|entry| &*entry.chars == chars)
     }
 
+    /// The pins the catalogue has, once each, in the user's order. One it
+    /// lacks stays in the file, unseen.
+    fn pinned(&self) -> Vec<&'static Entry> {
+        let mut pinned: Vec<&'static Entry> = Vec::new();
+        for entry in self
+            .saved
+            .pinned
+            .iter()
+            .filter_map(|chars| self.entry(chars))
+        {
+            if !pinned.iter().any(|kept| kept.chars == entry.chars) {
+                pinned.push(entry);
+            }
+        }
+        pinned
+    }
+
+    /// The most used that are not pinned, best first, at most
+    /// [`FREQUENT_LIMIT`]. Ties keep the catalogue's order.
+    fn frequent(&self) -> Vec<&'static Entry> {
+        let now = store::now();
+        let mut used: Vec<(f64, &'static Entry)> = self
+            .catalogue
+            .entries()
+            .iter()
+            .filter(|entry| self.saved.is_used(&entry.chars) && !self.saved.is_pinned(&entry.chars))
+            .map(|entry| (self.saved.score(&entry.chars, now), entry))
+            .collect();
+        used.sort_by(|a, b| b.0.total_cmp(&a.0));
+        used.into_iter()
+            .take(FREQUENT_LIMIT)
+            .map(|(_, entry)| entry)
+            .collect()
+    }
+
     pub fn view(&self) -> View {
+        let pinned = self.pinned();
+        let pinned: Vec<&str> = pinned.iter().map(|entry| &*entry.chars).collect();
+        let items = Items {
+            saved: &self.saved,
+            pinned: &pinned,
+        };
         let sections = if self.query.is_empty() {
-            self.browse()
+            self.browse(&items)
         } else {
             let found = self
                 .catalogue
                 .search(&self.query, self.category, &self.custom);
-            section("Results", found).into_iter().collect()
+            items.section("Results", "", found).into_iter().collect()
         };
 
         View::List(List {
@@ -135,21 +230,28 @@ impl Session {
     }
 
     /// What is shown before anything is typed: each category in the
-    /// dropdown's order, which is Unicode's, or the one chosen.
-    /// *Frequently Used* and *Pinned* go above them, here (F18, task 6).
-    fn browse(&self) -> Vec<Section> {
-        Category::ALL
-            .into_iter()
-            .filter(|category| self.category.is_none_or(|chosen| chosen == *category))
-            .filter_map(|category| {
-                let entries = self
-                    .catalogue
-                    .entries()
-                    .iter()
-                    .filter(|entry| entry.category == category);
-                section(category.label(), entries)
-            })
-            .collect()
+    /// dropdown's order, which is Unicode's, or the one chosen. Over *All
+    /// Categories*, *Pinned* and *Frequently Used* go above them.
+    fn browse(&self, items: &Items) -> Vec<Section> {
+        let mut sections = Vec::new();
+        if self.category.is_none() {
+            sections.extend(items.section("Pinned", PINNED_ITEM, self.pinned()));
+            sections.extend(items.section("Frequently Used", FREQUENT_ITEM, self.frequent()));
+        }
+        sections.extend(
+            Category::ALL
+                .into_iter()
+                .filter(|category| self.category.is_none_or(|chosen| chosen == *category))
+                .filter_map(|category| {
+                    let entries = self
+                        .catalogue
+                        .entries()
+                        .iter()
+                        .filter(|entry| entry.category == category);
+                    items.section(category.label(), "", entries)
+                }),
+        );
+        sections
     }
 
     /// *All Categories*, then each in [`Category::ALL`] order.
@@ -178,35 +280,70 @@ impl Session {
     }
 }
 
-/// A titled run of entries with its count, or nothing when it is empty: a
-/// header over no cells says nothing.
-fn section<'a>(title: &str, entries: impl IntoIterator<Item = &'a Entry>) -> Option<Section> {
-    let items: Vec<Item> = entries.into_iter().map(item).collect();
-    (!items.is_empty()).then(|| Section {
-        title: Some(title.into()),
-        subtitle: Some(items.len().to_string()),
-        items,
-    })
+/// What an item's actions depend on: whether it is pinned, where, and used.
+struct Items<'a> {
+    saved: &'a State,
+    /// The pins shown, in order.
+    pinned: &'a [&'a str],
 }
 
-fn item(entry: &Entry) -> Item {
-    Item {
-        id: entry.chars.to_string(),
-        title: title_case(&entry.name),
-        prefix: None,
-        subtitle: None,
-        icon: Some(Icon::Text {
-            text: entry.chars.to_string(),
-        }),
-        accessories: Vec::new(),
-        keywords: Vec::new(),
-        actions: vec![
+impl Items<'_> {
+    /// A titled run of entries with its count, or nothing when it is empty:
+    /// a header over no cells says nothing. `prefix` keeps ids unique when an
+    /// emoji is drawn twice, pinned or used and in its category.
+    fn section<'e>(
+        &self,
+        title: &str,
+        prefix: &str,
+        entries: impl IntoIterator<Item = &'e Entry>,
+    ) -> Option<Section> {
+        let items: Vec<Item> = entries
+            .into_iter()
+            .map(|entry| self.item(entry, prefix))
+            .collect();
+        (!items.is_empty()).then(|| Section {
+            title: Some(title.into()),
+            subtitle: Some(items.len().to_string()),
+            items,
+        })
+    }
+
+    fn item(&self, entry: &Entry, prefix: &str) -> Item {
+        let chars = &*entry.chars;
+        let mut actions = vec![
             action(PASTE, "Paste"),
             action(COPY, "Copy to Clipboard"),
             action(COPY_UNICODE, "Copy Unicode"),
             action(COPY_NAME, "Copy Name"),
-        ],
-        detail: None,
+        ];
+        match self.pinned.iter().position(|pinned| *pinned == chars) {
+            Some(at) => {
+                actions.push(action(UNPIN, "Unpin Emoji"));
+                if at > 0 {
+                    actions.push(action(MOVE_UP, "Move Up in Pinned"));
+                }
+                if at + 1 < self.pinned.len() {
+                    actions.push(action(MOVE_DOWN, "Move Down in Pinned"));
+                }
+            }
+            None => actions.push(action(PIN, "Pin Emoji")),
+        }
+        if self.saved.is_used(chars) {
+            actions.push(action(FORGET, "Remove from Frequently Used"));
+        }
+        Item {
+            id: format!("{prefix}{chars}"),
+            title: title_case(&entry.name),
+            prefix: None,
+            subtitle: None,
+            icon: Some(Icon::Text {
+                text: chars.to_string(),
+            }),
+            accessories: Vec::new(),
+            keywords: Vec::new(),
+            actions,
+            detail: None,
+        }
     }
 }
 
@@ -260,7 +397,7 @@ mod tests {
 
     #[test]
     fn the_view_is_a_grid_with_every_category_to_choose_from() {
-        let view = Session::new().view();
+        let view = Session::default().view();
         let list = list(&view);
         assert_eq!(list.presentation, Presentation::Grid);
         assert_eq!(list.filtering, Filtering::Extension);
@@ -284,7 +421,7 @@ mod tests {
 
     #[test]
     fn with_nothing_typed_each_category_is_a_section_with_its_count() {
-        let view = Session::new().view();
+        let view = Session::default().view();
         let sections = &list(&view).sections;
         assert_eq!(sections.len(), Category::ALL.len());
         for (section, category) in sections.iter().zip(Category::ALL) {
@@ -299,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_search_is_one_section_best_first() {
-        let mut session = Session::new();
+        let mut session = Session::default();
         query(&mut session, "sun");
         let view = session.view();
         let list = list(&view);
@@ -319,7 +456,7 @@ mod tests {
 
     #[test]
     fn the_category_scope_narrows_the_grid() {
-        let mut session = Session::new();
+        let mut session = Session::default();
         session.event(Event::ScopeChanged {
             scope: CATEGORY_SCOPE.into(),
             option: "arrows".into(),
@@ -361,7 +498,7 @@ mod tests {
 
     #[test]
     fn enter_pastes_and_the_panel_copies_the_emoji_its_code_and_its_name() {
-        let mut session = Session::new();
+        let mut session = Session::default();
         query(&mut session, "sun");
         let view = session.view();
         let first = list(&view).items().next().unwrap();
@@ -377,22 +514,19 @@ mod tests {
                 (COPY, "Copy to Clipboard"),
                 (COPY_UNICODE, "Copy Unicode"),
                 (COPY_NAME, "Copy Name"),
+                (PIN, "Pin Emoji"),
             ]
         );
 
+        // Each after the save that records the use.
+        let mut last = |action: &str| invoke(&mut session, SUN, action).pop();
+        assert_eq!(last(PASTE), Some(Effect::Paste(SUN.into())));
+        assert_eq!(last(COPY), Some(Effect::Copy(SUN.into())));
         assert_eq!(
-            invoke(&mut session, SUN, PASTE),
-            [Effect::Paste(SUN.into())]
+            last(COPY_UNICODE),
+            Some(Effect::Copy("U+2600 U+FE0F".into()))
         );
-        assert_eq!(invoke(&mut session, SUN, COPY), [Effect::Copy(SUN.into())]);
-        assert_eq!(
-            invoke(&mut session, SUN, COPY_UNICODE),
-            [Effect::Copy("U+2600 U+FE0F".into())]
-        );
-        assert_eq!(
-            invoke(&mut session, SUN, COPY_NAME),
-            [Effect::Copy("Sun".into())]
-        );
+        assert_eq!(last(COPY_NAME), Some(Effect::Copy("Sun".into())));
         // Something that is not in the catalogue does nothing.
         assert!(invoke(&mut session, "not an emoji", PASTE).is_empty());
         assert!(invoke(&mut session, SUN, "unknown").is_empty());
@@ -400,7 +534,7 @@ mod tests {
 
     #[test]
     fn a_change_that_changes_nothing_draws_nothing() {
-        let mut session = Session::new();
+        let mut session = Session::default();
         assert!(matches!(
             session.event(Event::QueryChanged {
                 query: "sun".into()
@@ -429,5 +563,253 @@ mod tests {
         assert_eq!(title_case("grinning face"), "Grinning Face");
         assert_eq!(title_case("flag: Spain"), "Flag: Spain");
         assert_eq!(title_case("sun"), "Sun");
+    }
+
+    // Pinned and Frequently Used (F18, task 6).
+
+    const GRIN: &str = "\u{1F600}";
+
+    fn titles(session: &Session) -> Vec<String> {
+        list(&session.view())
+            .sections
+            .iter()
+            .map(|section| section.title.clone().unwrap_or_default())
+            .collect()
+    }
+
+    fn section_ids(session: &Session, title: &str) -> Vec<String> {
+        list(&session.view())
+            .sections
+            .iter()
+            .find(|section| section.title.as_deref() == Some(title))
+            .map(|section| section.items.iter().map(|item| item.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn action_ids(session: &Session, id: &str) -> Vec<String> {
+        list(&session.view())
+            .items()
+            .find(|item| item.id == id)
+            .unwrap_or_else(|| panic!("no item {id}"))
+            .actions
+            .iter()
+            .map(|action| action.id.clone())
+            .collect()
+    }
+
+    fn saved(effects: &[Effect]) -> State {
+        effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Save(state) => Some(state.clone()),
+                _ => None,
+            })
+            .expect("a save")
+    }
+
+    fn the_first_emoji(count: usize) -> Vec<String> {
+        catalogue()
+            .entries()
+            .iter()
+            .take(count)
+            .map(|entry| entry.chars.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_empty_store_shows_only_the_categories() {
+        let labels: Vec<String> = Category::ALL
+            .iter()
+            .map(|category| category.label().to_string())
+            .collect();
+        assert_eq!(titles(&Session::default()), labels);
+    }
+
+    #[test]
+    fn a_pasted_emoji_is_frequently_used_when_the_view_opens_again() {
+        let dir = std::env::temp_dir().join(format!("lumen-emoji-session-{}", std::process::id()));
+        let path = dir.join("emoji.json");
+        let mut session = Session::new(State::load(&path));
+
+        let effects = invoke(&mut session, SUN, PASTE);
+        assert_eq!(effects.last(), Some(&Effect::Paste(SUN.into())));
+        assert!(
+            matches!(effects[0], Effect::Save(_)),
+            "saved before closing"
+        );
+        saved(&effects).save(&path).unwrap();
+
+        let session = Session::new(State::load(&path));
+        assert_eq!(titles(&session)[0], "Frequently Used");
+        let view = session.view();
+        let frequent = &list(&view).sections[0];
+        assert_eq!(frequent.subtitle.as_deref(), Some("1"));
+        assert_eq!(frequent.items[0].id, format!("frequent:{SUN}"));
+        assert_eq!(frequent.items[0].title, "Sun");
+        // Still in its category, under its own id.
+        assert!(list(&view).items().any(|item| item.id == SUN));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_copy_counts_as_a_use_and_the_most_used_come_first() {
+        let mut session = Session::default();
+        for action in [COPY, COPY_UNICODE, COPY_NAME] {
+            assert!(matches!(
+                invoke(&mut session, GRIN, action)[..],
+                [Effect::Save(_), Effect::Copy(_)]
+            ));
+        }
+        invoke(&mut session, SUN, COPY);
+        assert_eq!(session.saved.usage[GRIN].count, 3);
+        assert_eq!(
+            section_ids(&session, "Frequently Used"),
+            [format!("frequent:{GRIN}"), format!("frequent:{SUN}")]
+        );
+    }
+
+    #[test]
+    fn frequently_used_is_bounded() {
+        let mut session = Session::default();
+        for chars in the_first_emoji(FREQUENT_LIMIT + 4) {
+            invoke(&mut session, &chars, COPY);
+        }
+        assert_eq!(
+            section_ids(&session, "Frequently Used").len(),
+            FREQUENT_LIMIT
+        );
+    }
+
+    #[test]
+    fn pinning_moves_an_emoji_from_frequently_used_to_pinned() {
+        let mut session = Session::default();
+        invoke(&mut session, SUN, PASTE);
+        let frequent = format!("frequent:{SUN}");
+        assert!(action_ids(&session, &frequent).contains(&PIN.to_string()));
+
+        // From its prefixed id.
+        let effects = invoke(&mut session, &frequent, PIN);
+        assert_eq!(saved(&effects).pinned, [SUN]);
+        assert!(matches!(effects.last(), Some(Effect::Render(_))));
+        assert_eq!(titles(&session)[0], "Pinned");
+        assert_eq!(titles(&session)[1], Category::ALL[0].label());
+        assert_eq!(section_ids(&session, "Pinned"), [format!("pinned:{SUN}")]);
+
+        let actions = action_ids(&session, &format!("pinned:{SUN}"));
+        assert_eq!(&actions[..4], [PASTE, COPY, COPY_UNICODE, COPY_NAME]);
+        assert!(actions.contains(&UNPIN.to_string()));
+        assert!(!actions.contains(&PIN.to_string()));
+        // Used, so it can be forgotten; alone, so it cannot move.
+        assert!(actions.contains(&FORGET.to_string()));
+        assert!(!actions.contains(&MOVE_UP.to_string()));
+        assert!(!actions.contains(&MOVE_DOWN.to_string()));
+        // The same panel from its category.
+        assert_eq!(action_ids(&session, SUN), actions);
+    }
+
+    #[test]
+    fn pins_keep_the_users_order_and_move_up_and_down() {
+        let mut session = Session::default();
+        let [a, b, c] = <[String; 3]>::try_from(the_first_emoji(3)).unwrap();
+        for chars in [&a, &b, &c] {
+            invoke(&mut session, chars, PIN);
+        }
+        let pinned = |chars: &str| format!("pinned:{chars}");
+        assert_eq!(
+            section_ids(&session, "Pinned"),
+            [pinned(&a), pinned(&b), pinned(&c)]
+        );
+        let moves = |session: &Session, id: &str| -> Vec<String> {
+            action_ids(session, id)
+                .into_iter()
+                .filter(|id| id == MOVE_UP || id == MOVE_DOWN)
+                .collect()
+        };
+        assert_eq!(moves(&session, &pinned(&a)), [MOVE_DOWN]);
+        assert_eq!(moves(&session, &pinned(&b)), [MOVE_UP, MOVE_DOWN]);
+        assert_eq!(moves(&session, &pinned(&c)), [MOVE_UP]);
+
+        let effects = invoke(&mut session, &pinned(&c), MOVE_UP);
+        assert_eq!(saved(&effects).pinned, [a.clone(), c.clone(), b.clone()]);
+        invoke(&mut session, &a, MOVE_DOWN);
+        assert_eq!(
+            section_ids(&session, "Pinned"),
+            [pinned(&c), pinned(&a), pinned(&b)]
+        );
+        // At the top, up does nothing and writes nothing.
+        assert!(invoke(&mut session, &pinned(&c), MOVE_UP).is_empty());
+    }
+
+    #[test]
+    fn unpinning_puts_a_used_emoji_back_in_frequently_used() {
+        let mut session = Session::default();
+        invoke(&mut session, SUN, COPY);
+        invoke(&mut session, SUN, PIN);
+        assert!(section_ids(&session, "Frequently Used").is_empty());
+
+        let effects = invoke(&mut session, &format!("pinned:{SUN}"), UNPIN);
+        assert!(saved(&effects).pinned.is_empty());
+        assert!(!titles(&session).contains(&"Pinned".to_string()));
+        assert_eq!(
+            section_ids(&session, "Frequently Used"),
+            [format!("frequent:{SUN}")]
+        );
+        assert!(invoke(&mut session, SUN, UNPIN).is_empty());
+    }
+
+    #[test]
+    fn an_emoji_can_be_removed_from_frequently_used() {
+        let mut session = Session::default();
+        assert!(!action_ids(&session, SUN).contains(&FORGET.to_string()));
+        invoke(&mut session, SUN, COPY);
+        let effects = invoke(&mut session, &format!("frequent:{SUN}"), FORGET);
+        assert!(saved(&effects).usage.is_empty());
+        assert!(!titles(&session).contains(&"Frequently Used".to_string()));
+        assert!(!action_ids(&session, SUN).contains(&FORGET.to_string()));
+    }
+
+    #[test]
+    fn ids_are_unique_across_sections() {
+        let mut session = Session::default();
+        for chars in the_first_emoji(5) {
+            invoke(&mut session, &chars, COPY);
+        }
+        invoke(&mut session, SUN, PIN);
+        invoke(&mut session, GRIN, PIN);
+        let ids = list_ids(&session);
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len());
+        // The first emoji is the grin: two pinned, four used and not pinned.
+        assert_eq!(the_first_emoji(1), [GRIN]);
+        assert_eq!(ids.len(), 2_805 + 2 + 4);
+    }
+
+    #[test]
+    fn a_query_or_a_category_hides_pinned_and_frequently_used() {
+        let mut session = Session::default();
+        invoke(&mut session, SUN, COPY);
+        invoke(&mut session, GRIN, PIN);
+        query(&mut session, "sun");
+        assert_eq!(titles(&session), ["Results"]);
+        assert!(list_ids(&session).iter().all(|id| !id.contains(':')));
+
+        query(&mut session, "");
+        assert_eq!(titles(&session)[..2], ["Pinned", "Frequently Used"]);
+        session.event(Event::ScopeChanged {
+            scope: CATEGORY_SCOPE.into(),
+            option: Category::ALL[0].slug().into(),
+        });
+        assert_eq!(titles(&session), [Category::ALL[0].label()]);
+    }
+
+    #[test]
+    fn a_corrupt_file_starts_empty() {
+        let dir = std::env::temp_dir().join(format!("lumen-emoji-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("emoji.json");
+        std::fs::write(&path, "{ \"pinned\": 3").unwrap();
+        let session = Session::new(State::load(&path));
+        assert_eq!(titles(&session).len(), Category::ALL.len());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
