@@ -26,6 +26,7 @@ pub mod clock;
 pub mod commands;
 pub mod currency;
 pub mod dictionary;
+pub mod emoji;
 pub mod extensions;
 pub mod quicklinks;
 pub mod scripts;
@@ -44,6 +45,7 @@ pub use clock::ClockProvider;
 pub use commands::CommandsProvider;
 pub use currency::CurrencyProvider;
 pub use dictionary::DictionaryProvider;
+pub use emoji::EmojiProvider;
 pub use extensions::ExtensionProvider;
 pub use quicklinks::{Quicklink, QuicklinkProvider};
 pub use scripts::{Script, ScriptMode, ScriptProvider, ScriptRun};
@@ -115,6 +117,7 @@ impl Providers {
         providers.register(Box::new(DictionaryProvider));
         providers.register(Box::new(SnippetsProvider));
         providers.register(Box::new(ClipboardProvider));
+        providers.register(Box::new(EmojiProvider));
         providers.register(Box::new(ClockProvider));
         providers.register(Box::new(WeatherProvider));
         providers

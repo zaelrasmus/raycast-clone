@@ -292,6 +292,8 @@ pub enum ViewSource {
     CalculatorHistory,
     /// *Search Files* (F16).
     Files,
+    /// *Search Emoji & Symbols* (F18).
+    Emoji,
 }
 
 impl Action {

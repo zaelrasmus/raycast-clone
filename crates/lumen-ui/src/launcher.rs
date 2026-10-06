@@ -2928,6 +2928,8 @@ impl Launcher {
                 self.open_file_search(window, cx);
                 return;
             }
+            // Not yet wired (F18, task 5b).
+            lumen_core::ViewSource::Emoji => return,
         };
 
         // Prepared once, here, rather than on each keystroke: filtering a view

@@ -17,6 +17,7 @@
 //! first use and keeps it, and [`loaded`] answers without waiting (I-3).
 
 mod search;
+pub mod session;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -32,8 +33,8 @@ pub enum Category {
     SmileysPeople,
     AnimalsNature,
     FoodDrink,
-    Activities,
     TravelPlaces,
+    Activities,
     Objects,
     Symbols,
     Flags,
@@ -53,8 +54,8 @@ impl Category {
         Category::SmileysPeople,
         Category::AnimalsNature,
         Category::FoodDrink,
-        Category::Activities,
         Category::TravelPlaces,
+        Category::Activities,
         Category::Objects,
         Category::Symbols,
         Category::Flags,
