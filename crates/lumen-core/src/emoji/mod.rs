@@ -7,8 +7,10 @@
 //! drawing -- reduced by `scripts/make-emoji.ps1` to one line per entry and
 //! compiled into the binary, as the places are (F13).
 //!
-//! Skin-tone variants are not in it: an entry that takes a tone says so, and
-//! the tones are a later decision (F18, deferred).
+//! Skin-tone variants are not entries: an entry that takes a tone carries the
+//! five Unicode lists for it, written whole -- a modifier goes after each
+//! person in a sequence, which only Unicode's own list gets right -- and the
+//! user's [`SkinTone`] picks one (F18, task 8).
 //!
 //! # Loaded once, when first asked for
 //!
@@ -138,12 +140,115 @@ pub struct Entry {
     pub category: Category,
     /// Unicode's subgroup -- *face-smiling* -- or the symbol block's.
     pub subgroup: Box<str>,
-    /// Whether the entry takes a skin tone. The tones are not in the
-    /// catalogue; this is what a later version would offer them on.
-    pub skin_tones: bool,
+    /// The entry in each of the five tones, light to dark, exactly as
+    /// `emoji-test.txt` writes them; `None` when it takes no tone. Boxed, so
+    /// an entry without tones pays one pointer.
+    tones: Option<Box<[Box<str>; 5]>>,
     /// The name and keywords, folded, for matching.
     folded_name: Box<str>,
     folded_keywords: Box<[Box<str>]>,
+}
+
+impl Entry {
+    /// Whether the entry takes a skin tone.
+    pub fn has_tones(&self) -> bool {
+        self.tones.is_some()
+    }
+
+    /// What is shown and pasted in `tone`: the entry's own characters for
+    /// [`SkinTone::Default`] or when it takes no tone.
+    pub fn toned(&self, tone: SkinTone) -> &str {
+        match (&self.tones, tone.index()) {
+            (Some(tones), Some(index)) => &tones[index],
+            _ => &self.chars,
+        }
+    }
+}
+
+/// The skin tone emoji are shown and pasted in, as Raycast offers it: the
+/// default yellow, or one of the five Fitzpatrick modifiers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SkinTone {
+    #[default]
+    Default,
+    Light,
+    MediumLight,
+    Medium,
+    MediumDark,
+    Dark,
+}
+
+impl SkinTone {
+    pub const ALL: [SkinTone; 6] = [
+        SkinTone::Default,
+        SkinTone::Light,
+        SkinTone::MediumLight,
+        SkinTone::Medium,
+        SkinTone::MediumDark,
+        SkinTone::Dark,
+    ];
+
+    /// How `emoji.json` writes it.
+    pub fn slug(self) -> &'static str {
+        match self {
+            SkinTone::Default => "default",
+            SkinTone::Light => "light",
+            SkinTone::MediumLight => "medium-light",
+            SkinTone::Medium => "medium",
+            SkinTone::MediumDark => "medium-dark",
+            SkinTone::Dark => "dark",
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        SkinTone::ALL.into_iter().find(|tone| tone.slug() == slug)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SkinTone::Default => "Default",
+            SkinTone::Light => "Light",
+            SkinTone::MediumLight => "Medium-Light",
+            SkinTone::Medium => "Medium",
+            SkinTone::MediumDark => "Medium-Dark",
+            SkinTone::Dark => "Dark",
+        }
+    }
+
+    /// Its place among an entry's five variants; `None` for the default.
+    fn index(self) -> Option<usize> {
+        (self as usize).checked_sub(1)
+    }
+
+    /// The Fitzpatrick modifier, U+1F3FB to U+1F3FF; `None` for the default.
+    pub fn modifier(self) -> Option<char> {
+        self.index()
+            .and_then(|index| char::from_u32(0x1F3FB + index as u32))
+    }
+}
+
+/// Whether `c` is one of the five skin-tone modifiers.
+pub fn is_skin_tone(c: char) -> bool {
+    ('\u{1F3FB}'..='\u{1F3FF}').contains(&c)
+}
+
+/// Written by its slug. Read leniently, as the rest of `emoji.json` is: a
+/// tone this version does not know, or not a string at all, is the default
+/// rather than a file that fails to load (I-12).
+impl serde::Serialize for SkinTone {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.slug())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SkinTone {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(value
+            .as_str()
+            .and_then(SkinTone::from_slug)
+            .unwrap_or_default())
+    }
 }
 
 /// Keywords the user added, by an entry's [`Entry::chars`] (F18, task 7).
@@ -199,7 +304,7 @@ impl Catalogue {
         let mut entries = Vec::new();
         for line in text.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
-            let [chars, category, subgroup, name, keywords, skin_tones] = fields[..] else {
+            let [chars, category, subgroup, name, keywords, tones] = fields[..] else {
                 continue;
             };
             let Some(category) = Category::from_slug(category) else {
@@ -221,7 +326,7 @@ impl Catalogue {
                 keywords,
                 category,
                 subgroup: subgroup.into(),
-                skin_tones: skin_tones == "1",
+                tones: parse_tones(tones),
             });
         }
         Catalogue { entries }
@@ -230,6 +335,17 @@ impl Catalogue {
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
+}
+
+/// The last column: the five toned variants joined by `|`, or nothing. Any
+/// other count is a generator gone wrong, and the entry takes no tone rather
+/// than the wrong one.
+fn parse_tones(field: &str) -> Option<Box<[Box<str>; 5]>> {
+    let tones: Vec<Box<str>> = field.split('|').map(Into::into).collect();
+    if tones.iter().any(|tone| tone.is_empty()) {
+        return None;
+    }
+    <[Box<str>; 5]>::try_from(tones).ok().map(Box::new)
 }
 
 /// The code points of `chars` as Unicode writes them: `U+1F600`, a
@@ -278,8 +394,8 @@ mod tests {
         }
     }
 
-    /// The tones are deferred (F18), so a modifier in the catalogue is a
-    /// generator that let one through.
+    /// The tones are variants of an entry, not entries, so a modifier in an
+    /// entry's own characters is a generator that let one through.
     #[test]
     fn no_entry_carries_a_skin_tone() {
         for entry in catalogue().entries() {
@@ -322,6 +438,89 @@ mod tests {
             ["face".into(), "grin".into()]
         );
         assert!(catalogue.entries()[1].keywords.is_empty());
+    }
+
+    #[test]
+    fn the_tones_column_reads_five_variants_or_none() {
+        let catalogue = Catalogue::parse(
+            "\u{270B}\tsmileys-people\thand-fingers-open\traised hand\thand\t\
+             \u{270B}\u{1F3FB}|\u{270B}\u{1F3FC}|\u{270B}\u{1F3FD}|\u{270B}\u{1F3FE}|\u{270B}\u{1F3FF}\n\
+             \u{1F600}\tsmileys-people\tface-smiling\tgrinning face\tface\t\n\
+             \u{1F44D}\tsmileys-people\thand-fingers-closed\tthumbs up\t\t\u{1F44D}\u{1F3FB}|\u{1F44D}\u{1F3FC}\n",
+        );
+        let [hand, grin, short] = catalogue.entries() else {
+            panic!("three entries")
+        };
+        assert!(hand.has_tones());
+        assert_eq!(hand.toned(SkinTone::Default), "\u{270B}");
+        assert_eq!(hand.toned(SkinTone::Light), "\u{270B}\u{1F3FB}");
+        assert_eq!(hand.toned(SkinTone::Medium), "\u{270B}\u{1F3FD}");
+        assert_eq!(hand.toned(SkinTone::Dark), "\u{270B}\u{1F3FF}");
+        assert!(!grin.has_tones());
+        assert_eq!(grin.toned(SkinTone::Dark), "\u{1F600}");
+        // Incomplete: no tone rather than a wrong one.
+        assert!(!short.has_tones());
+        assert_eq!(short.toned(SkinTone::Light), "\u{1F44D}");
+    }
+
+    fn bundled(chars: &str) -> &'static Entry {
+        catalogue()
+            .entries()
+            .iter()
+            .find(|entry| &*entry.chars == chars)
+            .unwrap_or_else(|| panic!("no {chars}"))
+    }
+
+    #[test]
+    fn the_bundled_tones_are_unicodes_own_sequences() {
+        let thumbs = bundled("\u{1F44D}");
+        assert_eq!(thumbs.toned(SkinTone::Medium), "\u{1F44D}\u{1F3FD}");
+
+        // People holding hands: a modifier after each person, which a
+        // modifier inserted after the first character would not give.
+        let holding = bundled("\u{1F9D1}\u{200D}\u{1F91D}\u{200D}\u{1F9D1}");
+        assert_eq!(
+            holding.toned(SkinTone::Medium),
+            "\u{1F9D1}\u{1F3FD}\u{200D}\u{1F91D}\u{200D}\u{1F9D1}\u{1F3FD}"
+        );
+        // Index pointing up is written with U+FE0F; toned, Unicode drops it.
+        let up = bundled("\u{261D}\u{FE0F}");
+        assert_eq!(up.toned(SkinTone::Dark), "\u{261D}\u{1F3FF}");
+
+        assert!(!bundled("\u{1F600}").has_tones());
+        let toned = catalogue()
+            .entries()
+            .iter()
+            .filter(|e| e.has_tones())
+            .count();
+        assert!((250..=450).contains(&toned), "{toned} take a tone");
+        for entry in catalogue().entries().iter().filter(|e| e.has_tones()) {
+            for tone in &SkinTone::ALL[1..] {
+                let modifier = tone.modifier().unwrap();
+                let toned = entry.toned(*tone);
+                assert!(
+                    toned
+                        .chars()
+                        .filter(|c| is_skin_tone(*c))
+                        .all(|c| c == modifier),
+                    "{toned} in {tone:?}"
+                );
+                assert!(toned.contains(modifier), "{toned} in {tone:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn skin_tones_have_their_modifiers_and_round_trip() {
+        assert_eq!(SkinTone::Default.modifier(), None);
+        assert_eq!(SkinTone::Light.modifier(), Some('\u{1F3FB}'));
+        assert_eq!(SkinTone::Dark.modifier(), Some('\u{1F3FF}'));
+        for tone in SkinTone::ALL {
+            assert_eq!(SkinTone::from_slug(tone.slug()), Some(tone));
+        }
+        assert_eq!(SkinTone::MediumLight.label(), "Medium-Light");
+        assert!(is_skin_tone('\u{1F3FD}'));
+        assert!(!is_skin_tone('\u{1F44D}'));
     }
 
     #[test]

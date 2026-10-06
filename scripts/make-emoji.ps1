@@ -13,8 +13,8 @@
 #
 #   emoji-test.txt    which sequences are emoji, their group, subgroup and
 #                     order. Fully-qualified only. Skin-tone variants are
-#                     left out (F18 ships none) but remembered on their base,
-#                     for the deferred decision. Country and subdivision
+#                     not entries: each is kept on its base (see below).
+#                     Country and subdivision
 #                     flags are left out too: Windows draws neither, and the
 #                     Fluent images have none.
 #   CLDR annotations  the English name (`type="tts"`) and keywords of each
@@ -26,7 +26,14 @@
 # Writes assets/emoji/emoji.tsv.gz, one entry per line, in catalogue order --
 # the emoji in Unicode's order, then the symbols by category and code point:
 #
-#   chars, category, subgroup, name, keywords joined by '|', skin tones (1/0)
+#   chars, category, subgroup, name, keywords joined by '|', tones
+#
+# `tones` is the entry in each skin tone, light to dark (U+1F3FB..U+1F3FF),
+# joined by '|', or empty. Each is the fully-qualified sequence Unicode lists
+# with every modifier the same tone, copied, never built: a modifier goes
+# after each person of a sequence, and U+FE0F is dropped where one goes, so
+# only Unicode's own list is right. A base with fewer than five such
+# sequences gets none rather than some.
 #
 # This file is ASCII on purpose: Windows PowerShell 5.1 reads a script with
 # no byte-order mark in the ANSI codepage. Characters are built from code
@@ -110,11 +117,11 @@ $groups = @{
 $skipSubgroups = @('country-flag', 'subdivision-flag')
 
 # First pass: every sequence emoji-test.txt lists, whatever its status, so
-# a symbol that is also an emoji is not listed twice; and the bases that
-# have skin-tone variants.
+# a symbol that is also an emoji is not listed twice; and the skin-tone
+# variants of each base, by the base with U+FE0F and modifiers stripped.
 $emoji = [Collections.Generic.List[object]]::new()
 $isEmoji = [Collections.Generic.HashSet[int]]::new()
-$toned = [Collections.Generic.HashSet[string]]::new()
+$toned = Ordinal
 $group = ''
 $subgroup = ''
 $pattern = '^([0-9A-F ]+?)\s*;\s*([a-z-]+)\s*#\s*\S+\s+E\d+\.\d+\s+(.+)$'
@@ -131,8 +138,18 @@ foreach ($line in [IO.File]::ReadAllLines((Join-Path $work 'emoji-test.txt'), $u
 
     $modifiers = @($codepoints | Where-Object { $_ -ge 0x1F3FB -and $_ -le 0x1F3FF })
     if ($modifiers.Count -gt 0) {
-        if ($codepoints.Count -gt $modifiers.Count) {
-            [void] $toned.Add((Chars @($plain | Where-Object { $_ -lt 0x1F3FB -or $_ -gt 0x1F3FF })))
+        # One tone throughout, on something that is not a bare modifier.
+        $uniform = @($modifiers | Select-Object -Unique).Count -eq 1
+        if ($status -eq 'fully-qualified' -and $uniform -and $codepoints.Count -gt $modifiers.Count) {
+            $base = Chars @($plain | Where-Object { $_ -lt 0x1F3FB -or $_ -gt 0x1F3FF })
+            # Not `Lookup`: a function returning an array returns a copy.
+            $slots = $null
+            if (-not $toned.TryGetValue($base, [ref] $slots)) {
+                $slots = [string[]]::new(5)
+                $toned[$base] = $slots
+            }
+            $slot = $modifiers[0] - 0x1F3FB
+            if (-not $slots[$slot]) { $slots[$slot] = Chars $codepoints }
         }
         continue
     }
@@ -149,12 +166,18 @@ foreach ($line in [IO.File]::ReadAllLines((Join-Path $work 'emoji-test.txt'), $u
 }
 
 $lines = [Collections.Generic.List[string]]::new()
+$tonedCount = 0
 foreach ($entry in $emoji) {
     $name = Lookup $names $entry.Key
     if (-not $name) { $name = $entry.Fallback }
     $name = Clean $name
-    $skin = if ($toned.Contains($entry.Key)) { '1' } else { '0' }
-    $lines.Add((@($entry.Chars, $entry.Category, $entry.Subgroup, $name, (Keywords $entry.Key $name @()), $skin) -join "`t"))
+    $slots = $null
+    $tones = ''
+    if ($toned.TryGetValue($entry.Key, [ref] $slots) -and @($slots | Where-Object { $_ }).Count -eq 5) {
+        $tones = $slots -join '|'
+        $tonedCount++
+    }
+    $lines.Add((@($entry.Chars, $entry.Category, $entry.Subgroup, $name, (Keywords $entry.Key $name @()), $tones) -join "`t"))
 }
 $emojiCount = $lines.Count
 
@@ -201,7 +224,7 @@ foreach ($range in $symbols) {
         $chars = Chars @($codepoint)
         $name = Clean $data[0].ToLowerInvariant()
         $spoken = @(Lookup $names $chars) | Where-Object { $_ }
-        $lines.Add((@($chars, $category, $block, $name, (Keywords $chars $name $spoken), '0') -join "`t"))
+        $lines.Add((@($chars, $category, $block, $name, (Keywords $chars $name $spoken), '') -join "`t"))
     }
 }
 
@@ -219,5 +242,5 @@ try {
     $stream.Dispose()
 }
 
-"{0} emoji, {1} symbols, {2:N0} bytes of text, {3:N0} compressed" -f `
-    $emojiCount, ($lines.Count - $emojiCount), $text.Length, (Get-Item $target).Length
+"{0} emoji ({1} with skin tones), {2} symbols, {3:N0} bytes of text, {4:N0} compressed" -f `
+    $emojiCount, $tonedCount, ($lines.Count - $emojiCount), $text.Length, (Get-Item $target).Length

@@ -15,7 +15,7 @@ use std::cmp::Reverse;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
-use super::{Catalogue, Category, CustomKeywords, Entry};
+use super::{Catalogue, Category, CustomKeywords, Entry, is_skin_tone};
 use crate::places::fold;
 
 /// How an entry matched, best first.
@@ -117,11 +117,12 @@ impl Catalogue {
 }
 
 /// Whether `query` is `chars`, with or without the emoji variation
-/// selector: ☀ typed plainly is still ☀️.
+/// selector -- ☀ typed plainly is still ☀️ -- and in any skin tone: 👍🏽
+/// is 👍, whose tones are variants, not entries.
 fn same_character(chars: &str, query: &str) -> bool {
     let plain = |text: &str| {
         text.chars()
-            .filter(|c| *c != '\u{FE0F}')
+            .filter(|c| *c != '\u{FE0F}' && !is_skin_tone(*c))
             .collect::<String>()
     };
     chars == query || plain(chars) == plain(query)
@@ -229,5 +230,19 @@ mod tests {
     fn the_character_itself_finds_its_entry() {
         assert_eq!(found("\u{2192}").first(), Some(&"\u{2192}"));
         assert_eq!(found("\u{2600}").first(), Some(&"\u{2600}\u{FE0F}"));
+    }
+
+    #[test]
+    fn a_toned_character_finds_its_entry() {
+        assert_eq!(found("\u{1F44D}\u{1F3FD}").first(), Some(&"\u{1F44D}"));
+        // A modifier after each person, and the U+FE0F the toned form drops.
+        assert_eq!(
+            found("\u{1F9D1}\u{1F3FF}\u{200D}\u{1F91D}\u{200D}\u{1F9D1}\u{1F3FF}").first(),
+            Some(&"\u{1F9D1}\u{200D}\u{1F91D}\u{200D}\u{1F9D1}")
+        );
+        assert_eq!(
+            found("\u{261D}\u{1F3FB}").first(),
+            Some(&"\u{261D}\u{FE0F}")
+        );
     }
 }

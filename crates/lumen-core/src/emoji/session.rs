@@ -11,7 +11,7 @@
 //! made off the UI thread, as the clipboard's session is.
 
 use super::store::{self, State, join_keywords, parse_keywords};
-use super::{Catalogue, Category, Entry, catalogue, codepoints};
+use super::{Catalogue, Category, Entry, SkinTone, catalogue, codepoints};
 use crate::view::{
     Action, EmptyState, Event, Filtering, Icon, Item, List, Presentation, Scope, ScopeOption,
     Section, View,
@@ -32,6 +32,8 @@ pub use crate::view::favorite_action::{MOVE_DOWN, MOVE_UP, PIN, UNPIN};
 pub const FORGET: &str = "forget";
 /// *Add Custom Keywords*, or *Edit* when the emoji has some: opens the form.
 pub const CUSTOM_KEYWORDS: &str = "custom-keywords";
+/// Before a [`SkinTone`]'s slug: the action that makes it the tone.
+pub const SKIN_TONE: &str = "skin-tone:";
 
 /// The most emoji *Frequently Used* shows: two strips of the default
 /// seven-column grid and a little, enough for the handful anyone repeats
@@ -116,11 +118,16 @@ impl Session {
                 let Some(entry) = self.entry(&item) else {
                     return Vec::new();
                 };
+                if let Some(tone) = action.strip_prefix(SKIN_TONE) {
+                    return self.choose_tone(&item, entry, tone);
+                }
+                // Kept by its own characters; shown and pasted in the tone.
                 let chars = &*entry.chars;
+                let toned = entry.toned(self.saved.skin_tone);
                 let done = match action.as_str() {
-                    PASTE => Effect::Paste(chars.to_string()),
-                    COPY => Effect::Copy(chars.to_string()),
-                    COPY_UNICODE => Effect::Copy(codepoints(chars)),
+                    PASTE => Effect::Paste(toned.to_string()),
+                    COPY => Effect::Copy(toned.to_string()),
+                    COPY_UNICODE => Effect::Copy(codepoints(toned)),
                     COPY_NAME => Effect::Copy(title_case(&entry.name)),
                     CUSTOM_KEYWORDS => {
                         let keywords = self.saved.keywords.get(chars);
@@ -164,6 +171,25 @@ impl Session {
         }
         effects.push(Effect::Render(view));
         effects
+    }
+
+    /// Make `slug` the tone every emoji is shown and pasted in, chosen on
+    /// `entry` as `item`. Pins, use and keywords are kept by the untoned
+    /// characters, so nothing else changes; the grid is drawn again in the
+    /// tone with the emoji still selected.
+    fn choose_tone(&mut self, item: &str, entry: &Entry, slug: &str) -> Vec<Effect> {
+        let Some(tone) = SkinTone::from_slug(slug) else {
+            return Vec::new();
+        };
+        if tone == self.saved.skin_tone {
+            return Vec::new();
+        }
+        self.saved.skin_tone = tone;
+        let mut view = self.view();
+        if let View::List(list) = &mut view {
+            list.select = where_now(list, item, &entry.chars).map(Box::new);
+        }
+        vec![Effect::Save(self.saved.clone()), Effect::Render(view)]
     }
 
     /// Pin, unpin, move or forget `chars`, acted on as `item`: saved and
@@ -326,7 +352,8 @@ impl Session {
     }
 }
 
-/// What an item's actions depend on: whether it is pinned, where, and used.
+/// What an item's glyph and actions depend on: the tone, whether it is
+/// pinned, where, and used.
 struct Items<'a> {
     saved: &'a State,
     /// The pins shown, in order.
@@ -385,13 +412,31 @@ impl Items<'_> {
                 "Add Custom Keywords"
             },
         ));
+        // The tones it can be shown in other than the current one, which the
+        // grid already shows: a view's actions are one run (ARCHITECTURE
+        // 7.44), so these go last, each with the raised hand as its sample.
+        if entry.has_tones() {
+            actions.extend(
+                SkinTone::ALL
+                    .into_iter()
+                    .filter(|tone| *tone != self.saved.skin_tone)
+                    .map(|tone| {
+                        let sample: String =
+                            std::iter::once('\u{270B}').chain(tone.modifier()).collect();
+                        action(
+                            &format!("{SKIN_TONE}{}", tone.slug()),
+                            &format!("{sample} {}", tone.label()),
+                        )
+                    }),
+            );
+        }
         Item {
             id: format!("{prefix}{chars}"),
             title: title_case(&entry.name),
             prefix: None,
             subtitle: None,
             icon: Some(Icon::Text {
-                text: chars.to_string(),
+                text: entry.toned(self.saved.skin_tone).to_string(),
             }),
             accessories: Vec::new(),
             keywords: Vec::new(),
@@ -1015,6 +1060,149 @@ mod tests {
         assert_eq!(item, pinned);
         let effects = session.save_keywords(&pinned, "");
         assert_eq!(selected(&effects), Some(pinned));
+    }
+
+    // Skin tone (F18, task 8).
+
+    const THUMBS: &str = "\u{1F44D}";
+    const THUMBS_MEDIUM: &str = "\u{1F44D}\u{1F3FD}";
+
+    fn in_tone(tone: SkinTone) -> Session {
+        Session::new(State {
+            skin_tone: tone,
+            ..State::default()
+        })
+    }
+
+    fn item(session: &Session, id: &str) -> Item {
+        list(&session.view())
+            .items()
+            .find(|item| item.id == id)
+            .unwrap_or_else(|| panic!("no item {id}"))
+            .clone()
+    }
+
+    fn glyph(session: &Session, id: &str) -> String {
+        match item(session, id).icon {
+            Some(Icon::Text { text }) => text,
+            other => panic!("expected a glyph, got {other:?}"),
+        }
+    }
+
+    fn tone_actions(session: &Session, id: &str) -> Vec<(String, String)> {
+        item(session, id)
+            .actions
+            .into_iter()
+            .filter(|action| action.id.starts_with(SKIN_TONE))
+            .map(|action| (action.id, action.title))
+            .collect()
+    }
+
+    #[test]
+    fn in_a_tone_an_emoji_is_shown_pasted_and_copied_toned_and_kept_by_its_own_id() {
+        let mut session = in_tone(SkinTone::Medium);
+        query(&mut session, "thumbs up");
+        let thumbs = item(&session, THUMBS);
+        assert_eq!(thumbs.title, "Thumbs Up");
+        assert_eq!(glyph(&session, THUMBS), THUMBS_MEDIUM);
+
+        let mut last = |action: &str| invoke(&mut session, THUMBS, action).pop();
+        assert_eq!(last(PASTE), Some(Effect::Paste(THUMBS_MEDIUM.into())));
+        assert_eq!(last(COPY), Some(Effect::Copy(THUMBS_MEDIUM.into())));
+        assert_eq!(
+            last(COPY_UNICODE),
+            Some(Effect::Copy("U+1F44D U+1F3FD".into()))
+        );
+        assert_eq!(last(COPY_NAME), Some(Effect::Copy("Thumbs Up".into())));
+        // Its use is the untoned emoji's.
+        assert_eq!(session.saved.usage[THUMBS].count, 4);
+        assert_eq!(session.saved.usage.len(), 1);
+    }
+
+    #[test]
+    fn an_emoji_without_tones_is_the_same_in_any_tone() {
+        let mut session = in_tone(SkinTone::Dark);
+        query(&mut session, "sun");
+        assert_eq!(glyph(&session, SUN), SUN);
+        assert!(tone_actions(&session, SUN).is_empty());
+        assert_eq!(
+            invoke(&mut session, SUN, PASTE).pop(),
+            Some(Effect::Paste(SUN.into()))
+        );
+    }
+
+    #[test]
+    fn an_emoji_that_takes_a_tone_offers_the_others() {
+        let session = Session::default();
+        assert_eq!(
+            tone_actions(&session, THUMBS),
+            [
+                ("skin-tone:light", "\u{270B}\u{1F3FB} Light"),
+                ("skin-tone:medium-light", "\u{270B}\u{1F3FC} Medium-Light"),
+                ("skin-tone:medium", "\u{270B}\u{1F3FD} Medium"),
+                ("skin-tone:medium-dark", "\u{270B}\u{1F3FE} Medium-Dark"),
+                ("skin-tone:dark", "\u{270B}\u{1F3FF} Dark"),
+            ]
+            .map(|(id, title)| (id.to_string(), title.to_string()))
+        );
+        // Last, after everything the emoji itself does.
+        let actions = action_ids(&session, THUMBS);
+        assert!(actions.last().unwrap().starts_with(SKIN_TONE));
+
+        let toned = tone_actions(&in_tone(SkinTone::Medium), THUMBS);
+        assert_eq!(toned.len(), 5);
+        assert_eq!(
+            toned[0],
+            (
+                "skin-tone:default".to_string(),
+                "\u{270B} Default".to_string()
+            )
+        );
+        assert!(toned.iter().all(|(id, _)| id != "skin-tone:medium"));
+    }
+
+    #[test]
+    fn choosing_a_tone_redraws_every_emoji_in_it_and_keeps_pins_use_and_selection() {
+        let mut session = Session::default();
+        invoke(&mut session, THUMBS, PIN);
+        invoke(&mut session, SUN, COPY);
+        let pinned = format!("pinned:{THUMBS}");
+        assert_eq!(glyph(&session, &pinned), THUMBS);
+
+        let effects = invoke(&mut session, &pinned, "skin-tone:medium");
+        let state = saved(&effects);
+        assert_eq!(state.skin_tone, SkinTone::Medium);
+        assert_eq!(state.pinned, [THUMBS]);
+        assert!(state.is_used(SUN));
+        assert_eq!(selected(&effects), Some(pinned.clone()));
+        let Some(Effect::Render(view)) = effects.last() else {
+            panic!("drawn again")
+        };
+        let drawn = |id: &str| {
+            list(view)
+                .items()
+                .find(|item| item.id == id)
+                .and_then(|item| item.icon.clone())
+        };
+        let text = |text: &str| Some(Icon::Text { text: text.into() });
+        assert_eq!(drawn(&pinned), text(THUMBS_MEDIUM));
+        assert_eq!(drawn(THUMBS), text(THUMBS_MEDIUM));
+        assert_eq!(drawn(SUN), text(SUN));
+
+        // From its category, the selection stays there.
+        let effects = invoke(&mut session, THUMBS, "skin-tone:default");
+        assert_eq!(selected(&effects), Some(THUMBS.to_string()));
+        assert_eq!(saved(&effects).skin_tone, SkinTone::Default);
+        // The tone it already has, or one that does not exist: nothing.
+        assert!(invoke(&mut session, THUMBS, "skin-tone:default").is_empty());
+        assert!(invoke(&mut session, THUMBS, "skin-tone:purple").is_empty());
+    }
+
+    #[test]
+    fn a_toned_emoji_typed_finds_the_emoji() {
+        let mut session = in_tone(SkinTone::Light);
+        query(&mut session, THUMBS_MEDIUM);
+        assert_eq!(list_ids(&session)[0], THUMBS);
     }
 
     #[test]

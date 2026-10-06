@@ -1,12 +1,13 @@
-//! Pinned and frequently used emoji, in `emoji.json` in the data folder
-//! (F18, task 6).
+//! Pinned and frequently used emoji, custom keywords and the skin tone, in
+//! `emoji.json` in the data folder (F18, tasks 6 to 8).
 //!
 //! A file rather than a database, as for the dictionary: a few dozen entries,
 //! written once per emoji pasted or pinned, never per keystroke. Read
 //! leniently -- an unreadable file is an empty one, logged, not a view that
 //! fails to open -- and written whole, through a sibling renamed over it.
 //!
-//! Kept by the emoji's characters. One the catalogue no longer has is kept,
+//! Kept by the emoji's own characters, never a toned variant's, so a change
+//! of tone keeps every pin and use. One the catalogue no longer has is kept,
 //! not pruned, for `favorites.rs`'s reason: a catalogue regenerated without
 //! it for a release must not cost the user their arrangement.
 //!
@@ -23,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
-use super::CustomKeywords;
+use super::{CustomKeywords, SkinTone};
 
 /// How long it takes for a use to decay to half its weight: frecency's.
 const HALF_LIFE_SECS: f64 = 14.0 * 24.0 * 60.0 * 60.0;
@@ -38,6 +39,10 @@ pub struct State {
     /// The user's own keywords, by characters (task 7): lowercase, trimmed,
     /// once each, never an empty list. A file written before them has none.
     pub keywords: CustomKeywords,
+    /// The tone emoji are shown and pasted in (task 8). A file written
+    /// before it, or naming a tone this version does not know, has the
+    /// default.
+    pub skin_tone: SkinTone,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +273,40 @@ mod tests {
         let old = State::load(&path);
         assert_eq!(old.pinned, ["x"]);
         assert!(old.keywords.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_skin_tone_round_trips_and_an_older_or_unknown_one_is_the_default() {
+        let dir = std::env::temp_dir().join(format!("lumen-emoji-tone-{}", std::process::id()));
+        let path = dir.join("emoji.json");
+        let state = State {
+            skin_tone: SkinTone::MediumDark,
+            ..State::default()
+        };
+        state.save(&path).unwrap();
+        let json = std::fs::read_to_string(&path).unwrap();
+        assert!(json.contains("\"skin-tone\": \"medium-dark\""), "{json}");
+        assert_eq!(State::load(&path), state);
+
+        // Written before the tone existed.
+        std::fs::write(&path, r#"{ "pinned": ["x"] }"#).unwrap();
+        let old = State::load(&path);
+        assert_eq!(old.pinned, ["x"]);
+        assert_eq!(old.skin_tone, SkinTone::Default);
+
+        // A tone from a later version, or not a tone at all: the default,
+        // and the rest of the file still read.
+        for tone in [r#""purple""#, "3", "null"] {
+            std::fs::write(
+                &path,
+                format!(r#"{{ "pinned": ["x"], "skin-tone": {tone} }}"#),
+            )
+            .unwrap();
+            let read = State::load(&path);
+            assert_eq!(read.pinned, ["x"], "{tone}");
+            assert_eq!(read.skin_tone, SkinTone::Default, "{tone}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
