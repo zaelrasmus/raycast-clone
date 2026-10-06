@@ -44,7 +44,8 @@ use lumen_core::markdown::{self, Block, Span};
 use lumen_core::style::{Metrics, RowSubtitle};
 use lumen_core::theme::{Colors, Theme};
 use lumen_core::view::{
-    Accessory, Detail, EmptyState, Icon, Item, ItemDetail, List, MAX_ACCESSORIES, MetadataRow, Tone,
+    Accessory, Detail, EmptyState, Icon, Item, ItemDetail, List, MAX_ACCESSORIES, MetadataRow,
+    Presentation, Tone,
 };
 
 use crate::icons::IconCache;
@@ -62,27 +63,97 @@ pub enum Row {
     Section(SharedString, Option<SharedString>),
     /// An index into the view's flat item order.
     Item(usize),
+    /// A grid's strip: the flat indices of its cells, left to right (F18).
+    Cells(Vec<usize>),
 }
 
-/// The rows of `list`, in display order.
-pub fn rows(source: &List) -> Vec<Row> {
+impl Row {
+    /// The items this row shows: one for an item, none for a header, every
+    /// cell of a strip.
+    pub fn items(&self) -> &[usize] {
+        match self {
+            Row::Section(..) => &[],
+            Row::Item(index) => std::slice::from_ref(index),
+            Row::Cells(cells) => cells,
+        }
+    }
+}
+
+/// The rows of `list`, in display order, a grid's cut into strips of
+/// `columns` cells. A list of rows ignores `columns`.
+pub fn rows(source: &List, columns: usize) -> Vec<Row> {
+    flatten(source, columns, |_| true, true)
+}
+
+/// The rows of `list` that show an item `keep` accepts, by flat index.
+///
+/// A header with nothing left under it is dropped: a heading about nothing.
+/// A grid packs what survives into full strips, whatever the gaps.
+pub fn rows_where(source: &List, columns: usize, keep: impl Fn(usize) -> bool) -> Vec<Row> {
+    flatten(source, columns, keep, false)
+}
+
+fn flatten(
+    source: &List,
+    columns: usize,
+    keep: impl Fn(usize) -> bool,
+    empty_headers: bool,
+) -> Vec<Row> {
+    let grid = source.presentation == Presentation::Grid;
+    let columns = columns.max(1);
     let mut rows = Vec::new();
     let mut index = 0;
 
     for section in &source.sections {
-        if let Some(title) = &section.title {
+        let shown: Vec<usize> = (index..index + section.items.len())
+            .filter(|&item| keep(item))
+            .collect();
+        index += section.items.len();
+
+        if let Some(title) = &section.title
+            && (empty_headers || !shown.is_empty())
+        {
             rows.push(Row::Section(
                 title.clone().into(),
                 section.subtitle.clone().map(Into::into),
             ));
         }
-        for _ in &section.items {
-            rows.push(Row::Item(index));
-            index += 1;
+        if grid {
+            rows.extend(
+                shown
+                    .chunks(columns)
+                    .map(|strip| Row::Cells(strip.to_vec())),
+            );
+        } else {
+            rows.extend(shown.into_iter().map(Row::Item));
         }
     }
 
     rows
+}
+
+/// The row that shows the item at flat index `item`, if any does.
+pub fn row_of(rows: &[Row], item: usize) -> Option<usize> {
+    rows.iter().position(|row| row.items().contains(&item))
+}
+
+/// How many columns `list` has in a window `width` wide: those that fit
+/// between the gutters, in the list's share of the window beside a detail
+/// pane. A list of rows has one.
+pub fn grid_columns(list: &List, metrics: &Metrics, width: f32) -> usize {
+    if list.presentation != Presentation::Grid {
+        return 1;
+    }
+    let width = if list.showing_detail {
+        width * layout::view::DETAIL_LIST_SHARE
+    } else {
+        width
+    };
+    layout::view::grid_columns(
+        width - 2.0 * metrics.gutter,
+        metrics.grid_cell,
+        metrics.grid_gap,
+    )
 }
 
 /// Fresh list state for `count` rows.
@@ -97,6 +168,8 @@ pub fn row_height(row: &Row, metrics: &Metrics) -> f32 {
     match row {
         Row::Section(..) => metrics.section_height,
         Row::Item(_) => metrics.row_height,
+        // Every strip, the short last one too (I-10).
+        Row::Cells(_) => metrics.grid_cell + metrics.grid_gap,
     }
 }
 
@@ -281,6 +354,16 @@ pub fn render_list(
                         ),
                         None => div().into_any_element(),
                     },
+                    Some(Row::Cells(cells)) => render_strip(
+                        cells,
+                        &items,
+                        selected,
+                        &colors,
+                        &geometry,
+                        &row_images,
+                        &row_icons,
+                        cx,
+                    ),
                     None => div().into_any_element(),
                 }
             })
@@ -758,6 +841,80 @@ fn render_item(
         .into_any_element()
 }
 
+/// One strip of a grid (F18): square cells a gap apart from the gutter on,
+/// with the gap below them, so every strip is the same height (I-10).
+#[allow(clippy::too_many_arguments)]
+fn render_strip(
+    cells: &[usize],
+    items: &[Item],
+    selected: usize,
+    colors: &Colors,
+    geometry: &Geometry,
+    images: &ImageCache,
+    icons: &IconCache,
+    cx: &mut App,
+) -> AnyElement {
+    div()
+        .h(geometry.grid_cell() + geometry.grid_gap())
+        .px(geometry.gutter())
+        .flex()
+        .gap(geometry.grid_gap())
+        .children(cells.iter().map(|&index| {
+            let selected = index == selected;
+            div()
+                .size(geometry.grid_cell())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(geometry.grid_radius())
+                .border_1()
+                .when(selected, |cell| {
+                    cell.bg(color(colors.selection_background))
+                        .border_color(geometry.selection_border(colors))
+                })
+                .when(!selected, |cell| {
+                    cell.bg(color(colors.surface_elevated))
+                        .border_color(gpui::transparent_black())
+                })
+                .child(render_glyph(
+                    items.get(index).and_then(|item| item.icon.as_ref()),
+                    colors,
+                    geometry,
+                    images,
+                    icons,
+                    cx,
+                ))
+        }))
+        .into_any_element()
+}
+
+/// A cell's glyph, centred at its share of the cell. On its own so a
+/// picture of the emoji can take the text's place later.
+fn render_glyph(
+    icon: Option<&Icon>,
+    colors: &Colors,
+    geometry: &Geometry,
+    images: &ImageCache,
+    icons: &IconCache,
+    cx: &mut App,
+) -> AnyElement {
+    let size = px(layout::view::grid_glyph(geometry.metrics().grid_cell));
+    match icon {
+        Some(Icon::Text { text }) => div()
+            .size(size)
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(size)
+            .line_height(size)
+            .text_color(color(colors.text_primary))
+            .child(text.clone())
+            .into_any_element(),
+        icon => render_icon(icon, size, colors, geometry, images, icons, cx),
+    }
+}
+
 /// A row's title, after its prefix dimmed when it has one (F16): one run of
 /// text, so the two truncate together into one ellipsis.
 fn title(item: &Item, colors: &Colors) -> StyledText {
@@ -1026,7 +1183,7 @@ pub fn render_detail(detail: &Detail, theme: &Theme, height: gpui::Pixels) -> An
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lumen_core::view::{Section, View};
+    use lumen_core::view::{Presentation, Section, View};
 
     fn item(id: &str) -> Item {
         Item {
@@ -1052,6 +1209,191 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// A grid of five titled sections, 0, 1, 8, 9 and 17 items long.
+    fn grid() -> List {
+        let mut next = 0;
+        let sections = [0, 1, 8, 9, 17]
+            .into_iter()
+            .map(|count| Section {
+                title: Some(format!("{count}")),
+                subtitle: Some(format!("{count}")),
+                items: (0..count)
+                    .map(|_| {
+                        next += 1;
+                        item(&next.to_string())
+                    })
+                    .collect(),
+            })
+            .collect();
+        List {
+            sections,
+            presentation: Presentation::Grid,
+            ..Default::default()
+        }
+    }
+
+    /// What a row holds, as a short string a test can compare: `H` for a
+    /// header, `i3` for an item, `[8 9 10]` for a strip of cells.
+    fn shape(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|row| match row {
+                Row::Section(..) => "H".to_string(),
+                Row::Item(index) => format!("i{index}"),
+                Row::Cells(cells) => format!(
+                    "[{}]",
+                    cells
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            })
+            .collect()
+    }
+
+    /// A grid's section is cut into strips of as many cells as there are
+    /// columns, the last one short; a strip never runs into the next section.
+    #[test]
+    fn a_grid_section_is_cut_into_strips_of_the_column_count() {
+        let rows = rows(&grid(), 8);
+
+        assert_eq!(
+            shape(&rows),
+            [
+                "H",
+                "H",
+                "[0]",
+                "H",
+                "[1 2 3 4 5 6 7 8]",
+                "H",
+                "[9 10 11 12 13 14 15 16]",
+                "[17]",
+                "H",
+                "[18 19 20 21 22 23 24 25]",
+                "[26 27 28 29 30 31 32 33]",
+                "[34]",
+            ]
+        );
+    }
+
+    /// The header keeps the subtitle the view gave it: the section's count.
+    #[test]
+    fn a_grid_header_keeps_its_subtitle() {
+        let rows = rows(&grid(), 8);
+        let Row::Section(title, subtitle) = &rows[3] else {
+            panic!("a header")
+        };
+        assert_eq!(title.as_ref(), "8");
+        assert_eq!(subtitle.as_ref().map(AsRef::as_ref), Some("8"));
+    }
+
+    /// A list of rows ignores the column count: one item, one row, as before.
+    #[test]
+    fn a_list_of_rows_is_not_cut_into_strips() {
+        let mut list = grid();
+        list.presentation = Presentation::Rows;
+
+        for columns in [1, 8] {
+            let rows = rows(&list, columns);
+            assert_eq!(rows.len(), 5 + 35);
+            assert!(rows.iter().all(|row| !matches!(row, Row::Cells(_))));
+        }
+        assert_eq!(shape(&rows(&example(), 8)), ["H", "i0", "i1", "i2"]);
+    }
+
+    /// A filtered grid packs what survives into strips, whatever the gaps
+    /// in the flat order, and drops a header with nothing under it.
+    #[test]
+    fn a_filtered_grid_packs_the_survivors() {
+        let rows = rows_where(&grid(), 3, |index| index % 2 == 0 && index < 20);
+
+        assert_eq!(
+            shape(&rows),
+            [
+                "H",
+                "[0]",
+                "H",
+                "[2 4 6]",
+                "[8]",
+                "H",
+                "[10 12 14]",
+                "[16]",
+                "H",
+                "[18]",
+            ]
+        );
+    }
+
+    /// The selection is a flat item index; the row it is in is the strip
+    /// that holds it.
+    #[test]
+    fn the_selected_item_is_found_in_its_strip() {
+        let rows = rows(&grid(), 8);
+
+        assert_eq!(row_of(&rows, 0), Some(2));
+        assert_eq!(row_of(&rows, 1), Some(4));
+        assert_eq!(row_of(&rows, 8), Some(4));
+        assert_eq!(row_of(&rows, 9), Some(6));
+        assert_eq!(row_of(&rows, 16), Some(6));
+        assert_eq!(row_of(&rows, 17), Some(7));
+        assert_eq!(row_of(&rows, 34), Some(11));
+        assert_eq!(row_of(&rows, 35), None);
+        assert_eq!(row_of(&super::rows(&example(), 8), 1), Some(2));
+    }
+
+    /// A strip is a cell and a gap tall, every one of them, the short last
+    /// one included (I-10); a header is as tall as in a list of rows.
+    #[test]
+    fn a_strip_is_a_cell_and_a_gap_tall() {
+        let metrics = Metrics::BASE;
+        let strip = metrics.grid_cell + metrics.grid_gap;
+        let rows = rows(&grid(), 8);
+
+        assert_eq!(row_height(&rows[7], &metrics), strip);
+        assert_eq!(row_height(&rows[6], &metrics), strip);
+        assert_eq!(row_height(&rows[0], &metrics), metrics.section_height);
+        let total: f32 = rows.iter().map(|row| row_height(row, &metrics)).sum();
+        assert_eq!(total, 5.0 * metrics.section_height + 7.0 * strip);
+    }
+
+    /// Revealing the last cell from the top scrolls the list so its strip's
+    /// bottom is the viewport's: the sum of the heights above it.
+    #[test]
+    fn revealing_a_cell_below_the_fold_scrolls_to_its_strip() {
+        let metrics = Metrics::BASE;
+        let rows = rows(&grid(), 8);
+        let height = |row: &Row| row_height(row, &metrics);
+        let viewport = metrics.section_height * 2.0 + (metrics.grid_cell + metrics.grid_gap) * 3.0;
+
+        let target = row_of(&rows, 34).unwrap();
+        let (index, offset) = reveal(&rows, &metrics, (0, 0.0), target, viewport);
+        let top: f32 = rows[..index].iter().map(height).sum::<f32>() + offset;
+        let total: f32 = rows.iter().map(height).sum();
+        assert_eq!(top, total - viewport);
+
+        // Back up to the first cell of a section: its header shows too.
+        let first = row_of(&rows, 9).unwrap();
+        assert_eq!(reveal(&rows, &metrics, (9, 0.0), first, viewport), (5, 0.0));
+    }
+
+    /// The columns are the ones that fit in the window less the gutter
+    /// either side, and in the list's share of it beside a detail pane.
+    #[test]
+    fn a_grid_takes_the_columns_that_fit_inside_the_gutters() {
+        let metrics = Metrics::BASE;
+        let mut list = grid();
+        let width = |columns: f32| {
+            columns * metrics.grid_cell + (columns - 1.0) * metrics.grid_gap + 2.0 * metrics.gutter
+        };
+
+        assert_eq!(grid_columns(&list, &metrics, width(8.0)), 8);
+        assert_eq!(grid_columns(&list, &metrics, width(8.0) - 1.0), 7);
+        list.showing_detail = true;
+        let pane = (width(8.0) - 2.0 * metrics.gutter) / layout::view::DETAIL_LIST_SHARE
+            + 2.0 * metrics.gutter;
+        assert!(grid_columns(&list, &metrics, pane) < 8);
     }
 
     /// A preview card is in the palette's monospace family unless the user
@@ -1097,7 +1439,7 @@ mod tests {
     /// blank band of nothing where a label should be.
     #[test]
     fn only_titled_sections_produce_a_header() {
-        let rows = rows(&example());
+        let rows = rows(&example(), 1);
         assert_eq!(rows.len(), 4);
         assert!(matches!(rows[0], Row::Section(..)));
         assert!(matches!(rows[1], Row::Item(0)));
@@ -1109,14 +1451,8 @@ mod tests {
     /// keep counting across a section boundary rather than restarting.
     #[test]
     fn item_indices_continue_across_sections() {
-        let rows = rows(&example());
-        let items: Vec<usize> = rows
-            .iter()
-            .filter_map(|row| match row {
-                Row::Item(index) => Some(*index),
-                Row::Section(..) => None,
-            })
-            .collect();
+        let rows = rows(&example(), 1);
+        let items: Vec<usize> = rows.iter().flat_map(Row::items).copied().collect();
         assert_eq!(items, [0, 1, 2]);
     }
 
@@ -1271,7 +1607,7 @@ mod tests {
 
         assert_eq!(list.len(), 10);
         assert_eq!(list.sections.len(), 2);
-        assert_eq!(rows(&list).len(), 12);
+        assert_eq!(rows(&list, 1).len(), 12);
 
         // "with an action panel": at least one item has more than the one
         // action `Enter` would run, or there is nothing for the panel to show.

@@ -2914,7 +2914,7 @@ impl Launcher {
         };
 
         let rows = match &view {
-            lumen_core::view::View::List(list) => crate::view::rows(list),
+            lumen_core::view::View::List(list) => crate::view::rows(list, self.view_columns(list)),
             lumen_core::view::View::Detail(_) => Vec::new(),
         };
 
@@ -2954,6 +2954,11 @@ impl Launcher {
     }
 
     /// The active style's geometry, as numbers, for sizing the window.
+    /// How many columns a view's list has in this window (F18).
+    fn view_columns(&self, list: &lumen_core::view::List) -> usize {
+        crate::view::grid_columns(list, self.metrics(), self.width())
+    }
+
     fn metrics(&self) -> &lumen_core::style::Metrics {
         &self.theme.style.metrics
     }
@@ -3067,11 +3072,7 @@ impl Launcher {
         let Some(index) = list.items().position(|item| item.id == id) else {
             return;
         };
-        if state
-            .rows
-            .iter()
-            .any(|row| matches!(row, crate::view::Row::Item(item) if *item == index))
-        {
+        if crate::view::row_of(&state.rows, index).is_some() {
             state.selected = index;
             self.reveal_view_selection();
         }
@@ -3085,9 +3086,7 @@ impl Launcher {
         let Mode::View(state) = &self.mode else {
             return;
         };
-        let Some(row) = state.rows.iter().position(
-            |row| matches!(row, crate::view::Row::Item(index) if *index == state.selected),
-        ) else {
+        let Some(row) = crate::view::row_of(&state.rows, state.selected) else {
             return;
         };
         let top = state.list.logical_scroll_top();
@@ -3540,46 +3539,27 @@ impl Launcher {
                 Some(self.root.filter(&query, &candidates).into_iter().collect())
             };
 
-        let Mode::View(state) = &mut self.mode else {
+        let Mode::View(state) = &self.mode else {
             return;
         };
         let lumen_core::view::View::List(list) = &state.view else {
             return;
         };
 
-        let mut rows = Vec::new();
-        let mut index = 0;
-        for section in &list.sections {
-            let first = rows.len();
-            for _ in &section.items {
-                if keep.as_ref().is_none_or(|keep| keep.contains(&index)) {
-                    rows.push(crate::view::Row::Item(index));
-                }
-                index += 1;
-            }
-            // A heading with nothing under it is a heading about nothing.
-            if rows.len() > first
-                && let Some(title) = &section.title
-            {
-                rows.insert(
-                    first,
-                    crate::view::Row::Section(
-                        title.clone().into(),
-                        section.subtitle.clone().map(Into::into),
-                    ),
-                );
-            }
-        }
+        let rows = crate::view::rows_where(list, self.view_columns(list), |index| {
+            keep.as_ref().is_none_or(|keep| keep.contains(&index))
+        });
+
+        let Mode::View(state) = &mut self.mode else {
+            return;
+        };
 
         // The selection lands on the first surviving row. Keeping it on an item
         // the filter just removed would leave Enter pointing at something that
         // is no longer on screen.
         state.selected = rows
             .iter()
-            .find_map(|row| match row {
-                crate::view::Row::Item(index) => Some(*index),
-                crate::view::Row::Section(..) => None,
-            })
+            .find_map(|row| row.items().first().copied())
             .unwrap_or(0);
 
         state.list = crate::view::list_state(rows.len());
@@ -3594,10 +3574,8 @@ impl Launcher {
         state
             .rows
             .iter()
-            .filter_map(|row| match row {
-                crate::view::Row::Item(index) => Some(*index),
-                crate::view::Row::Section(..) => None,
-            })
+            .flat_map(crate::view::Row::items)
+            .copied()
             .collect()
     }
 
@@ -6068,7 +6046,8 @@ impl Launcher {
                 &self.geometry(),
             ),
             Some(crate::view::Row::Item(hit)) => self.render_row(*hit, entity, cx),
-            None => div().into_any_element(),
+            // The root list is never a grid.
+            Some(crate::view::Row::Cells(_)) | None => div().into_any_element(),
         }
     }
 
