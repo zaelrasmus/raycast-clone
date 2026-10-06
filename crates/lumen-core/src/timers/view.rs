@@ -87,6 +87,7 @@ pub fn view(clock: &Clock, presets: &[Preset], quick: &[Duration], now: Millis) 
     .collect();
 
     View::List(List {
+        presentation: Default::default(),
         showing_detail: false,
         placeholder: Some("Search timers".into()),
         filtering: Filtering::Host,

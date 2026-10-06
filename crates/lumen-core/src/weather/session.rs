@@ -385,6 +385,7 @@ impl Session {
             .sections(&listing, home, &mut WeatherRows { session: self });
 
         View::List(List {
+            presentation: Default::default(),
             placeholder: Some(self.browse.placeholder(self.places)),
             filtering: Filtering::Extension,
             scopes: Vec::new(),
@@ -438,6 +439,7 @@ impl Session {
             ),
         };
         Some(View::List(List {
+            presentation: Default::default(),
             placeholder: Some("Search for another place".into()),
             filtering: Filtering::Extension,
             scopes: Vec::new(),

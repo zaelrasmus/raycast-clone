@@ -663,6 +663,7 @@ impl Session {
         }
 
         View::List(List {
+            presentation: Default::default(),
             placeholder: Some("Search files\u{2026}".into()),
             filtering: Filtering::Extension,
             scopes: vec![self.type_scope()],

@@ -76,6 +76,7 @@ pub fn view(names: &[String], current: Option<&str>) -> View {
         .collect();
 
     View::List(List {
+        presentation: Default::default(),
         showing_detail: false,
         placeholder: Some("Search alert sounds".into()),
         filtering: Filtering::Host,

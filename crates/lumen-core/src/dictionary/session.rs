@@ -587,6 +587,7 @@ impl Session {
         };
 
         View::List(List {
+            presentation: Default::default(),
             placeholder: Some(format!("Look up a word in {}", self.language_name())),
             filtering: Filtering::Extension,
             scopes: vec![self.source_scope()],

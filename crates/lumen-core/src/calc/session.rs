@@ -150,6 +150,7 @@ impl Session {
         };
 
         View::List(List {
+            presentation: Default::default(),
             placeholder: Some("Type to filter calculations\u{2026}".into()),
             filtering: Filtering::Extension,
             scopes: Vec::new(),

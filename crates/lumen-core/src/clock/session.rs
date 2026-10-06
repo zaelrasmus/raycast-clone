@@ -294,6 +294,7 @@ impl Session {
         );
 
         View::List(List {
+            presentation: Default::default(),
             placeholder: Some(self.browse.placeholder(self.places)),
             filtering: Filtering::Extension,
             scopes: Vec::new(),

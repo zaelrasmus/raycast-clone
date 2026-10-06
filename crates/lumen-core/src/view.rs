@@ -120,6 +120,9 @@ pub struct List {
     /// layout (I-10). The rows keep their height and narrow to the list's
     /// share of the width.
     pub showing_detail: bool,
+    /// Rows, the default, or a grid of the same items (F18).
+    #[serde(default)]
+    pub presentation: Presentation,
     pub sections: Vec<Section>,
 }
 
@@ -199,6 +202,22 @@ impl List {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// How a [`List`] is drawn.
+///
+/// A grid is a presentation of the same list, not another view: the same
+/// sections, items, scopes, filtering and events, and the selection is the
+/// same flat index. In a grid each cell draws the item's `icon` large and
+/// the title is not drawn in the cell. The column count is derived from the
+/// width ([`crate::layout::view::grid_columns`]), never set by a view or a
+/// style (I-11).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Presentation {
+    #[default]
+    Rows,
+    Grid,
 }
 
 /// Who narrows the list as the user types.
@@ -590,6 +609,7 @@ mod tests {
     #[test]
     fn the_tree_round_trips_through_json() {
         let view = View::List(List {
+            presentation: Default::default(),
             placeholder: Some("Search issues".into()),
             filtering: Filtering::Extension,
             scopes: vec![scope(&["mine", "all"], "mine")],
@@ -657,6 +677,25 @@ mod tests {
     fn a_tone_is_a_meaning_and_not_a_colour() {
         let json = serde_json::to_string(&Tone::Caution).unwrap();
         assert_eq!(json, "\"caution\"");
+    }
+
+    /// Lists written before the grid existed load as rows, and a rows list
+    /// says so like every other list field.
+    #[test]
+    fn the_presentation_defaults_to_rows() {
+        let View::List(list) = from_json(r#"{ "type": "list" }"#).unwrap() else {
+            panic!("expected a list")
+        };
+        assert_eq!(list.presentation, Presentation::Rows);
+
+        let View::List(list) = from_json(r#"{ "type": "list", "presentation": "grid" }"#).unwrap()
+        else {
+            panic!("expected a list")
+        };
+        assert_eq!(list.presentation, Presentation::Grid);
+
+        let json = serde_json::to_value(List::default()).unwrap();
+        assert_eq!(json["presentation"], "rows");
     }
 
     #[test]
