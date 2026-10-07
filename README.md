@@ -190,7 +190,9 @@ an aesthetic worth looking at fifty times a day.
 - **Search Emoji & Symbols** (F18). Every emoji and the symbols people reach
   for -- arrows, maths, currency, box drawing -- in a grid, found by name or
   keyword (`sun`, `heart`, `check`) and browsed by category. `Enter` pastes
-  into the window you came from and puts your clipboard back; `Ctrl+K` has
+  into the window you came from and puts your clipboard back;
+  `Ctrl+Shift+Enter` pastes and keeps the window open, for several in a
+  row; `Ctrl+K` has
   *Copy to Clipboard*, *Copy Unicode* (`U+2600`), *Copy Name*, *Add Custom
   Keywords* and a skin tone for every emoji that has one. Pin the ones you
   use with `Ctrl+Shift+F`, in your order (`Ctrl+Alt+Up` / `Down`); the ones

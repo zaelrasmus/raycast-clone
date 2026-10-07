@@ -2387,6 +2387,34 @@ The decisions:
   kept its old selection by id: typing `sunny` after `sun` left the second
   result selected. Fixed in the launcher, for every view, not in the emoji
   view.
+- **Paste and Keep Window Open, `Ctrl+Shift+Enter`.** After Raycast's, for
+  pasting several emoji in a row. The launcher is not hidden:
+  `Platform::paste_keep_open` lends the foreground to the target, sends the
+  paste, and takes the foreground back -- a method of its own rather than a
+  flag on `Paste`, since it is a different behaviour and `Paste` stays data.
+  A spike measured the round trip with plain `SetForegroundWindow` both ways
+  at 50/50, about 4 ms out and 14 ms back, the window never hidden. In the
+  product the first hand-off was refused until this process owned the last
+  input, so an input that does nothing (a still mouse event, as PowerToys
+  does) goes before each call; attaching to the foreground's input was
+  slower (22--27 ms) and lost more in a burst. The chord is still down when
+  the paste goes out, so Shift, Alt and Win are released in the same
+  `SendInput` as `Ctrl+V` and Shift and Ctrl pressed again only if a
+  low-level hook saw no real release meanwhile (the hook only stores into
+  atomics, I-15); Alt and Win are never pressed again, so letting go of them
+  cannot open a menu or Start. Focus comes back at the target's first read;
+  the clipboard owner stays behind to put the clipboard back. A press while
+  a paste is in flight joins a batch that goes out as one paste, in order,
+  and plain `Enter` during it joins and closes after. A refused hand-off
+  pastes nothing and leaves the clipboard alone: the launcher is still open
+  to try again. *Frequently Used* keeps its order while the view is open, so
+  walking and pasting does not reshuffle it. Not perfect, and accepted as
+  good enough by hand test: a key typed in the 20--50 ms before the target
+  reads goes to the target, a batch lands about 250--300 ms after the paste
+  before it, and where the foreground lock is on (off on the machine this was
+  built on) the hand-off is untested. Automated focus tests fail whenever
+  someone is using the machine, since they own the last input; this was
+  checked by hand.
 - **No country or subdivision flags.** Windows draws neither as a flag, only
   as letters, so the catalogue leaves them out; the other flags stay.
 - **Open: the skin-tone actions are not a group.** The six tone actions come
@@ -3367,6 +3395,8 @@ has, and `Ctrl+Alt+Up`/`Down` run the moves, sent as `ActionInvoked` as if
 chosen from the panel. The panel shows those keys from the keymap, like a
 root row's, in place of any `shortcut`. `Action::shortcut` stays
 display-only: drawn on any other action, and never bound.
+`view::paste_action::KEEP_OPEN` (`paste-keep-open`) works the same way and
+takes `Ctrl+Shift+Enter`.
 
 ### 7.45 The action panel is a popover over the list
 
