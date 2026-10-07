@@ -172,6 +172,8 @@ struct Shell {
     /// Distinct from whether it is *visible*: it stays mapped throughout the
     /// fade-out, and is hidden only once the fade reports it has finished.
     overlay_shown: bool,
+    /// Keep-open pastes under way and asked for meanwhile (F18).
+    pastes: PasteBatch,
 }
 
 fn run_daemon() -> Result<()> {
@@ -280,6 +282,7 @@ fn start(cx: &mut App, paths: Paths, config: Config, theme: Theme) -> Result<()>
         restore_to: None,
         monitor: None,
         overlay_shown: false,
+        pastes: PasteBatch::default(),
     }));
 
     // Gaps and cycling for arranged windows (7.58), before anything can be
@@ -1511,7 +1514,13 @@ fn subscribe_to_launcher(
                 LauncherEvent::WindowLayout(ref request) => hide(&platform, &shell, &launcher, cx)
                     .and_then(|()| window_layout(&platform, layouts, request.clone(), draft, None)),
                 LauncherEvent::Paste(ref paste) => {
-                    paste_into(&platform, &config, &shell, &launcher, paste.clone(), cx)
+                    // During a keep-open batch, it joins the batch and closes
+                    // the launcher when that goes (`PasteBatch`).
+                    let now = shell.borrow_mut().pastes.close(paste.clone());
+                    match now {
+                        Some(paste) => paste_into(&platform, &config, &shell, &launcher, paste, cx),
+                        None => Ok(()),
+                    }
                 }
                 LauncherEvent::PasteKeepOpen(ref paste) => {
                     paste_keep_open(&platform, &config, &shell, &launcher, paste.clone(), cx)
@@ -2638,59 +2647,216 @@ fn paste_into(
 /// Nothing is hidden, so nothing is reset, and `restore_to` stays the
 /// target of the next paste. The platform lends the target the foreground
 /// and gives it back; until it has, the launcher is told not to take the
-/// focus it loses for the user leaving.
+/// focus it loses for the user leaving. Asked for while one is under way,
+/// the paste waits in the batch and goes with the others after it.
 fn paste_keep_open(
+    platform: &Arc<dyn Platform>,
+    config: &Config,
+    shell: &Rc<RefCell<Shell>>,
+    launcher: &gpui::WindowHandle<Launcher>,
+    paste: lumen_platform::Paste,
+    cx: &mut gpui::AsyncApp,
+) -> Result<()> {
+    if shell.borrow().restore_to.is_none() {
+        // Opened from the desktop: copied, as `paste_into` does, and the
+        // launcher stays.
+        log::info!("no window to paste into; copied the snippet instead");
+        kept_open_done(launcher, 1, cx);
+        return platform.set_clipboard_text(&paste.text);
+    }
+    let now = shell.borrow_mut().pastes.keep_open(paste);
+    if let Some(paste) = now {
+        start_keep_open(platform, config, shell, launcher, paste, cx);
+    }
+    Ok(())
+}
+
+/// Send `paste` on its way, kept open, and once it is over the batch that
+/// gathered meanwhile.
+fn start_keep_open(
     platform: &Arc<dyn Platform>,
     config: &Config,
     shell: &Rc<RefCell<Shell>>,
     launcher: &gpui::WindowHandle<Launcher>,
     mut paste: lumen_platform::Paste,
     cx: &mut gpui::AsyncApp,
-) -> Result<()> {
-    let launcher = *launcher;
-    let done = move |cx: &mut gpui::AsyncApp| {
-        launcher
-            .update(cx, |launcher, _window, _cx| launcher.paste_kept_open_done())
-            .ok();
-    };
-
-    let Some(target) = shell.borrow().restore_to else {
-        // Opened from the desktop: copied, as `paste_into` does, and the
-        // launcher stays.
-        log::info!("no window to paste into; copied the snippet instead");
-        done(cx);
-        return platform.set_clipboard_text(&paste.text);
-    };
-
+) {
+    let target = shell.borrow().restore_to;
     let (finished, finishing) = futures::channel::oneshot::channel::<()>();
-    let platform = platform.clone();
-    let snippets = config.snippets.clone();
-    let started = std::thread::Builder::new()
-        .name("lumen-paste-request".into())
-        .spawn(move || {
-            let _one_at_a_time = pasting();
-            paste.keys = keys_for(&*platform, &snippets, target);
-            if let Err(error) = platform.paste_keep_open(target, &paste) {
-                paste_failed(&*platform, &error);
-            }
-            let _ = finished.send(());
-        });
+    let started = match target {
+        Some(target) => {
+            let platform = platform.clone();
+            let snippets = config.snippets.clone();
+            std::thread::Builder::new()
+                .name("lumen-paste-request".into())
+                .spawn(move || {
+                    let _one_at_a_time = pasting();
+                    paste.keys = keys_for(&*platform, &snippets, target);
+                    if let Err(error) = platform.paste_keep_open(target, &paste) {
+                        paste_failed(&*platform, &error);
+                    }
+                    let _ = finished.send(());
+                })
+                .map(drop)
+                .context("starting the paste")
+        }
+        None => platform
+            .set_clipboard_text(&paste.text)
+            .context("no window to paste into; copying the snippet"),
+    };
     if let Err(error) = started {
-        done(cx);
-        return Err(error).context("starting the paste");
+        log::warn!("{error:#}");
     }
+
+    let (platform, config, shell, launcher) =
+        (platform.clone(), config.clone(), shell.clone(), *launcher);
     cx.spawn(async move |cx| {
         // Sent or dropped, the paste is over either way.
         let _ = finishing.await;
-        done(cx);
+        let (done, next) = shell.borrow_mut().pastes.finished();
+        match next {
+            NextPaste::Nothing => {}
+            NextPaste::KeepOpen(paste) => {
+                start_keep_open(&platform, &config, &shell, &launcher, paste, cx)
+            }
+            NextPaste::Close(paste) => {
+                if let Err(error) = paste_into(&platform, &config, &shell, &launcher, paste, cx) {
+                    log::error!("could not paste: {error:#}");
+                }
+            }
+        }
+        // After the next has started, so the count never drops to zero
+        // between them.
+        kept_open_done(&launcher, done, cx);
     })
     .detach();
-    Ok(())
 }
 
-/// One paste at a time, whichever kind: held for the whole of one, so a
-/// second waits for the first to have put the clipboard back and, kept open,
-/// given the foreground back, rather than interleaving with it.
+/// Tell the launcher `count` of its keep-open pastes are over.
+fn kept_open_done(launcher: &gpui::WindowHandle<Launcher>, count: usize, cx: &mut gpui::AsyncApp) {
+    if count == 0 {
+        return;
+    }
+    launcher
+        .update(cx, |launcher, _window, _cx| {
+            for _ in 0..count {
+                launcher.paste_kept_open_done();
+            }
+        })
+        .ok();
+}
+
+/// The keep-open pastes asked for while one is under way (F18), so that a
+/// burst of them -- emoji, one press each -- goes out as one more paste
+/// rather than a round trip each.
+///
+/// Each request the launcher counted (`pastes_kept_open`) is counted here
+/// until it has gone out and its paste is over, and said done then, once.
+/// A plain paste asked for meanwhile joins the batch and closes the launcher
+/// when the batch goes: the order of the pastes is the order of the
+/// presses, and the launcher stays until its last one.
+#[derive(Debug, Default)]
+struct PasteBatch {
+    /// The counted requests riding on the paste under way; zero, with
+    /// `busy` false, when none is.
+    in_flight: usize,
+    busy: bool,
+    /// Asked for since, in order, each with whether the launcher counted it.
+    pending: Vec<(lumen_platform::Paste, bool)>,
+    /// A plain paste is among `pending`: the last of them closes.
+    close: bool,
+}
+
+/// What [`PasteBatch::finished`] says to do next.
+#[derive(Debug, PartialEq)]
+enum NextPaste {
+    Nothing,
+    KeepOpen(lumen_platform::Paste),
+    /// The last of the batch, which closes the launcher as it goes.
+    Close(lumen_platform::Paste),
+}
+
+impl PasteBatch {
+    /// A keep-open paste: to start now, or `None` if it was added to the
+    /// batch.
+    fn keep_open(&mut self, paste: lumen_platform::Paste) -> Option<lumen_platform::Paste> {
+        if self.busy {
+            self.pending.push((paste, true));
+            return None;
+        }
+        self.busy = true;
+        self.in_flight = 1;
+        Some(paste)
+    }
+
+    /// A plain paste, which closes the launcher: to start now, or `None` if
+    /// it was added to the batch.
+    fn close(&mut self, paste: lumen_platform::Paste) -> Option<lumen_platform::Paste> {
+        if !self.busy {
+            return Some(paste);
+        }
+        self.pending.push((paste, false));
+        self.close = true;
+        None
+    }
+
+    /// The paste under way is over: how many counted requests are done, and
+    /// what goes out next.
+    fn finished(&mut self) -> (usize, NextPaste) {
+        let mut done = std::mem::take(&mut self.in_flight);
+        if self.pending.is_empty() {
+            self.busy = false;
+            return (done, NextPaste::Nothing);
+        }
+
+        // The longest run from the front that can go as one text; at least
+        // the first, whatever it is.
+        let (first, _) = &self.pending[0];
+        let mut run = 1;
+        if joinable(first) {
+            while run < self.pending.len() && joins(first, &self.pending[run].0) {
+                run += 1;
+            }
+        }
+        let mut group = self.pending.drain(..run);
+        let (mut paste, counted) = group.next().expect("the run has a first");
+        let mut riding = usize::from(counted);
+        for (next, counted) in group {
+            paste.text.push_str(&next.text);
+            riding += usize::from(counted);
+        }
+
+        if self.close && self.pending.is_empty() {
+            // Nothing comes back from a paste that hides the launcher.
+            self.close = false;
+            self.busy = false;
+            done += riding;
+            return (done, NextPaste::Close(paste));
+        }
+        self.in_flight = riding;
+        (done, NextPaste::KeepOpen(paste))
+    }
+}
+
+/// A paste that is its text and nothing else: no HTML, files, picture or
+/// `{cursor}`.
+fn joinable(paste: &lumen_platform::Paste) -> bool {
+    paste.html.is_none() && paste.files.is_empty() && paste.image.is_none() && paste.caret_back == 0
+}
+
+/// Whether `next` can be run onto `first`'s text, the clipboard treated the
+/// same.
+fn joins(first: &lumen_platform::Paste, next: &lumen_platform::Paste) -> bool {
+    joinable(next)
+        && next.restore_clipboard == first.restore_clipboard
+        && next.keep_out_of_history == first.keep_out_of_history
+}
+
+/// One paste at a time, whichever kind: held from the hand-off to the
+/// target until the paste is over for the caller -- hidden, until the
+/// clipboard is put back; kept open, until the launcher has the foreground
+/// back, the clipboard being put back after on the platform's own thread,
+/// which the next paste waits for before it touches the clipboard.
 fn pasting() -> std::sync::MutexGuard<'static, ()> {
     static PASTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // Nothing is guarded but the turn: a paste that panicked leaves it free.
@@ -2900,7 +3066,112 @@ async fn record_image(
 
 #[cfg(test)]
 mod tests {
-    use super::{ShortcutsCommand::*, ShortcutsStep, shortcuts_step};
+    use super::{NextPaste, PasteBatch, ShortcutsCommand::*, ShortcutsStep, shortcuts_step};
+
+    fn text(text: &str) -> lumen_platform::Paste {
+        lumen_platform::Paste {
+            text: text.into(),
+            html: None,
+            keys: lumen_platform::PasteKeys::CtrlV,
+            caret_back: 0,
+            restore_clipboard: true,
+            files: Vec::new(),
+            image: None,
+            keep_out_of_history: false,
+        }
+    }
+
+    fn texts(next: &NextPaste) -> Option<String> {
+        match next {
+            NextPaste::KeepOpen(paste) | NextPaste::Close(paste) => Some(paste.text.clone()),
+            NextPaste::Nothing => None,
+        }
+    }
+
+    #[test]
+    fn keep_open_pastes_during_one_go_out_together_in_order() {
+        let mut batch = PasteBatch::default();
+        assert_eq!(batch.keep_open(text("a")).map(|p| p.text), Some("a".into()));
+        assert!(batch.keep_open(text("b")).is_none());
+        assert!(batch.keep_open(text("c")).is_none());
+
+        let (done, next) = batch.finished();
+        assert_eq!(done, 1, "the first one");
+        assert!(matches!(next, NextPaste::KeepOpen(_)));
+        assert_eq!(texts(&next), Some("bc".into()));
+        // Arriving while the batch is out: the next one.
+        assert!(batch.keep_open(text("d")).is_none());
+
+        let (done, next) = batch.finished();
+        assert_eq!(done, 2, "b and c");
+        assert_eq!(texts(&next), Some("d".into()));
+        assert_eq!(batch.finished(), (1, NextPaste::Nothing));
+        // Idle again: the next starts at once.
+        assert!(batch.keep_open(text("e")).is_some());
+        assert_eq!(batch.finished(), (1, NextPaste::Nothing));
+    }
+
+    /// Every request counted by the launcher is said done exactly once.
+    #[test]
+    fn every_request_is_done_once() {
+        let mut batch = PasteBatch::default();
+        let mut asked = 0;
+        let mut done = 0;
+        for round in 0..5 {
+            for _ in 0..round {
+                asked += 1;
+                let _ = batch.keep_open(text("x"));
+            }
+            let (finished, _) = batch.finished();
+            done += finished;
+        }
+        loop {
+            let (finished, next) = batch.finished();
+            done += finished;
+            if next == NextPaste::Nothing {
+                break;
+            }
+        }
+        assert_eq!(done, asked);
+    }
+
+    /// A snippet with a `{cursor}`, HTML or files cannot be run together
+    /// with another: it goes alone, in its turn.
+    #[test]
+    fn what_cannot_be_joined_goes_alone_in_its_turn() {
+        let mut batch = PasteBatch::default();
+        batch.keep_open(text("a"));
+        let mut cursor = text("snippet");
+        cursor.caret_back = 2;
+        batch.keep_open(text("b"));
+        batch.keep_open(cursor);
+        batch.keep_open(text("c"));
+        assert_eq!(texts(&batch.finished().1), Some("b".into()));
+        assert_eq!(texts(&batch.finished().1), Some("snippet".into()));
+        assert_eq!(texts(&batch.finished().1), Some("c".into()));
+        assert_eq!(batch.finished().1, NextPaste::Nothing);
+    }
+
+    /// Plain Enter during a batch joins it and closes the launcher with it.
+    #[test]
+    fn a_plain_paste_during_a_batch_goes_last_and_closes() {
+        let mut batch = PasteBatch::default();
+        // Idle: straight away.
+        assert!(batch.close(text("now")).is_some());
+
+        let mut batch = PasteBatch::default();
+        batch.keep_open(text("a"));
+        batch.keep_open(text("b"));
+        assert!(batch.close(text("c")).is_none());
+        let (done, next) = batch.finished();
+        assert!(matches!(next, NextPaste::Close(_)));
+        assert_eq!(texts(&next), Some("bc".into()));
+        // Nothing comes back from a paste that closes: a and b are done
+        // now, and c was never counted.
+        assert_eq!(done, 2);
+        assert_eq!(batch.finished(), (0, NextPaste::Nothing));
+        assert!(batch.keep_open(text("d")).is_some());
+    }
 
     #[test]
     fn recording_suspends_once_and_resuming_applies_the_file() {
