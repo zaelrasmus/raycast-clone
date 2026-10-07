@@ -42,12 +42,17 @@
 //! # Keeping the launcher open
 //!
 //! *Paste and Keep Window Open* (F18) does not hide the launcher: the
-//! foreground is given to the target with a plain `SetForegroundWindow`,
-//! which the launcher, in front, may do, and taken back the same way once
-//! the paste is over -- read, given up on, or the clipboard replaced. Never
-//! after a delay of its own: the keystroke waits in the target's queue until
-//! it is handled, and taking the foreground back first can leave it unread.
-//! The text is offered by delayed rendering whether or not the clipboard is
+//! foreground is given to the target and taken back once the paste is over
+//! -- read, given up on, or the clipboard replaced -- and the paste is over
+//! only when the launcher is in front again. Given back at the target's
+//! first read, not after the grace that follows it, so that what the user
+//! types next goes to the launcher; never after a delay of its own: the
+//! keystroke waits in the target's queue until it is handled, and taking
+//! the foreground back first can leave it unread. Both handoffs are made
+//! from the paste's thread, which has to earn the right first (see
+//! `hand_foreground`). A paste not taken, kept open, leaves the clipboard
+//! as it was, unless pastes are kept: the launcher is still there to paste
+//! from again. The text is offered by delayed rendering whether or not the clipboard is
 //! put back, so that the read is seen.
 
 use std::cell::RefCell;
@@ -71,9 +76,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
     GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HWND_MESSAGE, KillTimer, MSG,
-    PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROYCLIPBOARD, WM_RENDERALLFORMATS, WM_RENDERFORMAT,
-    WM_TIMER, WNDCLASSW,
+    PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, TranslateMessage,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROYCLIPBOARD, WM_RENDERALLFORMATS,
+    WM_RENDERFORMAT, WM_TIMER, WNDCLASSW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -92,6 +97,10 @@ const READ_WAIT: Duration = Duration::from_millis(2000);
 /// one format, one after another.
 const READ_GRACE: Duration = Duration::from_millis(250);
 
+/// Posted to the paste's own window when the target has read, to give the
+/// foreground back to a launcher kept open.
+const WM_GIVE_BACK: u32 = WM_APP + 1;
+
 const READ_TIMER: usize = 1;
 const GRACE_TIMER: usize = 2;
 
@@ -103,22 +112,27 @@ const VK_V: VIRTUAL_KEY = VIRTUAL_KEY(0x56);
 const MAX_CARET_BACK: usize = 2000;
 
 pub fn paste(window: FocusOwner, paste: &Paste) -> Result<()> {
-    deliver(window, paste, false)
+    deliver(window, paste, None)
 }
 
 /// [`paste`] with the launcher, `launcher`, left showing: the foreground is
 /// lent to the target and given back once the paste is over.
 pub fn paste_keep_open(window: FocusOwner, paste: &Paste, launcher: HWND) -> Result<()> {
-    let outcome = deliver(window, paste, true);
+    let outcome = deliver(window, paste, Some(launcher));
     // Read, given up on, or the clipboard replaced: `deliver` returns only
-    // then, so the target has had the keystroke.
-    if !unsafe { SetForegroundWindow(launcher) }.as_bool() {
-        let front = unsafe { GetForegroundWindow() };
+    // then, so the target has had the keystroke. Given back at the read
+    // already, unless the read was not seen.
+    let started = Instant::now();
+    hand_foreground(launcher);
+    // Not over until the launcher is in front again: a paste after this one
+    // hands the foreground over from there.
+    if wait_for_foreground(launcher) {
         log::debug!(
-            "could not take the foreground back to the launcher; {:?} ({}) has it",
-            front.0,
-            class_of(front)
+            "paste: the launcher is in front again after {:?}",
+            started.elapsed()
         );
+    } else {
+        log::debug!("could not take the foreground back to the launcher");
     }
     outcome
 }
@@ -126,7 +140,8 @@ pub fn paste_keep_open(window: FocusOwner, paste: &Paste, launcher: HWND) -> Res
 /// Type `paste` into `window`. With `keep_open` the launcher is still in
 /// front, so the foreground is handed to `window` here rather than by
 /// hiding, and the read is always watched for.
-fn deliver(window: FocusOwner, paste: &Paste, keep_open: bool) -> Result<()> {
+fn deliver(window: FocusOwner, paste: &Paste, launcher: Option<HWND>) -> Result<()> {
+    let keep_open = launcher.is_some();
     let target = HWND(window.0 as *mut c_void);
     // The window that owns the clipboard watches for the read: needed to
     // put the clipboard back, and to know when the launcher may have the
@@ -156,23 +171,35 @@ fn deliver(window: FocusOwner, paste: &Paste, keep_open: bool) -> Result<()> {
         }
     }
 
-    if keep_open {
+    let started = if keep_open {
         // The chord that asked for this is still down. Let go of in front of
         // the launcher, the target never sees Shift's release, nor a
         // `Ctrl+Shift+V` made of it.
         wait_for_modifiers();
-        // The launcher is in front, so this is allowed.
-        if !unsafe { SetForegroundWindow(target) }.as_bool() {
-            log::debug!("SetForegroundWindow refused the paste's target");
-        }
-    }
+        let started = Instant::now();
+        hand_foreground(target);
+        started
+    } else {
+        Instant::now()
+    };
     if !wait_for_foreground(target) {
         // Typing into whatever is in front instead is the race 7.15 exists
-        // to avoid, so nothing is typed; the text is not lost either.
+        // to avoid, so nothing is typed.
+        if keep_open {
+            // The launcher is still open to paste from again, so the
+            // clipboard is left as the user had it.
+            bail!("the window did not come to the front, so nothing was pasted");
+        }
+        // Hidden, the launcher is gone: the text is not lost either.
         clipboard::set_formats(&formats)?;
         bail!("the window did not come back to the front, so the snippet was copied instead");
     }
-    if !keep_open {
+    if keep_open {
+        log::debug!(
+            "paste: the target is in front after {:?}",
+            started.elapsed()
+        );
+    } else {
         wait_for_modifiers();
     }
 
@@ -188,6 +215,7 @@ fn deliver(window: FocusOwner, paste: &Paste, keep_open: bool) -> Result<()> {
         caret_back: paste.caret_back,
         put_back: paste.restore_clipboard,
         keep_out_of_history: paste.keep_out_of_history,
+        give_back: launcher.map(|launcher| launcher.0 as isize),
     };
     let raw = window.0;
     std::thread::Builder::new()
@@ -196,6 +224,35 @@ fn deliver(window: FocusOwner, paste: &Paste, keep_open: bool) -> Result<()> {
         .context("starting the paste")?
         .join()
         .map_err(|_| anyhow!("the paste stopped unexpectedly"))?
+}
+
+/// Give `hwnd` the foreground, from this thread, which is not the window's.
+///
+/// Being the foreground process is not enough: `SetForegroundWindow` was
+/// refused, now and then, until this process had sent an input of its own
+/// -- which is why every paste after a first one worked: its `Ctrl+V`.
+/// Once the target is in front and the user's next key is the target's,
+/// the right is lost again. So an input that does nothing goes first, a
+/// mouse event with no movement and no buttons, as PowerToys does; then a
+/// plain call.
+///
+/// Not attached to the foreground's input: that measured 22-27 ms a hand-off,
+/// synchronous with gpui's deactivation, against 1-5 ms plain, and lost more
+/// keys in a burst. Not `activate::raise` either: its `SetFocus`, made
+/// attached to the launcher's input for a window that is not, left nothing
+/// in front on every paste.
+fn hand_foreground(hwnd: HWND) {
+    let input = [INPUT::default()];
+    if unsafe { SendInput(&input, std::mem::size_of::<INPUT>() as i32) } != 1 {
+        log::debug!("could not send the input that lets the foreground move");
+    }
+    if !unsafe { SetForegroundWindow(hwnd) }.as_bool() {
+        log::debug!(
+            "SetForegroundWindow refused {:?} ({})",
+            hwnd.0,
+            class_of(hwnd)
+        );
+    }
 }
 
 /// Whether `target` is in front, or comes to the front soon.
@@ -303,6 +360,9 @@ struct Delivery {
     put_back: bool,
     /// For a text that is left: keep it out of the history all the same.
     keep_out_of_history: bool,
+    /// The launcher, kept open: given the foreground back the moment the
+    /// target reads, so what the user types next is not the target's.
+    give_back: Option<isize>,
 }
 
 /// The window that owns the clipboard while a paste is read, and what it
@@ -330,6 +390,11 @@ struct Owner {
     /// text already supplied, which asks this window nothing, so its read
     /// cannot be seen; the paste most likely went through.
     read_by_other: bool,
+    /// See [`Delivery::give_back`]; taken when it is done.
+    give_back: Option<HWND>,
+    /// The launcher is still open: a paste the target did not take leaves
+    /// the clipboard as it was, to paste again from there.
+    kept_open: bool,
     /// The formats announced on the clipboard and not yet supplied. Only
     /// those may this window write: once supplied, restored over or given up
     /// on, writing one again would put the snippet back over whatever is
@@ -363,6 +428,8 @@ impl Owner {
             history: unsafe { RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory")) },
             read: false,
             read_by_other: false,
+            give_back: send.give_back.map(|raw| HWND(raw as *mut c_void)),
+            kept_open: send.give_back.is_some(),
             owed: Vec::new(),
             outcome: None,
         };
@@ -493,6 +560,12 @@ impl Owner {
         }
         if by_target && !self.read {
             self.read = true;
+            if self.give_back.is_some() {
+                // Once the target has its text, not from inside its read.
+                unsafe {
+                    let _ = PostMessageW(Some(self.hwnd), WM_GIVE_BACK, WPARAM(0), LPARAM(0));
+                }
+            }
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), READ_TIMER);
                 SetTimer(
@@ -689,6 +762,14 @@ extern "system" fn window_proc(
             });
             LRESULT(0)
         }
+        // The target has read: the launcher may have the foreground again.
+        // The clipboard stays this window's until the grace is over.
+        WM_GIVE_BACK => {
+            if let Some(Some(launcher)) = with_owner(|owner| owner.give_back.take()) {
+                hand_foreground(launcher);
+            }
+            LRESULT(0)
+        }
         WM_TIMER => {
             let _ = unsafe { KillTimer(Some(hwnd), wparam.0) };
             log::debug!(
@@ -707,6 +788,12 @@ extern "system" fn window_proc(
                         // Taken, and the text stays: supplied, as it goes.
                         owner.give_up()
                     }
+                } else if owner.kept_open && owner.put_back {
+                    owner.restore().and_then(|()| {
+                        Err(anyhow!(
+                            "the window did not take the paste -- it may be running as                              administrator -- so nothing was pasted"
+                        ))
+                    })
                 } else {
                     owner.give_up().and_then(|()| {
                         Err(anyhow!(

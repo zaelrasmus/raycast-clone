@@ -80,6 +80,11 @@ pub struct Session {
     category: Option<Category>,
     /// Pins, usage and custom keywords, as `emoji.json` holds them.
     saved: State,
+    /// *Frequently Used* as it was drawn before the first paste that kept
+    /// the view open, drawn so until the view is opened again or the user
+    /// arranges: the pastes count, but reordering under the selection would
+    /// move what the user is walking through.
+    still_frequent: Option<Vec<&'static Entry>>,
 }
 
 impl Default for Session {
@@ -95,6 +100,7 @@ impl Session {
             query: String::new(),
             category: None,
             saved,
+            still_frequent: None,
         }
     }
 
@@ -150,10 +156,14 @@ impl Session {
                     }
                     _ => return self.arrange(&item, chars, &action),
                 };
+                if action == PASTE_KEEP_OPEN && self.still_frequent.is_none() {
+                    self.still_frequent = Some(self.frequent());
+                }
                 // Saved first: pasting and copying close the view.
                 self.saved.record(chars);
                 let mut effects = vec![Effect::Save(self.saved.clone()), done];
-                // Still open: drawn again, so Frequently Used has it now.
+                // Still open: drawn again, so the emoji's actions know it is
+                // used now.
                 if action == PASTE_KEEP_OPEN {
                     effects.push(Effect::Render(self.view()));
                 }
@@ -226,6 +236,7 @@ impl Session {
         if !changed {
             return Vec::new();
         }
+        self.still_frequent = None;
         let mut view = self.view();
         if let View::List(list) = &mut view {
             list.select = where_now(list, item, chars).map(Box::new);
@@ -264,8 +275,12 @@ impl Session {
     }
 
     /// The most used that are not pinned, best first, at most
-    /// [`FREQUENT_LIMIT`]. Ties keep the catalogue's order.
+    /// [`FREQUENT_LIMIT`]. Ties keep the catalogue's order. Held still
+    /// while pastes keep the view open: see `still_frequent`.
     fn frequent(&self) -> Vec<&'static Entry> {
+        if let Some(still) = &self.still_frequent {
+            return still.clone();
+        }
         let now = store::now();
         let mut used: Vec<(f64, &'static Entry)> = self
             .catalogue
@@ -789,11 +804,17 @@ mod tests {
     }
 
     /// *Paste and Keep Window Open* pastes the same emoji as *Paste*, keeps
-    /// the launcher open, counts as a use, and draws the grid again so
-    /// *Frequently Used* shows it at once.
+    /// the launcher open, counts as a use and saves it, and draws the grid
+    /// again with *Frequently Used* as it was: reordered under the user's
+    /// selection, it would move what they are walking through.
     #[test]
-    fn paste_and_keep_window_open_counts_the_use_and_redraws() {
+    fn paste_and_keep_window_open_counts_the_use_and_keeps_frequently_used_still() {
         let mut session = in_tone(SkinTone::Medium);
+        invoke(&mut session, GRIN, COPY);
+        invoke(&mut session, GRIN, COPY);
+        invoke(&mut session, SUN, COPY);
+        let before = [format!("frequent:{GRIN}"), format!("frequent:{SUN}")];
+        assert_eq!(section_ids(&session, "Frequently Used"), before);
 
         let effects = invoke(&mut session, THUMBS, PASTE_KEEP_OPEN);
         let [Effect::Save(state), paste, Effect::Render(view)] = &effects[..] else {
@@ -807,16 +828,45 @@ mod tests {
                 keep_open: true,
             }
         );
-        assert_eq!(
-            list(view).sections[0].title.as_deref(),
-            Some("Frequently Used")
-        );
         // Still in its category, under its own id, which keeps it selected.
         assert!(list(view).items().any(|item| item.id == THUMBS));
 
-        // A second one adds to the count.
-        invoke(&mut session, THUMBS, PASTE_KEEP_OPEN);
-        assert_eq!(session.saved.usage[THUMBS].count, 2);
+        // Sun, pasted until it outranks Grin, stays where it was, and
+        // Thumbs is not added.
+        for _ in 0..3 {
+            invoke(&mut session, &format!("frequent:{SUN}"), PASTE_KEEP_OPEN);
+        }
+        assert_eq!(session.saved.usage[SUN].count, 4);
+        assert_eq!(section_ids(&session, "Frequently Used"), before);
+
+        // Opened again, it is ranked as it was saved.
+        let session = Session::new(session.saved.clone());
+        assert_eq!(
+            section_ids(&session, "Frequently Used"),
+            [
+                format!("frequent:{SUN}"),
+                format!("frequent:{GRIN}"),
+                format!("frequent:{THUMBS}")
+            ]
+        );
+    }
+
+    /// Kept still for pasting, not for arranging: what the user pins or
+    /// forgets leaves *Frequently Used* at once.
+    #[test]
+    fn arranging_after_a_kept_open_paste_draws_frequently_used_afresh() {
+        let mut session = Session::default();
+        invoke(&mut session, GRIN, COPY);
+        invoke(&mut session, SUN, COPY);
+        invoke(&mut session, SUN, PASTE_KEEP_OPEN);
+
+        invoke(&mut session, &format!("frequent:{GRIN}"), FORGET);
+        assert_eq!(
+            section_ids(&session, "Frequently Used"),
+            [format!("frequent:{SUN}")]
+        );
+        invoke(&mut session, &format!("frequent:{SUN}"), PIN);
+        assert!(section_ids(&session, "Frequently Used").is_empty());
     }
 
     #[test]

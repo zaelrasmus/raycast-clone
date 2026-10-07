@@ -50,7 +50,7 @@ mod spike {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
         MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, SendInput, SetFocus, UnregisterHotKey,
-        VIRTUAL_KEY, VK_CONTROL, VK_F24,
+        VIRTUAL_KEY, VK_CONTROL, VK_F24, VK_SHIFT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, ES_AUTOVSCROLL,
@@ -89,7 +89,11 @@ mod spike {
             target_main();
             return;
         }
-        let trials = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(50usize);
+        let trials = args
+            .iter()
+            .skip(1)
+            .find_map(|a| a.parse().ok())
+            .unwrap_or(50usize);
         unsafe { timeBeginPeriod(1) };
         launcher_main(trials);
         unsafe { timeEndPeriod(1) };
@@ -221,6 +225,11 @@ mod spike {
     enum Method {
         Plain,
         Attach,
+        /// `SetForegroundWindow` from a thread with no window, as Lumen's
+        /// paste thread is (`--from-thread`).
+        Thread,
+        /// The same thread, its input attached to the foreground's first.
+        ThreadAttach,
     }
 
     #[derive(Clone, Copy)]
@@ -245,6 +254,9 @@ mod spike {
         /// Before `Ctrl+V`, wait until nobody has the clipboard open, and
         /// has not for this many milliseconds.
         settle_ms: u64,
+        /// Ctrl and Shift held down while the foreground is handed over, as
+        /// they are when the user's `Ctrl+Shift+Enter` asked for the paste.
+        hold: bool,
     }
 
     #[derive(Default)]
@@ -371,6 +383,7 @@ mod spike {
                 hide: false,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "give attach / back attach",
@@ -382,6 +395,7 @@ mod spike {
                 hide: false,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "give plain / back attach",
@@ -393,6 +407,7 @@ mod spike {
                 hide: false,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "plain/plain, no user key",
@@ -404,6 +419,7 @@ mod spike {
                 hide: false,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "plain/plain, no Ctrl+V",
@@ -415,6 +431,7 @@ mod spike {
                 hide: false,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "target locks, back plain",
@@ -426,6 +443,7 @@ mod spike {
                 hide: false,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "target locks, back attach",
@@ -437,6 +455,7 @@ mod spike {
                 hide: false,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "plain/plain, wait focus",
@@ -448,6 +467,7 @@ mod spike {
                 hide: false,
                 wait_focus: true,
                 settle_ms: 0,
+                hold: false,
             },
             Variant {
                 name: "plain/plain, clipboard settle",
@@ -459,6 +479,7 @@ mod spike {
                 hide: false,
                 wait_focus: true,
                 settle_ms: 30,
+                hold: false,
             },
             Variant {
                 name: "fallback hide/show",
@@ -470,8 +491,45 @@ mod spike {
                 hide: true,
                 wait_focus: false,
                 settle_ms: 0,
+                hold: false,
             },
         ];
+        let threaded = |name, give, back, hold| Variant {
+            name,
+            give,
+            back,
+            user_key: true,
+            paste: true,
+            target_locks: false,
+            hide: false,
+            wait_focus: false,
+            settle_ms: 0,
+            hold,
+        };
+        // The same round trip, the foreground handed over from a thread with
+        // no window, and with the chord that asked for it still held.
+        let variants = if std::env::args().any(|a| a == "--from-thread") {
+            vec![
+                threaded("window thread", Method::Plain, Method::Plain, false),
+                threaded("window thread, held", Method::Plain, Method::Plain, true),
+                threaded("other thread", Method::Thread, Method::Thread, false),
+                threaded("other thread, held", Method::Thread, Method::Thread, true),
+                threaded(
+                    "other, attach",
+                    Method::ThreadAttach,
+                    Method::ThreadAttach,
+                    false,
+                ),
+                threaded(
+                    "other, attach, held",
+                    Method::ThreadAttach,
+                    Method::ThreadAttach,
+                    true,
+                ),
+            ]
+        } else {
+            variants.to_vec()
+        };
 
         println!(
             "\n{:<28} {:>5} {:>5} {:>5} {:>5} | {:>13} {:>13} {:>13} | {:>6} {:>8} {:>5} {:>5}",
@@ -549,6 +607,10 @@ mod spike {
             send_keys(&[(VK_F24, false), (VK_F24, true)]);
             pump_for(Duration::from_millis(5));
         }
+        if v.hold {
+            send_keys(&[(VK_CONTROL, false), (VK_SHIFT, false)]);
+            pump_for(Duration::from_millis(5));
+        }
 
         monitor.hidden_samples.store(0, Ordering::SeqCst);
         monitor.max_hidden_us.store(0, Ordering::SeqCst);
@@ -574,9 +636,15 @@ mod spike {
                         let _ = AttachThreadInput(me, target_thread, false);
                     }
                 }
+                Method::Thread | Method::ThreadAttach => {
+                    from_thread(target, v.give == Method::ThreadAttach, "give");
+                }
             }
         }
         t.give = wait_until(|| unsafe { GetForegroundWindow() } == target, started);
+        if v.hold {
+            send_keys(&[(VK_SHIFT, true), (VK_CONTROL, true)]);
+        }
 
         // 2. Paste.
         if v.paste && t.give.is_some() {
@@ -664,6 +732,9 @@ mod spike {
                     if attached {
                         let _ = AttachThreadInput(me, front_thread, false);
                     }
+                }
+                Method::Thread | Method::ThreadAttach => {
+                    from_thread(launcher, v.back == Method::ThreadAttach, "back");
                 }
             }
         }
@@ -813,6 +884,40 @@ mod spike {
                 return None;
             }
             unsafe { MsgWaitForMultipleObjects(None, false, 1, QS_ALLINPUT) };
+        }
+    }
+
+    /// `SetForegroundWindow(hwnd)` from a new thread, with `attach` its input
+    /// attached to the foreground's for the call; this thread pumps until it
+    /// is done. A refusal is printed with the error and the foreground.
+    fn from_thread(hwnd: HWND, attach: bool, step: &str) {
+        let raw = hwnd.0 as isize;
+        let worker = std::thread::spawn(move || unsafe {
+            let hwnd = HWND(raw as *mut _);
+            let front = GetForegroundWindow();
+            let front_thread = if front.0.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(front, None)
+            };
+            let me = GetCurrentThreadId();
+            let attached =
+                attach && front_thread != 0 && AttachThreadInput(me, front_thread, true).as_bool();
+            let ok = SetForegroundWindow(hwnd).as_bool();
+            let error = windows::Win32::Foundation::GetLastError();
+            if attached {
+                let _ = AttachThreadInput(me, front_thread, false);
+            }
+            (ok, error.0, GetForegroundWindow().0 as isize)
+        });
+        let started = Instant::now();
+        while !worker.is_finished() && started.elapsed() < STEP_TIMEOUT {
+            pump();
+            unsafe { MsgWaitForMultipleObjects(None, false, 1, QS_ALLINPUT) };
+        }
+        let (ok, error, front) = worker.join().unwrap();
+        if !ok || front == 0 {
+            println!("  {step} from a thread: returned {ok}, error {error}, foreground {front:#x}");
         }
     }
 
